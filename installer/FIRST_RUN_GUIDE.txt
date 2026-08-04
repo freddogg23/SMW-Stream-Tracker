@@ -1,0 +1,37 @@
+SMW STREAM TRACKER - FIRST RUN GUIDE
+====================================
+
+The tracker supports FXPAK Pro and RetroArch. Select the platform from the
+File menu inside SMW Stream Tracker.
+
+FXPAK PRO
+---------
+1. Connect the FXPAK Pro USB port to the PC and power on the console.
+2. Run SNI (strongly recommended) or QUsb2Snes. The installer can place one
+   or both tools beside SMW Stream Tracker and find the selected tool
+   automatically.
+3. In SMW Stream Tracker, select File > FXPAK Pro and choose Refresh.
+4. If the device is not listed, verify the FXPAK Pro firmware/USB driver and
+   test the connection at https://usb2snes.com/.
+
+RETROARCH
+---------
+1. Install the official 64-bit desktop version of RetroArch, or select it on
+   the installer's dependency page. Skip it there if RetroArch is already
+   installed or if you only use FXPAK Pro.
+2. The installer adds the bsnes-mercury Performance core when RetroArch is selected. For an
+   existing installation, you can also use Online Updater > Core Downloader.
+3. Open Settings > Network, enable Network Commands, and leave the command
+   port at 55355.
+4. Launch an SMW ROM in RetroArch.
+5. In SMW Stream Tracker, select File > RetroArch. If needed, open Settings
+   and select retroarch.exe and the installed SNES core DLL.
+
+ROM AND DOWNLOAD NOTICE
+-----------------------
+SMW Stream Tracker does not include or download a commercial base ROM. The
+Download Missing Hacks tool downloads moderated patch files and applies them
+only to a clean Super Mario World ROM that the user supplies legally.
+
+The installer downloads optional third-party tools only from their official
+project sources. Those tools are governed by their own licenses.

@@ -1,0 +1,28 @@
+OPTIONAL SOFTWARE AND ROM NOTICE — THE FAIR DINKUM VERSION
+
+G'day. This installer can download and set up optional third-party software:
+
+* SNI from the official alttpo/sni GitHub releases.
+* QUsb2Snes from the official usb2snes GitHub releases.
+* RetroArch from the official Libretro build server.
+
+They are separate projects with their own licences. They are not secretly
+stuffed inside SMW Stream Tracker; the wizard only downloads the options you
+actually tick. No funny business.
+
+Project and licence information:
+
+* SNI: https://github.com/alttpo/sni
+* QUsb2Snes: https://github.com/usb2snes/usb2snes
+* RetroArch and Libretro cores: https://www.libretro.com/
+* Pillow: https://python-pillow.org/
+* openpyxl: https://openpyxl.readthedocs.io/
+* websocket-client: https://github.com/websocket-client/websocket-client
+* pystray: https://github.com/moses-palmer/pystray
+
+The exact licence shipped with each project is the one that counts. SMW Stream
+Tracker does not change or replace those licences.
+
+One serious bit: SMW Stream Tracker does not include or download a commercial
+base ROM. Download Missing Hacks fetches moderated patch files and applies them
+only to a clean Super Mario World ROM legally supplied by you. Too easy.

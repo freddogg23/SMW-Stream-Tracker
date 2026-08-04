@@ -1,0 +1,28 @@
+SOFTWARE OPCIONAL Y AVISO SOBRE ROMS
+
+Este instalador puede descargar y configurar software opcional de terceros:
+
+* SNI desde las versiones oficiales de alttpo/sni en GitHub.
+* QUsb2Snes desde las versiones oficiales de usb2snes en GitHub.
+* RetroArch desde el servidor oficial de compilaciones de Libretro.
+
+Estos programas son proyectos independientes y se rigen por sus propias
+licencias. No están incluidos dentro de SMW Stream Tracker. El asistente solo
+descarga las opciones que seleccione el usuario.
+
+Información de proyectos y licencias:
+
+* SNI: https://github.com/alttpo/sni
+* QUsb2Snes: https://github.com/usb2snes/usb2snes
+* RetroArch y núcleos Libretro: https://www.libretro.com/
+* Pillow: https://python-pillow.org/
+* openpyxl: https://openpyxl.readthedocs.io/
+* websocket-client: https://github.com/websocket-client/websocket-client
+* pystray: https://github.com/moses-palmer/pystray
+
+El texto exacto de la licencia distribuida con cada proyecto es el que se
+aplica. SMW Stream Tracker no modifica ni sustituye esas licencias.
+
+SMW Stream Tracker no incluye ni descarga una ROM base comercial. La función
+Descargar hacks faltantes obtiene parches moderados y los aplica únicamente a
+una ROM limpia de Super Mario World proporcionada legalmente por el usuario.

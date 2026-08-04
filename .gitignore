@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.pyinstaller-build/
+.build-packages/
+build/
+dist/
+*.log
+*.tmp
+*.bak
+*.db
+*.sqlite*
+tracker_config.json
+current_hack.txt
+game_time.txt
+level_time.txt
