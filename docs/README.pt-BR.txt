@@ -1,0 +1,159 @@
+SMW STREAM TRACKER - GUIA COMPLETO DE CONFIGURAÇÃO
+Versão 1.0.0
+
+IDIOMAS
+English: README.en.txt
+Australian: README.au.txt
+Español: README.es.txt
+Français: README.fr.txt
+Deutsch: README.de.txt
+Português (Brasil): README.pt-BR.txt
+
+ÍNDICE
+1. O que você precisa
+2. Instalar o programa
+3. Escolher software opcional
+4. Configurar o FXPAK Pro
+5. Configurar o RetroArch
+6. Escolher pastas e arquivos
+7. Atualizar o catálogo
+8. Baixar e criar hacks
+9. Copiar ROMs para um cartão SD
+10. Jogar e acompanhar um hack
+11. Cronômetros, Meu Tracker e estatísticas
+12. Saída de texto para OBS
+13. Atualizações, backup e reversão
+14. Solução de problemas e privacidade
+
+1. O QUE VOCÊ PRECISA
+
+* Um PC de 64 bits com Windows 10 ou Windows 11.
+* Uma pasta para ROMs com patch.
+* Internet para o catálogo e downloads opcionais.
+* Um FXPAK Pro/SD2SNES ou RetroArch no Windows.
+* Sua própria ROM limpa de Super Mario World obtida legalmente para criar ROMs
+  jogáveis com patches moderados.
+
+O SMW Stream Tracker não inclui nem baixa uma ROM-base comercial.
+
+2. INSTALAR O PROGRAMA
+
+1. Execute SMWStreamTracker_Setup_1.0.0.exe.
+2. Escolha um idioma na primeira tela.
+3. Leia o aviso sobre software opcional e ROMs.
+4. Escolha FXPAK Pro ou RetroArch como plataforma inicial.
+5. Marque as ferramentas opcionais que deseja instalar.
+6. Escolha as pastas de ROMs e saída do OBS, ou deixe os campos vazios para
+   configurar depois.
+7. Conclua a instalação e abra este guia.
+
+As configurações existentes são preservadas em instalações e atualizações.
+
+3. ESCOLHER SOFTWARE OPCIONAL
+
+O SNI é altamente recomendado para a conexão ao vivo. O QUsb2Snes é uma ponte
+opcional, avançada e legada, principalmente para usuários de FXPAK Pro e
+SD2SNES. O RetroArch é opcional: ignore-o se já estiver instalado ou se você
+usar apenas o FXPAK Pro. Quando selecionado, o instalador também baixa o núcleo
+bsnes-mercury Performance do Libretro.
+
+4. CONFIGURAR O FXPAK PRO
+
+1. Conecte a porta USB do FXPAK Pro ao PC e ligue o console.
+2. Inicie o SNI ou QUsb2Snes e espere o dispositivo aparecer.
+3. Abra o SMW Stream Tracker e selecione Arquivo > FXPAK Pro.
+4. Clique em Atualizar se o status não mudar automaticamente.
+5. Em Configurações, confira o executável do serviço e o endereço WebSocket. O
+   endereço comum é ws://localhost:23074.
+
+Se o dispositivo não aparecer, confira o cabo USB, firmware compatível, driver
+do Windows e se outro programa está usando a conexão.
+
+5. CONFIGURAR O RETROARCH
+
+1. Instale o RetroArch ou selecione retroarch.exe em Configurações.
+2. Instale Nintendo - SNES / SFC (bsnes-mercury Performance) em Atualizador Online > Baixador de
+   Núcleos.
+3. Abra Configurações > Rede no RetroArch.
+4. Ative Comandos de Rede e mantenha a porta 55355.
+5. No SMW Stream Tracker, selecione Arquivo > RetroArch.
+6. Selecione retroarch.exe e bsnes_mercury_performance_libretro.dll se não forem detectados.
+7. Use Jogar. Ao trocar de jogo, o tracker salva o estado, fecha o conteúdo
+   atual e inicia o hack selecionado.
+
+6. ESCOLHER PASTAS E ARQUIVOS
+
+Abra Arquivo > Configurações e confira:
+
+* Biblioteca de ROMs com patch.
+* Pasta de saída de texto para o OBS.
+* ROM-base limpa para aplicar patches moderados.
+* Executável do SNI/QUsb2Snes para o FXPAK Pro.
+* Executável do RetroArch e núcleo bsnes-mercury Performance.
+
+Execute a verificação de integridade depois de alterar caminhos.
+
+7. ATUALIZAR O CATÁLOGO
+
+1. Abra Downloads.
+2. Selecione Atualizar hacks moderados do SMW Central.
+3. Aguarde; as solicitações são espaçadas para evitar limites do site.
+4. Abra Ver catálogo completo para pesquisar, filtrar e ordenar.
+5. Clique uma vez em Data adicionada para os mais novos e novamente para os
+   mais antigos.
+
+Somente a célula Dificuldade usa a cor configurada para aquela dificuldade.
+
+8. BAIXAR E CRIAR HACKS
+
+1. Abra Downloads > Baixar hacks SMW ausentes.
+2. Selecione sua ROM limpa e legal de Super Mario World.
+3. Selecione a pasta da biblioteca com patches.
+4. Filtre se quiser, confira a visualização e clique em Baixar hacks moderados.
+
+A ferramenta baixa patches moderados e os aplica localmente. Ela nunca baixa
+uma ROM-base e ignora jogos existentes.
+
+9. COPIAR ROMS PARA UM CARTÃO SD
+
+Escolha o destino SD em Configurações e ative a cópia durante o download.
+Confirme a unidade com cuidado. Normalmente o FXPAK Pro não expõe o cartão SD
+como unidade do Windows pela conexão USB de rastreamento; para uma cópia
+permanente em massa geralmente é necessário um leitor de cartões.
+
+10. JOGAR E ACOMPANHAR UM HACK
+
+Digite em Pesquisar ou selecionar um hack, escolha um resultado e clique em
+Jogar. Jogar hack aleatório escolhe da biblioteca. Adicionar ao Meu Tracker cria
+uma entrada e Concluir hack registra a conclusão. Clicar fora fecha a lista.
+
+11. CRONÔMETROS, MEU TRACKER E ESTATÍSTICAS
+
+Controle os cronômetros de jogo e fase na tela principal. Meu Tracker oferece
+pesquisa, filtros, campos editáveis, cores por dificuldade, barras de nota e
+progresso e exportação CSV/XLSX. As estatísticas resumem progresso, notas,
+tempo, atividade e dificuldade.
+
+12. SAÍDA DE TEXTO PARA OBS
+
+Escolha uma pasta de saída em Configurações. No OBS, adicione uma fonte Texto,
+ative Ler do arquivo e selecione o arquivo desejado. Repita para título, autor,
+saídas, cronômetros e outros dados.
+
+13. ATUALIZAÇÕES, BACKUP E REVERSÃO
+
+Use SMWStreamTracker_Update_VERSION.exe para versões pequenas depois de uma
+instalação completa. O atualizador preserva o executável anterior para reversão.
+Faça backup do banco de dados, configuração e biblioteca antes de mudanças
+importantes no Windows ou armazenamento.
+
+14. SOLUÇÃO DE PROBLEMAS E PRIVACIDADE
+
+* FXPAK desconectado: confira SNI/QUsb2Snes, USB, firmware e porta 23074.
+* RetroArch não acompanha: ative Comandos de Rede na porta 55355.
+* Jogo não inicia: confira ROM, executável, núcleo e caminhos.
+* Catálogo lento: deixe as novas tentativas espaçadas terminarem.
+
+Os dados e caminhos do tracker são processados localmente. Catálogo,
+dependências, atualizações e sincronização só se conectam quando usados. Leia
+PRIVACY.txt e THIRD_PARTY_NOTICE.txt para os avisos completos.
