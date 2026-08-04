@@ -6,7 +6,7 @@ SMW Stream Tracker does not collect telemetry and does not upload ROM files.
 The app uses the network only for features the user requests or enables:
 
 * SMW Central catalog and moderated patch information.
-* GitHub release checks and signed updater downloads.
+* GitHub release checks and checksum-verified updater downloads.
 * Optional Google Sheets synchronization through the URL the user supplies.
 * Optional installer downloads for SNI, QUsb2Snes, RetroArch, and Libretro cores.
 * Local communication with SNI, QUsb2Snes, FXPAK Pro, or RetroArch.

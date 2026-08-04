@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)][string]$CurrentExe,
     [Parameter(Mandatory = $true)][string]$BackupExe,
     [Parameter(Mandatory = $true)][int]$ProcessId,
-    [Parameter(Mandatory = $true)][string]$ExpectedSubject
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9A-Fa-f]{64}$')]
+    [string]$ExpectedSha256
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,12 +25,9 @@ try {
         throw 'The previous executable is missing.'
     }
 
-    $backupSignature = Get-AuthenticodeSignature -LiteralPath $BackupExe
-    if ($backupSignature.Status -ne 'Valid') {
-        throw 'The previous executable does not have a valid Windows signature.'
-    }
-    if ($backupSignature.SignerCertificate.Subject -ne $ExpectedSubject) {
-        throw 'The previous executable publisher does not match the installed app.'
+    $backupHash = (Get-FileHash -LiteralPath $BackupExe -Algorithm SHA256).Hash
+    if ($backupHash -ine $ExpectedSha256) {
+        throw 'The previous executable failed its SHA-256 integrity check.'
     }
 
     if (Test-Path -LiteralPath $CurrentExe -PathType Leaf) {

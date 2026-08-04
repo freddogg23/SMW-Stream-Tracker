@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.0.2**
+**Version 1.0.3**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports two playable platforms:
 
@@ -47,7 +47,7 @@ The setup wizard installs all six text guides in its `Documentation` folder and 
 ### Required for everyone
 
 - A 64-bit Windows 10 or Windows 11 PC.
-- The signed SMW Stream Tracker complete installer.
+- The SMW Stream Tracker complete installer.
 - A folder where your patched ROMs can be stored.
 - Internet access for catalog refreshes, moderated patch downloads, updates, and optional dependency installation.
 
@@ -72,8 +72,8 @@ The setup wizard installs all six text guides in its `Documentation` folder and 
 ## 2. Install SMW Stream Tracker
 
 1. Download `SMWStreamTracker_Setup_<version>.exe` from the official release page.
-2. Right-click the installer, select **Properties**, and confirm the Digital Signatures tab shows the expected SMW Stream Tracker publisher.
-3. Open the installer.
+2. Verify the installer SHA-256 value against `SHA256SUMS_<version>.txt` on the same release page.
+3. Open the installer. Because this release is intentionally unsigned, Windows may show **Unknown publisher** or a SmartScreen warning.
 4. On **Choose Your Platform**, select either:
    - **FXPAK Pro** for cartridge hardware.
    - **RetroArch** for the Windows emulator.
@@ -318,7 +318,7 @@ Google Sheets is optional. The local SQLite tracker database remains the primary
 1. Open **File → Check for Updates**.
 2. Review the version, date, size, and release notes.
 3. Select **Download & Install**.
-4. The app verifies the SHA-256 checksum and Windows publisher signature.
+4. The app verifies the downloaded updater against the SHA-256 checksum in the official HTTPS update manifest.
 5. A complete recovery backup is created before the updater starts.
 
 ### Automatic backups
@@ -336,9 +336,9 @@ Use **Stats → Create Recovery Backup Now** for an immediate backup. Use **Stat
 
 1. Open **File → Restore Previous App Version**.
 2. Confirm the rollback.
-3. The app verifies the previous executable’s publisher signature.
+3. The app verifies the previous executable against the SHA-256 checksum saved before the update.
 4. It creates another data backup.
-5. It restores and launches the previous signed executable.
+5. It restores and launches the previous executable.
 
 Rollback is available only after at least one updater has preserved an earlier installed version.
 

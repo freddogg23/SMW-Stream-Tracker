@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.0.2
+Version 1.0.3
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -45,7 +45,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.0.2.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.0.3.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro or RetroArch as your first cab off the rank.
@@ -205,9 +205,9 @@ Use File > Check for Updates inside SMW Stream Tracker. The app checks the
 official update manifest and tells you when a newer version is available.
 Review the version, release date, size, and notes, then select Download & Install.
 
-The app downloads the updater helper automatically, verifies its SHA-256
-checksum and Windows publisher signature, and creates a recovery backup before
-closing. The helper replaces the running program and keeps the previous signed
+The app downloads the updater helper automatically, checks its SHA-256 value
+against the official HTTPS update manifest, and creates a recovery backup
+before closing. The helper replaces the running program and keeps the previous
 executable available for rollback. You do not need to hunt down or run the
 updater helper yourself.
 

@@ -1,7 +1,7 @@
-Release 1.0.2
+Release 1.0.3
 
-* Adds a publicly trusted Microsoft Artifact Signing signature to the app, complete installer, and updater.
-* Shows FredDOGG23 as the verified Windows publisher for authentic release files.
-* Uses Microsoft's Artifact Signing timestamp service so signatures remain valid after certificate rotation.
-* Establishes a trusted publisher baseline for secure automatic updates after this full installer is installed.
-* Existing unsigned installations must run the full 1.0.2 installer once before automatic signed updates can be installed.
+* Switches the app, complete installer, and updater to unsigned distribution by design.
+* Keeps update checks and installation inside SMW Stream Tracker.
+* Verifies every downloaded updater against the SHA-256 value in the official HTTPS update manifest.
+* Verifies rollback executables with a SHA-256 value saved before replacement.
+* Version 1.0.2 users must run the full 1.0.3 installer manually once; later unsigned releases can update from inside the app.

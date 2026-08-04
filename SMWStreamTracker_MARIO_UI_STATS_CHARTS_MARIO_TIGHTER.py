@@ -62,8 +62,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.2"
-APP_BUILD_DATE = "2026-08-03"
+APP_VERSION = "1.0.3"
+APP_BUILD_DATE = "2026-08-04"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 DEFAULT_UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/freddogg23/"
@@ -11104,6 +11104,8 @@ STATS_DB_FILE = APP_DATA_DIR / "SMWStreamTracker.db"
 STATS_BACKUP_DIR = APP_DATA_DIR / "Backups"
 AUTOMATIC_BACKUP_DIR = APP_DATA_DIR / "AutomaticBackups"
 ROLLBACK_DIR = APP_DATA_DIR / "Rollback"
+ROLLBACK_EXECUTABLE = ROLLBACK_DIR / "SMWStreamTracker_previous.exe"
+ROLLBACK_HASH_FILE = ROLLBACK_DIR / "SMWStreamTracker_previous.sha256"
 UPDATE_DOWNLOAD_DIR = APP_DATA_DIR / "Updates"
 LOG_DIR = APP_DATA_DIR / "Logs"
 CRASH_LOG_FILE = LOG_DIR / "SMWStreamTracker-errors.log"
@@ -11113,6 +11115,14 @@ def application_directory() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def installed_document_path(filename: str) -> Path:
@@ -40927,39 +40937,6 @@ class TrackerApp:
         numbers = re.findall(r"\d+", str(value or ""))
         return tuple(int(number) for number in numbers[:4]) or (0,)
 
-    def _authenticode_signature(self, path: Path) -> dict[str, str]:
-        if os.name != "nt" or not path.is_file():
-            return {"Status": "Unavailable", "Subject": "", "Thumbprint": ""}
-        escaped_path = str(path).replace("'", "''")
-        command = (
-            "$s=Get-AuthenticodeSignature -LiteralPath '" + escaped_path + "';"
-            "[pscustomobject]@{Status=[string]$s.Status;"
-            "Subject=[string]$s.SignerCertificate.Subject;"
-            "Thumbprint=[string]$s.SignerCertificate.Thumbprint;"
-            "Message=[string]$s.StatusMessage}|ConvertTo-Json -Compress"
-        )
-        try:
-            completed = subprocess.run(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    command,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            parsed = json.loads(completed.stdout.strip() or "{}")
-            return {key: str(value or "") for key, value in parsed.items()}
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-            return {"Status": "Error", "Subject": "", "Thumbprint": ""}
-
     def _fetch_update_manifest(self) -> dict[str, Any]:
         manifest_url = str(
             self.config.get("update_manifest_url", DEFAULT_UPDATE_MANIFEST_URL)
@@ -40987,6 +40964,26 @@ class TrackerApp:
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise RuntimeError("The updater SHA-256 value is invalid.")
         return manifest
+
+    def _preserve_current_app_for_rollback(self) -> None:
+        if not bool(getattr(sys, "frozen", False)):
+            return
+        current_executable = Path(sys.executable).resolve()
+        if not current_executable.is_file():
+            raise RuntimeError("The installed application executable could not be found.")
+        ROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
+        temporary_executable = ROLLBACK_DIR / "SMWStreamTracker_previous.tmp"
+        temporary_hash = ROLLBACK_DIR / "SMWStreamTracker_previous.sha256.tmp"
+        try:
+            shutil.copy2(current_executable, temporary_executable)
+            expected_hash = file_sha256(temporary_executable)
+            temporary_hash.write_text(expected_hash + "\n", encoding="ascii")
+            os.replace(temporary_executable, ROLLBACK_EXECUTABLE)
+            os.replace(temporary_hash, ROLLBACK_HASH_FILE)
+        except Exception:
+            temporary_executable.unlink(missing_ok=True)
+            temporary_hash.unlink(missing_ok=True)
+            raise
 
     def check_for_updates(self, silent: bool = False) -> None:
         if not silent:
@@ -41107,7 +41104,7 @@ class TrackerApp:
         dialog: tk.Toplevel,
     ) -> None:
         dialog.destroy()
-        self.status_var.set("Downloading and verifying the signed updater...")
+        self.status_var.set("Downloading and verifying the update package...")
 
         def worker() -> None:
             updater_path: Path | None = None
@@ -41135,22 +41132,11 @@ class TrackerApp:
                 if digest.hexdigest().casefold() != str(manifest["sha256"]).casefold():
                     raise RuntimeError("The updater failed its SHA-256 integrity check and was deleted.")
 
-                updater_signature = self._authenticode_signature(updater_path)
-                if bool(getattr(sys, "frozen", False)):
-                    current_signature = self._authenticode_signature(Path(sys.executable))
-                    if current_signature.get("Status") != "Valid":
-                        raise RuntimeError(
-                            "This installed copy is not signed. Use the signed complete installer before using in-app updates."
-                        )
-                    if updater_signature.get("Status") != "Valid":
-                        raise RuntimeError("The updater does not have a valid Windows publisher signature.")
-                    if updater_signature.get("Subject") != current_signature.get("Subject"):
-                        raise RuntimeError("The updater publisher does not match the installed app publisher.")
-
                 backup = self._create_recovery_backup("before_update")
                 if backup is None:
                     raise RuntimeError("A safety backup could not be created, so the update was stopped.")
-                self.root.after(0, lambda: self._launch_verified_updater(updater_path))
+                self._preserve_current_app_for_rollback()
+                self.root.after(0, lambda: self._launch_update_package(updater_path))
             except Exception as error:
                 if updater_path is not None:
                     try:
@@ -41169,7 +41155,7 @@ class TrackerApp:
                 )
         threading.Thread(target=worker, daemon=True).start()
 
-    def _launch_verified_updater(self, updater_path: Path) -> None:
+    def _launch_update_package(self, updater_path: Path) -> None:
         try:
             subprocess.Popen([str(updater_path), "/SP-"])
         except OSError as error:
@@ -41178,7 +41164,8 @@ class TrackerApp:
         self.shutdown()
 
     def restore_previous_app_version(self) -> None:
-        previous_executable = ROLLBACK_DIR / "SMWStreamTracker_previous.exe"
+        previous_executable = ROLLBACK_EXECUTABLE
+        previous_hash_file = ROLLBACK_HASH_FILE
         rollback_script = application_directory() / "rollback_update.ps1"
         if not getattr(sys, "frozen", False):
             messagebox.showinfo(
@@ -41187,29 +41174,37 @@ class TrackerApp:
                 parent=self.root,
             )
             return
-        if not previous_executable.is_file() or not rollback_script.is_file():
+        if (
+            not previous_executable.is_file()
+            or not previous_hash_file.is_file()
+            or not rollback_script.is_file()
+        ):
             messagebox.showinfo(
                 "No Previous Version",
                 "No previous installed app version is available to restore yet.",
                 parent=self.root,
             )
             return
-        current_signature = self._authenticode_signature(Path(sys.executable))
-        previous_signature = self._authenticode_signature(previous_executable)
-        if (
-            current_signature.get("Status") != "Valid"
-            or previous_signature.get("Status") != "Valid"
-            or current_signature.get("Subject") != previous_signature.get("Subject")
-        ):
+        try:
+            expected_hash = previous_hash_file.read_text(encoding="ascii").strip().casefold()
+            actual_hash = file_sha256(previous_executable).casefold()
+        except OSError as error:
             messagebox.showerror(
                 "Rollback Stopped Safely",
-                "The previous executable did not pass the publisher-signature check.",
+                "The previous executable could not be verified.\n\n" + str(error),
+                parent=self.root,
+            )
+            return
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_hash) or actual_hash != expected_hash:
+            messagebox.showerror(
+                "Rollback Stopped Safely",
+                "The previous executable did not pass its SHA-256 integrity check.",
                 parent=self.root,
             )
             return
         if not messagebox.askyesno(
             "Restore Previous App Version",
-            "Restore the previous signed app version? Your tracker data and settings will be backed up first.",
+            "Restore the previous app version? Your tracker data and settings will be backed up first.",
             parent=self.root,
         ):
             return
@@ -41235,8 +41230,8 @@ class TrackerApp:
                     str(previous_executable),
                     "-ProcessId",
                     str(os.getpid()),
-                    "-ExpectedSubject",
-                    current_signature.get("Subject", ""),
+                    "-ExpectedSha256",
+                    expected_hash,
                 ],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
