@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "version": "1.0.0",
+  "release_date": "2026-08-03",
+  "notes": [
+    "Initial release from the new SMW Stream Tracker repository.",
+    "Supports FXPAK Pro and RetroArch tracking, timers, statistics, catalog downloads, exports, and backups.",
+    "Includes optional SNI, QUsb2Snes, RetroArch, and bsnes-mercury Performance setup.",
+    "Includes multilingual setup, health checks, redacted diagnostics, and rollback-capable updates."
+  ],
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.0/SMWStreamTracker_Update_1.0.0.exe",
+  "sha256": "4b3152ae5ae5a1670ef8ce0b7b593b32503dc780da3837bf3aa6b5c01b4225fb",
+  "size": 65853717
+}
