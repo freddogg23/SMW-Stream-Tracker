@@ -1,7 +1,7 @@
-Release 1.0.1
+Release 1.0.2
 
-* Repairs update checks for installations that saved the retired smwc_tracker manifest URL.
-* Moves Check for Updates into File > About & Updates beside the installed version and build date.
-* Publishes the complete source tree and multilingual documentation on the repository main branch.
-* Expands the Australian setup guide with a more playful Australian voice.
-* Existing unsigned installations must run the full 1.0.1 installer once; automatic installation requires signed builds.
+* Adds a publicly trusted Microsoft Artifact Signing signature to the app, complete installer, and updater.
+* Shows FredDOGG23 as the verified Windows publisher for authentic release files.
+* Uses Microsoft's Artifact Signing timestamp service so signatures remain valid after certificate rotation.
+* Establishes a trusted publisher baseline for secure automatic updates after this full installer is installed.
+* Existing unsigned installations must run the full 1.0.2 installer once before automatic signed updates can be installed.

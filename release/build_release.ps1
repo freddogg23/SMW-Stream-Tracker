@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.1',
+    [string]$Version = '1.0.2',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild,
     [switch]$AllowUnsigned
@@ -29,7 +29,12 @@ function Find-SignTool {
 }
 
 function Invoke-ReleaseSignature([string]$Path, [string]$SignTool) {
-    $timestamp = 'http://timestamp.digicert.com'
+    $timestamp = if ($env:SMW_TRUSTED_SIGNING_DLIB -and $env:SMW_TRUSTED_SIGNING_METADATA) {
+        'http://timestamp.acs.microsoft.com'
+    }
+    else {
+        'http://timestamp.digicert.com'
+    }
     if ($env:SMW_SIGN_CERT_PFX) {
         $arguments = @('sign', '/v', '/fd', 'SHA256', '/td', 'SHA256', '/tr', $timestamp, '/f', $env:SMW_SIGN_CERT_PFX)
         if ($env:SMW_SIGN_CERT_PASSWORD) {

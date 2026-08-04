@@ -62,7 +62,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 APP_BUILD_DATE = "2026-08-03"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 DEFAULT_UPDATE_MANIFEST_URL = (

@@ -1,5 +1,7 @@
 # SMW Stream Tracker
 
+**Version 1.0.2**
+
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports two playable platforms:
 
 - FXPAK Pro / SD2SNES hardware
