@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.1.1
+Version 1.0.0
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
