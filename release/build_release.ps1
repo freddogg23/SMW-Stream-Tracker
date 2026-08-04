@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.3',
+    [string]$Version = '1.0.4',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -10,6 +10,7 @@ $dist = Join-Path $projectRoot 'dist'
 $appExe = Join-Path $dist 'SMWStreamTracker.exe'
 $setupExe = Join-Path $dist "SMWStreamTracker_Setup_$Version.exe"
 $updaterExe = Join-Path $dist "SMWStreamTracker_Update_$Version.exe"
+$sourceZip = Join-Path $dist "SMWStreamTracker_Desktop_${Version}_Source.zip"
 $checksumsPath = Join-Path $dist "SHA256SUMS_$Version.txt"
 $manifestPath = Join-Path $PSScriptRoot 'update_manifest.json'
 $releaseNotesPath = Join-Path $PSScriptRoot 'RELEASE_NOTES.txt'
@@ -45,6 +46,10 @@ if (-not $SkipAppBuild) {
             throw 'python.exe was not found. Install Python or set SMW_BUILD_PYTHON to its full path.'
         }
         $pythonPath = $python.Source
+    }
+    & $pythonPath -c "from PIL import Image; print('Pillow ' + Image.__version__ + ' from ' + Image.__file__)"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The selected Python environment cannot load Pillow. Install a Pillow build that matches this Python version before packaging.'
     }
     & $pythonPath -m PyInstaller --noconfirm --clean (Join-Path $projectRoot 'SMWStreamTracker.spec')
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
@@ -105,9 +110,47 @@ $manifest = [ordered]@{
     sha256 = $updaterHash
     size = (Get-Item -LiteralPath $updaterExe).Length
 }
-$manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+$manifestJson = $manifest | ConvertTo-Json -Depth 5
+$utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText(
+    $manifestPath,
+    $manifestJson + [Environment]::NewLine,
+    $utf8WithoutBom
+)
 
-$checksumLines = @($appExe, $setupExe, $updaterExe) | ForEach-Object {
+$sourceItems = @(
+    '.gitignore',
+    'LICENSE.txt',
+    'README.md',
+    'SMWStreamTracker.spec',
+    'SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py',
+    'app_assets',
+    'banner_background_assets',
+    'banner_character_assets',
+    'banner_character_assets_user',
+    'banner_element_assets',
+    'banner_foreground_assets',
+    'banner_title_assets',
+    'build_tracker_icons.py',
+    'create_bowser_fixed_flame_overlay.py',
+    'create_bowser_uncropped_fixed_flame_overlay.py',
+    'docs',
+    'fix_toadette_hair_circles.py',
+    'installer',
+    'platform_assets',
+    'prepare_user_banner_characters.py',
+    'preview_consistent_ground_shadows.py',
+    'release',
+    'release_tools',
+    'render_banner_qa.py',
+    'version_info.txt'
+) | ForEach-Object { Join-Path $projectRoot $_ }
+if (Test-Path -LiteralPath $sourceZip) {
+    Remove-Item -LiteralPath $sourceZip -Force
+}
+Compress-Archive -LiteralPath $sourceItems -DestinationPath $sourceZip -CompressionLevel Optimal
+
+$checksumLines = @($appExe, $setupExe, $updaterExe, $sourceZip) | ForEach-Object {
     $artifactHash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
     "$artifactHash  $(Split-Path -Leaf $_)"
 }
@@ -118,5 +161,6 @@ Write-Host "Unsigned release $Version is ready."
 Write-Host "App:       $appExe"
 Write-Host "Installer: $setupExe"
 Write-Host "Updater:   $updaterExe"
+Write-Host "Source:    $sourceZip"
 Write-Host "Checksums: $checksumsPath"
 Write-Host "Manifest:  $manifestPath"

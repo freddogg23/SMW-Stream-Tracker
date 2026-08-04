@@ -7,7 +7,9 @@ a = Analysis(
     binaries=[],
     datas=[
         ('banner_background_assets', 'banner_background_assets'),
+        ('banner_character_assets', 'banner_character_assets'),
         ('banner_character_assets_user', 'banner_character_assets_user'),
+        ('banner_foreground_assets', 'banner_foreground_assets'),
         ('banner_title_assets', 'banner_title_assets'),
         ('banner_element_assets', 'banner_element_assets'),
         ('platform_assets', 'platform_assets'),

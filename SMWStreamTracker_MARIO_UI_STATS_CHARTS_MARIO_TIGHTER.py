@@ -40,6 +40,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+PIL_IMPORT_ERROR = ""
 try:
     from PIL import (
         Image,
@@ -48,7 +49,8 @@ try:
         ImageFont,
         ImageTk,
     )
-except ImportError:
+except ImportError as error:
+    PIL_IMPORT_ERROR = f"{type(error).__name__}: {error}"
     Image = None
     ImageDraw = None
     ImageFilter = None
@@ -62,7 +64,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 APP_BUILD_DATE = "2026-08-04"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 DEFAULT_UPDATE_MANIFEST_URL = (
@@ -23272,6 +23274,11 @@ class TrackerApp:
         ] = {}
 
         if Image is None or ImageTk is None:
+            append_error_log(
+                "Brand asset loading unavailable",
+                PIL_IMPORT_ERROR
+                or "Pillow could not be imported.",
+            )
             return
 
         try:
@@ -23973,17 +23980,12 @@ class TrackerApp:
             )
 
         except Exception:
-            self.banner_photo = None
-            self.banner_source_image = None
-            self.banner_background_source = None
-            self.banner_repeat_background_source = None
-            self.banner_foreground_source = None
-            self.banner_title_source = None
-            self.app_icon_photo = None
-            self.app_icon_idle_image = None
-            self.app_icon_tracking_image = None
-            self.app_icon_idle_photo = None
-            self.app_icon_tracking_photo = None
+            # Keep any assets that loaded successfully. One optional image
+            # should never blank the entire interface.
+            append_error_log(
+                "Brand asset loading failed",
+                traceback.format_exc(),
+            )
 
     def _set_tracking_icon(self, tracking: bool) -> None:
         """Use the green-star icon only while a platform is connected."""
@@ -40951,7 +40953,9 @@ class TrackerApp:
             payload = response.read(1024 * 1024 + 1)
         if len(payload) > 1024 * 1024:
             raise RuntimeError("The update manifest is unexpectedly large.")
-        manifest = json.loads(payload.decode("utf-8"))
+        # Windows PowerShell 5 commonly writes UTF-8 JSON with a BOM.
+        # utf-8-sig accepts both BOM and ordinary BOM-free UTF-8 manifests.
+        manifest = json.loads(payload.decode("utf-8-sig"))
         if not isinstance(manifest, dict):
             raise RuntimeError("The update manifest is not valid.")
         for field in ("version", "updater_url", "sha256"):

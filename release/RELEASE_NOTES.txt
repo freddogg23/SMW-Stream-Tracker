@@ -1,7 +1,7 @@
-Release 1.0.3
+Release 1.0.4
 
-* Switches the app, complete installer, and updater to unsigned distribution by design.
-* Keeps update checks and installation inside SMW Stream Tracker.
-* Verifies every downloaded updater against the SHA-256 value in the official HTTPS update manifest.
-* Verifies rollback executables with a SHA-256 value saved before replacement.
-* Version 1.0.2 users must run the full 1.0.3 installer manually once; later unsigned releases can update from inside the app.
+* Restores the full banner, platform artwork, menu images, and application photos in packaged builds.
+* Packages every banner asset directory used by the desktop application.
+* Accepts update manifests saved as either ordinary UTF-8 or UTF-8 with a byte-order mark.
+* Generates future update manifests as BOM-free UTF-8 for compatibility with every installed version.
+* Keeps successfully loaded artwork visible if one optional image cannot be opened and records a diagnostic error instead.
