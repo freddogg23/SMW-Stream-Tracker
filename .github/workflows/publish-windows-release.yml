@@ -1,0 +1,125 @@
+name: Publish Windows release
+
+on:
+  push:
+    tags:
+      - "v1.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install packaging tools
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller pillow openpyxl websocket-client
+          choco install innosetup --no-progress -y
+
+      - name: Build the unsigned Windows release
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          .\release\build_release.ps1 -Version $version
+
+      - name: Publish release and sanitize older source downloads
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $repo = "${{ github.repository }}"
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          $dist = Join-Path $PWD "dist"
+          $manifestBackup = Join-Path $env:RUNNER_TEMP "update_manifest.json"
+          Copy-Item -LiteralPath ".\release\update_manifest.json" -Destination $manifestBackup -Force
+
+          $assets = @(
+            (Join-Path $dist "SMWStreamTracker.exe"),
+            (Join-Path $dist "SMWStreamTracker_Setup_$version.exe"),
+            (Join-Path $dist "SMWStreamTracker_Update_$version.exe"),
+            (Join-Path $dist "SMWStreamTracker_Desktop_${version}_Source.zip"),
+            (Join-Path $dist "SHA256SUMS_$version.txt")
+          )
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) {
+              throw "Missing release asset: $asset"
+            }
+          }
+
+          gh release create $tag $assets `
+            --repo $repo `
+            --verify-tag `
+            --latest `
+            --title "SMW Stream Tracker v$version" `
+            --notes-file ".\release\DESKTOP_RELEASE_NOTES_$version.md"
+
+          foreach ($oldVersion in @("1.0.3", "1.0.4")) {
+            $oldTag = "v$oldVersion"
+            if (-not (gh release view $oldTag --repo $repo 2>$null)) {
+              continue
+            }
+
+            $oldSourceName = "SMWStreamTracker_Desktop_${oldVersion}_Source.zip"
+            $oldChecksumName = "SHA256SUMS_$oldVersion.txt"
+            $oldSource = Join-Path $env:RUNNER_TEMP $oldSourceName
+            $oldChecksumDirectory = Join-Path $env:RUNNER_TEMP "checksums-$oldVersion"
+            New-Item -ItemType Directory -Force -Path $oldChecksumDirectory | Out-Null
+
+            git archive --format=zip --output=$oldSource $oldTag
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not create the privacy-cleaned $oldTag source archive."
+            }
+
+            gh release download $oldTag `
+              --repo $repo `
+              --pattern $oldChecksumName `
+              --dir $oldChecksumDirectory `
+              --clobber
+            $oldChecksum = Join-Path $oldChecksumDirectory $oldChecksumName
+            $oldSourceHash = (Get-FileHash -LiteralPath $oldSource -Algorithm SHA256).Hash.ToLowerInvariant()
+            $replacementLine = "$oldSourceHash  $oldSourceName"
+            $foundSourceLine = $false
+            $updatedChecksum = Get-Content -LiteralPath $oldChecksum | ForEach-Object {
+              if ($_ -match "\s+$([regex]::Escape($oldSourceName))$") {
+                $foundSourceLine = $true
+                $replacementLine
+              }
+              else {
+                $_
+              }
+            }
+            if (-not $foundSourceLine) {
+              $updatedChecksum += $replacementLine
+            }
+            $updatedChecksum | Set-Content -LiteralPath $oldChecksum -Encoding ascii
+
+            gh release upload $oldTag $oldSource $oldChecksum `
+              --repo $repo `
+              --clobber
+          }
+
+          git checkout main
+          Copy-Item -LiteralPath $manifestBackup -Destination ".\release\update_manifest.json" -Force
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- ".\release\update_manifest.json"
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "Update v$version release manifest"
+            git push origin main
+          }

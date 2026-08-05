@@ -28,6 +28,7 @@ feedback, and appearance handling while preserving existing user settings.
 
 ## Downloads
 
+- `SMWStreamTracker.exe` - portable single-file application.
 - `SMWStreamTracker_Setup_1.1.0.exe` - complete unsigned installer.
 - `SMWStreamTracker_Update_1.1.0.exe` - checksum-verified in-app updater.
 - `SMWStreamTracker_Desktop_1.1.0_Source.zip` - complete release source.
