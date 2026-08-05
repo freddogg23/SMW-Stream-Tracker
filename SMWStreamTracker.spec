@@ -1,10 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_all
+
+
+webview_datas, webview_binaries, webview_hiddenimports = collect_all('webview')
+
 
 a = Analysis(
     ['SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py'],
     pathex=[],
-    binaries=[],
+    binaries=webview_binaries,
     datas=[
         ('banner_background_assets', 'banner_background_assets'),
         ('banner_character_assets', 'banner_character_assets'),
@@ -18,8 +23,8 @@ a = Analysis(
         ('installer\\PRIVACY.txt', 'installer'),
         ('installer\\LICENSE.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.txt', 'installer'),
-    ],
-    hiddenimports=[],
+    ] + webview_datas,
+    hiddenimports=webview_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

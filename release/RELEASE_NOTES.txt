@@ -1,4 +1,7 @@
-Release 1.1.0
+Release 1.1.1
+
+* Restores the in-app Feedback & Suggestions window by packaging pywebview, pythonnet, and the Windows WebView2 bridge with the application.
+* Detects an embedded-feedback child process that exits during startup and shows the in-app fallback panel instead of silently doing nothing.
 
 * Keeps the level timer through older-hack death-to-overworld transitions and resets it only after a confirmed finish or a different level selection.
 * Adds search and click-to-sort behavior throughout catalog and tracker lists, plus combined download filters for difficulty, type, and rating.

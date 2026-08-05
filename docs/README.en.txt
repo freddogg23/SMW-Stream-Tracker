@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - COMPLETE SETUP GUIDE
-Version 1.1.0
+Version 1.1.1
 
 LANGUAGES
 English: README.en.txt
@@ -38,7 +38,7 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 
 2. INSTALL THE PROGRAM
 
-1. Start SMWStreamTracker_Setup_1.1.0.exe.
+1. Start SMWStreamTracker_Setup_1.1.1.exe.
 2. Select a language on the first screen.
 3. Read the optional-software and ROM notice.
 4. Choose FXPAK Pro or RetroArch as the initial platform.

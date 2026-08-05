@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.1.0',
+    [string]$Version = '1.1.1',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -50,6 +50,10 @@ if (-not $SkipAppBuild) {
     & $pythonPath -c "from PIL import Image; print('Pillow ' + Image.__version__ + ' from ' + Image.__file__)"
     if ($LASTEXITCODE -ne 0) {
         throw 'The selected Python environment cannot load Pillow. Install a Pillow build that matches this Python version before packaging.'
+    }
+    & $pythonPath -c "from importlib.metadata import version; import webview, clr; print('pywebview ' + version('pywebview') + ' with pythonnet ' + version('pythonnet'))"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The selected Python environment cannot load pywebview and pythonnet. Install the Windows release requirements before packaging.'
     }
     & $pythonPath -m PyInstaller --noconfirm --clean (Join-Path $projectRoot 'SMWStreamTracker.spec')
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }

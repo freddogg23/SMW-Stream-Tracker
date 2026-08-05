@@ -64,7 +64,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_BUILD_DATE = "2026-08-04"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
@@ -42582,15 +42582,26 @@ class TrackerApp:
             return
 
         try:
-            self.feedback_webview_process = subprocess.Popen(
+            feedback_process = subprocess.Popen(
                 _feedback_webview_command(
                     self.appearance_var.get(),
                 ),
                 close_fds=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            return
+            self.feedback_webview_process = feedback_process
+            try:
+                exit_code = feedback_process.wait(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                return
+
+            self.feedback_webview_process = None
+            append_error_log(
+                "Embedded feedback window exited during startup",
+                f"Child process exit code: {exit_code}",
+            )
         except Exception as error:
+            self.feedback_webview_process = None
             append_error_log(
                 "Could not launch the embedded feedback window",
                 f"{type(error).__name__}: {error}",
@@ -44048,25 +44059,6 @@ def _run_feedback_webview(appearance: str) -> int:
                 )
             ),
         )
-        try:
-            opened = webbrowser.open(FEEDBACK_FORM_URL)
-        except Exception:
-            opened = False
-
-        if not opened:
-            try:
-                error_root = tk.Tk()
-                error_root.withdraw()
-                messagebox.showerror(
-                    "Feedback Form Could Not Be Opened",
-                    "The embedded feedback window and default browser could "
-                    "not open the anonymous Microsoft Form.\n\n"
-                    + f"{type(error).__name__}: {error}",
-                    parent=error_root,
-                )
-                error_root.destroy()
-            except Exception:
-                pass
         return 1
 
 
