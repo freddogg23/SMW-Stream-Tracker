@@ -64,7 +64,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 APP_BUILD_DATE = "2026-08-04"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
@@ -22225,6 +22225,12 @@ class TrackerApp:
         self._refresh_downloader_window_appearance()
         self._refresh_game_library_window_appearance()
         self._refresh_my_tracker_appearance()
+        custom_tree = self.custom_hacks_widgets.get("tree")
+        if custom_tree is not None:
+            self._apply_statistics_table_colors(
+                custom_tree,
+                "unmoderated_hacks",
+            )
 
         stats_dialog = getattr(
             self,
@@ -22343,6 +22349,17 @@ class TrackerApp:
                     background=palette["panel_alt"],
                     foreground=palette["text"],
                 )
+                self._apply_statistics_table_colors(
+                    tree,
+                    (
+                        "complete_catalog"
+                        if self.downloader_widgets.get(
+                            "catalog_view_only",
+                            False,
+                        )
+                        else "missing_hacks"
+                    ),
+                )
             self._schedule_downloader_difficulty_overlays()
         except tk.TclError:
             pass
@@ -22374,6 +22391,12 @@ class TrackerApp:
                 ],
                 foreground=[("selected", "#FFFFFF")],
             )
+            tree = self.game_library_widgets.get("tree")
+            if tree is not None:
+                self._apply_statistics_table_colors(
+                    tree,
+                    "game_library",
+                )
             self._schedule_game_library_difficulty_overlays()
         except tk.TclError:
             pass
@@ -27223,7 +27246,40 @@ class TrackerApp:
         return {
             "difficulty": "Progress by Difficulty",
             "recent": "Recent Activity",
+            "unmoderated_hacks": "Unmoderated Hacks",
+            "complete_catalog": "Complete SMW Central Catalog",
+            "missing_hacks": "Download Missing Hacks",
+            "game_library": "Game Library",
         }.get(table_key, "Statistics table")
+
+    @staticmethod
+    def _treeview_all_items(
+        tree: ttk.Treeview,
+        parent: str = "",
+    ) -> tuple[str, ...]:
+        """Return every item in display order, including nested lists."""
+        ordered: list[str] = []
+        try:
+            children = tree.get_children(parent)
+        except tk.TclError:
+            return ()
+        for iid in children:
+            ordered.append(str(iid))
+            ordered.extend(
+                TrackerApp._treeview_all_items(tree, str(iid))
+            )
+        return tuple(ordered)
+
+    def _table_style_parent(self, table_key: str):
+        if table_key in {"difficulty", "recent"}:
+            return self.stats_overview_dialog or self.root
+        if table_key == "unmoderated_hacks":
+            return self.custom_hacks_dialog or self.root
+        if table_key in {"complete_catalog", "missing_hacks"}:
+            return self.downloader_dialog or self.root
+        if table_key == "game_library":
+            return self.game_library_dialog or self.root
+        return self.root
 
     def _apply_statistics_table_colors(
         self,
@@ -27238,7 +27294,7 @@ class TrackerApp:
 
         palette = self._library_palette()
         style = self._statistics_table_style(table_key)
-        children = tuple(tree.get_children(""))
+        children = self._treeview_all_items(tree)
         total_rows = max(1, len(children) - 1)
 
         tree.tag_configure(
@@ -27253,32 +27309,7 @@ class TrackerApp:
         )
 
         for row_index, iid in enumerate(children):
-            difficulty_color = None
-            if table_key == "difficulty":
-                try:
-                    difficulty_name = str(
-                        tree.item(iid, "text")
-                        or "Unknown"
-                    )
-                except tk.TclError:
-                    difficulty_name = "Unknown"
-                difficulty_color = self._tracker_difficulty_color(
-                    difficulty_name
-                )
-
-            if difficulty_color is not None:
-                tag_name = (
-                    "stats_difficulty_palette_"
-                    + difficulty_color.lstrip("#")
-                )
-                tree.tag_configure(
-                    tag_name,
-                    background=difficulty_color,
-                    foreground=self._tracker_contrast_text_color(
-                        difficulty_color
-                    ),
-                )
-            elif style is None:
+            if style is None:
                 tag_name = (
                     "even"
                     if row_index % 2 == 0
@@ -27313,7 +27344,17 @@ class TrackerApp:
                     background=background,
                     foreground=foreground,
                 )
-            tree.item(iid, tags=(tag_name,))
+            try:
+                tree.item(iid, tags=(tag_name,))
+            except tk.TclError:
+                continue
+
+        after_style = getattr(tree, "_smw_after_table_style", None)
+        if callable(after_style):
+            try:
+                after_style()
+            except tk.TclError:
+                pass
 
     def _set_statistics_table_style(
         self,
@@ -27321,7 +27362,7 @@ class TrackerApp:
         table_key: str,
         mode: str,
     ) -> None:
-        parent = self.stats_overview_dialog or self.root
+        parent = self._table_style_parent(table_key)
         palette = self._library_palette()
         current = self._statistics_table_style(table_key)
         label = self._statistics_table_label(table_key)
@@ -27453,7 +27494,16 @@ class TrackerApp:
             activeforeground="#FFFFFF",
             font=("Segoe UI", 10),
         )
-        if table_key == "difficulty":
+        forced_column = getattr(event, "_smw_forced_column", None)
+        if forced_column is not None:
+            selected_column = str(forced_column)
+        else:
+            try:
+                selected_column = str(tree.identify_column(event.x))
+            except tk.TclError:
+                selected_column = ""
+
+        if table_key == "difficulty" and selected_column == "#0":
             selected_difficulty = ""
             if iid:
                 try:
@@ -27510,48 +27560,26 @@ class TrackerApp:
                 label="Reset all difficulty colors",
                 command=lambda: self._reset_tracker_difficulty_color(),
             )
-        else:
+            menu.add_separator()
+        elif table_key == "difficulty" and selected_column in {
+            "#4",
+            "rate",
+        }:
             menu.add_command(
-                label=f"Solid color for {label}...",
-                command=lambda: self._set_statistics_table_style(
-                    tree,
-                    table_key,
-                    "solid",
-                ),
+                label="Edit Rate gradient data bar...",
+                command=lambda: self._set_statistics_rate_bar_style(tree),
             )
             menu.add_command(
-                label=f"Two-color gradient for {label}...",
-                command=lambda: self._set_statistics_table_style(
-                    tree,
-                    table_key,
-                    "gradient",
-                ),
-            )
-            menu.add_command(
-                label=f"Alternating row colors for {label}...",
-                command=lambda: self._set_statistics_table_style(
-                    tree,
-                    table_key,
-                    "alternating",
-                ),
-            )
-            menu.add_command(
-                label="Use Overview alternating colors",
-                command=lambda: (
-                    self._set_statistics_overview_alternating(
-                        tree,
-                        table_key,
-                    )
-                ),
+                label="Restore default Rate data bar",
+                command=lambda: self._reset_statistics_rate_bar_style(tree),
             )
             menu.add_separator()
-            menu.add_command(
-                label="Restore default table colors",
-                command=lambda: self._reset_statistics_table_style(
-                    tree,
-                    table_key,
-                ),
-            )
+
+        self._add_table_appearance_menu_items(
+            menu,
+            tree,
+            table_key,
+        )
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -28672,18 +28700,30 @@ class TrackerApp:
             anchor="center",
         )
         self._center_treeview_content(difficulty_tree)
+        def scroll_difficulty_table(*arguments) -> None:
+            difficulty_tree.yview(*arguments)
+            self._schedule_statistics_difficulty_overlays(
+                difficulty_tree
+            )
+
         difficulty_scrollbar = ttk.Scrollbar(
             difficulty_table,
             orient="vertical",
-            command=difficulty_tree.yview,
+            command=scroll_difficulty_table,
             style="Overview.Vertical.TScrollbar",
         )
         difficulty_scrollbar.pack(
             side="right",
             fill="y",
         )
+        def update_difficulty_scrollbar(first: str, last: str) -> None:
+            difficulty_scrollbar.set(first, last)
+            self._schedule_statistics_difficulty_overlays(
+                difficulty_tree
+            )
+
         difficulty_tree.configure(
-            yscrollcommand=difficulty_scrollbar.set,
+            yscrollcommand=update_difficulty_scrollbar,
         )
         difficulty_tree.pack(
             side="left",
@@ -28691,7 +28731,12 @@ class TrackerApp:
             expand=True,
         )
         self._bind_fast_vertical_scroll(
-            difficulty_tree
+            difficulty_tree,
+            after_scroll=lambda: (
+                self._schedule_statistics_difficulty_overlays(
+                    difficulty_tree
+                )
+            ),
         )
 
         difficulty_tree.tag_configure(
@@ -28755,6 +28800,11 @@ class TrackerApp:
                 difficulty_tree,
                 "difficulty",
             ),
+        )
+        difficulty_tree._smw_after_table_style = lambda: (
+            self._schedule_statistics_difficulty_overlays(
+                difficulty_tree
+            )
         )
         self._reapply_treeview_sorting(difficulty_tree)
         self._apply_statistics_table_colors(
@@ -28952,6 +29002,21 @@ class TrackerApp:
                 "recent",
             ),
         )
+        difficulty_tree.bind(
+            "<Configure>",
+            lambda _event: self._schedule_statistics_difficulty_overlays(
+                difficulty_tree
+            ),
+            add="+",
+        )
+        difficulty_tree.bind(
+            "<<TreeviewSelect>>",
+            lambda _event: self._schedule_statistics_difficulty_overlays(
+                difficulty_tree
+            ),
+            add="+",
+        )
+        self._schedule_statistics_difficulty_overlays(difficulty_tree)
         self._reapply_treeview_sorting(recent_tree)
 
         self._apply_statistics_table_colors(
@@ -29031,8 +29096,8 @@ class TrackerApp:
         tk.Label(
             button_bar,
             text=(
-                "Right-click a difficulty to set its color, or "
-                "Recent Activity to customize that table"
+                "Right-click Difficulty or Rate for cell colors; "
+                "right-click any table to customize its rows"
             ),
             font=("Segoe UI", 9, "bold"),
             fg=palette["muted"],
@@ -29050,6 +29115,7 @@ class TrackerApp:
             "pie_canvas": pie_canvas,
             "bar_canvas": bar_canvas,
             "difficulty_tree": difficulty_tree,
+            "recent_tree": recent_tree,
             "redraw_difficulty_graph": lambda: (
                 draw_difficulty_bars(bar_canvas)
             ),
@@ -30414,16 +30480,10 @@ class TrackerApp:
 
         custom_tree = self.custom_hacks_widgets.get("tree")
         if custom_tree is not None:
-            for iid, record in self.custom_hacks_records.items():
-                try:
-                    difficulty_name = str(record["difficulty"])
-                except (IndexError, KeyError, TypeError):
-                    difficulty_name = "Unknown"
-                self._apply_difficulty_color_to_tree_item(
-                    custom_tree,
-                    iid,
-                    difficulty_name,
-                )
+            self._apply_statistics_table_colors(
+                custom_tree,
+                "unmoderated_hacks",
+            )
 
         library_tree = self.game_library_widgets.get("tree")
         if library_tree is not None:
@@ -30431,25 +30491,16 @@ class TrackerApp:
 
         downloader_tree = self.downloader_widgets.get("tree")
         if downloader_tree is not None:
-            try:
-                downloader_iids = downloader_tree.get_children("")
-            except tk.TclError:
-                downloader_iids = ()
-            for iid in downloader_iids:
-                try:
-                    values = downloader_tree.item(iid, "values")
-                except tk.TclError:
-                    continue
-                difficulty_name = (
-                    str(values[0])
-                    if values
-                    else "Unknown"
-                )
-                self._apply_difficulty_color_to_tree_item(
-                    downloader_tree,
-                    iid,
-                    difficulty_name,
-                )
+            downloader_table_key = (
+                "complete_catalog"
+                if self.downloader_widgets.get("catalog_view_only", False)
+                else "missing_hacks"
+            )
+            self._apply_statistics_table_colors(
+                downloader_tree,
+                downloader_table_key,
+            )
+            self._schedule_downloader_difficulty_overlays()
 
     def _set_tracker_difficulty_color(
         self,
@@ -30777,6 +30828,445 @@ class TrackerApp:
         except tk.TclError:
             pass
         return "break"
+
+    def _add_table_appearance_menu_items(
+        self,
+        menu: tk.Menu,
+        tree: ttk.Treeview,
+        table_key: str,
+    ) -> None:
+        """Add persistent whole-table appearance controls to a menu."""
+        label = self._statistics_table_label(table_key)
+        menu.add_command(
+            label=f"Solid color for {label}...",
+            command=lambda: self._set_statistics_table_style(
+                tree,
+                table_key,
+                "solid",
+            ),
+        )
+        menu.add_command(
+            label=f"Two-color gradient for {label}...",
+            command=lambda: self._set_statistics_table_style(
+                tree,
+                table_key,
+                "gradient",
+            ),
+        )
+        menu.add_command(
+            label=f"Alternating row colors for {label}...",
+            command=lambda: self._set_statistics_table_style(
+                tree,
+                table_key,
+                "alternating",
+            ),
+        )
+        menu.add_command(
+            label="Use Overview alternating colors",
+            command=lambda: self._set_statistics_overview_alternating(
+                tree,
+                table_key,
+            ),
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Restore default table colors",
+            command=lambda: self._reset_statistics_table_style(
+                tree,
+                table_key,
+            ),
+        )
+
+    def _show_table_appearance_menu(
+        self,
+        event,
+        tree: ttk.Treeview,
+        table_key: str,
+    ) -> str:
+        """Show the shared appearance menu used by non-tracker tables."""
+        palette = self._library_palette()
+        menu = tk.Menu(
+            self._table_style_parent(table_key),
+            tearoff=False,
+            bg=palette["panel"],
+            fg=palette["text"],
+            activebackground=THEME["blue"],
+            activeforeground="#FFFFFF",
+            font=("Segoe UI", 10),
+        )
+        self._add_table_appearance_menu_items(menu, tree, table_key)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except tk.TclError:
+                pass
+        return "break"
+
+    def _register_customizable_table(
+        self,
+        tree: ttk.Treeview,
+        table_key: str,
+        *,
+        after_style=None,
+    ) -> None:
+        """Enable persistent right-click colors for an application table."""
+        tree._smw_table_style_key = table_key
+        tree._smw_after_table_style = after_style
+        tree.bind(
+            "<Button-3>",
+            lambda event: self._show_table_appearance_menu(
+                event,
+                tree,
+                table_key,
+            ),
+            add="+",
+        )
+        self._apply_statistics_table_colors(tree, table_key)
+
+    def _statistics_rate_bar_style(self) -> dict[str, str]:
+        raw_style = self.config.get("statistics_rate_bar_style", {})
+        style = raw_style if isinstance(raw_style, dict) else {}
+        start = str(
+            style.get("start", TRACKER_PERCENT_GRADIENT_START)
+        ).upper()
+        end = str(
+            style.get("end", TRACKER_PERCENT_GRADIENT_END)
+        ).upper()
+        if not re.fullmatch(r"#[0-9A-F]{6}", start):
+            start = TRACKER_PERCENT_GRADIENT_START
+        if not re.fullmatch(r"#[0-9A-F]{6}", end):
+            end = TRACKER_PERCENT_GRADIENT_END
+        return {"start": start, "end": end}
+
+    def _set_statistics_rate_bar_style(
+        self,
+        tree: ttk.Treeview,
+    ) -> None:
+        current = self._statistics_rate_bar_style()
+        parent = self.stats_overview_dialog or self.root
+        _rgb, start = colorchooser.askcolor(
+            color=current["start"],
+            title="Choose Rate data-bar starting color",
+            parent=parent,
+        )
+        if not start:
+            return
+        _rgb, end = colorchooser.askcolor(
+            color=current["end"],
+            title="Choose Rate data-bar ending color",
+            parent=parent,
+        )
+        if not end:
+            return
+        self.config["statistics_rate_bar_style"] = {
+            "start": str(start).upper(),
+            "end": str(end).upper(),
+        }
+        save_config(self.config)
+        self._schedule_statistics_difficulty_overlays(tree)
+
+    def _reset_statistics_rate_bar_style(
+        self,
+        tree: ttk.Treeview,
+    ) -> None:
+        self.config.pop("statistics_rate_bar_style", None)
+        save_config(self.config)
+        self._schedule_statistics_difficulty_overlays(tree)
+
+    def _schedule_statistics_difficulty_overlays(
+        self,
+        tree: ttk.Treeview,
+        event=None,
+    ) -> None:
+        pending = getattr(
+            tree,
+            "_smw_statistics_overlay_after_id",
+            None,
+        )
+        if pending is not None:
+            return
+        try:
+            tree._smw_statistics_overlay_after_id = self.root.after_idle(
+                lambda: self._render_statistics_difficulty_overlays(tree)
+            )
+        except tk.TclError:
+            pass
+
+    def _statistics_row_background(
+        self,
+        tree: ttk.Treeview,
+        iid: str,
+        row_index: int,
+    ) -> str:
+        palette = self._library_palette()
+        try:
+            tags = tuple(tree.item(iid, "tags"))
+        except tk.TclError:
+            tags = ()
+        for tag in tags:
+            try:
+                background = str(
+                    tree.tag_configure(tag, "background") or ""
+                )
+            except tk.TclError:
+                background = ""
+            if background:
+                return background
+        return palette["tree"] if row_index % 2 == 0 else palette["panel_alt"]
+
+    def _statistics_overlay_select(
+        self,
+        tree: ttk.Treeview,
+        canvas: tk.Canvas,
+        event,
+    ) -> str:
+        origin_y = int(getattr(canvas, "_smw_origin_y", 0) or 0)
+        try:
+            iid = str(tree.identify_row(event.y + origin_y) or "")
+            if iid:
+                tree.selection_set(iid)
+                tree.focus(iid)
+        except tk.TclError:
+            pass
+        self._schedule_statistics_difficulty_overlays(tree)
+        return "break"
+
+    def _statistics_overlay_scroll(
+        self,
+        tree: ttk.Treeview,
+        event,
+    ) -> str:
+        units = self._fast_scroll_units(event)
+        if units:
+            try:
+                tree.yview_scroll(units, "units")
+            except tk.TclError:
+                return "break"
+            self._schedule_statistics_difficulty_overlays(tree)
+        return "break"
+
+    def _statistics_overlay_menu(
+        self,
+        tree: ttk.Treeview,
+        column: str,
+        event,
+    ) -> str:
+        self._statistics_overlay_select(tree, event.widget, event)
+        event._smw_forced_column = column
+        return self._show_statistics_table_color_menu(
+            event,
+            tree,
+            "difficulty",
+        )
+
+    def _render_statistics_difficulty_overlays(
+        self,
+        tree: ttk.Treeview,
+    ) -> None:
+        tree._smw_statistics_overlay_after_id = None
+        try:
+            if not tree.winfo_exists():
+                return
+            tree_height = max(1, tree.winfo_height())
+        except tk.TclError:
+            return
+
+        children = tuple(tree.get_children(""))
+        visible: list[tuple[int, str]] = []
+        for row_index, iid in enumerate(children):
+            try:
+                if tree.bbox(iid, "#0"):
+                    visible.append((row_index, str(iid)))
+            except tk.TclError:
+                continue
+
+        overlays = getattr(tree, "_smw_statistics_overlays", None)
+        if not isinstance(overlays, dict):
+            overlays = {}
+            tree._smw_statistics_overlays = overlays
+        if not visible:
+            for canvas in overlays.values():
+                try:
+                    canvas.place_forget()
+                except tk.TclError:
+                    pass
+            return
+
+        palette = self._library_palette()
+        selected = set(tree.selection())
+        rate_style = self._statistics_rate_bar_style()
+        for column in ("#0", "rate"):
+            boxes: dict[str, tuple[int, int, int, int]] = {}
+            row_indexes: dict[str, int] = {}
+            for row_index, iid in visible:
+                try:
+                    box = tree.bbox(iid, column)
+                except tk.TclError:
+                    box = ()
+                if box:
+                    boxes[iid] = box
+                    row_indexes[iid] = row_index
+            if not boxes:
+                continue
+
+            reference_box = next(iter(boxes.values()))
+            column_x = reference_box[0]
+            column_width = reference_box[2]
+            origin_y = min(box[1] for box in boxes.values())
+            overlay_height = max(1, tree_height - origin_y)
+            canvas = overlays.get(column)
+            if canvas is None:
+                canvas = tk.Canvas(
+                    tree,
+                    bd=0,
+                    highlightthickness=0,
+                    takefocus=False,
+                )
+                canvas.bind(
+                    "<Button-1>",
+                    lambda event, widget=canvas: self._statistics_overlay_select(
+                        tree,
+                        widget,
+                        event,
+                    ),
+                )
+                canvas.bind(
+                    "<Button-3>",
+                    lambda event, selected_column=column: self._statistics_overlay_menu(
+                        tree,
+                        selected_column,
+                        event,
+                    ),
+                )
+                for wheel_event in (
+                    "<MouseWheel>",
+                    "<Button-4>",
+                    "<Button-5>",
+                ):
+                    canvas.bind(
+                        wheel_event,
+                        lambda event: self._statistics_overlay_scroll(
+                            tree,
+                            event,
+                        ),
+                    )
+                overlays[column] = canvas
+
+            canvas._smw_origin_y = origin_y
+            canvas.configure(
+                width=column_width,
+                height=overlay_height,
+                bg=palette["tree"],
+            )
+            canvas.place(
+                x=column_x,
+                y=origin_y,
+                width=column_width,
+                height=overlay_height,
+            )
+            canvas.delete("all")
+
+            for iid, box in boxes.items():
+                row_y = box[1] - origin_y
+                row_height = box[3]
+                row_index = row_indexes[iid]
+                base_background = (
+                    palette["selected"]
+                    if iid in selected
+                    else self._statistics_row_background(
+                        tree,
+                        iid,
+                        row_index,
+                    )
+                )
+                text = self._treeview_display_value(tree, iid, column)
+                if column == "#0":
+                    background = self._effective_difficulty_color(text)
+                    foreground = self._tracker_contrast_text_color(background)
+                    canvas.create_rectangle(
+                        0,
+                        row_y,
+                        column_width,
+                        row_y + row_height,
+                        fill=background,
+                        outline=palette["border"],
+                        width=1,
+                    )
+                else:
+                    foreground = palette["text"]
+                    canvas.create_rectangle(
+                        0,
+                        row_y,
+                        column_width,
+                        row_y + row_height,
+                        fill=base_background,
+                        outline=palette["border"],
+                        width=1,
+                    )
+                    match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
+                    percentage = (
+                        max(0, min(100, round(float(match.group(1)))))
+                        if match
+                        else 0
+                    )
+                    inner_width = max(0, column_width - 2)
+                    filled_width = round(inner_width * percentage / 100)
+                    if filled_width > 0:
+                        gradient = self._tracker_gradient_photo(
+                            canvas,
+                            filled_width,
+                            max(1, row_height - 3),
+                            rate_style["start"],
+                            rate_style["end"],
+                        )
+                        if gradient is not None:
+                            canvas.create_image(
+                                1,
+                                row_y + 1,
+                                image=gradient,
+                                anchor="nw",
+                            )
+                        else:
+                            canvas.create_rectangle(
+                                1,
+                                row_y + 1,
+                                1 + filled_width,
+                                row_y + row_height - 1,
+                                fill=rate_style["start"],
+                                outline="",
+                            )
+                        foreground = self._tracker_contrast_text_color(
+                            blend_hex_colors(
+                                rate_style["start"],
+                                rate_style["end"],
+                                0.5,
+                            )
+                        )
+                        canvas.create_rectangle(
+                            0,
+                            row_y,
+                            column_width,
+                            row_y + row_height,
+                            fill="",
+                            outline=palette["border"],
+                            width=1,
+                        )
+
+                create_outlined_canvas_text(
+                    canvas,
+                    column_width / 2,
+                    row_y + row_height / 2,
+                    text=text,
+                    fill=foreground,
+                    font=("Segoe UI", 9, "bold"),
+                    anchor="center",
+                )
+            try:
+                canvas.tk.call("raise", canvas._w)
+            except tk.TclError:
+                pass
 
     def _tracker_clipboard_date(self, value: str) -> str:
         stripped = value.strip()
@@ -32735,6 +33225,10 @@ class TrackerApp:
             tree,
             headings,
             default_column="#0",
+            after_sort=lambda: self._apply_statistics_table_colors(
+                tree,
+                "unmoderated_hacks",
+            ),
         )
 
         tree.column(
@@ -32763,6 +33257,10 @@ class TrackerApp:
                 stretch=False,
             )
         self._center_treeview_content(tree)
+        self._register_customizable_table(
+            tree,
+            "unmoderated_hacks",
+        )
 
         scrollbar = ttk.Scrollbar(
             tree_frame,
@@ -32921,13 +33419,11 @@ class TrackerApp:
                     ),
                 ),
             )
-            self._apply_difficulty_color_to_tree_item(
-                tree,
-                iid,
-                str(record["difficulty"]),
-            )
-
         self._reapply_treeview_sorting(tree)
+        self._apply_statistics_table_colors(
+            tree,
+            "unmoderated_hacks",
+        )
         self.custom_hacks_widgets["count_var"].set(
             f"{len(records):,} unmoderated hack(s)"
         )
@@ -35550,15 +36046,19 @@ class TrackerApp:
             if catalog_view_only
             else "Library Status"
         )
+        downloader_table_key = (
+            "complete_catalog"
+            if catalog_view_only
+            else "missing_hacks"
+        )
         self._configure_treeview_sorting(
             tree,
             downloader_headings,
             default_column="#0",
             after_sort=lambda: (
-                self._retag_treeview_alternating(
+                self._apply_statistics_table_colors(
                     tree,
-                    "downloader_even",
-                    "downloader_odd",
+                    downloader_table_key,
                 ),
                 self._schedule_downloader_difficulty_overlays(),
             ),
@@ -35676,6 +36176,11 @@ class TrackerApp:
         self.downloader_widgets[
             "tree"
         ] = tree
+        self._register_customizable_table(
+            tree,
+            downloader_table_key,
+            after_style=self._schedule_downloader_difficulty_overlays,
+        )
         tree.bind(
             "<Configure>",
             self._schedule_downloader_difficulty_overlays,
@@ -36540,6 +37045,14 @@ class TrackerApp:
             games_by_iid[downloader_iid] = display_game
 
         self._reapply_treeview_sorting(tree)
+        self._apply_statistics_table_colors(
+            tree,
+            (
+                "complete_catalog"
+                if catalog_view_only
+                else "missing_hacks"
+            ),
+        )
         self.downloader_preview_games = (
             [] if catalog_view_only else missing
         )
@@ -36688,6 +37201,21 @@ class TrackerApp:
             overlay.bind(
                 "<Button-1>",
                 self._select_downloader_overlay_event,
+            )
+            overlay.bind(
+                "<Button-3>",
+                lambda event: self._show_table_appearance_menu(
+                    event,
+                    tree,
+                    (
+                        "complete_catalog"
+                        if self.downloader_widgets.get(
+                            "catalog_view_only",
+                            False,
+                        )
+                        else "missing_hacks"
+                    ),
+                ),
             )
             for wheel_event in (
                 "<MouseWheel>",
@@ -39466,6 +39994,11 @@ class TrackerApp:
         self.game_library_widgets[
             "difficulty_overlay_after_id"
         ] = None
+        self._register_customizable_table(
+            tree,
+            "game_library",
+            after_style=self._schedule_game_library_difficulty_overlays,
+        )
         tree.bind(
             "<<TreeviewSelect>>",
             self._update_game_library_selection,
@@ -40178,6 +40711,10 @@ class TrackerApp:
         self.root.after_idle(
             self._sync_library_expand_button
         )
+        self._apply_statistics_table_colors(
+            tree,
+            "game_library",
+        )
         self._schedule_game_library_difficulty_overlays()
         self._update_game_library_sort_headings()
 
@@ -40282,6 +40819,14 @@ class TrackerApp:
             overlay.bind(
                 "<Button-1>",
                 self._select_game_library_overlay_event,
+            )
+            overlay.bind(
+                "<Button-3>",
+                lambda event: self._show_table_appearance_menu(
+                    event,
+                    tree,
+                    "game_library",
+                ),
             )
             overlay.bind(
                 "<Double-1>",

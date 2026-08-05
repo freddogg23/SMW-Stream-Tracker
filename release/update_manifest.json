@@ -1,8 +1,11 @@
 {
     "schema":  1,
-    "version":  "1.1.2",
+    "version":  "1.1.3",
     "release_date":  "2026-08-04",
     "notes":  [
+                  "Colors only the Difficulty cells in Progress by Difficulty instead of the entire row.",
+                  "Adds a value-based gradient data bar to Rate, with editable starting and ending colors.",
+                  "Adds persistent solid, gradient, and alternating-row appearance controls to every application table.",
                   "Adds clickable SMW Central page and patch-download links to the complete catalog.",
                   "Centers headers and cell contents throughout tracker, catalog, downloader, library, difficulty, and recent-activity lists.",
                   "Makes Progress by Difficulty colors directly editable by right-clicking a difficulty row.",
@@ -19,8 +22,8 @@
                   "Expands the setup guides with LiveSplit, OBS Studio, and Streamlabs Desktop instructions.",
                   "Removes legacy signed v1.0.2 build artifacts and personal publisher references from the release source."
               ],
-    "updater_url":  "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.1.2/SMWStreamTracker_Update_1.1.2.exe",
+    "updater_url":  "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.1.3/SMWStreamTracker_Update_1.1.3.exe",
     "verification":  "sha256",
-    "sha256":  "d594a2931d2241e086ae4532a372a25cb1d1285eba62b20043f20a500f34b7ff",
-    "size":  75512851
+    "sha256":  "1e0ba9f95358a2ef20c6f566355337d0d8c94c62b36a9133d8aa9f71c30fb03b",
+    "size":  75519239
 }

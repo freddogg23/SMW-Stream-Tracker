@@ -1,4 +1,8 @@
-Release 1.1.2
+Release 1.1.3
+
+* Colors only the Difficulty cells in Progress by Difficulty instead of the entire row.
+* Adds a value-based gradient data bar to Rate, with editable starting and ending colors.
+* Adds persistent solid, gradient, and alternating-row appearance controls to every application table.
 
 * Adds clickable SMW Central page and patch-download links to the complete catalog.
 * Centers headers and cell contents throughout tracker, catalog, downloader, library, difficulty, and recent-activity lists.
