@@ -129,7 +129,9 @@ jobs:
               --clobber
           }
 
-          git checkout main
+          git restore --source=HEAD --worktree -- ".\release\update_manifest.json"
+          git fetch origin main
+          git switch -C main origin/main
           Copy-Item -LiteralPath $manifestBackup -Destination ".\release\update_manifest.json" -Force
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
