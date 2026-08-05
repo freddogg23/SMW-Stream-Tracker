@@ -14,6 +14,7 @@ a = Analysis(
         ('banner_element_assets', 'banner_element_assets'),
         ('platform_assets', 'platform_assets'),
         ('app_assets', 'app_assets'),
+        ('docs', 'docs'),
         ('installer\\PRIVACY.txt', 'installer'),
         ('installer\\LICENSE.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.txt', 'installer'),

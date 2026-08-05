@@ -19,6 +19,9 @@ Project and license information:
 * openpyxl: https://openpyxl.readthedocs.io/
 * websocket-client: https://github.com/websocket-client/websocket-client
 * pystray: https://github.com/moses-palmer/pystray
+* pywebview: https://pywebview.flowrl.com/
+* pythonnet: https://pythonnet.github.io/
+* Microsoft Edge WebView2: https://developer.microsoft.com/microsoft-edge/webview2/
 
 The exact license text distributed with each project controls. SMW Stream
 Tracker does not change or replace those licenses.

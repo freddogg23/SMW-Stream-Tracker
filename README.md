@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.0.4**
+**Version 1.1.0**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports two playable platforms:
 
@@ -35,7 +35,7 @@ The setup wizard installs all six text guides in its `Documentation` folder and 
 11. [Select and play a hack](#11-select-and-play-a-hack)
 12. [Use timers and tracker controls](#12-use-timers-and-tracker-controls)
 13. [Use My Tracker and statistics](#13-use-my-tracker-and-statistics)
-14. [Set up OBS text files](#14-set-up-obs-text-files)
+14. [Set up LiveSplit, OBS Studio, and Streamlabs Desktop](#14-set-up-livesplit-obs-studio-and-streamlabs-desktop)
 15. [Optional Google Sheets sync](#15-optional-google-sheets-sync)
 16. [Updates, backups, and rollback](#16-updates-backups-and-rollback)
 17. [Diagnostics and troubleshooting](#17-diagnostics-and-troubleshooting)
@@ -174,13 +174,13 @@ Open **File → Settings** and configure the fields you use.
 |---|---|
 | SNI / QUsb2Snes | `sni.exe` or `QUsb2Snes.exe` |
 | Import workbook | Optional existing `.xlsx` or `.xlsm` tracker workbook |
-| OBS text folder | Folder where stream text files will be written |
+| OBS text folder | Folder where current-hack and timer text files will be written |
 | Local ROM library | Folder containing patched `.sfc` or `.smc` files |
 | RetroArch | `retroarch.exe` |
 | RetroArch core | A SNES Libretro core such as `bsnes_mercury_performance_libretro.dll` |
 | Overworld idle pause | Seconds before overworld/idle behavior pauses timing |
-| Game LiveSplit port | Optional LiveSplit connection port |
-| Level LiveSplit port | A different optional LiveSplit connection port |
+| Game LiveSplit port | TCP port for the full-game LiveSplit window; default `16834` |
+| Level LiveSplit port | TCP port for a separate level LiveSplit window; default `16835` |
 
 Select **Save** after changing the settings.
 
@@ -283,18 +283,91 @@ Open **Stats → Overview** for progress, ratings, playtime, recent activity, an
 
 Use **Stats → Export My Tracker** to export as `.csv` or `.xlsx`.
 
-## 14. Set up OBS text files
+## 14. Set up LiveSplit, OBS Studio, and Streamlabs Desktop
 
-1. Open **File → Settings**.
-2. Choose an **OBS text folder**.
-3. Save the settings.
-4. Open OBS Studio.
-5. Add a **Text (GDI+)** source.
+You can show the timers in either of these ways:
+
+- **LiveSplit windows:** LiveSplit displays and styles the timers while SMW Stream Tracker controls them.
+- **Text files:** OBS Studio or Streamlabs Desktop reads the timer text files written by SMW Stream Tracker. This is the simpler method and does not require LiveSplit.
+
+You can also use both methods at the same time.
+
+### A. Connect the full-game LiveSplit timer
+
+1. Download and extract [LiveSplit](https://livesplit.org/downloads/). The separate, older LiveSplit Server component is not needed because current LiveSplit releases include the server.
+2. Open `LiveSplit.exe`.
+3. Right-click the LiveSplit window and open **Settings**.
+4. Set **Server Port** to `16834`. If you will use only this one LiveSplit timer, you may set **Startup Behavior** to start the TCP server automatically. When using two LiveSplit windows, manual startup is safer because it lets you confirm each window's different port first.
+5. Right-click LiveSplit and select **Control → Start TCP/WS Server**. Do this each time LiveSplit opens unless you intentionally enabled automatic startup for a single timer.
+6. In SMW Stream Tracker, open **File → Settings**.
+7. Set **Game LiveSplit port** to `16834`, leave the level port at `16835`, and save.
+8. Select **Start Game Timer** in SMW Stream Tracker. The LiveSplit timer should start and follow the tracker controls.
+
+LiveSplit uses its built-in TCP server for this connection. SMW Stream Tracker connects locally on `127.0.0.1`; internet or remote access is not required.
+
+### B. Connect the separate level LiveSplit timer
+
+Use a second LiveSplit window when you want the full-game and current-level timers visible at the same time.
+
+1. Leave the full-game LiveSplit window open.
+2. Open `LiveSplit.exe` a second time.
+3. In the second window's **Settings**, set **Server Port** to `16835`.
+4. Start its TCP server with **Control → Start TCP/WS Server**.
+5. In SMW Stream Tracker, confirm **Level LiveSplit port** is `16835`.
+6. Select **Start Level Timer** or **Start Timers**. Use **Reset Level Timer** when beginning a new level.
+
+The two LiveSplit windows must use different ports. On later launches, verify the first window is on `16834` before starting its server, then verify the second is on `16835`. Save separate layouts such as `SMW Game Timer.lsl` and `SMW Level Timer.lsl` if you want each window to have a different size or appearance.
+
+### C. Add the LiveSplit windows to OBS Studio
+
+1. Keep the LiveSplit window or windows open and not minimized.
+2. In OBS Studio, select the scene that should show the timers.
+3. In **Sources**, select **+ → Window Capture**.
+4. Name the source `Game LiveSplit`, select the full-game LiveSplit window, and confirm.
+5. Move, resize, and crop the source to fit the scene.
+6. Repeat with a source named `Level LiveSplit` for the second LiveSplit window.
+7. Run a short test recording and operate the tracker timers to confirm both sources update.
+
+If a LiveSplit window is blank in OBS, keep it restored instead of minimized and try another Window Capture method in the source properties.
+
+### D. Add the LiveSplit windows to Streamlabs Desktop
+
+1. Keep the LiveSplit window or windows open and not minimized.
+2. Select the desired scene in Streamlabs Desktop.
+3. In **Sources**, select **+ → Screen Capture**. In versions that list it separately, choose **Window Capture**.
+4. Select the full-game LiveSplit window and name the source `Game LiveSplit`.
+5. Position and resize it in the scene.
+6. Repeat for the level LiveSplit window.
+7. Make a short test recording before going live.
+
+### E. Use timer text files in OBS Studio or Streamlabs Desktop
+
+This method is recommended when you only want the timer numbers and prefer to style the font directly in the streaming program.
+
+1. In SMW Stream Tracker, open **File → Settings**.
+2. Choose an **OBS text folder** and save the settings.
+3. Select or start a hack, then operate each timer once so the files are created.
+4. Use **File → Open OBS Text Folder** to open that folder.
+5. In OBS Studio or Streamlabs Desktop, select the scene and add a **Text (GDI+)** source.
 6. Enable **Read from file**.
-7. Browse to the matching text file in the configured OBS folder.
-8. Repeat for the values you want on stream, such as hack name, author, exits, game time, or level time.
+7. Select `game_timer.txt` for the full-game timer.
+8. Add a second Text source and select `level_timer.txt` for the level timer.
+9. Set the font, color, outline, alignment, and size in the Text source properties.
+10. Start, pause, reset, and override the timers in SMW Stream Tracker while watching the preview.
 
-Use **File → Open OBS Text Folder** to reach the files quickly.
+Other files in the same folder can be added the same way:
+
+| File | Stream value |
+|---|---|
+| `hack_name.txt` | Current hack title |
+| `author.txt` | Current creator, prefixed with `By:` |
+| `exits.txt` | Completed and total exits |
+| `game_timer.txt` | Full-game time |
+| `level_timer.txt` | Current-level time |
+
+SMW Stream Tracker must remain running so these files continue to update. If a source shows old or blank text, verify it is reading from the same folder selected under **OBS text folder**, then operate the timer once more.
+
+Official references: [LiveSplit server setup](https://github.com/LiveSplit/LiveSplit#the-livesplit-server), [OBS text sources](https://obsproject.com/kb/text-sources), [OBS sources guide](https://obsproject.com/kb/sources-guide), and [Streamlabs screen capture](https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop).
 
 ## 15. Optional Google Sheets sync
 

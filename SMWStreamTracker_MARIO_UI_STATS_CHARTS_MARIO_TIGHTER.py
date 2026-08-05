@@ -64,9 +64,17 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.1.0"
 APP_BUILD_DATE = "2026-08-04"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
+SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
+FEEDBACK_FORM_URL = (
+    "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?"
+    "id=DQSIkWdsW0yxEjajBLZtrQAAAAAAAAAAAAO__rWBd8BU"
+    "MTg0MzVHNzVDODFRQVlOVERKTzFNQzAyRy4u"
+)
+FEEDBACK_WEBVIEW_ARGUMENT = "--embedded-feedback-form"
+FEEDBACK_APPEARANCE_ARGUMENT_PREFIX = "--feedback-appearance="
 DEFAULT_UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/freddogg23/"
     "SMW-Stream-Tracker/main/release/update_manifest.json"
@@ -14660,6 +14668,45 @@ def blend_hex_colors(
 CONFIG_FILE = Path.home() / "SMWStreamTrackerConfig.json"
 TIMER_SAVE_FILE = Path.home() / "SMWStreamTrackerTimes.json"
 
+# These are first-run defaults only. load_config() replaces each value with
+# the user's saved value when one exists, so an app update never resets a
+# customized tracker appearance.
+DEFAULT_TRACKER_COLUMN_STYLES = {
+    "*": {
+        "mode": "alternating",
+        "start": "#101827",
+        "end": "#1D2A40",
+        "theme_linked": True,
+    },
+    "difficulty": {"mode": "default"},
+    "percentage": {
+        "mode": "data_bar",
+        "start": "#00F02F",
+        "end": "#00FF38",
+    },
+    "rating": {
+        "mode": "data_bar",
+        "start": "#8584C4",
+        "end": "#1E94C5",
+    },
+    "smwc_rating": {
+        "mode": "data_bar",
+        "start": "#DB6BE8",
+        "end": "#8175F6",
+    },
+}
+
+DEFAULT_TRACKER_DIFFICULTY_COLORS = {
+    "Casual": "#65E5EA",
+    "Intermediate": "#FFF36A",
+    "Advanced": "#8584C4",
+    "Expert": "#F000E8",
+    "Master": "#FF7A3D",
+    "Grandmaster": "#F21414",
+    "Unranked": "#ADB1B6",
+    "Unknown": "#ADB1B6",
+}
+
 DEFAULT_CONFIG = {
     "qusb2snes_path": "",
     "spreadsheet_path": "",
@@ -14699,8 +14746,8 @@ DEFAULT_CONFIG = {
     "google_sheets_enabled": False,
     "google_sheets_web_app_url": "",
     "google_sheets_sheet_base_name": "SMW Stream Tracker",
-    "tracker_column_styles": {},
-    "tracker_difficulty_colors": {},
+    "tracker_column_styles": DEFAULT_TRACKER_COLUMN_STYLES,
+    "tracker_difficulty_colors": DEFAULT_TRACKER_DIFFICULTY_COLORS,
     "statistics_table_styles": {},
     "update_manifest_url": DEFAULT_UPDATE_MANIFEST_URL,
     "check_for_updates_at_startup": False,
@@ -19079,9 +19126,11 @@ finally {
                 f"{format_timer(self.level_elapsed, False)}."
             )
 
-        # Returning to the overworld marks the completed level as over.
-        # Pause first as a fallback for hacks whose exit counter changes late,
-        # then reset the level LiveSplit and arm it for the next real level.
+        # Older hacks can send Mario back to the overworld after a death.
+        # A return to the overworld therefore does not, by itself, prove that
+        # the level ended. Keep the current level and elapsed time parked until
+        # either the goal/exit logic above confirms completion or the player
+        # selects a different translevel.
         if (
             mode == OVERWORLD_MODE
             and self.previous_mode != OVERWORLD_MODE
@@ -19089,18 +19138,83 @@ finally {
         ):
             if self.level_livesplit_running:
                 self.send_livesplit_command("level", "pause")
+            self.level_livesplit_running = False
 
+            if self.level_finished:
+                self.send_livesplit_command("level", "reset")
+                self.level_manual_paused = False
+                self.level_waiting_for_start = True
+                self.level_id = None
+                self.level_elapsed = 0.0
+                self.level_finished = False
+                self.log(
+                    "Completed level timer reset on return to overworld."
+                )
+            else:
+                self.log(
+                    "Level timer parked on the overworld after a death; "
+                    "elapsed time will resume if the same level is selected."
+                )
+
+        # When gameplay resumes after a death-to-overworld transition, keep
+        # the same timer for the same translevel. Selecting another level is
+        # the other legitimate reset point requested by the user.
+        if (
+            mode == LEVEL_MODE
+            and self.previous_mode != LEVEL_MODE
+            and self.level_id is not None
+            and not self.level_waiting_for_start
+            and not self.level_finished
+        ):
+            if translevel == self.level_id:
+                if (
+                    not self.timers_paused
+                    and not self.level_manual_paused
+                ):
+                    self.send_livesplit_command("level", "resume")
+                    self.level_livesplit_running = True
+                self.log(
+                    f"Level timer resumed for level {translevel:02X} at "
+                    f"{format_timer(self.level_elapsed, False)}."
+                )
+            else:
+                previous_level_id = self.level_id
+                self.send_livesplit_command("level", "reset")
+                self.level_id = None
+                self.level_elapsed = 0.0
+                self.level_finished = False
+                self.level_manual_paused = False
+                self.level_waiting_for_start = True
+                self.log(
+                    f"New level selected ({previous_level_id:02X} -> "
+                    f"{translevel:02X}); starting a fresh level timer."
+                )
+
+        # Some hacks can move directly between levels without briefly
+        # exposing overworld mode. Treat a changed translevel in active
+        # gameplay as a new selection too.
+        if (
+            mode == LEVEL_MODE
+            and self.previous_mode == LEVEL_MODE
+            and self.level_id is not None
+            and translevel != self.level_id
+        ):
+            previous_level_id = self.level_id
             self.send_livesplit_command("level", "reset")
             self.level_livesplit_running = False
-            self.level_manual_paused = False
-            self.level_waiting_for_start = True
             self.level_id = None
             self.level_elapsed = 0.0
             self.level_finished = False
-            self.log("Level timer reset on return to overworld.")
+            self.level_manual_paused = False
+            self.level_waiting_for_start = True
+            self.log(
+                f"Direct level change detected ({previous_level_id:02X} -> "
+                f"{translevel:02X}); starting a fresh level timer."
+            )
 
-        # Start a fresh level timer only after a ROM reset or an overworld
-        # reset. Retry prompts do not arm this flag, so they cannot restart it.
+        # Start a fresh level timer only after a ROM reset, a confirmed goal,
+        # or selection of a different level. Deaths and retry prompts never
+        # arm this flag, so they cannot restart the timer.
         if mode == LEVEL_MODE and self.level_waiting_for_start:
             self.level_id = translevel
             self.level_elapsed = 0.0
@@ -19434,6 +19548,7 @@ class TrackerApp:
         self.appearance_var = tk.StringVar(
             value=saved_theme
         )
+        self.applied_appearance_mode = saved_theme
         saved_platform = str(
             self.config.get(
                 "selected_platform",
@@ -19535,6 +19650,9 @@ class TrackerApp:
         self.health_check_dialog: tk.Toplevel | None = None
         self.about_dialog: tk.Toplevel | None = None
         self.update_dialog: tk.Toplevel | None = None
+        self.readme_dialog: tk.Toplevel | None = None
+        self.feedback_dialog: tk.Toplevel | None = None
+        self.feedback_webview_process: subprocess.Popen | None = None
 
         self.qusb_path_var = tk.StringVar(
             value=str(self.config["qusb2snes_path"])
@@ -19669,6 +19787,35 @@ class TrackerApp:
                 min(target_height, self._ui_px(min_height)),
             )
         return target_width, target_height
+
+    def _fit_dialog_height_to_contents(
+        self,
+        dialog: tk.Toplevel,
+        padding: int = 24,
+    ) -> None:
+        """Grow a dialog enough to keep its bottom action row visible."""
+        try:
+            if not dialog.winfo_exists():
+                return
+            dialog.update_idletasks()
+            current_width = max(dialog.winfo_width(), dialog.winfo_reqwidth())
+            current_height = dialog.winfo_height()
+            required_height = dialog.winfo_reqheight() + self._ui_px(padding)
+            maximum_height = max(
+                self._ui_px(480),
+                dialog.winfo_screenheight() - self._ui_px(100),
+            )
+            target_height = min(
+                maximum_height,
+                max(current_height, required_height),
+            )
+            if target_height > current_height:
+                dialog.geometry(
+                    f"{current_width}x{target_height}+"
+                    f"{dialog.winfo_x()}+{max(0, dialog.winfo_y())}"
+                )
+        except tk.TclError:
+            pass
 
     def _target_main_ui_scale(self) -> float:
         width = max(1, self.root.winfo_width())
@@ -21200,7 +21347,7 @@ class TrackerApp:
         )
         add_mario_command(
             downloads_menu,
-            "Add Hack…",
+            "Add Unmoderated Hack…",
             lambda: self._edit_custom_hack(
                 new_record=True
             ),
@@ -21269,37 +21416,46 @@ class TrackerApp:
         )
         self.catalog_menu = catalog_menu
         self._update_catalog_menu_labels()
+        downloads_menu.add_separator()
+        add_mario_command(
+            downloads_menu,
+            "Visit SMW Central Website...",
+            lambda: webbrowser.open(SMW_CENTRAL_WEBSITE_URL),
+            "star",
+        )
 
-        self.appearance_menu_button, appearance_menu = (
+        self.help_menu_button, help_menu = (
             create_menu_button(
-                "Appearance",
+                "Help",
                 THEME["blue"],
                 "piranha",
             )
         )
-        add_mario_radio(
-            appearance_menu,
-            "Light Mode",
-            "light",
-            lambda: self._set_appearance(
-                "light"
-            ),
-            "flower",
+        add_mario_command(
+            help_menu,
+            "Read Me / Setup Guide...",
+            self.open_readme_dialog,
+            "block",
         )
-        add_mario_radio(
-            appearance_menu,
-            "Dark Mode",
-            "dark",
-            lambda: self._set_appearance(
-                "dark"
-            ),
-            "moon",
+        add_mario_command(
+            help_menu,
+            "Feedback & Suggestions...",
+            self.open_feedback_dialog,
+            "one_up",
+        )
+        help_menu.add_separator()
+        add_mario_command(
+            help_menu,
+            "About & Updates...",
+            self.open_about_dialog,
+            "mario_head",
         )
 
         self.stats_menu = stats_menu
         self.settings_menu = settings_menu
         self.downloads_menu = downloads_menu
-        self.appearance_menu = appearance_menu
+        self.appearance_menu = None
+        self.help_menu = help_menu
 
     def _menu_colors(self) -> dict[str, str]:
         if (
@@ -21458,6 +21614,13 @@ class TrackerApp:
         normalized = mode.casefold()
         if normalized not in {"light", "dark"}:
             normalized = "light"
+
+        previous_appearance = getattr(
+            self,
+            "applied_appearance_mode",
+            self.appearance_var.get(),
+        )
+        previous_appearance = str(previous_appearance).strip().casefold()
 
         self.appearance_var.set(normalized)
         self._set_windows_titlebar_theme(
@@ -21669,6 +21832,20 @@ class TrackerApp:
         )
 
         self._refresh_open_window_appearances()
+        self.applied_appearance_mode = normalized
+
+        feedback_process = getattr(
+            self,
+            "feedback_webview_process",
+            None,
+        )
+        feedback_was_open = (
+            feedback_process is not None
+            and feedback_process.poll() is None
+        )
+        if feedback_was_open and previous_appearance != normalized:
+            self._stop_feedback_webview_process()
+            self.root.after(250, self.open_feedback_dialog)
 
         if persist:
             self.config["ui_theme"] = normalized
@@ -21797,6 +21974,7 @@ class TrackerApp:
             THEME["purple"],
             THEME["orange"],
             THEME["blue"],
+            THEME["blue"],
         )
 
         if self.catalog_menu is not None:
@@ -21833,6 +22011,7 @@ class TrackerApp:
                 getattr(self, "settings_menu", None),
                 getattr(self, "downloads_menu", None),
                 getattr(self, "appearance_menu", None),
+                getattr(self, "help_menu", None),
             ),
             menu_active_colors,
         ):
@@ -22684,6 +22863,9 @@ class TrackerApp:
         local_level_port = tk.StringVar(
             value=self.level_livesplit_port_var.get()
         )
+        local_appearance = tk.StringVar(
+            value=self.appearance_var.get()
+        )
         local_rom_library = tk.StringVar(
             value=str(
                 self.config.get("platform_rom_library_folder", "")
@@ -22874,6 +23056,67 @@ class TrackerApp:
             local_retroarch_core,
             choose_retroarch_core,
         )
+
+        tk.Label(
+            body,
+            text="\u263c",
+            font=("Segoe UI Symbol", 14, "bold"),
+            fg=THEME["purple"],
+            bg="#F9F5FF",
+            width=2,
+        ).grid(
+            row=7,
+            column=0,
+            padx=(0, 8),
+            pady=7,
+        )
+
+        OutlinedLabel(
+            body,
+            text="Appearance",
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["text"],
+            bg="#F9F5FF",
+            anchor="w",
+            width=17,
+        ).grid(
+            row=7,
+            column=1,
+            sticky="w",
+            pady=7,
+        )
+
+        appearance_frame = tk.Frame(
+            body,
+            bg="#F9F5FF",
+        )
+        appearance_frame.grid(
+            row=7,
+            column=2,
+            columnspan=2,
+            sticky="w",
+            padx=(8, 0),
+            pady=7,
+        )
+        for label_text, mode in (
+            ("Light Mode", "light"),
+            ("Dark Mode", "dark"),
+        ):
+            tk.Radiobutton(
+                appearance_frame,
+                text=label_text,
+                variable=local_appearance,
+                value=mode,
+                font=("Segoe UI", 10, "bold"),
+                fg=THEME["text"],
+                bg="#F9F5FF",
+                activeforeground=THEME["purple"],
+                activebackground="#F9F5FF",
+                selectcolor="white",
+                cursor="hand2",
+                padx=8,
+            ).pack(side="left", padx=(0, 12))
+
         ttk.Separator(
             body,
             orient="horizontal",
@@ -23152,8 +23395,18 @@ class TrackerApp:
                 }
             )
 
+            selected_appearance = local_appearance.get().strip().casefold()
+            if selected_appearance not in {"light", "dark"}:
+                selected_appearance = "light"
+            self.appearance_var.set(selected_appearance)
+
             if not self.save_settings():
                 return
+
+            self._set_appearance(
+                selected_appearance,
+                persist=False,
+            )
 
             if self.worker:
                 self.worker.config.update(
@@ -26681,6 +26934,241 @@ class TrackerApp:
         widget.bind("<Button-4>", scroll)
         widget.bind("<Button-5>", scroll)
 
+    @staticmethod
+    def _treeview_display_value(
+        tree: ttk.Treeview,
+        iid: str,
+        column: str,
+    ) -> str:
+        try:
+            if column == "#0":
+                return str(tree.item(iid, "text") or "")
+            return str(tree.set(iid, column) or "")
+        except tk.TclError:
+            return ""
+
+    @staticmethod
+    def _treeview_sort_value(value: object) -> tuple[int, object]:
+        text_value = str(value or "").strip()
+        if not text_value or text_value in {"\u2014", "-", "Unknown", "Unrated"}:
+            return (9, "")
+
+        normalized = text_value.replace(",", "")
+        percentage_match = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)\s*%", normalized)
+        if percentage_match:
+            return (0, float(percentage_match.group(1)))
+
+        fraction_match = re.fullmatch(
+            r"([+-]?\d+(?:\.\d+)?)\s*/\s*([+-]?\d+(?:\.\d+)?)",
+            normalized,
+        )
+        if fraction_match:
+            numerator = float(fraction_match.group(1))
+            denominator = float(fraction_match.group(2))
+            ratio = numerator / denominator if denominator else numerator
+            return (0, ratio)
+
+        if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", normalized):
+            return (0, float(normalized))
+
+        timer_match = re.fullmatch(r"\d+(?::\d{1,2}){1,2}", normalized)
+        if timer_match:
+            parts = [int(part) for part in normalized.split(":")]
+            seconds = 0
+            for part in parts:
+                seconds = seconds * 60 + part
+            return (1, seconds)
+
+        parsed_date = rom_builder_parse_date(text_value)
+        if parsed_date is None:
+            for date_format in ("%b %d, %Y", "%B %d, %Y"):
+                try:
+                    parsed_date = datetime.strptime(
+                        text_value,
+                        date_format,
+                    ).date()
+                    break
+                except ValueError:
+                    continue
+        if parsed_date is not None:
+            return (2, parsed_date.toordinal())
+
+        natural_parts: list[object] = []
+        for part in re.split(r"(\d+)", normalized.casefold()):
+            natural_parts.append(int(part) if part.isdigit() else part)
+        return (3, natural_parts)
+
+    def _retag_treeview_alternating(
+        self,
+        tree: ttk.Treeview,
+        even_tag: str,
+        odd_tag: str,
+    ) -> None:
+        for row_index, iid in enumerate(tree.get_children("")):
+            try:
+                existing_tags = tuple(
+                    tag
+                    for tag in tree.item(iid, "tags")
+                    if tag not in {even_tag, odd_tag}
+                )
+                tree.item(
+                    iid,
+                    tags=existing_tags + (
+                        even_tag if row_index % 2 == 0 else odd_tag,
+                    ),
+                )
+            except tk.TclError:
+                continue
+
+    def _configure_treeview_sorting(
+        self,
+        tree: ttk.Treeview,
+        headings: dict[str, str],
+        *,
+        default_column: str | None = None,
+        default_descending: bool = False,
+        after_sort=None,
+    ) -> None:
+        tree._smw_sort_headings = dict(headings)
+        tree._smw_sort_column = default_column
+        tree._smw_sort_descending = bool(default_descending)
+        tree._smw_after_sort = after_sort
+        for column, label in headings.items():
+            tree.heading(
+                column,
+                text=label,
+                anchor="center",
+                command=lambda selected_column=column: (
+                    self._sort_treeview_by_column(
+                        tree,
+                        selected_column,
+                        toggle=True,
+                    )
+                ),
+            )
+        self._update_treeview_sort_headings(tree)
+
+    def _update_treeview_sort_headings(self, tree: ttk.Treeview) -> None:
+        headings = getattr(tree, "_smw_sort_headings", {})
+        active_column = getattr(tree, "_smw_sort_column", None)
+        descending = bool(
+            getattr(tree, "_smw_sort_descending", False)
+        )
+        for column, label in headings.items():
+            suffix = ""
+            if column == active_column:
+                suffix = " \u25BC" if descending else " \u25B2"
+            try:
+                tree.heading(column, text=label + suffix)
+            except tk.TclError:
+                pass
+
+    def _sort_treeview_by_column(
+        self,
+        tree: ttk.Treeview,
+        column: str,
+        *,
+        toggle: bool,
+    ) -> None:
+        current_column = getattr(tree, "_smw_sort_column", None)
+        descending = bool(
+            getattr(tree, "_smw_sort_descending", False)
+        )
+        if toggle:
+            descending = not descending if current_column == column else False
+        tree._smw_sort_column = column
+        tree._smw_sort_descending = descending
+
+        populated: list[tuple[tuple[int, object], str]] = []
+        missing: list[str] = []
+        for iid in tree.get_children(""):
+            display_value = self._treeview_display_value(tree, iid, column)
+            sort_value = self._treeview_sort_value(display_value)
+            if sort_value[0] == 9:
+                missing.append(iid)
+            else:
+                populated.append((sort_value, iid))
+        populated.sort(key=lambda item: item[0], reverse=descending)
+        ordered_iids = [iid for _value, iid in populated] + missing
+        for row_index, iid in enumerate(ordered_iids):
+            try:
+                tree.move(iid, "", row_index)
+            except tk.TclError:
+                pass
+        self._update_treeview_sort_headings(tree)
+        after_sort = getattr(tree, "_smw_after_sort", None)
+        if after_sort is not None:
+            after_sort()
+
+    def _reapply_treeview_sorting(self, tree: ttk.Treeview) -> None:
+        column = getattr(tree, "_smw_sort_column", None)
+        if column:
+            self._sort_treeview_by_column(
+                tree,
+                column,
+                toggle=False,
+            )
+
+    def _bind_editable_clipboard_menu(self, widget: tk.Widget) -> None:
+        def send_virtual(event_name: str) -> None:
+            try:
+                widget.focus_set()
+                widget.event_generate(event_name)
+            except tk.TclError:
+                pass
+
+        def select_all() -> None:
+            try:
+                widget.focus_set()
+                widget.selection_range(0, "end")
+                widget.icursor("end")
+            except tk.TclError:
+                pass
+
+        def show_menu(event) -> str:
+            palette = self._library_palette()
+            menu = tk.Menu(
+                widget,
+                tearoff=False,
+                bg=palette["panel"],
+                fg=palette["text"],
+                activebackground=THEME["blue"],
+                activeforeground="#FFFFFF",
+            )
+            menu.add_command(
+                label="Cut",
+                accelerator="Ctrl+X",
+                command=lambda: send_virtual("<<Cut>>"),
+            )
+            menu.add_command(
+                label="Copy",
+                accelerator="Ctrl+C",
+                command=lambda: send_virtual("<<Copy>>"),
+            )
+            menu.add_command(
+                label="Paste",
+                accelerator="Ctrl+V",
+                command=lambda: send_virtual("<<Paste>>"),
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="Select All",
+                accelerator="Ctrl+A",
+                command=select_all,
+            )
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+            return "break"
+
+        widget.bind("<Button-3>", show_menu, add="+")
+        widget.bind(
+            "<Control-a>",
+            lambda _event: (select_all(), "break")[1],
+            add="+",
+        )
+
     def _statistics_table_style(
         self,
         table_key: str,
@@ -27790,7 +28278,7 @@ class TrackerApp:
                 "⏱",
             ),
             (
-                "Custom Hacks",
+                "Unmoderated Hacks",
                 f"{overview['custom']:,}",
                 status_colors["Planned"],
                 "🧩",
@@ -28179,6 +28667,21 @@ class TrackerApp:
                 ),
             )
 
+        self._configure_treeview_sorting(
+            difficulty_tree,
+            {
+                "#0": "Difficulty",
+                "tracked": "Tracked",
+                "completed": "Completed",
+                "exits": "Exits",
+                "rate": "Rate",
+            },
+            after_sort=lambda: self._apply_statistics_table_colors(
+                difficulty_tree,
+                "difficulty",
+            ),
+        )
+        self._reapply_treeview_sorting(difficulty_tree)
         self._apply_statistics_table_colors(
             difficulty_tree,
             "difficulty",
@@ -28358,6 +28861,22 @@ class TrackerApp:
                 ),
             )
 
+        self._configure_treeview_sorting(
+            recent_tree,
+            {
+                "#0": "Hack",
+                "status": "Status",
+                "date": "Date",
+            },
+            default_column="date",
+            default_descending=True,
+            after_sort=lambda: self._apply_statistics_table_colors(
+                recent_tree,
+                "recent",
+            ),
+        )
+        self._reapply_treeview_sorting(recent_tree)
+
         self._apply_statistics_table_colors(
             recent_tree,
             "recent",
@@ -28404,7 +28923,7 @@ class TrackerApp:
         ).pack(side="left")
         self._make_action_button(
             button_bar,
-            text="Custom Hacks",
+            text="Unmoderated Hacks",
             command=self.open_custom_hacks,
             bg=THEME["purple"],
             active_bg="#6037AA",
@@ -28955,6 +29474,13 @@ class TrackerApp:
                 anchor="center",
             )
 
+        self._configure_treeview_sorting(
+            tree,
+            headings,
+            default_column="#0",
+            after_sort=self._schedule_tracker_cell_overlays,
+        )
+
         tree.column(
             "#0",
             width=self._ui_px(76),
@@ -29070,6 +29596,11 @@ class TrackerApp:
             lambda _event: self._edit_tracker_record(),
         )
         tree.bind(
+            "<Button-1>",
+            self._remember_tracker_tree_cell_event,
+            add="+",
+        )
+        tree.bind(
             "<Button-3>",
             lambda event: (
                 self._show_tracker_appearance_menu(
@@ -29102,6 +29633,9 @@ class TrackerApp:
                 self._schedule_tracker_cell_overlays,
                 add="+",
             )
+        tree.bind("<Control-c>", lambda _event: self._copy_tracker_cell())
+        tree.bind("<Control-x>", lambda _event: self._cut_tracker_cell())
+        tree.bind("<Control-v>", lambda _event: self._paste_tracker_cell())
 
         self.tracker_list_widgets["tree"] = tree
         self.tracker_list_widgets["tree_frame"] = tree_frame
@@ -29503,7 +30037,7 @@ class TrackerApp:
                         .rstrip("0")
                         .rstrip(".")
                         if smwc_rating is not None
-                        else "â€”"
+                        else "\u2014"
                     ),
                 ),
             )
@@ -29523,6 +30057,7 @@ class TrackerApp:
         self.tracker_list_widgets["count_var"].set(
             f"{visible:,} hack(s)"
         )
+        self._reapply_treeview_sorting(tree)
         self._schedule_tracker_cell_overlays()
 
     def _clear_tracker_cell_overlays(self) -> None:
@@ -30122,6 +30657,184 @@ class TrackerApp:
             return str(columns[index])
         return "title"
 
+    def _remember_tracker_cell(self, iid: str, column: str) -> None:
+        if iid:
+            self.tracker_list_widgets["active_cell"] = (
+                str(iid),
+                str(column),
+            )
+
+    def _active_tracker_cell(self) -> tuple[str, str]:
+        active = self.tracker_list_widgets.get("active_cell")
+        if (
+            isinstance(active, tuple)
+            and len(active) == 2
+            and active[0] in self.tracker_list_records
+        ):
+            return str(active[0]), str(active[1])
+        tree = self.tracker_list_widgets.get("tree")
+        if tree is not None:
+            try:
+                selected = tree.selection()
+            except tk.TclError:
+                selected = ()
+            if selected:
+                return str(selected[0]), "title"
+        return "", ""
+
+    def _copy_tracker_cell(self) -> str:
+        tree = self.tracker_list_widgets.get("tree")
+        iid, column = self._active_tracker_cell()
+        if tree is None or not iid:
+            return "break"
+        value = self._treeview_display_value(tree, iid, column)
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(value)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _tracker_clipboard_date(self, value: str) -> str:
+        stripped = value.strip()
+        if not stripped or stripped in {"\u2014", "-"}:
+            return ""
+        parsed = rom_builder_parse_date(stripped)
+        if parsed is None:
+            for date_format in ("%b %d, %Y", "%B %d, %Y"):
+                try:
+                    parsed = datetime.strptime(
+                        stripped,
+                        date_format,
+                    ).date()
+                    break
+                except ValueError:
+                    continue
+        if parsed is None:
+            raise ValueError(
+                "Dates must use YYYY-MM-DD or a displayed month/day/year date."
+            )
+        return parsed.isoformat()
+
+    def _set_tracker_cell_value(
+        self,
+        iid: str,
+        column: str,
+        value: str,
+    ) -> None:
+        editable_columns = {
+            "exits",
+            "percentage",
+            "rating",
+            "playtime",
+            "started",
+            "completed",
+        }
+        if column not in editable_columns:
+            raise ValueError(
+                "That catalog-backed cell is read-only. You can still copy it."
+            )
+        record = self.tracker_list_records.get(iid)
+        if record is None:
+            raise ValueError("The selected tracker row is no longer available.")
+
+        completed_exits = max(0, int(record.get("completed_exits") or 0))
+        total_exits = max(0, int(record.get("total_exits") or 0))
+        personal_rating = record.get("personal_rating")
+        playtime_seconds = max(0, int(record.get("playtime_seconds") or 0))
+        date_started = str(record.get("date_started") or "")
+        date_completed = str(record.get("date_completed") or "")
+        stripped = str(value).strip()
+
+        if column == "exits":
+            completed_text = stripped.split("/", 1)[0].strip()
+            completed_exits = int(completed_text or "0")
+            if completed_exits < 0:
+                raise ValueError("Completed exits cannot be negative.")
+        elif column == "percentage":
+            percent_text = stripped.rstrip("%").strip()
+            percentage = float(percent_text or "0")
+            if not 0 <= percentage <= 100:
+                raise ValueError("Percent complete must be from 0 through 100.")
+            completed_exits = (
+                round(total_exits * percentage / 100)
+                if total_exits
+                else 0
+            )
+        elif column == "rating":
+            if not stripped or stripped in {"\u2014", "-"}:
+                personal_rating = None
+            else:
+                personal_rating = float(stripped)
+                if not 1 <= personal_rating <= 5:
+                    raise ValueError("My Rating must be from 1 through 5.")
+        elif column == "playtime":
+            playtime_seconds = (
+                int(self.parse_timer_override(stripped))
+                if stripped
+                else 0
+            )
+        elif column == "started":
+            date_started = self._tracker_clipboard_date(stripped)
+        elif column == "completed":
+            date_completed = self._tracker_clipboard_date(stripped)
+
+        status = str(record.get("status") or "Planned")
+        if total_exits and completed_exits >= total_exits:
+            status = "Completed"
+        elif completed_exits > 0:
+            status = "In Progress"
+        elif status == "Completed":
+            status = "Planned"
+
+        self.stats_db.save_tracked(
+            int(record["id"]),
+            completed_exits,
+            status,
+            (
+                float(personal_rating)
+                if personal_rating is not None
+                else None
+            ),
+            playtime_seconds,
+            date_started,
+            date_completed,
+            str(record.get("notes") or ""),
+        )
+        self._refresh_my_tracker()
+        self._refresh_database_status()
+        self._queue_google_sheets_sync()
+
+    def _paste_tracker_cell(self) -> str:
+        iid, column = self._active_tracker_cell()
+        if not iid:
+            return "break"
+        try:
+            value = self.root.clipboard_get()
+            self._set_tracker_cell_value(iid, column, value)
+        except (tk.TclError, ValueError) as error:
+            messagebox.showerror(
+                "Cannot Paste Cell",
+                str(error) or "The clipboard does not contain usable text.",
+                parent=self.tracker_list_dialog or self.root,
+            )
+        return "break"
+
+    def _cut_tracker_cell(self) -> str:
+        iid, column = self._active_tracker_cell()
+        if not iid:
+            return "break"
+        self._copy_tracker_cell()
+        try:
+            self._set_tracker_cell_value(iid, column, "")
+        except ValueError as error:
+            messagebox.showerror(
+                "Cannot Cut Cell",
+                str(error),
+                parent=self.tracker_list_dialog or self.root,
+            )
+        return "break"
+
     def _show_tracker_appearance_menu(
         self,
         event,
@@ -30143,6 +30856,7 @@ class TrackerApp:
             self._select_tracker_overlay_row(iid)
 
         column = self._tracker_column_at_event(event)
+        self._remember_tracker_cell(iid, column)
         column_label = self._tracker_column_label(column)
         palette = self._library_palette()
         menu = tk.Menu(
@@ -30156,6 +30870,22 @@ class TrackerApp:
             font=("Segoe UI", 10),
         )
         if iid:
+            menu.add_command(
+                label="Copy cell",
+                accelerator="Ctrl+C",
+                command=self._copy_tracker_cell,
+            )
+            menu.add_command(
+                label="Cut cell",
+                accelerator="Ctrl+X",
+                command=self._cut_tracker_cell,
+            )
+            menu.add_command(
+                label="Paste into cell",
+                accelerator="Ctrl+V",
+                command=self._paste_tracker_cell,
+            )
+            menu.add_separator()
             menu.add_command(
                 label="Edit rating, progress, and tracker entry",
                 command=self._edit_tracker_record,
@@ -30487,6 +31217,18 @@ class TrackerApp:
                         from_overlay=True,
                     )
                 ),
+            )
+            row_canvas.bind(
+                "<Control-c>",
+                lambda _event: self._copy_tracker_cell(),
+            )
+            row_canvas.bind(
+                "<Control-x>",
+                lambda _event: self._cut_tracker_cell(),
+            )
+            row_canvas.bind(
+                "<Control-v>",
+                lambda _event: self._paste_tracker_cell(),
             )
             for wheel_event in (
                 "<MouseWheel>",
@@ -31280,7 +32022,25 @@ class TrackerApp:
         iid = self._tracker_overlay_iid_at_event(event)
         if iid:
             self._select_tracker_overlay_row(iid)
+            self._remember_tracker_cell(
+                iid,
+                self._tracker_column_at_event(event),
+            )
         return "break"
+
+    def _remember_tracker_tree_cell_event(self, event) -> None:
+        tree = self.tracker_list_widgets.get("tree")
+        if tree is None:
+            return
+        try:
+            iid = str(tree.identify_row(event.y) or "")
+        except tk.TclError:
+            iid = ""
+        if iid:
+            self._remember_tracker_cell(
+                iid,
+                self._tracker_column_at_event(event),
+            )
 
     def _edit_tracker_overlay_event(
         self,
@@ -31301,6 +32061,7 @@ class TrackerApp:
 
         if tree is not None:
             try:
+                tree.focus_set()
                 tree.selection_set(iid)
                 tree.focus(iid)
                 self._schedule_tracker_cell_overlays()
@@ -31771,7 +32532,7 @@ class TrackerApp:
         palette = self._library_palette()
         dialog = tk.Toplevel(self.root)
         self.custom_hacks_dialog = dialog
-        dialog.title("Custom Hacks")
+        dialog.title("Unmoderated Hacks")
         self._size_dialog_for_ui(
             dialog,
             1050,
@@ -31799,12 +32560,12 @@ class TrackerApp:
         )
         OutlinedLabel(
             title_bar,
-            text="?  CUSTOM HACKS",
+            text="?  UNMODERATED HACKS",
             font=("Segoe UI", 17, "bold"),
             fg="white",
             bg=THEME["purple"],
         ).pack(side="left")
-        count_var = tk.StringVar(value="0 custom hacks")
+        count_var = tk.StringVar(value="0 unmoderated hacks")
         OutlinedLabel(
             title_bar,
             textvariable=count_var,
@@ -31812,6 +32573,37 @@ class TrackerApp:
             fg="white",
             bg=THEME["purple"],
         ).pack(side="right")
+
+        search_panel = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=12,
+            pady=8,
+        )
+        search_panel.pack(fill="x", padx=14, pady=(12, 8))
+        OutlinedLabel(
+            search_panel,
+            text="Search title or creator:",
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+        ).pack(side="left", padx=(0, 8))
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(
+            search_panel,
+            textvariable=search_var,
+            font=("Segoe UI", 10),
+            bg=palette["entry"],
+            fg=palette["text"],
+            insertbackground=palette["text"],
+            relief="flat",
+            highlightbackground=palette["border"],
+            highlightcolor=THEME["purple"],
+            highlightthickness=1,
+        )
+        search_entry.pack(side="left", fill="x", expand=True, ipady=5)
 
         tree_frame = tk.Frame(
             dialog,
@@ -31823,7 +32615,7 @@ class TrackerApp:
             fill="both",
             expand=True,
             padx=14,
-            pady=(12, 8),
+            pady=(0, 8),
         )
         columns = (
             "author",
@@ -31855,6 +32647,12 @@ class TrackerApp:
                 text=heading,
                 anchor="center",
             )
+
+        self._configure_treeview_sorting(
+            tree,
+            headings,
+            default_column="#0",
+        )
 
         tree.column(
             "#0",
@@ -31904,6 +32702,8 @@ class TrackerApp:
         self.custom_hacks_widgets = {
             "tree": tree,
             "count_var": count_var,
+            "search_var": search_var,
+            "search_entry": search_entry,
         }
         self.custom_hacks_records = {}
 
@@ -31918,13 +32718,13 @@ class TrackerApp:
         )
         self._make_action_button(
             button_bar,
-            text="Add Custom Hack",
+            text="Add Unmoderated Hack",
             command=lambda: self._edit_custom_hack(
                 new_record=True
             ),
             bg=THEME["green"],
             active_bg=THEME["green_dark"],
-            width=16,
+            width=22,
             pad_y=5,
         ).pack(side="left")
         self._make_action_button(
@@ -31973,6 +32773,10 @@ class TrackerApp:
                 == "dark"
             ),
         )
+        search_var.trace_add(
+            "write",
+            lambda *_args: self._refresh_custom_hacks(),
+        )
         self._refresh_custom_hacks()
 
     def _refresh_custom_hacks(self) -> None:
@@ -31987,6 +32791,22 @@ class TrackerApp:
         tree.delete(*tree.get_children(""))
         self.custom_hacks_records = {}
         records = self.stats_db.list_custom()
+        search_text = str(
+            self.custom_hacks_widgets.get("search_var").get()
+            if self.custom_hacks_widgets.get("search_var") is not None
+            else ""
+        ).casefold().strip()
+        if search_text:
+            records = [
+                record
+                for record in records
+                if search_text
+                in (
+                    str(record.get("title", ""))
+                    + " "
+                    + str(record.get("author", ""))
+                ).casefold()
+            ]
 
         for record in records:
             iid = "custom::" + str(
@@ -32022,8 +32842,9 @@ class TrackerApp:
                 str(record["difficulty"]),
             )
 
+        self._reapply_treeview_sorting(tree)
         self.custom_hacks_widgets["count_var"].set(
-            f"{len(records):,} custom hack(s)"
+            f"{len(records):,} unmoderated hack(s)"
         )
 
     def _selected_custom_hack(self) -> dict[str, Any] | None:
@@ -32036,8 +32857,8 @@ class TrackerApp:
 
         if not selection:
             messagebox.showinfo(
-                "Custom Hacks",
-                "Select a custom hack first.",
+                "Unmoderated Hacks",
+                "Select an unmoderated hack first.",
                 parent=self.custom_hacks_dialog or self.root,
             )
             return None
@@ -32067,9 +32888,9 @@ class TrackerApp:
             self.custom_hacks_dialog or self.root
         )
         dialog.title(
-            "Add Custom Hack"
+            "Add Unmoderated Hack"
             if new_record
-            else "Edit Custom Hack"
+            else "Edit Unmoderated Hack"
         )
         self._size_dialog_for_ui(
             dialog,
@@ -32100,9 +32921,9 @@ class TrackerApp:
         OutlinedLabel(
             title_bar,
             text=(
-                "ADD CUSTOM HACK"
+                "ADD UNMODERATED HACK"
                 if new_record
-                else "EDIT CUSTOM HACK"
+                else "EDIT UNMODERATED HACK"
             ),
             font=("Segoe UI", 14, "bold"),
             fg="white",
@@ -32231,6 +33052,7 @@ class TrackerApp:
                     highlightthickness=1,
                 )
 
+            self._bind_editable_clipboard_menu(widget)
             field_rows.append((field_label, widget))
 
         details_heading = OutlinedLabel(
@@ -32505,7 +33327,7 @@ class TrackerApp:
 
             if not title:
                 messagebox.showerror(
-                    "Custom Hacks",
+                    "Unmoderated Hacks",
                     "ROM Hack Title is required.",
                     parent=dialog,
                 )
@@ -32537,7 +33359,7 @@ class TrackerApp:
 
             except ValueError:
                 messagebox.showerror(
-                    "Custom Hacks",
+                    "Unmoderated Hacks",
                     (
                         "Exits must be 0 or greater, rating must be blank "
                         "or from 0 through 5, and Added Date must use "
@@ -32590,11 +33412,11 @@ class TrackerApp:
         ).pack(side="right")
         self._make_action_button(
             button_bar,
-            text="Save Custom Hack",
+            text="Save Unmoderated Hack",
             command=save_custom,
             bg=THEME["purple"],
             active_bg="#6037AA",
-            width=16,
+            width=22,
             pad_y=5,
         ).pack(side="right", padx=(0, 8))
 
@@ -32614,7 +33436,7 @@ class TrackerApp:
             return
 
         confirmed = messagebox.askyesno(
-            "Delete Custom Hack",
+            "Delete Unmoderated Hack",
             (
                 f'Delete "{record["title"]}" from the catalog?\n\n'
                 "If it is in My Tracker, its personal tracker row will "
@@ -33666,9 +34488,9 @@ class TrackerApp:
         self._size_dialog_for_ui(
             dialog,
             1180,
-            790,
+            920,
             980,
-            680,
+            760,
         )
         dialog.configure(
             bg=palette["window"]
@@ -33837,6 +34659,7 @@ class TrackerApp:
         through_date_var = tk.StringVar(
             value=""
         )
+        search_var = tk.StringVar(value="")
         count_var = tk.StringVar(
             value=(
                 "Loading moderated catalog…"
@@ -33871,14 +34694,32 @@ class TrackerApp:
             "maximum_rating_var": maximum_rating_var,
             "from_date_var": from_date_var,
             "through_date_var": through_date_var,
+            "search_var": search_var,
             "count_var": count_var,
             "status_var": status_var,
             "added_sort_desc": None,
             "games_by_iid": {},
             "difficulty_overlay": None,
             "difficulty_overlay_after_id": None,
+            "settings_save_after_id": None,
             "catalog_view_only": catalog_view_only,
         }
+
+        if not catalog_view_only:
+            for settings_variable in (
+                base_rom_var,
+                library_folder_var,
+                copy_to_sd_var,
+                sd_folder_var,
+                upload_via_usb_var,
+                usb_folder_var,
+            ):
+                settings_variable.trace_add(
+                    "write",
+                    lambda *_args: (
+                        self._queue_downloader_settings_save()
+                    ),
+                )
 
         title_bar = tk.Frame(
             dialog,
@@ -33936,8 +34777,8 @@ class TrackerApp:
                 (
                     "Browse every moderated hack currently stored in the "
                     "SMW Central catalog. Use the filters to narrow the "
-                    "list, or click Added Date to alternate between newest "
-                    "and oldest additions."
+                    "list. Search by title or creator, and click any column "
+                    "heading to sort it."
                 )
                 if catalog_view_only
                 else (
@@ -34240,6 +35081,7 @@ class TrackerApp:
                 minimum_rating_var,
                 (
                     "Any",
+                    "0.0",
                     "1.0",
                     "2.0",
                     "3.0",
@@ -34248,6 +35090,7 @@ class TrackerApp:
                     "4.25",
                     "4.5",
                     "4.75",
+                    "5.0",
                 ),
                 12,
             ),
@@ -34265,6 +35108,7 @@ class TrackerApp:
                     "3.0",
                     "2.0",
                     "1.0",
+                    "0.0",
                 ),
                 12,
             ),
@@ -34412,6 +35256,59 @@ class TrackerApp:
             pady=(7, 0),
         )
 
+        OutlinedLabel(
+            filter_panel,
+            text="Search title or creator",
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+        ).grid(
+            row=3,
+            column=0,
+            sticky="w",
+            pady=(8, 0),
+        )
+        search_entry = tk.Entry(
+            filter_panel,
+            textvariable=search_var,
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["entry"],
+            insertbackground=palette["text"],
+            relief="flat",
+            highlightbackground=palette["border"],
+            highlightcolor=THEME["blue"],
+            highlightthickness=1,
+        )
+        search_entry.grid(
+            row=3,
+            column=1,
+            columnspan=4,
+            sticky="ew",
+            padx=(8, 0),
+            pady=(8, 0),
+            ipady=4,
+        )
+        self._make_action_button(
+            filter_panel,
+            text="Reset Filters",
+            command=self._reset_downloader_filters,
+            bg=THEME["purple"],
+            active_bg="#6037AA",
+            width=12,
+            pad_y=4,
+        ).grid(
+            row=3,
+            column=5,
+            sticky="e",
+            padx=(8, 0),
+            pady=(8, 0),
+        )
+        search_var.trace_add(
+            "write",
+            lambda *_args: self._queue_downloader_preview_refresh(),
+        )
+
         list_frame = tk.Frame(
             dialog,
             bg=palette["panel"],
@@ -34452,40 +35349,30 @@ class TrackerApp:
             background=palette["panel_alt"],
             foreground=palette["text"],
         )
-        tree.heading(
-            "#0",
-            text="ROM Hack Title",
-            anchor="center",
-        )
-        tree.heading(
-            "difficulty",
-            text="Difficulty",
-            anchor="center",
-        )
-        tree.heading(
-            "type",
-            text="Type",
-            anchor="center",
-        )
-        tree.heading(
-            "rating",
-            text="Rating",
-            anchor="center",
-        )
-        tree.heading(
-            "added",
-            text="Added Date",
-            anchor="center",
-            command=self._toggle_downloader_added_date_sort,
-        )
-        tree.heading(
-            "status",
-            text=(
+        downloader_headings = {
+            "#0": "ROM Hack Title",
+            "difficulty": "Difficulty",
+            "type": "Type",
+            "rating": "Rating",
+            "added": "Added Date",
+            "status": (
                 "Catalog Status"
                 if catalog_view_only
                 else "Library Status"
             ),
-            anchor="center",
+        }
+        self._configure_treeview_sorting(
+            tree,
+            downloader_headings,
+            default_column="#0",
+            after_sort=lambda: (
+                self._retag_treeview_alternating(
+                    tree,
+                    "downloader_even",
+                    "downloader_odd",
+                ),
+                self._schedule_downloader_difficulty_overlays(),
+            ),
         )
         tree.column(
             "#0",
@@ -34641,11 +35528,11 @@ class TrackerApp:
         if not catalog_view_only:
             download_button = self._make_action_button(
                 button_panel,
-                text="Download Moderated Hacks",
+                text="Download All Matching Hacks",
                 command=self._start_filtered_hack_download,
                 bg=THEME["green"],
                 active_bg=THEME["green_dark"],
-                width=23,
+                width=28,
                 pad_y=5,
             )
             download_button.pack(
@@ -34700,6 +35587,95 @@ class TrackerApp:
             ),
         )
         self._refresh_downloader_preview()
+        self._fit_dialog_height_to_contents(
+            dialog,
+            padding=12,
+        )
+
+    def _queue_downloader_settings_save(self) -> None:
+        """Remember downloader locations shortly after the user edits them."""
+        if (
+            not self.downloader_widgets
+            or self.downloader_widgets.get("catalog_view_only", False)
+        ):
+            return
+
+        pending = self.downloader_widgets.get(
+            "settings_save_after_id"
+        )
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except tk.TclError:
+                pass
+
+        self.downloader_widgets[
+            "settings_save_after_id"
+        ] = self.root.after(
+            350,
+            self._save_downloader_settings,
+        )
+
+    def _save_downloader_settings(self) -> None:
+        """Persist the downloader paths and transfer choices."""
+        if (
+            not self.downloader_widgets
+            or self.downloader_widgets.get("catalog_view_only", False)
+        ):
+            return
+
+        self.downloader_widgets[
+            "settings_save_after_id"
+        ] = None
+        settings_map = (
+            (
+                "rom_builder_base_rom_path",
+                "base_rom_var",
+                "string",
+            ),
+            (
+                "rom_builder_library_folder",
+                "library_folder_var",
+                "string",
+            ),
+            (
+                "rom_builder_copy_to_sd",
+                "copy_to_sd_var",
+                "boolean",
+            ),
+            (
+                "rom_builder_sd_folder",
+                "sd_folder_var",
+                "string",
+            ),
+            (
+                "rom_builder_upload_via_usb",
+                "upload_via_usb_var",
+                "boolean",
+            ),
+            (
+                "rom_builder_usb_folder",
+                "usb_folder_var",
+                "usb_path",
+            ),
+        )
+        for config_key, variable_key, value_kind in settings_map:
+            variable = self.downloader_widgets.get(variable_key)
+            if variable is None:
+                continue
+            value = variable.get()
+            if value_kind == "boolean":
+                saved_value = bool(value)
+            else:
+                saved_value = str(value).strip()
+                if value_kind == "usb_path":
+                    saved_value = saved_value or "/All_Hacks"
+            self.config[config_key] = saved_value
+
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
 
     def _browse_downloader_base_rom(self) -> None:
         selected = filedialog.askopenfilename(
@@ -34721,6 +35697,28 @@ class TrackerApp:
             self.downloader_widgets[
                 "base_rom_var"
             ].set(selected)
+
+    def _reset_downloader_filters(self) -> None:
+        if not self.downloader_widgets:
+            return
+        for key in (
+            "type_var",
+            "difficulty_var",
+            "minimum_rating_var",
+            "maximum_rating_var",
+        ):
+            variable = self.downloader_widgets.get(key)
+            if variable is not None:
+                variable.set("Any")
+        for key in (
+            "from_date_var",
+            "through_date_var",
+            "search_var",
+        ):
+            variable = self.downloader_widgets.get(key)
+            if variable is not None:
+                variable.set("")
+        self._refresh_downloader_preview()
 
     def _browse_downloader_library_folder(
         self,
@@ -34846,6 +35844,26 @@ class TrackerApp:
             )
 
         return parsed
+
+    def _queue_downloader_preview_refresh(self) -> None:
+        if not self.downloader_widgets:
+            return
+        pending = self.downloader_widgets.get("search_refresh_after_id")
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except tk.TclError:
+                pass
+        self.downloader_widgets["search_refresh_after_id"] = self.root.after(
+            180,
+            self._run_queued_downloader_preview_refresh,
+        )
+
+    def _run_queued_downloader_preview_refresh(self) -> None:
+        if not self.downloader_widgets:
+            return
+        self.downloader_widgets["search_refresh_after_id"] = None
+        self._refresh_downloader_preview()
 
     def _game_matches_downloader_filters(
         self,
@@ -35084,8 +36102,19 @@ class TrackerApp:
                 "difficulty_var"
             ].get()
         )
+        search_text = self.downloader_widgets[
+            "search_var"
+        ].get().casefold().strip()
 
         for game in self.hack_catalog:
+            if search_text:
+                searchable = (
+                    str(game.get("title", ""))
+                    + " "
+                    + str(game.get("author", ""))
+                ).casefold()
+                if search_text not in searchable:
+                    continue
             if not self._game_matches_downloader_filters(
                 game,
                 type_value,
@@ -35160,6 +36189,12 @@ class TrackerApp:
                 ] = "No download link"
             else:
                 missing.append(display_game)
+
+        # Catalog and downloader lists begin alphabetically. A subsequent
+        # header click is reapplied to the newly built rows below.
+        filtered.sort(
+            key=lambda game: str(game.get("title", "")).casefold()
+        )
 
         sort_desc = self.downloader_widgets.get(
             "added_sort_desc"
@@ -35240,6 +36275,7 @@ class TrackerApp:
             )
             games_by_iid[downloader_iid] = display_game
 
+        self._reapply_treeview_sorting(tree)
         self.downloader_preview_games = (
             [] if catalog_view_only else missing
         )
@@ -35263,7 +36299,7 @@ class TrackerApp:
         if catalog_view_only:
             status_message = (
                 f"Showing {len(filtered):,} moderated catalog hack(s). "
-                "Click Added Date to switch between newest and oldest."
+                "Click any column heading to change the sort order."
             )
         elif not selected_folder:
             status_message = (
@@ -36560,6 +37596,20 @@ class TrackerApp:
 
             self.downloader_cancel_event.set()
 
+        if not self.downloader_widgets.get(
+            "catalog_view_only",
+            False,
+        ):
+            pending_save = self.downloader_widgets.get(
+                "settings_save_after_id"
+            )
+            if pending_save is not None:
+                try:
+                    self.root.after_cancel(pending_save)
+                except tk.TclError:
+                    pass
+            self._save_downloader_settings()
+
         pending_overlay = self.downloader_widgets.get(
             "difficulty_overlay_after_id"
         )
@@ -37766,6 +38816,8 @@ class TrackerApp:
             "type_var": type_var,
             "sort_var": sort_var,
             "jump_var": jump_var,
+            "header_sort_column": "#0",
+            "header_sort_descending": False,
         }
 
         def add_filter_label(
@@ -38049,7 +39101,13 @@ class TrackerApp:
                 column_id,
                 text=heading_text,
                 anchor="center",
+                command=lambda selected_column=column_id: (
+                    self._sort_game_library_from_header(
+                        selected_column
+                    )
+                ),
             )
+        self.game_library_widgets["heading_labels"] = heading_labels
 
         tree.column(
             "#0",
@@ -38566,8 +39624,62 @@ class TrackerApp:
         self.game_library_widgets["difficulty_var"].set("Any")
         self.game_library_widgets["type_var"].set("Any")
         self.game_library_widgets["sort_var"].set("Title (A-Z)")
+        self.game_library_widgets["header_sort_column"] = "#0"
+        self.game_library_widgets["header_sort_descending"] = False
         self.game_library_widgets["jump_var"].set("Top")
         self._populate_game_library()
+
+    def _sort_game_library_from_header(self, column: str) -> None:
+        if not self.game_library_widgets:
+            return
+        current = self.game_library_widgets.get(
+            "header_sort_column",
+            "#0",
+        )
+        descending = bool(
+            self.game_library_widgets.get(
+                "header_sort_descending",
+                False,
+            )
+        )
+        if current == column:
+            descending = not descending
+        else:
+            descending = False
+        self.game_library_widgets["header_sort_column"] = column
+        self.game_library_widgets["header_sort_descending"] = descending
+        labels = self.game_library_widgets.get("heading_labels", {})
+        label = str(labels.get(column, column))
+        self.game_library_widgets["sort_var"].set(
+            label + (" (Descending)" if descending else " (Ascending)")
+        )
+
+    def _update_game_library_sort_headings(self) -> None:
+        tree = self.game_library_widgets.get("tree")
+        labels = self.game_library_widgets.get("heading_labels", {})
+        if tree is None or not isinstance(labels, dict):
+            return
+        active = self.game_library_widgets.get("header_sort_column", "#0")
+        descending = bool(
+            self.game_library_widgets.get("header_sort_descending", False)
+        )
+        for column, label in labels.items():
+            suffix = ""
+            if column == active:
+                suffix = " \u25BC" if descending else " \u25B2"
+            try:
+                tree.heading(column, text=str(label) + suffix)
+            except tk.TclError:
+                pass
+
+        pending_search = self.downloader_widgets.get(
+            "search_refresh_after_id"
+        )
+        if pending_search is not None:
+            try:
+                self.root.after_cancel(pending_search)
+            except tk.TclError:
+                pass
 
     def _populate_game_library(self) -> None:
         tree = self.game_library_widgets.get("tree")
@@ -38589,6 +39701,15 @@ class TrackerApp:
         sort_value = self.game_library_widgets[
             "sort_var"
         ].get()
+        if sort_value == "Title (A-Z)":
+            self.game_library_widgets["header_sort_column"] = "#0"
+            self.game_library_widgets["header_sort_descending"] = False
+        elif sort_value == "Date Added (Newest)":
+            self.game_library_widgets["header_sort_column"] = "added"
+            self.game_library_widgets["header_sort_descending"] = True
+        elif sort_value == "Date Added (Oldest)":
+            self.game_library_widgets["header_sort_column"] = "added"
+            self.game_library_widgets["header_sort_descending"] = False
         filtered = [
             game
             for game in self.hack_catalog
@@ -38624,27 +39745,67 @@ class TrackerApp:
                 title_sort_key(game),
             )
 
-        if sort_value == "Date Added (Newest)":
-            filtered.sort(
-                key=lambda game: added_date_sort_key(
-                    game,
-                    newest_first=True,
+        sort_column = str(
+            self.game_library_widgets.get("header_sort_column", "#0")
+        )
+        sort_descending = bool(
+            self.game_library_widgets.get("header_sort_descending", False)
+        )
+
+        def game_sort_value(game: dict[str, Any]) -> tuple[int, object]:
+            if sort_column == "#0":
+                raw_value = game.get("title", "")
+            elif sort_column == "author":
+                raw_value = game.get("author", "")
+            elif sort_column == "difficulty":
+                raw_value = game.get("difficulty", "")
+            elif sort_column == "type":
+                raw_value = game.get("hack_type", "")
+            elif sort_column == "rating":
+                raw_value = game.get("rating", "")
+            elif sort_column == "exits":
+                raw_value = game.get("total_exits", "")
+            elif sort_column == "added":
+                added_value = rom_builder_parse_date(
+                    game.get("added_date", "")
                 )
-            )
-        elif sort_value == "Date Added (Oldest)":
-            filtered.sort(
-                key=lambda game: added_date_sort_key(
-                    game,
-                    newest_first=False,
+                raw_value = (
+                    added_value.toordinal()
+                    if added_value is not None
+                    else ""
                 )
-            )
-        else:
-            filtered.sort(key=title_sort_key)
+            elif sort_column == "rom":
+                raw_value = (
+                    "Mapped"
+                    if str(game.get("rom_path", "")).strip()
+                    else "Auto-find"
+                )
+            else:
+                raw_value = game.get("title", "")
+            return self._treeview_sort_value(raw_value)
+
+        present_games = [
+            game
+            for game in filtered
+            if game_sort_value(game)[0] != 9
+        ]
+        missing_games = [
+            game
+            for game in filtered
+            if game_sort_value(game)[0] == 9
+        ]
+        present_games.sort(
+            key=game_sort_value,
+            reverse=sort_descending,
+        )
+        filtered = present_games + missing_games
 
         tree.delete(*tree.get_children())
         self.game_library_games_by_iid = {}
 
-        alphabetical_sort = sort_value == "Title (A-Z)"
+        alphabetical_sort = (
+            sort_column == "#0" and not sort_descending
+        )
         grouped: dict[str, list[dict[str, Any]]] = {}
         if alphabetical_sort:
             for game in filtered:
@@ -38752,6 +39913,7 @@ class TrackerApp:
             self._sync_library_expand_button
         )
         self._schedule_game_library_difficulty_overlays()
+        self._update_game_library_sort_headings()
 
         if not filtered:
             tree.insert(
@@ -41042,7 +42204,7 @@ class TrackerApp:
         self.update_dialog = dialog
         dialog.title("SMW Stream Tracker Update")
         dialog.configure(bg=palette["window"])
-        self._size_dialog_for_ui(dialog, 720, 540, 620, 440)
+        self._size_dialog_for_ui(dialog, 760, 650, 660, 540)
         self._add_dialog_window_controls(dialog, dialog, palette["window"])
         tk.Label(
             dialog,
@@ -41071,6 +42233,7 @@ class TrackerApp:
             notes = "\n".join("- " + str(note) for note in notes)
         content = tk.Text(
             dialog,
+            height=14,
             font=("Segoe UI", 11),
             bg=palette["panel"],
             fg=palette["text"],
@@ -41101,6 +42264,9 @@ class TrackerApp:
             "#40566E",
             width=10,
         ).pack(side="right")
+        dialog.after_idle(
+            lambda: self._fit_dialog_height_to_contents(dialog)
+        )
 
     def _download_and_install_update(
         self,
@@ -41258,6 +42424,303 @@ class TrackerApp:
         else:
             subprocess.Popen(["xdg-open", str(document)])
 
+    def _selected_readme_path(self) -> Path:
+        """Return only the guide selected by Setup, with an English fallback."""
+        installed_readme = application_directory() / "README.txt"
+        if installed_readme.is_file():
+            return installed_readme
+
+        bundled_readme = bundled_resource_path(
+            "docs",
+            "README.en.txt",
+        )
+        if bundled_readme.is_file():
+            return bundled_readme
+
+        return (
+            Path(__file__).resolve().parent
+            / "docs"
+            / "README.en.txt"
+        )
+
+    def open_readme_dialog(self) -> None:
+        if self.readme_dialog is not None:
+            try:
+                if self.readme_dialog.winfo_exists():
+                    self.readme_dialog.deiconify()
+                    self.readme_dialog.lift()
+                    self.readme_dialog.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        readme_path = self._selected_readme_path()
+        try:
+            readme_text = readme_path.read_text(
+                encoding="utf-8-sig",
+                errors="replace",
+            )
+        except OSError as error:
+            messagebox.showerror(
+                "Read Me",
+                "The selected-language Read Me could not be opened.\n\n"
+                + str(error),
+                parent=self.root,
+            )
+            return
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.readme_dialog = dialog
+        dialog.title("Read Me / Setup Guide - SMW Stream Tracker")
+        dialog.configure(bg=palette["window"])
+        self._size_dialog_for_ui(dialog, 1040, 820, 720, 560)
+        self._add_dialog_window_controls(dialog, dialog, palette["window"])
+
+        tk.Label(
+            dialog,
+            text="READ ME / SETUP GUIDE",
+            font=("Segoe UI", 20, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            padx=18,
+            pady=12,
+        ).pack(fill="x")
+
+        guide_frame = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        guide_frame.pack(
+            fill="both",
+            expand=True,
+            padx=12,
+            pady=12,
+        )
+        scrollbar = ttk.Scrollbar(
+            guide_frame,
+            orient="vertical",
+            style="Mario.Vertical.TScrollbar",
+        )
+        guide = tk.Text(
+            guide_frame,
+            wrap="word",
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel"],
+            insertbackground=palette["text"],
+            selectbackground=palette["selected"],
+            selectforeground="white",
+            relief="flat",
+            padx=16,
+            pady=14,
+            yscrollcommand=scrollbar.set,
+        )
+        scrollbar.configure(command=guide.yview)
+        guide.insert("1.0", readme_text)
+        guide.configure(state="disabled")
+        guide.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self._bind_fast_vertical_scroll(guide)
+
+        actions = tk.Frame(dialog, bg=palette["window"])
+        actions.pack(fill="x", padx=12, pady=(0, 12))
+        self._make_action_button(
+            actions,
+            "Visit SMW Central",
+            lambda: webbrowser.open(SMW_CENTRAL_WEBSITE_URL),
+            THEME["orange"],
+            "#A84808",
+            width=17,
+        ).pack(side="left")
+
+        def close_readme() -> None:
+            try:
+                dialog.destroy()
+            finally:
+                self.readme_dialog = None
+
+        self._make_action_button(
+            actions,
+            "Close",
+            close_readme,
+            "#60758D",
+            "#40566E",
+            width=10,
+        ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", close_readme)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+
+    def _stop_feedback_webview_process(self) -> None:
+        feedback_process = self.feedback_webview_process
+        self.feedback_webview_process = None
+        if feedback_process is None or feedback_process.poll() is not None:
+            return
+
+        try:
+            feedback_process.terminate()
+            feedback_process.wait(timeout=2)
+        except Exception:
+            try:
+                feedback_process.kill()
+            except Exception:
+                pass
+
+    def open_feedback_dialog(self) -> None:
+        feedback_process = self.feedback_webview_process
+        if feedback_process is not None and feedback_process.poll() is None:
+            messagebox.showinfo(
+                "Feedback & Suggestions",
+                "The anonymous feedback window is already open.",
+                parent=self.root,
+            )
+            return
+
+        try:
+            self.feedback_webview_process = subprocess.Popen(
+                _feedback_webview_command(
+                    self.appearance_var.get(),
+                ),
+                close_fds=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return
+        except Exception as error:
+            append_error_log(
+                "Could not launch the embedded feedback window",
+                f"{type(error).__name__}: {error}",
+            )
+
+        if self.feedback_dialog is not None:
+            try:
+                if self.feedback_dialog.winfo_exists():
+                    self.feedback_dialog.deiconify()
+                    self.feedback_dialog.lift()
+                    self.feedback_dialog.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.feedback_dialog = dialog
+        dialog.title("Feedback & Suggestions - SMW Stream Tracker")
+        dialog.configure(bg=palette["window"])
+        self._size_dialog_for_ui(dialog, 720, 430, 600, 390)
+        self._add_dialog_window_controls(dialog, dialog, palette["window"])
+
+        tk.Label(
+            dialog,
+            text="FEEDBACK & SUGGESTIONS",
+            font=("Segoe UI", 20, "bold"),
+            fg="white",
+            bg=THEME["green"],
+            padx=18,
+            pady=12,
+        ).pack(fill="x")
+        tk.Label(
+            dialog,
+            text=(
+                "The embedded feedback window could not be started. You can "
+                "still open the same anonymous Microsoft Form in your default "
+                "browser.\n\n"
+                "The form does not ask for your name or email address. SMW "
+                "Stream Tracker does not attach settings, diagnostics, ROM "
+                "information, file paths, or tracker data."
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="left",
+            anchor="w",
+            wraplength=self._ui_px(650),
+            padx=16,
+            pady=14,
+        ).pack(fill="x", padx=12, pady=(12, 8))
+
+        privacy_panel = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=14,
+            pady=12,
+        )
+        privacy_panel.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        tk.Label(
+            privacy_panel,
+            text=(
+                "Only the answers you type into the form are submitted. "
+                "Microsoft may process normal service data under its privacy "
+                "policy."
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="left",
+            anchor="w",
+            wraplength=self._ui_px(650),
+        ).pack(fill="both", expand=True)
+
+        actions = tk.Frame(dialog, bg=palette["window"])
+        actions.pack(fill="x", padx=12, pady=(0, 12))
+        open_form_button = self._make_action_button(
+            actions,
+            "Open Anonymous Feedback Form",
+            lambda: None,
+            THEME["green"],
+            THEME["green_dark"],
+            width=29,
+        )
+        open_form_button.pack(side="left")
+
+        def close_feedback() -> None:
+            try:
+                dialog.destroy()
+            finally:
+                self.feedback_dialog = None
+
+        self._make_action_button(
+            actions,
+            "Close",
+            close_feedback,
+            "#60758D",
+            "#40566E",
+            width=10,
+        ).pack(side="right")
+
+        def open_feedback_form() -> None:
+            try:
+                opened = webbrowser.open(FEEDBACK_FORM_URL)
+            except Exception as error:
+                opened = False
+                error_detail = str(error)
+            else:
+                error_detail = ""
+
+            if opened:
+                return
+
+            messagebox.showerror(
+                "Feedback Form Could Not Be Opened",
+                "Windows could not open the anonymous feedback form in "
+                "your default browser."
+                + ("\n\n" + error_detail if error_detail else ""),
+                parent=dialog,
+            )
+
+        open_form_button.configure(command=open_feedback_form)
+        dialog.protocol("WM_DELETE_WINDOW", close_feedback)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+
     def open_about_dialog(self) -> None:
         if self.about_dialog is not None:
             try:
@@ -41271,7 +42734,7 @@ class TrackerApp:
         self.about_dialog = dialog
         dialog.title("About & Updates - SMW Stream Tracker")
         dialog.configure(bg=palette["window"])
-        self._size_dialog_for_ui(dialog, 760, 600, 640, 480)
+        self._size_dialog_for_ui(dialog, 1040, 760, 820, 600)
         self._add_dialog_window_controls(dialog, dialog, palette["window"])
         tk.Label(
             dialog,
@@ -41294,15 +42757,32 @@ class TrackerApp:
         about_text = (
             "Tracks Super Mario World ROM-hack progress with FXPAK Pro or RetroArch, "
             "maintains a local catalog, and writes optional stream text files.\n\n"
+            "SMW Central & the SMW community\n"
+            "ROM-hack catalog data shown in the app comes directly from SMW Central's "
+            "moderated catalog and is cached locally for faster browsing. Huge thanks "
+            "to SMW Central's staff and moderators, and to the creators, testers, "
+            "players, tool developers, and the entire SMW community for creating and "
+            "supporting these remarkable hacks.\n\n"
+            "Looking ahead\n"
+            "Future SMW Stream Tracker releases may explore additional hardware "
+            "setups, flash-cartridge workflows, and emulator integrations beyond "
+            "the currently supported FXPAK Pro and RetroArch setups. These ideas "
+            "are under consideration and are not a promise of specific integrations "
+            "or release dates.\n\n"
             "Privacy\n"
             "No telemetry is collected. Network access is used only for features you request, "
             "including SMW Central catalog data, GitHub release checks, optional Google Sheets "
-            "sync, and optional dependency downloads. ROM files are never uploaded. Error logs "
-            "are stored locally.\n\n"
+            "sync, optional dependency downloads, and the anonymous Microsoft Forms feedback "
+            "window. The form opens inside the app through Microsoft Edge WebView2, with the "
+            "default browser used only as a fallback. Feedback submits only the answers you "
+            "type into the form; the app never "
+            "attaches settings, diagnostics, file paths, ROM information, or tracker data. ROM files "
+            "are never uploaded. Error logs are stored locally.\n\n"
             "Acknowledgments\n"
             "SNI, QUsb2Snes, RetroArch, Libretro/bsnes-mercury, SMW Central, openpyxl, Pillow, "
-            "websocket-client, pystray, and their contributors. Third-party projects remain "
-            "subject to their own licenses.\n\n"
+            "websocket-client, pystray, pywebview, pythonnet, Microsoft Edge WebView2, and "
+            "their contributors. Third-party projects "
+            "and services remain subject to their own licenses and policies.\n\n"
             "Copyright (c) 2026 FredDOGG23. All rights reserved."
         )
         tk.Label(
@@ -41313,9 +42793,9 @@ class TrackerApp:
             bg=palette["panel"],
             justify="left",
             anchor="nw",
-            wraplength=self._ui_px(690),
+            wraplength=self._ui_px(880),
             padx=18,
-            pady=18,
+            pady=14,
         ).pack(fill="both", expand=True, padx=12, pady=12)
         actions = tk.Frame(dialog, bg=palette["window"])
         actions.pack(fill="x", padx=12, pady=(0, 12))
@@ -41357,15 +42837,35 @@ class TrackerApp:
             "#60758D",
             "#40566E",
             width=11,
+        ).pack(side="left", padx=(0, 8))
+        self._make_action_button(
+            actions,
+            "Visit SMW Central",
+            lambda: webbrowser.open(SMW_CENTRAL_WEBSITE_URL),
+            THEME["yellow"],
+            THEME["orange"],
+            width=16,
         ).pack(side="left")
+        def close_about() -> None:
+            try:
+                dialog.destroy()
+            finally:
+                self.about_dialog = None
+
         self._make_action_button(
             actions,
             "Close",
-            dialog.destroy,
+            close_about,
             "#60758D",
             "#40566E",
             width=10,
         ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", close_about)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        self._fit_dialog_height_to_contents(dialog, padding=8)
 
     def open_output_folder(self) -> None:
         folder = Path(self.output_folder_var.get().strip())
@@ -42408,6 +43908,8 @@ class TrackerApp:
             except Exception:
                 pass
 
+        self._stop_feedback_webview_process()
+
         self.root.destroy()
 
 
@@ -42435,7 +43937,147 @@ def _enable_windows_dpi_awareness() -> None:
         pass
 
 
+def _normalize_feedback_appearance(value: object) -> str:
+    normalized = str(value or "").strip().casefold()
+    return "dark" if normalized == "dark" else "light"
+
+
+def _feedback_webview_command(appearance: object) -> list[str]:
+    appearance_argument = (
+        FEEDBACK_APPEARANCE_ARGUMENT_PREFIX
+        + _normalize_feedback_appearance(appearance)
+    )
+    if getattr(sys, "frozen", False):
+        return [
+            sys.executable,
+            FEEDBACK_WEBVIEW_ARGUMENT,
+            appearance_argument,
+        ]
+    return [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        FEEDBACK_WEBVIEW_ARGUMENT,
+        appearance_argument,
+    ]
+
+
+def _feedback_appearance_from_arguments(arguments: list[str]) -> str:
+    for argument in arguments:
+        if argument.startswith(FEEDBACK_APPEARANCE_ARGUMENT_PREFIX):
+            return _normalize_feedback_appearance(
+                argument.removeprefix(
+                    FEEDBACK_APPEARANCE_ARGUMENT_PREFIX
+                )
+            )
+    return "light"
+
+
+def _feedback_dark_mode_script() -> str:
+    return r"""
+(() => {
+    const styleId = "smw-stream-tracker-feedback-theme";
+    let style = document.getElementById(styleId);
+    if (!style) {
+        style = document.createElement("style");
+        style.id = styleId;
+        document.head.appendChild(style);
+    }
+    style.textContent = `
+        html {
+            background: #0f1b2d !important;
+        }
+        body {
+            filter: invert(1) hue-rotate(180deg) !important;
+            min-height: 100vh !important;
+        }
+        img, picture, video, canvas, svg {
+            filter: invert(1) hue-rotate(180deg) !important;
+        }
+    `;
+})();
+"""
+
+
+def _run_feedback_webview(appearance: str) -> int:
+    try:
+        import webview
+
+        icon_path = bundled_resource_path(
+            "app_assets",
+            "smw_stream_tracker_icon.ico",
+        )
+        feedback_window = webview.create_window(
+            "Feedback & Suggestions - SMW Stream Tracker",
+            FEEDBACK_FORM_URL,
+            width=1040,
+            height=820,
+            min_size=(700, 560),
+            resizable=True,
+            maximized=True,
+            background_color="#0F1B2D",
+            text_select=True,
+            zoomable=True,
+        )
+        if _normalize_feedback_appearance(appearance) == "dark":
+            def apply_dark_feedback_theme() -> None:
+                try:
+                    feedback_window.evaluate_js(
+                        _feedback_dark_mode_script()
+                    )
+                except Exception as theme_error:
+                    append_error_log(
+                        "Feedback dark mode could not be applied",
+                        f"{type(theme_error).__name__}: {theme_error}",
+                    )
+
+            feedback_window.events.loaded += apply_dark_feedback_theme
+        webview.start(
+            gui="edgechromium",
+            private_mode=True,
+            icon=str(icon_path) if icon_path.exists() else None,
+        )
+        return 0
+    except Exception as error:
+        append_error_log(
+            "Embedded feedback window failed",
+            "".join(
+                traceback.format_exception(
+                    type(error),
+                    error,
+                    error.__traceback__,
+                )
+            ),
+        )
+        try:
+            opened = webbrowser.open(FEEDBACK_FORM_URL)
+        except Exception:
+            opened = False
+
+        if not opened:
+            try:
+                error_root = tk.Tk()
+                error_root.withdraw()
+                messagebox.showerror(
+                    "Feedback Form Could Not Be Opened",
+                    "The embedded feedback window and default browser could "
+                    "not open the anonymous Microsoft Form.\n\n"
+                    + f"{type(error).__name__}: {error}",
+                    parent=error_root,
+                )
+                error_root.destroy()
+            except Exception:
+                pass
+        return 1
+
+
 def main() -> None:
+    if FEEDBACK_WEBVIEW_ARGUMENT in sys.argv[1:]:
+        raise SystemExit(
+            _run_feedback_webview(
+                _feedback_appearance_from_arguments(sys.argv[1:])
+            )
+        )
+
     _enable_windows_dpi_awareness()
     def global_exception_handler(
         exception_type,

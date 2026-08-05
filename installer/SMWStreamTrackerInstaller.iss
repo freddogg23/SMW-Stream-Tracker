@@ -1,9 +1,15 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.0.4"
+#define AppVersion "1.1.0"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
   #define AppExeSource "..\dist\SMWStreamTracker.exe"
+#endif
+#ifndef SetupOutputDir
+  #define SetupOutputDir "..\dist"
+#endif
+#ifndef SetupOutputBaseFilename
+  #define SetupOutputBaseFilename "SMWStreamTracker_Setup_" + AppVersion
 #endif
 
 [Setup]
@@ -26,8 +32,8 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-OutputDir=..\dist
-OutputBaseFilename=SMWStreamTracker_Setup_{#AppVersion}
+OutputDir={#SetupOutputDir}
+OutputBaseFilename={#SetupOutputBaseFilename}
 SetupIconFile=..\app_assets\smw_stream_tracker_icon.ico
 WizardSmallImageFile=..\app_assets\smw_stream_tracker_icon.png
 WizardSmallImageBackColor=#E02C26
@@ -522,6 +528,96 @@ begin
   Result := ExpandConstant('{%USERPROFILE}\SMWStreamTrackerConfig.json');
 end;
 
+function PickerInitialDirectory(CurrentValue: String): String;
+begin
+  Result := '';
+  CurrentValue := Trim(CurrentValue);
+  if CurrentValue <> '' then
+  begin
+    if DirExists(CurrentValue) then
+      Result := CurrentValue
+    else
+      Result := ExtractFileDir(CurrentValue);
+  end;
+  if (Result = '') or (not DirExists(Result)) then
+    Result := ExpandConstant('{userdocs}');
+end;
+
+procedure BrowseForRomLibrary(Sender: TObject);
+var
+  SelectedDirectory: String;
+begin
+  SelectedDirectory := FolderPage.Values[0];
+  if Trim(SelectedDirectory) = '' then
+    SelectedDirectory := ExpandConstant('{userdocs}');
+  if BrowseForFolder(
+       ExpandConstant('{cm:ROMLibrary}'),
+       SelectedDirectory,
+       True) then
+    FolderPage.Values[0] := SelectedDirectory;
+end;
+
+procedure BrowseForObsFolder(Sender: TObject);
+var
+  SelectedDirectory: String;
+begin
+  SelectedDirectory := FolderPage.Values[1];
+  if Trim(SelectedDirectory) = '' then
+    SelectedDirectory := ExpandConstant('{userdocs}');
+  if BrowseForFolder(
+       ExpandConstant('{cm:OBSFolder}'),
+       SelectedDirectory,
+       True) then
+    FolderPage.Values[1] := SelectedDirectory;
+end;
+
+procedure BrowseForConnectionService(Sender: TObject);
+var
+  SelectedFile: String;
+begin
+  SelectedFile := ExistingInterfacePage.Values[0];
+  if GetOpenFileName(
+       ExpandConstant('{cm:ServiceTitle}'),
+       SelectedFile,
+       PickerInitialDirectory(SelectedFile),
+       ExpandConstant('{cm:ExecutableFiles}') + '|*.exe|' +
+         ExpandConstant('{cm:AllFiles}') + '|*.*',
+       '.exe') then
+    ExistingInterfacePage.Values[0] := SelectedFile;
+end;
+
+procedure BrowseForRetroArch(Sender: TObject);
+var
+  SelectedFile: String;
+begin
+  SelectedFile := RetroArchPage.Values[0];
+  if GetOpenFileName(
+       ExpandConstant('{cm:RetroLocationTitle}'),
+       SelectedFile,
+       PickerInitialDirectory(SelectedFile),
+       ExpandConstant('{cm:RetroExecutableFilter}') + '|retroarch.exe|' +
+         ExpandConstant('{cm:ExecutableFiles}') + '|*.exe|' +
+         ExpandConstant('{cm:AllFiles}') + '|*.*',
+       '.exe') then
+    RetroArchPage.Values[0] := SelectedFile;
+end;
+
+procedure BrowseForRetroArchCore(Sender: TObject);
+var
+  SelectedFile: String;
+begin
+  SelectedFile := RetroArchPage.Values[1];
+  if GetOpenFileName(
+       ExpandConstant('{cm:RetroCore}'),
+       SelectedFile,
+       PickerInitialDirectory(SelectedFile),
+       ExpandConstant('{cm:LibretroCores}') + '|*_libretro.dll|' +
+         ExpandConstant('{cm:DLLFiles}') + '|*.dll|' +
+         ExpandConstant('{cm:AllFiles}') + '|*.*',
+       '.dll') then
+    RetroArchPage.Values[1] := SelectedFile;
+end;
+
 procedure InitializeWizard;
 begin
   PlatformPage := CreateInputOptionPage(
@@ -560,6 +656,8 @@ begin
   FolderPage.Add(ExpandConstant('{cm:OBSFolder}'));
   FolderPage.Values[0] := '';
   FolderPage.Values[1] := '';
+  FolderPage.Buttons[0].OnClick := @BrowseForRomLibrary;
+  FolderPage.Buttons[1].OnClick := @BrowseForObsFolder;
 
   ExistingInterfacePage := CreateInputFilePage(
     FolderPage.ID,
@@ -572,6 +670,8 @@ begin
       ExpandConstant('{cm:AllFiles}') + '|*.*',
     '.exe');
   ExistingInterfacePage.Values[0] := '';
+  ExistingInterfacePage.Buttons[0].OnClick :=
+    @BrowseForConnectionService;
 
   RetroArchPage := CreateInputFilePage(
     ExistingInterfacePage.ID,
@@ -592,6 +692,8 @@ begin
     '.dll');
   RetroArchPage.Values[0] := '';
   RetroArchPage.Values[1] := '';
+  RetroArchPage.Buttons[0].OnClick := @BrowseForRetroArch;
+  RetroArchPage.Buttons[1].OnClick := @BrowseForRetroArchCore;
 
   FXPAKStepsPage := CreateOutputMsgPage(
     RetroArchPage.ID,

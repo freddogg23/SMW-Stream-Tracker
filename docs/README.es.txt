@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUÍA COMPLETA DE CONFIGURACIÓN
-Versión 1.0.4
+Versión 1.1.0
 
 IDIOMAS
 English: README.en.txt
@@ -21,7 +21,7 @@ Português (Brasil): README.pt-BR.txt
 9. Copiar ROMs a una tarjeta SD
 10. Jugar y seguir un hack
 11. Temporizadores, Mi Tracker y estadísticas
-12. Salida de texto para OBS
+12. LiveSplit, OBS Studio y Streamlabs Desktop
 13. Actualizaciones, copias y reversión
 14. Solución de problemas y privacidad
 
@@ -38,7 +38,7 @@ SMW Stream Tracker no incluye ni descarga una ROM base comercial.
 
 2. INSTALAR EL PROGRAMA
 
-1. Ejecuta SMWStreamTracker_Setup_1.0.4.exe.
+1. Ejecuta SMWStreamTracker_Setup_1.1.0.exe.
 2. Elige un idioma en la primera pantalla.
 3. Lee el aviso sobre software opcional y ROMs.
 4. Elige FXPAK Pro o RetroArch como plataforma inicial.
@@ -136,11 +136,73 @@ Tracker permite búsqueda, filtros, campos editables, colores de dificultad,
 barras de puntuación y progreso, y exportación CSV/XLSX. Las estadísticas
 resumen progreso, puntuaciones, tiempo, actividad y dificultad.
 
-12. SALIDA DE TEXTO PARA OBS
+12. LIVESPLIT, OBS STUDIO Y STREAMLABS DESKTOP
 
-Elige una carpeta de salida en Configuración. En OBS añade una fuente Texto,
-activa Leer desde archivo y selecciona el archivo deseado de esa carpeta.
-Repite para título, autor, salidas, temporizadores y otros datos.
+Puedes capturar las ventanas de LiveSplit, usar los archivos de texto del
+tracker o combinar ambos métodos. Los archivos de texto son la opción más
+sencilla y no necesitan LiveSplit.
+
+CONECTAR EL TEMPORIZADOR DE JUEGO DE LIVESPLIT
+
+1. Descarga y extrae LiveSplit desde https://livesplit.org/downloads/.
+2. Abre LiveSplit.exe. El servidor ya viene integrado; no instales el antiguo
+   componente LiveSplit Server por separado.
+3. Haz clic derecho en LiveSplit, abre Configuración y establece Server Port
+   en 16834.
+4. Si solo usarás un temporizador, el inicio automático es opcional. Con dos
+   ventanas, inicia cada servidor manualmente después de revisar su puerto con
+   Control > Start TCP/WS Server.
+5. En SMW Stream Tracker abre Archivo > Configuración, establece Game LiveSplit
+   port en 16834, guarda y prueba Iniciar temporizador de juego.
+
+CONECTAR UN TEMPORIZADOR DE NIVEL INDEPENDIENTE
+
+1. Deja abierta la primera ventana y ejecuta LiveSplit.exe otra vez.
+2. En la segunda ventana establece Server Port en 16835 e inicia su servidor
+   TCP.
+3. Deja Level LiveSplit port en 16835 en el tracker.
+4. Prueba Iniciar temporizador de nivel, Iniciar temporizadores y Restablecer
+   temporizador de nivel.
+
+Las dos ventanas deben usar puertos diferentes. Al volver a abrirlas, confirma
+16834 en la primera y 16835 en la segunda antes de iniciar cada servidor. La
+conexión permanece en este equipo mediante 127.0.0.1.
+
+MOSTRAR LIVESPLIT EN OBS STUDIO
+
+1. Mantén abiertas y sin minimizar las ventanas de LiveSplit.
+2. En Fuentes de OBS selecciona + > Captura de ventana.
+3. Elige la ventana del temporizador de juego, colócala y cambia su tamaño.
+4. Repite con otra Captura de ventana para el temporizador de nivel.
+5. Haz una grabación corta de prueba y comprueba ambos temporizadores.
+
+MOSTRAR LIVESPLIT EN STREAMLABS DESKTOP
+
+1. Mantén las ventanas de LiveSplit abiertas y sin minimizar.
+2. En Fuentes selecciona + > Captura de pantalla; si aparece Captura de
+   ventana por separado, usa esa opción.
+3. Selecciona, coloca y ajusta cada ventana de LiveSplit.
+4. Haz una grabación corta de prueba antes de transmitir.
+
+USAR LOS ARCHIVOS DE TEMPORIZADOR EN OBS O STREAMLABS
+
+1. Elige una carpeta de salida OBS en Archivo > Configuración y guarda.
+2. Selecciona o inicia un hack y usa ambos temporizadores una vez.
+3. Usa Archivo > Abrir carpeta de texto OBS para abrir la carpeta correcta.
+4. En OBS o Streamlabs añade una fuente Texto (GDI+).
+5. Activa Leer desde archivo y selecciona game_timer.txt.
+6. Añade otra fuente Texto y selecciona level_timer.txt.
+7. Configura fuente, color, contorno, alineación y tamaño.
+8. Si quieres, repite con hack_name.txt, author.txt o exits.txt.
+
+SMW Stream Tracker debe seguir abierto para actualizar los archivos. Si una
+fuente está vacía o atrasada, confirma que usa la misma carpeta configurada en
+el tracker y vuelve a operar el temporizador.
+
+Ayuda oficial:
+Servidor LiveSplit: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
+Texto en OBS: https://obsproject.com/kb/text-sources
+Captura en Streamlabs: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
 13. ACTUALIZACIONES, COPIAS Y REVERSIÓN
 

@@ -10,6 +10,18 @@ The app uses the network only for features the user requests or enables:
 * Optional Google Sheets synchronization through the URL the user supplies.
 * Optional installer downloads for SNI, QUsb2Snes, RetroArch, and Libretro cores.
 * Local communication with SNI, QUsb2Snes, FXPAK Pro, or RetroArch.
+* The optional Microsoft Forms feedback page that the user chooses to open.
+
+Feedback & Suggestions opens a public Microsoft Forms page inside a dedicated
+SMW Stream Tracker WebView2 window. If WebView2 is unavailable, the same form is
+opened in the user's default browser. The form does not ask for the respondent's
+name or email address. The app does not attach settings, diagnostics, ROM
+information, file paths, or tracker data. Only answers the user enters into the
+form are submitted.
+
+Microsoft may process normal service data under its privacy policy when the form
+is opened or submitted. SMW Stream Tracker does not receive or store that service
+data.
 
 Tracker data, settings, timer state, mappings, recovery backups, and error logs
 are stored locally. Error logs may contain technical file paths, but the Copy

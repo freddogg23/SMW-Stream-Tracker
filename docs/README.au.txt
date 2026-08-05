@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.0.4
+Version 1.1.0
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -25,7 +25,7 @@ WHAT'S IN THIS YARN
 9. Bung ROMs onto an SD card
 10. Pick a hack and have a crack
 11. Timers, My Tracker, and statistics
-12. OBS text output
+12. LiveSplit, OBS Studio, and Streamlabs Desktop
 13. Updates, backups, and winding back a version
 14. When something spits the dummy
 
@@ -45,7 +45,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.0.4.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.1.0.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro or RetroArch as your first cab off the rank.
@@ -188,16 +188,71 @@ areas to change solid fills, gradients, or difficulty colours.
 Statistics rounds up progress, ratings, playtime, recent activity, and
 completion by difficulty. Everything in one spot, neat as a new pin. Beauty.
 
-12. OBS TEXT OUTPUT
+12. LIVESPLIT, OBS STUDIO, AND STREAMLABS DESKTOP
 
-1. Choose an OBS output folder in File > Settings.
-2. Start or select a hack so the tracker writes its text files.
-3. In OBS, add a Text (GDI+) source.
-4. Enable Read from file and select the text file you want.
-5. Repeat for the title, creator, exits, timers, or any other fields you use.
+You've got two fair-dinkum options: capture the LiveSplit windows, or let OBS
+or Streamlabs read the tracker's text files. Use both if that floats your boat.
+The text-file method is the easier caper and doesn't need LiveSplit at all.
 
-If OBS shows yesterday's news, make sure it is reading the files from the same
-folder selected in the tracker.
+HOOK UP THE FULL-GAME LIVESPLIT TIMER
+
+1. Grab and extract LiveSplit from https://livesplit.org/downloads/.
+2. Open LiveSplit.exe. The server is already built in, so don't fossick around
+   for the old separate LiveSplit Server component.
+3. Right-click LiveSplit, open Settings, and set Server Port to 16834.
+4. If this is your only LiveSplit timer, automatic TCP startup is optional. If
+   you're using two windows, start them manually so you can check both ports.
+   Choose Control > Start TCP/WS Server after checking the port.
+5. In SMW Stream Tracker, open File > Settings, set Game LiveSplit port to
+   16834, save, and give Start Game Timer a burl.
+
+HOOK UP THE LEVEL LIVESPLIT TIMER
+
+1. Leave the first LiveSplit running and open LiveSplit.exe again.
+2. In this second window, set Server Port to 16835 and start its TCP server.
+3. Leave Level LiveSplit port at 16835 in the tracker.
+4. Try Start Level Timer, Start Timers, and Reset Level Timer.
+
+The two windows need different ports or they'll carry on like two utes trying
+to fit through one gate. On later launches, check 16834 in the first and 16835
+in the second before starting each server. It all stays local on 127.0.0.1.
+Save separate game and level layouts if you want each timer dressed differently.
+
+PUT LIVESPLIT INTO OBS STUDIO
+
+1. Keep the LiveSplit windows open and don't minimise them.
+2. In OBS Sources, choose + > Window Capture.
+3. Pick the full-game LiveSplit window, then position and resize it.
+4. Add another Window Capture for the level LiveSplit window.
+5. Make a quick test recording and work both tracker timers.
+
+PUT LIVESPLIT INTO STREAMLABS DESKTOP
+
+1. Keep the LiveSplit windows open and not minimised.
+2. In Streamlabs Sources, choose + > Screen Capture. If your version has a
+   separate Window Capture choice, use that.
+3. Pick, position, and resize the full-game LiveSplit window.
+4. Do the same for the level window and make a quick test recording.
+
+USE THE TIMER TEXT FILES IN OBS OR STREAMLABS
+
+1. Choose an OBS output folder in File > Settings and save it.
+2. Pick or start a hack and operate both timers once to create the files.
+3. Use File > Open OBS Text Folder to find the right paddock.
+4. In OBS or Streamlabs, add a Text (GDI+) source.
+5. Enable Read from file and choose game_timer.txt.
+6. Add another Text source and choose level_timer.txt.
+7. Set your font, colour, outline, alignment, and size.
+8. Repeat for hack_name.txt, author.txt, or exits.txt if you fancy.
+
+Keep SMW Stream Tracker running so the files stay fresh. If a source shows
+yesterday's news, make sure it reads the same folder selected in the tracker,
+then give that timer another nudge. Too easy.
+
+Official help:
+LiveSplit server: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
+OBS text sources: https://obsproject.com/kb/text-sources
+Streamlabs capture: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
 13. UPDATES, BACKUPS, AND WINDING BACK A VERSION
 

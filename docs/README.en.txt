@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - COMPLETE SETUP GUIDE
-Version 1.0.4
+Version 1.1.0
 
 LANGUAGES
 English: README.en.txt
@@ -21,7 +21,7 @@ TABLE OF CONTENTS
 9. Copy ROMs to an SD card
 10. Play and track a hack
 11. Timers, My Tracker, and statistics
-12. OBS text output
+12. LiveSplit, OBS Studio, and Streamlabs Desktop
 13. Updates, backup, and rollback
 14. Troubleshooting and privacy
 
@@ -38,7 +38,7 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 
 2. INSTALL THE PROGRAM
 
-1. Start SMWStreamTracker_Setup_1.0.4.exe.
+1. Start SMWStreamTracker_Setup_1.1.0.exe.
 2. Select a language on the first screen.
 3. Read the optional-software and ROM notice.
 4. Choose FXPAK Pro or RetroArch as the initial platform.
@@ -147,13 +147,71 @@ rating and completion data bars, and CSV/XLSX export. Right-click supported
 areas to change solid or gradient colors. Statistics summarizes progress,
 ratings, playtime, recent activity, and completion by difficulty.
 
-12. OBS TEXT OUTPUT
+12. LIVESPLIT, OBS STUDIO, AND STREAMLABS DESKTOP
 
-1. Choose an OBS output folder in Settings.
-2. Start or select a hack so the tracker writes its text files.
-3. In OBS, add a Text source.
-4. Enable Read from file and select the desired file from the output folder.
-5. Repeat for the title, creator, exits, timers, or other fields you use.
+You can capture LiveSplit windows, use the tracker's text files, or use both.
+The text-file method is simpler and does not require LiveSplit.
+
+CONNECT THE FULL-GAME LIVESPLIT TIMER
+
+1. Download and extract LiveSplit from https://livesplit.org/downloads/.
+2. Open LiveSplit.exe. The server is built in; do not install the old separate
+   LiveSplit Server component.
+3. Right-click LiveSplit, open Settings, and set Server Port to 16834.
+4. If this is your only LiveSplit timer, automatic TCP startup is optional. If
+   you use two windows, manual startup is safer so you can check both ports.
+   Right-click LiveSplit and select Control > Start TCP/WS Server.
+5. In SMW Stream Tracker, open File > Settings, set Game LiveSplit port to
+   16834, and save.
+6. Select Start Game Timer and confirm LiveSplit follows the tracker.
+
+CONNECT A SEPARATE LEVEL LIVESPLIT TIMER
+
+1. Leave the game-timer LiveSplit open and start LiveSplit.exe a second time.
+2. In the second window, set Server Port to 16835 and start its TCP server.
+3. In the tracker, leave Level LiveSplit port set to 16835.
+4. Select Start Level Timer or Start Timers and test Reset Level Timer.
+
+The two LiveSplit windows must use different ports. On later launches, verify
+16834 in the first window and 16835 in the second before starting each server.
+The tracker connects only to this computer at 127.0.0.1. Save separate game
+and level layouts if desired.
+
+CAPTURE LIVESPLIT IN OBS STUDIO
+
+1. Keep each LiveSplit window open and not minimized.
+2. In OBS Sources, select + > Window Capture.
+3. Select the full-game LiveSplit window, then position and resize it.
+4. Add a second Window Capture source for the level LiveSplit window.
+5. Make a short test recording and operate both tracker timers.
+
+CAPTURE LIVESPLIT IN STREAMLABS DESKTOP
+
+1. Keep each LiveSplit window open and not minimized.
+2. In Streamlabs Sources, select + > Screen Capture. If your version lists it
+   separately, select Window Capture.
+3. Select, position, and resize the full-game LiveSplit window.
+4. Repeat for the level LiveSplit window, then make a test recording.
+
+USE THE TIMER TEXT FILES IN OBS OR STREAMLABS
+
+1. Choose an OBS output folder in File > Settings and save.
+2. Select or start a hack and operate both timers once to create the files.
+3. Use File > Open OBS Text Folder to open the configured folder.
+4. In OBS or Streamlabs, add a Text (GDI+) source.
+5. Enable Read from file and select game_timer.txt.
+6. Add another Text source and select level_timer.txt.
+7. Set the font, color, outline, alignment, and size you want.
+8. Repeat for hack_name.txt, author.txt, or exits.txt if desired.
+
+SMW Stream Tracker must remain running for the files to update. If a source is
+blank or stale, verify it uses the same folder selected in the tracker and
+operate that timer once more.
+
+Official help:
+LiveSplit server: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
+OBS text sources: https://obsproject.com/kb/text-sources
+Streamlabs capture: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
 13. UPDATES, BACKUP, AND ROLLBACK
 

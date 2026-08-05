@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - VOLLSTÄNDIGE EINRICHTUNGSANLEITUNG
-Version 1.0.4
+Version 1.1.0
 
 SPRACHEN
 English: README.en.txt
@@ -21,7 +21,7 @@ INHALTSVERZEICHNIS
 9. ROMs auf eine SD-Karte kopieren
 10. Einen Hack spielen und verfolgen
 11. Timer, Mein Tracker und Statistiken
-12. OBS-Textausgabe
+12. LiveSplit, OBS Studio und Streamlabs Desktop
 13. Updates, Sicherung und Rollback
 14. Fehlerbehebung und Datenschutz
 
@@ -38,7 +38,7 @@ SMW Stream Tracker enthält und lädt kein kommerzielles Basis-ROM herunter.
 
 2. PROGRAMM INSTALLIEREN
 
-1. Starten Sie SMWStreamTracker_Setup_1.0.4.exe.
+1. Starten Sie SMWStreamTracker_Setup_1.1.0.exe.
 2. Wählen Sie auf dem ersten Bildschirm eine Sprache.
 3. Lesen Sie den Hinweis zu optionaler Software und ROMs.
 4. Wählen Sie FXPAK Pro oder RetroArch als erste Plattform.
@@ -137,11 +137,75 @@ Suche, Filter, editierbare Felder, Schwierigkeitsfarben, Bewertungs- und
 Fortschrittsbalken sowie CSV/XLSX-Export. Statistiken fassen Fortschritt,
 Bewertungen, Spielzeit, Aktivität und Schwierigkeit zusammen.
 
-12. OBS-TEXTAUSGABE
+12. LIVESPLIT, OBS STUDIO UND STREAMLABS DESKTOP
 
-Wählen Sie einen Ausgabeordner in Einstellungen. Fügen Sie in OBS eine
-Textquelle hinzu, aktivieren Sie Aus Datei lesen und wählen Sie die gewünschte
-Datei. Wiederholen Sie dies für Titel, Autor, Ausgänge, Timer und weitere Daten.
+Sie können LiveSplit-Fenster aufnehmen, die Textdateien des Trackers verwenden
+oder beide Methoden kombinieren. Die Textdateien sind einfacher und benötigen
+kein LiveSplit.
+
+DEN LIVESPLIT-SPIELTIMER VERBINDEN
+
+1. Laden Sie LiveSplit von https://livesplit.org/downloads/ herunter und
+   entpacken Sie es.
+2. Starten Sie LiveSplit.exe. Der Server ist integriert; die alte separate
+   LiveSplit-Server-Komponente wird nicht benötigt.
+3. Klicken Sie LiveSplit mit der rechten Maustaste an, öffnen Sie Einstellungen
+   und setzen Sie Server Port auf 16834.
+4. Bei nur einem Timer ist der automatische TCP-Start optional. Bei zwei
+   Fenstern starten Sie jeden Server nach der Portprüfung manuell mit
+   Control > Start TCP/WS Server.
+5. Öffnen Sie in SMW Stream Tracker Datei > Einstellungen, setzen Sie Game
+   LiveSplit port auf 16834, speichern Sie und testen Sie den Spieltimer.
+
+EINEN SEPARATEN LIVESPLIT-LEVELTIMER VERBINDEN
+
+1. Lassen Sie das erste LiveSplit-Fenster offen und starten Sie LiveSplit.exe
+   ein zweites Mal.
+2. Setzen Sie im zweiten Fenster Server Port auf 16835 und starten Sie den
+   TCP-Server.
+3. Lassen Sie Level LiveSplit port im Tracker auf 16835.
+4. Testen Sie Start, gemeinsamen Start und Zurücksetzen des Leveltimers.
+
+Beide Fenster müssen unterschiedliche Ports verwenden. Prüfen Sie bei späteren
+Starts zuerst 16834 im ersten und 16835 im zweiten Fenster. Die Verbindung
+bleibt lokal auf 127.0.0.1.
+
+LIVESPLIT IN OBS STUDIO ANZEIGEN
+
+1. Lassen Sie die LiveSplit-Fenster geöffnet und nicht minimiert.
+2. Wählen Sie in Quellen + > Fensteraufnahme.
+3. Wählen, positionieren und skalieren Sie das Spieltimer-Fenster.
+4. Fügen Sie eine zweite Fensteraufnahme für den Leveltimer hinzu.
+5. Erstellen Sie eine kurze Testaufnahme.
+
+LIVESPLIT IN STREAMLABS DESKTOP ANZEIGEN
+
+1. Lassen Sie die LiveSplit-Fenster geöffnet und nicht minimiert.
+2. Wählen Sie in Quellen + > Bildschirmaufnahme. Falls Fensteraufnahme als
+   eigene Option erscheint, verwenden Sie diese.
+3. Wählen, positionieren und skalieren Sie beide LiveSplit-Fenster.
+4. Erstellen Sie vor dem Stream eine kurze Testaufnahme.
+
+TIMER-TEXTDATEIEN IN OBS ODER STREAMLABS VERWENDEN
+
+1. Wählen Sie unter Datei > Einstellungen einen OBS-Ausgabeordner und speichern
+   Sie.
+2. Wählen oder starten Sie einen Hack und bedienen Sie beide Timer einmal.
+3. Öffnen Sie den Ordner mit Datei > OBS-Textordner öffnen.
+4. Fügen Sie in OBS oder Streamlabs eine Text-(GDI+)-Quelle hinzu.
+5. Aktivieren Sie Aus Datei lesen und wählen Sie game_timer.txt.
+6. Fügen Sie eine zweite Textquelle mit level_timer.txt hinzu.
+7. Stellen Sie Schriftart, Farbe, Kontur, Ausrichtung und Größe ein.
+8. Wiederholen Sie dies bei Bedarf für hack_name.txt, author.txt oder exits.txt.
+
+SMW Stream Tracker muss geöffnet bleiben, damit die Dateien aktualisiert
+werden. Bei einer leeren oder alten Anzeige prüfen Sie den Ordner und bedienen
+Sie den Timer erneut.
+
+Offizielle Hilfe:
+LiveSplit-Server: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
+OBS-Textquellen: https://obsproject.com/kb/text-sources
+Streamlabs-Aufnahme: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
 13. UPDATES, SICHERUNG UND ROLLBACK
 

@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUIA COMPLETO DE CONFIGURAÇÃO
-Versão 1.0.4
+Versão 1.1.0
 
 IDIOMAS
 English: README.en.txt
@@ -21,7 +21,7 @@ Português (Brasil): README.pt-BR.txt
 9. Copiar ROMs para um cartão SD
 10. Jogar e acompanhar um hack
 11. Cronômetros, Meu Tracker e estatísticas
-12. Saída de texto para OBS
+12. LiveSplit, OBS Studio e Streamlabs Desktop
 13. Atualizações, backup e reversão
 14. Solução de problemas e privacidade
 
@@ -38,7 +38,7 @@ O SMW Stream Tracker não inclui nem baixa uma ROM-base comercial.
 
 2. INSTALAR O PROGRAMA
 
-1. Execute SMWStreamTracker_Setup_1.0.4.exe.
+1. Execute SMWStreamTracker_Setup_1.1.0.exe.
 2. Escolha um idioma na primeira tela.
 3. Leia o aviso sobre software opcional e ROMs.
 4. Escolha FXPAK Pro ou RetroArch como plataforma inicial.
@@ -134,11 +134,71 @@ pesquisa, filtros, campos editáveis, cores por dificuldade, barras de nota e
 progresso e exportação CSV/XLSX. As estatísticas resumem progresso, notas,
 tempo, atividade e dificuldade.
 
-12. SAÍDA DE TEXTO PARA OBS
+12. LIVESPLIT, OBS STUDIO E STREAMLABS DESKTOP
 
-Escolha uma pasta de saída em Configurações. No OBS, adicione uma fonte Texto,
-ative Ler do arquivo e selecione o arquivo desejado. Repita para título, autor,
-saídas, cronômetros e outros dados.
+Você pode capturar as janelas do LiveSplit, usar os arquivos de texto do
+tracker ou combinar os dois métodos. Os arquivos de texto são mais simples e
+não exigem o LiveSplit.
+
+CONECTAR O CRONÔMETRO DE JOGO DO LIVESPLIT
+
+1. Baixe e extraia o LiveSplit de https://livesplit.org/downloads/.
+2. Abra LiveSplit.exe. O servidor já está integrado; não instale o antigo
+   componente LiveSplit Server separado.
+3. Clique com o botão direito no LiveSplit, abra Configurações e defina Server
+   Port como 16834.
+4. Com apenas um cronômetro, a inicialização automática é opcional. Com duas
+   janelas, inicie cada servidor manualmente depois de conferir a porta usando
+   Control > Start TCP/WS Server.
+5. No SMW Stream Tracker, abra Arquivo > Configurações, defina Game LiveSplit
+   port como 16834, salve e teste o cronômetro de jogo.
+
+CONECTAR UM CRONÔMETRO DE FASE SEPARADO
+
+1. Deixe a primeira janela aberta e execute LiveSplit.exe novamente.
+2. Na segunda janela, defina Server Port como 16835 e inicie o servidor TCP.
+3. Deixe Level LiveSplit port como 16835 no tracker.
+4. Teste iniciar, iniciar os dois e redefinir o cronômetro de fase.
+
+As duas janelas precisam usar portas diferentes. Nas próximas execuções,
+confira 16834 na primeira e 16835 na segunda antes de iniciar cada servidor. A
+conexão fica local em 127.0.0.1.
+
+MOSTRAR O LIVESPLIT NO OBS STUDIO
+
+1. Mantenha as janelas do LiveSplit abertas e não minimizadas.
+2. Em Fontes, selecione + > Captura de janela.
+3. Selecione, posicione e redimensione a janela do cronômetro de jogo.
+4. Adicione outra Captura de janela para o cronômetro de fase.
+5. Faça uma gravação curta de teste.
+
+MOSTRAR O LIVESPLIT NO STREAMLABS DESKTOP
+
+1. Mantenha as janelas do LiveSplit abertas e não minimizadas.
+2. Em Fontes, selecione + > Captura de tela. Se Captura de janela aparecer
+   separadamente na sua versão, use essa opção.
+3. Selecione, posicione e redimensione cada janela do LiveSplit.
+4. Faça uma gravação curta antes de transmitir.
+
+USAR OS ARQUIVOS DOS CRONÔMETROS NO OBS OU STREAMLABS
+
+1. Escolha uma pasta de saída OBS em Arquivo > Configurações e salve.
+2. Selecione ou inicie um hack e opere cada cronômetro uma vez.
+3. Abra a pasta com Arquivo > Abrir pasta de texto OBS.
+4. No OBS ou Streamlabs, adicione uma fonte Texto (GDI+).
+5. Ative Ler do arquivo e escolha game_timer.txt.
+6. Adicione outra fonte Texto e escolha level_timer.txt.
+7. Configure fonte, cor, contorno, alinhamento e tamanho.
+8. Repita, se desejar, para hack_name.txt, author.txt ou exits.txt.
+
+O SMW Stream Tracker precisa ficar aberto para atualizar os arquivos. Se uma
+fonte estiver vazia ou desatualizada, confira a pasta e opere o cronômetro
+novamente.
+
+Ajuda oficial:
+Servidor LiveSplit: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
+Texto no OBS: https://obsproject.com/kb/text-sources
+Captura no Streamlabs: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
 13. ATUALIZAÇÕES, BACKUP E REVERSÃO
 
