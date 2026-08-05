@@ -9,6 +9,37 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
 
+## Screenshots
+
+### Main dashboard
+
+<p align="center">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker main dashboard with platform status, current hack controls, and timers">
+</p>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/my-tracker.png" alt="My Tracker searchable progress table"><br>
+      <strong>My Tracker</strong><br>
+      Search, filter, sort, rate, launch, and manage every tracked hack.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/stats-overview.png" alt="Tracker statistics, difficulty progress, and recent activity"><br>
+      <strong>Statistics</strong><br>
+      Review completion, playtime, ratings, difficulty progress, and recent activity.
+    </td>
+  </tr>
+</table>
+
+### SMW Central catalog
+
+<p align="center">
+  <img src="docs/screenshots/smw-central-catalog.png" alt="Searchable and sortable SMW Central catalog">
+</p>
+
+Browse the moderated catalog with title search, letter filters, difficulty and rating filters, sortable columns, SMW Central page links, and patch-download links.
+
 ## Plain-text guides in other languages
 
 - [English](docs/README.en.txt)
