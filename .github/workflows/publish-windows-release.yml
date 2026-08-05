@@ -62,12 +62,27 @@ jobs:
             }
           }
 
-          gh release create $tag $assets `
-            --repo $repo `
-            --verify-tag `
-            --latest `
-            --title "SMW Stream Tracker v$version" `
-            --notes-file ".\release\DESKTOP_RELEASE_NOTES_$version.md"
+          gh release view $tag --repo $repo *> $null
+          $releaseExists = $LASTEXITCODE -eq 0
+
+          if ($releaseExists) {
+            gh release upload $tag $assets `
+              --repo $repo `
+              --clobber
+            gh release edit $tag `
+              --repo $repo `
+              --latest `
+              --title "SMW Stream Tracker v$version" `
+              --notes-file ".\release\DESKTOP_RELEASE_NOTES_$version.md"
+          }
+          else {
+            gh release create $tag $assets `
+              --repo $repo `
+              --verify-tag `
+              --latest `
+              --title "SMW Stream Tracker v$version" `
+              --notes-file ".\release\DESKTOP_RELEASE_NOTES_$version.md"
+          }
 
           foreach ($oldVersion in @("1.0.3", "1.0.4")) {
             $oldTag = "v$oldVersion"

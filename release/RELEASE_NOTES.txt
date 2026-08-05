@@ -7,6 +7,7 @@ Release 1.0.0
 * Displays Rate as an editable, value-based gradient data bar.
 * Adds persistent solid, gradient, alternating-row, Overview, and default appearance controls to every application table.
 * Includes searchable and sortable lists, centered table contents, clickable SMW Central page and patch links, and horizontal scrolling where needed.
+* Accepts a healthy BPS/IPS patch even when an unrelated README or documentation entry inside the ZIP is damaged.
 * Keeps the level timer through older-hack death-to-overworld transitions and resets it only after a confirmed finish or a different level selection.
 * Preserves user appearance choices and supplies first-use tracker colors and data-bar defaults.
 * Includes multilingual setup guides for LiveSplit, OBS Studio, and Streamlabs Desktop.

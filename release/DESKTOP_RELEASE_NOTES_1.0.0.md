@@ -20,6 +20,7 @@ This is the first public release of SMW Stream Tracker.
 - Every application table supports persistent solid, gradient, alternating-row, Overview, and default color styles.
 - Catalog links open the matching SMW Central page or patch download.
 - Lists include centered contents, search, sorting, and horizontal scrolling where needed.
+- Patch ZIPs with a healthy BPS/IPS file are accepted even when an unrelated README or documentation entry is damaged.
 
 ## Windows downloads
 

@@ -10514,6 +10514,74 @@ def rom_builder_apply_patch_with_variants(
     )
 
 
+def rom_builder_patch_archive_entries(
+    archive: zipfile.ZipFile,
+) -> list[zipfile.ZipInfo]:
+    return [
+        info
+        for info in archive.infolist()
+        if (
+            not info.is_dir()
+            and Path(info.filename).suffix.casefold()
+            in ROM_BUILDER_PATCH_EXTENSIONS
+        )
+    ]
+
+
+def rom_builder_validate_patch_archive(
+    zip_path: Path,
+) -> None:
+    """Validate usable patch entries without reading unrelated ZIP files.
+
+    A few moderated SMW Central archives contain a valid patch alongside an
+    old or damaged README entry.  ``ZipFile.testzip()`` reads every member and
+    rejects those archives even though the patch itself is intact.  The ROM
+    builder only needs a readable BPS or IPS file, so validate those entries
+    directly and leave unrelated documentation alone.
+    """
+    with zipfile.ZipFile(
+        zip_path,
+        "r",
+    ) as archive:
+        patch_entries = (
+            rom_builder_patch_archive_entries(
+                archive
+            )
+        )
+
+        if not patch_entries:
+            raise RuntimeError(
+                "No .bps or .ips patch was found in the ZIP."
+            )
+
+        errors: list[str] = []
+
+        for info in patch_entries:
+            try:
+                with archive.open(
+                    info,
+                    "r",
+                ) as patch_file:
+                    while patch_file.read(
+                        1024 * 256
+                    ):
+                        pass
+                return
+            except Exception as error:
+                errors.append(
+                    f"{info.filename}: {error}"
+                )
+
+    raise RuntimeError(
+        "No readable .bps or .ips patch was found in the ZIP"
+        + (
+            ": " + "; ".join(errors)
+            if errors
+            else "."
+        )
+    )
+
+
 def rom_builder_download_file(
     url: str,
     destination: Path,
@@ -10530,13 +10598,11 @@ def rom_builder_download_file(
         and destination.stat().st_size > 0
     ):
         try:
-            with zipfile.ZipFile(
-                destination,
-                "r",
-            ) as archive:
-                if archive.testzip() is None:
-                    return
-        except zipfile.BadZipFile:
+            rom_builder_validate_patch_archive(
+                destination
+            )
+            return
+        except Exception:
             destination.unlink(
                 missing_ok=True
             )
@@ -10595,17 +10661,9 @@ def rom_builder_download_file(
                     "Downloaded file was empty."
                 )
 
-            with zipfile.ZipFile(
-                temporary_path,
-                "r",
-            ) as archive:
-                bad_entry = archive.testzip()
-
-                if bad_entry is not None:
-                    raise RuntimeError(
-                        "Downloaded ZIP contains "
-                        f"a damaged entry: {bad_entry}"
-                    )
+            rom_builder_validate_patch_archive(
+                temporary_path
+            )
 
             temporary_path.replace(
                 destination
@@ -10652,19 +10710,16 @@ def rom_builder_extract_patches(
         zip_path,
         "r",
     ) as archive:
-        for info in archive.infolist():
-            if info.is_dir():
-                continue
+        patch_entries = (
+            rom_builder_patch_archive_entries(
+                archive
+            )
+        )
 
+        for info in patch_entries:
             suffix = Path(
                 info.filename
             ).suffix.casefold()
-
-            if (
-                suffix
-                not in ROM_BUILDER_PATCH_EXTENSIONS
-            ):
-                continue
 
             filename = (
                 rom_builder_sanitize_filename(
@@ -10691,16 +10746,22 @@ def rom_builder_extract_patches(
                 )
                 counter += 1
 
-            with archive.open(
-                info,
-                "r",
-            ) as source_file, output_path.open(
-                "wb"
-            ) as destination_file:
-                shutil.copyfileobj(
-                    source_file,
-                    destination_file,
+            try:
+                with archive.open(
+                    info,
+                    "r",
+                ) as source_file, output_path.open(
+                    "wb"
+                ) as destination_file:
+                    shutil.copyfileobj(
+                        source_file,
+                        destination_file,
+                    )
+            except Exception:
+                output_path.unlink(
+                    missing_ok=True
                 )
+                continue
 
             patches.append(output_path)
 
