@@ -1,6 +1,14 @@
-Release 1.0.0
+Release 1.0.1
 
-* First public release of SMW Stream Tracker.
+* Adds clickable SMW Central links for the current hack, catalog pages, and patch downloads.
+* Shows the catalog refresh time and newly available hack count in My Tracker.
+* Adds an FXPAK Pro SD Card manager with searching, letter filtering, sorting, and direct ROM removal.
+* Adds per-window streamer privacy warnings for screens that can reveal file paths.
+* Adds editable OBS author and exit formats and automatically creates the five OBS text files.
+* Adds article-aware A-Z filtering and sortable, searchable list controls throughout the app.
+* Centers table contents, filter fields, dropdown values, popup rows, and dropdown headers over the usable text area.
+* Preserves downloader folders and FXPAK copy/upload options while improving downloader layout and links.
+* Expands automated regression coverage for catalog status, dropdown alignment, FXPAK SD browsing, OBS files, privacy warnings, and damaged ZIP documentation.
 * Supports always-on FXPAK Pro and RetroArch tracking.
 * Includes the searchable SMW Central catalog, filtered missing-hack downloads, tracker statistics, exports, backups, and stream timer output.
 * Colors only Difficulty cells in Progress by Difficulty.

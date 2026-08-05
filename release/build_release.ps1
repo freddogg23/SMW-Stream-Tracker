@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.0',
+    [string]$Version = '1.0.1',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -147,6 +147,7 @@ $sourceItems = @(
     'release',
     'release_tools',
     'render_banner_qa.py',
+    'tests',
     'version_info.txt'
 ) | ForEach-Object { Join-Path $projectRoot $_ }
 if (Test-Path -LiteralPath $sourceZip) {

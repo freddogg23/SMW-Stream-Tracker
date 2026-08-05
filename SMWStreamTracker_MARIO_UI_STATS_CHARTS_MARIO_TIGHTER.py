@@ -25,6 +25,7 @@ import time
 import traceback
 import webbrowser
 from pathlib import Path, PurePosixPath
+from string import Formatter
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
@@ -64,8 +65,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.0"
-APP_BUILD_DATE = "2026-08-04"
+APP_VERSION = "1.0.1"
+APP_BUILD_DATE = "2026-08-05"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
 FEEDBACK_FORM_URL = (
@@ -2133,6 +2134,34 @@ def github_catalog_integer(
         ValueError,
     ):
         return default
+
+
+def catalog_available_new_hack_count(
+    local_official_count: object,
+    version_payload: dict[str, Any],
+) -> int | None:
+    """Return the net number of catalog hacks newer than the local copy."""
+    remote_value = version_payload.get("hack_count")
+
+    if remote_value in (None, ""):
+        return None
+
+    remote_count = github_catalog_integer(
+        remote_value,
+        -1,
+    )
+
+    if remote_count < 0:
+        return None
+
+    local_count = max(
+        0,
+        github_catalog_integer(
+            local_official_count,
+            0,
+        ),
+    )
+    return max(0, remote_count - local_count)
 
 
 def github_catalog_rating(
@@ -14213,6 +14242,66 @@ class TrackerDatabase:
                 ),
             )
 
+    def clear_remote_rom_paths(
+        self,
+        rom_paths: list[str],
+    ) -> None:
+        """Forget only FXPAK paths that were removed from the SD card."""
+
+        def normalize_remote_path(value: object) -> str:
+            normalized = re.sub(
+                r"/+",
+                "/",
+                str(value or "").replace("\\", "/"),
+            ).rstrip("/")
+            if normalized and not normalized.startswith("/"):
+                normalized = "/" + normalized
+            return normalized.casefold()
+
+        normalized_paths = {
+            normalize_remote_path(path)
+            for path in rom_paths
+            if str(path).strip()
+        }
+        if not normalized_paths:
+            return
+
+        self.initialize()
+        with self.connect() as connection:
+            catalog_rows = connection.execute(
+                """
+                SELECT catalog_key, rom_path
+                FROM catalog_hacks
+                WHERE rom_path <> ''
+                """
+            ).fetchall()
+            for row in catalog_rows:
+                normalized = normalize_remote_path(row["rom_path"])
+                if normalized in normalized_paths:
+                    connection.execute(
+                        """
+                        UPDATE catalog_hacks
+                        SET rom_path = '', updated_at = CURRENT_TIMESTAMP
+                        WHERE catalog_key = ?
+                        """,
+                        (str(row["catalog_key"]),),
+                    )
+
+            mapping_rows = connection.execute(
+                """
+                SELECT map_key, rom_path
+                FROM rom_mappings
+                WHERE rom_path <> ''
+                """
+            ).fetchall()
+            for row in mapping_rows:
+                normalized = normalize_remote_path(row["rom_path"])
+                if normalized in normalized_paths:
+                    connection.execute(
+                        "DELETE FROM rom_mappings WHERE map_key = ?",
+                        (str(row["map_key"]),),
+                    )
+
     def _tracker_export_data(
         self,
     ) -> tuple[
@@ -14777,6 +14866,8 @@ DEFAULT_CONFIG = {
         / "SMW Stream Tracker"
         / "OBS"
     ),
+    "obs_author_text_format": "By: {author}",
+    "obs_exits_text_format": "Exits: {completed} / {total}",
     "overworld_idle_seconds": 30,
     "livesplit_host": "127.0.0.1",
     "game_livesplit_port": 16834,
@@ -14952,6 +15043,54 @@ def format_timer(seconds: float, milliseconds: bool = False) -> str:
     if minutes:
         return f"{minutes:02d}:{secs:02d}"
     return f"00:{secs:02d}"
+
+
+def render_obs_text_template(
+    template: object,
+    default_template: str,
+    **values: object,
+) -> str:
+    selected_template = (
+        str(template)
+        if template is not None
+        else default_template
+    )
+    try:
+        return selected_template.format(**values)
+    except (KeyError, ValueError, AttributeError, IndexError):
+        return default_template.format(**values)
+
+
+def ensure_obs_text_files(
+    config: dict[str, Any],
+) -> Path | None:
+    folder_text = str(config.get("output_folder", "")).strip()
+    if not folder_text:
+        return None
+
+    output_folder = Path(folder_text)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    defaults = {
+        "author.txt": render_obs_text_template(
+            config.get("obs_author_text_format"),
+            "By: {author}",
+            author="Unknown",
+        ),
+        "exits.txt": render_obs_text_template(
+            config.get("obs_exits_text_format"),
+            "Exits: {completed} / {total}",
+            completed=0,
+            total="Unknown",
+        ),
+        "hack_name.txt": "No game detected",
+        "level_timer.txt": "00:00",
+        "game_timer.txt": "00:00",
+    }
+    for filename, initial_text in defaults.items():
+        file_path = output_folder / filename
+        if not file_path.exists():
+            file_path.write_text(initial_text, encoding="utf-8")
+    return output_folder
 
 
 def load_config() -> dict[str, Any]:
@@ -15504,12 +15643,24 @@ class TrackerWorker:
 
     def update_title_files(self, hack_name: str, author: str) -> None:
         self.write_text_file("hack_name.txt", hack_name)
-        self.write_text_file("author.txt", f"By: {author}")
+        self.write_text_file(
+            "author.txt",
+            render_obs_text_template(
+                self.config.get("obs_author_text_format"),
+                "By: {author}",
+                author=author,
+            ),
+        )
 
     def update_exit_file(self, completed: object, total: object) -> None:
         self.write_text_file(
             "exits.txt",
-            f"Exits: {completed} / {total}",
+            render_obs_text_template(
+                self.config.get("obs_exits_text_format"),
+                "Exits: {completed} / {total}",
+                completed=completed,
+                total=total,
+            ),
         )
 
     def update_timer_files(self) -> None:
@@ -19586,6 +19737,10 @@ class TrackerApp:
             pass
 
         self.config = load_config()
+        try:
+            ensure_obs_text_files(self.config)
+        except OSError:
+            pass
         self.stats_db = TrackerDatabase(
             STATS_DB_FILE
         )
@@ -19633,6 +19788,24 @@ class TrackerApp:
         self.spreadsheet_var = tk.StringVar(
             value=database_bootstrap_status
         )
+        try:
+            catalog_metadata = self.stats_db.metadata()
+        except Exception:
+            catalog_metadata = {}
+        self.catalog_last_refresh_var = tk.StringVar(
+            value=(
+                "Last refreshed: "
+                + format_display_datetime(
+                    catalog_metadata.get(
+                        "Catalog Last Refresh",
+                        "",
+                    )
+                )
+            )
+        )
+        self.catalog_new_hacks_var = tk.StringVar(
+            value="Checking for new hacks..."
+        )
         self.game_var = tk.StringVar(
             value="No game detected"
         )
@@ -19676,6 +19849,7 @@ class TrackerApp:
         self.main_hack_selector_post_after_id: str | None = None
         self.main_hack_selector_popup: tk.Toplevel | None = None
         self.main_hack_selector_popup_listbox: tk.Listbox | None = None
+        self.main_hack_selector_popup_values: list[str] = []
         self.fxpak_settings: dict[str, str] = {}
         self.game_library_dialog: tk.Toplevel | None = None
         self.game_library_widgets: dict[str, Any] = {}
@@ -19686,10 +19860,17 @@ class TrackerApp:
         self.downloader_preview_games: list[dict[str, Any]] = []
         self.downloader_thread: threading.Thread | None = None
         self.downloader_cancel_event = threading.Event()
+        self.fxpak_sd_dialog: tk.Toplevel | None = None
+        self.fxpak_sd_widgets: dict[str, Any] = {}
+        self.fxpak_sd_records: list[dict[str, str]] = []
+        self.fxpak_sd_scan_thread: threading.Thread | None = None
+        self.fxpak_sd_cancel_event = threading.Event()
         self.catalog_refresh_dialog: tk.Toplevel | None = None
         self.catalog_refresh_status_var: tk.StringVar | None = None
         self.catalog_refresh_thread: threading.Thread | None = None
         self.catalog_refresh_cancel_event = threading.Event()
+        self.catalog_freshness_thread: threading.Thread | None = None
+        self.catalog_freshness_cancel_event = threading.Event()
         self.catalog_menu: tk.Menu | None = None
         self.catalog_version_menu_index: int | None = None
         self.catalog_refresh_menu_index: int | None = None
@@ -19714,6 +19895,7 @@ class TrackerApp:
         self.readme_dialog: tk.Toplevel | None = None
         self.feedback_dialog: tk.Toplevel | None = None
         self.feedback_webview_process: subprocess.Popen | None = None
+        self.obs_settings_dialog: tk.Toplevel | None = None
 
         self.qusb_path_var = tk.StringVar(
             value=str(self.config["qusb2snes_path"])
@@ -19781,6 +19963,10 @@ class TrackerApp:
         self.root.after(
             450,
             self._apply_responsive_ui_scale,
+        )
+        self.root.after(
+            1800,
+            self._check_catalog_freshness_async,
         )
         self.root.after_idle(
             self._maximize_main_window,
@@ -20024,6 +20210,41 @@ class TrackerApp:
     def _build_ui(self) -> None:
         self.root.configure(bg=THEME["sky_dark"])
         self.root.option_add("*Font", ("Segoe UI", 10))
+
+        # Center every single-line input by default. These option defaults
+        # handle widgets built now; the class bindings also catch inputs that
+        # are created later in popup windows. Multi-line text stays left
+        # aligned for readability.
+        for option_pattern in (
+            "*Entry.justify",
+            "*TEntry.justify",
+            "*Spinbox.justify",
+            "*TSpinbox.justify",
+            "*TCombobox.justify",
+        ):
+            self.root.option_add(option_pattern, "center")
+
+        if not getattr(self, "_box_center_bindings_installed", False):
+            for widget_class in (
+                "Entry",
+                "TEntry",
+                "Spinbox",
+                "TSpinbox",
+                "TCombobox",
+            ):
+                self.root.bind_class(
+                    widget_class,
+                    "<Map>",
+                    self._center_mapped_box_text,
+                    add="+",
+                )
+            self.root.bind_class(
+                "Listbox",
+                "<Map>",
+                self._center_dropdown_list_items,
+                add="+",
+            )
+            self._box_center_bindings_installed = True
 
         style = ttk.Style()
         try:
@@ -20350,10 +20571,38 @@ class TrackerApp:
             anchor="center",
         )
         self.spreadsheet_status_label.pack(side="left")
+        self.catalog_last_refresh_label = tk.Label(
+            sheet_tile,
+            textvariable=self.catalog_last_refresh_var,
+            font=("Segoe UI", 8),
+            fg=THEME["muted"],
+            bg="#F1FFF0",
+            anchor="center",
+        )
+        self.catalog_last_refresh_label.place(
+            relx=0.5,
+            rely=0.74,
+            anchor="center",
+        )
+        self.catalog_new_hacks_label = tk.Label(
+            sheet_tile,
+            textvariable=self.catalog_new_hacks_var,
+            font=("Segoe UI", 8, "bold"),
+            fg=THEME["bad"],
+            bg="#F1FFF0",
+            anchor="center",
+        )
+        self.catalog_new_hacks_label.place(
+            relx=0.5,
+            rely=0.88,
+            anchor="center",
+        )
         for clickable_widget in (
             sheet_status_line,
             self.spreadsheet_dot,
             self.spreadsheet_status_label,
+            self.catalog_last_refresh_label,
+            self.catalog_new_hacks_label,
         ):
             clickable_widget.configure(
                 cursor="hand2"
@@ -20405,18 +20654,24 @@ class TrackerApp:
             self.open_current_hack_page,
         )
 
-        tk.Label(
+        self.current_hack_title_label = tk.Label(
             game_layout,
             textvariable=self.game_var,
-            font=("Segoe UI", 20, "bold"),
+            font=("Segoe UI", 20, "bold underline"),
             fg="#145C21",
             bg="#F1FFF0",
             anchor="w",
             wraplength=self._ui_px(500),
-        ).grid(
+            cursor="hand2",
+        )
+        self.current_hack_title_label.grid(
             row=0,
             column=1,
             sticky="ew",
+        )
+        self.current_hack_title_label.bind(
+            "<Button-1>",
+            self.open_current_hack_page,
         )
 
         tk.Label(
@@ -21169,6 +21424,7 @@ class TrackerApp:
                 fg=colors["fg"],
                 activebackground=active_color,
                 activeforeground="white",
+                disabledforeground=colors["disabled_fg"],
                 selectcolor=colors["select"],
                 relief="solid",
                 bd=1,
@@ -21217,6 +21473,19 @@ class TrackerApp:
             }
             menu.add_radiobutton(**options)
 
+        def protected_menu_action(
+            scope_key: str,
+            scope_label: str,
+            action_label: str,
+            action,
+        ):
+            return lambda: self._run_with_streamer_privacy_warning(
+                scope_key,
+                scope_label,
+                action_label,
+                action,
+            )
+
         self.stats_menu_button, stats_menu = (
             create_menu_button(
                 "Stats",
@@ -21240,20 +21509,35 @@ class TrackerApp:
         add_mario_command(
             stats_menu,
             "Import Existing Spreadsheet…",
-            self.import_existing_spreadsheet,
+            protected_menu_action(
+                "stats_files",
+                "Stats file tools",
+                "Import Existing Spreadsheet",
+                self.import_existing_spreadsheet,
+            ),
             "sheet",
         )
         add_mario_command(
             stats_menu,
             "Export My Tracker…",
-            self.export_my_tracker,
+            protected_menu_action(
+                "stats_files",
+                "Stats file tools",
+                "Export My Tracker",
+                self.export_my_tracker,
+            ),
             "block",
         )
         stats_menu.add_separator()
         add_mario_command(
             stats_menu,
             "Google Sheets Sync…",
-            self.open_google_sheets_sync,
+            protected_menu_action(
+                "stats_files",
+                "Stats file tools",
+                "Google Sheets Sync",
+                self.open_google_sheets_sync,
+            ),
             "peach",
         )
         add_mario_command(
@@ -21268,19 +21552,34 @@ class TrackerApp:
         add_mario_command(
             stats_menu,
             "Back Up Database…",
-            self.backup_tracker_database,
+            protected_menu_action(
+                "stats_files",
+                "Stats file tools",
+                "Back Up Database",
+                self.backup_tracker_database,
+            ),
             "mushroom",
         )
         add_mario_command(
             stats_menu,
             "Restore Database…",
-            self.restore_tracker_database,
+            protected_menu_action(
+                "stats_files",
+                "Stats file tools",
+                "Restore Database",
+                self.restore_tracker_database,
+            ),
             "one_up",
         )
         add_mario_command(
             stats_menu,
             "Open Database Folder",
-            self.open_database_folder,
+            protected_menu_action(
+                "stats_files",
+                "Stats file tools",
+                "Open Database Folder",
+                self.open_database_folder,
+            ),
             "mario_head",
         )
         add_mario_command(
@@ -21292,7 +21591,12 @@ class TrackerApp:
         add_mario_command(
             stats_menu,
             "Open Automatic Backups Folder",
-            lambda: self._open_local_folder(AUTOMATIC_BACKUP_DIR),
+            protected_menu_action(
+                "stats_files",
+                "Stats file tools",
+                "Open Automatic Backups Folder",
+                lambda: self._open_local_folder(AUTOMATIC_BACKUP_DIR),
+            ),
             "one_up",
         )
 
@@ -21306,12 +21610,21 @@ class TrackerApp:
         self.settings_menu_button.pack_configure(
             before=self.stats_menu_button,
         )
-        settings_menu.add_command(
-            label="Select Platform",
-            state="disabled",
+        platform_menu = tk.Menu(
+            settings_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["purple"],
+            activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
         )
         add_mario_radio(
-            settings_menu,
+            platform_menu,
             "FXPAK Pro",
             "FXPAK Pro",
             self._on_platform_selected,
@@ -21319,18 +21632,27 @@ class TrackerApp:
             variable=self.platform_var,
         )
         add_mario_radio(
-            settings_menu,
+            platform_menu,
             "RetroArch",
             "RetroArch",
             self._on_platform_selected,
             "star",
             variable=self.platform_var,
         )
+        settings_menu.add_cascade(
+            label="Select Platform",
+            menu=platform_menu,
+        )
         settings_menu.add_separator()
         add_mario_command(
             settings_menu,
             "Settings",
-            self._open_settings_dialog,
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "Settings",
+                self._open_settings_dialog,
+            ),
             "yoshi",
         )
         add_mario_command(
@@ -21340,36 +21662,90 @@ class TrackerApp:
             "star",
         )
         settings_menu.add_separator()
-        add_mario_command(
+
+        obs_menu = tk.Menu(
             settings_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["purple"],
+            activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        add_mario_command(
+            obs_menu,
+            "Edit OBS Text Settings...",
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "OBS Text Settings",
+                self.open_obs_settings_dialog,
+            ),
+            "sheet",
+        )
+        add_mario_command(
+            obs_menu,
             "Open OBS Text Folder",
-            self.open_output_folder,
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "Open OBS Text Folder",
+                self.open_output_folder,
+            ),
             "mario",
+        )
+        settings_menu.add_cascade(
+            label="OBS Settings",
+            menu=obs_menu,
         )
         add_mario_command(
             settings_menu,
             "Import / Refresh from Spreadsheet…",
-            self._reload_selected_spreadsheet,
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "Import / Refresh from Spreadsheet",
+                self._reload_selected_spreadsheet,
+            ),
             "sheet",
         )
         settings_menu.add_separator()
         add_mario_command(
             settings_menu,
             "Setup & Health Check...",
-            self.open_setup_health_check,
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "Setup & Health Check",
+                self.open_setup_health_check,
+            ),
             "one_up",
         )
         add_mario_command(
             settings_menu,
             "Diagnostics...",
-            self.open_diagnostics,
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "Diagnostics",
+                self.open_diagnostics,
+            ),
             "block",
         )
         settings_menu.add_separator()
         add_mario_command(
             settings_menu,
             "Restore Previous App Version...",
-            self.restore_previous_app_version,
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "Restore Previous App Version",
+                self.restore_previous_app_version,
+            ),
             "mushroom",
         )
         add_mario_command(
@@ -21403,16 +21779,56 @@ class TrackerApp:
         add_mario_command(
             downloads_menu,
             "Download Missing Hacks…",
-            self.open_hack_downloader,
+            protected_menu_action(
+                "downloads_files",
+                "Downloads",
+                "Download Missing Hacks",
+                self.open_hack_downloader,
+            ),
             "peach",
         )
         add_mario_command(
             downloads_menu,
             "Add Unmoderated Hack…",
-            lambda: self._edit_custom_hack(
-                new_record=True
+            protected_menu_action(
+                "downloads_files",
+                "Downloads",
+                "Add Unmoderated Hack",
+                lambda: self._edit_custom_hack(
+                    new_record=True
+                ),
             ),
             "yoshi",
+        )
+        downloads_menu.add_separator()
+
+        fxpak_downloads_menu = tk.Menu(
+            downloads_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["orange"],
+            activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        add_mario_command(
+            fxpak_downloads_menu,
+            "Manage SD Card Hacks…",
+            protected_menu_action(
+                "downloads_files",
+                "Downloads",
+                "FXPAK Pro SD Card",
+                self.open_fxpak_sd_card_browser,
+            ),
+            "mario",
+        )
+        downloads_menu.add_cascade(
+            label="FXPAK Pro",
+            menu=fxpak_downloads_menu,
         )
         downloads_menu.add_separator()
 
@@ -21423,6 +21839,7 @@ class TrackerApp:
             fg=colors["fg"],
             activebackground=THEME["orange"],
             activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
             selectcolor=colors["select"],
             relief="solid",
             bd=1,
@@ -21514,9 +21931,243 @@ class TrackerApp:
 
         self.stats_menu = stats_menu
         self.settings_menu = settings_menu
+        self.platform_menu = platform_menu
+        self.obs_menu = obs_menu
         self.downloads_menu = downloads_menu
+        self.fxpak_downloads_menu = fxpak_downloads_menu
         self.appearance_menu = None
         self.help_menu = help_menu
+
+    def _streamer_privacy_warning_is_suppressed(
+        self,
+        scope_key: str,
+    ) -> bool:
+        if bool(
+            self.config.get(
+                "streamer_privacy_warning_disabled_everywhere",
+                False,
+            )
+        ):
+            return True
+
+        disabled_scopes = self.config.get(
+            "streamer_privacy_warning_disabled_scopes",
+            [],
+        )
+        if not isinstance(disabled_scopes, (list, tuple, set)):
+            return False
+        normalized_scopes = {
+            str(value).strip().casefold()
+            for value in disabled_scopes
+            if str(value).strip()
+        }
+        return scope_key.strip().casefold() in normalized_scopes
+
+    def _run_with_streamer_privacy_warning(
+        self,
+        scope_key: str,
+        scope_label: str,
+        action_label: str,
+        action,
+    ) -> None:
+        if self._streamer_privacy_warning_is_suppressed(
+            scope_key
+        ) or self._show_streamer_privacy_warning(
+            scope_key,
+            scope_label,
+            action_label,
+        ):
+            action()
+
+    def _show_streamer_privacy_warning(
+        self,
+        scope_key: str,
+        scope_label: str,
+        action_label: str,
+    ) -> bool:
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Streamer Privacy Warning")
+        self._size_dialog_for_ui(
+            dialog,
+            700,
+            430,
+            640,
+            420,
+        )
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        dialog.configure(bg=palette["window"])
+
+        result = {"continue": False}
+        disable_scope_var = tk.BooleanVar(value=False)
+        disable_everywhere_var = tk.BooleanVar(value=False)
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["orange"],
+            padx=18,
+            pady=12,
+        )
+        title_bar.pack(fill="x")
+        OutlinedLabel(
+            title_bar,
+            text="⚠  STREAMER PRIVACY WARNING",
+            font=("Segoe UI", 16, "bold"),
+            fg="white",
+            bg=THEME["orange"],
+            anchor="w",
+        ).pack(fill="x")
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=22,
+            pady=18,
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=16,
+            pady=14,
+        )
+
+        tk.Label(
+            body,
+            text=(
+                f"Opening {action_label} may display local file names, "
+                "folder paths, account names, or other personal information."
+            ),
+            font=("Segoe UI", 12, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="left",
+            anchor="w",
+            wraplength=self._ui_px(625),
+        ).pack(fill="x")
+        tk.Label(
+            body,
+            text=(
+                "If you are streaming, recording, or sharing your screen, "
+                "pause the capture or crop this window before continuing."
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            justify="left",
+            anchor="w",
+            wraplength=self._ui_px(625),
+        ).pack(fill="x", pady=(8, 16))
+
+        scope_checkbox = tk.Checkbutton(
+            body,
+            text=f"Don't show this warning again for {scope_label}",
+            variable=disable_scope_var,
+            bg=palette["panel"],
+            fg=palette["text"],
+            activebackground=palette["panel"],
+            activeforeground=palette["text"],
+            selectcolor=palette["entry"],
+            anchor="w",
+            font=("Segoe UI", 10, "bold"),
+        )
+        scope_checkbox.pack(fill="x", pady=(0, 8))
+
+        def toggle_global_scope() -> None:
+            if disable_everywhere_var.get():
+                disable_scope_var.set(False)
+                scope_checkbox.configure(state="disabled")
+            else:
+                scope_checkbox.configure(state="normal")
+
+        tk.Checkbutton(
+            body,
+            text=(
+                "Don't show streamer privacy warnings anywhere in the app"
+            ),
+            variable=disable_everywhere_var,
+            command=toggle_global_scope,
+            bg=palette["panel"],
+            fg=palette["text"],
+            activebackground=palette["panel"],
+            activeforeground=palette["text"],
+            selectcolor=palette["entry"],
+            anchor="w",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(fill="x")
+
+        button_bar = tk.Frame(
+            dialog,
+            bg=palette["window"],
+            padx=16,
+            pady=0,
+        )
+        button_bar.pack(fill="x", pady=(0, 14))
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        def continue_action() -> None:
+            if disable_everywhere_var.get():
+                self.config[
+                    "streamer_privacy_warning_disabled_everywhere"
+                ] = True
+            elif disable_scope_var.get():
+                existing_scopes = self.config.get(
+                    "streamer_privacy_warning_disabled_scopes",
+                    [],
+                )
+                if not isinstance(existing_scopes, list):
+                    existing_scopes = []
+                normalized_key = scope_key.strip().casefold()
+                updated_scopes = {
+                    str(value).strip().casefold()
+                    for value in existing_scopes
+                    if str(value).strip()
+                }
+                updated_scopes.add(normalized_key)
+                self.config[
+                    "streamer_privacy_warning_disabled_scopes"
+                ] = sorted(updated_scopes)
+
+            if disable_everywhere_var.get() or disable_scope_var.get():
+                try:
+                    save_config(self.config)
+                except OSError:
+                    pass
+
+            result["continue"] = True
+            dialog.destroy()
+
+        self._make_action_button(
+            button_bar,
+            text="Continue",
+            command=continue_action,
+            bg=THEME["green"],
+            active_bg=THEME["green_dark"],
+            width=13,
+            pad_y=6,
+        ).pack(side="right")
+        self._make_action_button(
+            button_bar,
+            text="Cancel",
+            command=cancel,
+            bg=THEME["muted"],
+            active_bg="#384D65",
+            width=11,
+            pad_y=6,
+        ).pack(side="right", padx=(0, 8))
+
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        self._apply_widget_appearance(
+            dialog,
+            dark=self.appearance_var.get() == "dark",
+        )
+        self.root.wait_window(dialog)
+        return bool(result["continue"])
 
     def _menu_colors(self) -> dict[str, str]:
         if (
@@ -21527,6 +22178,7 @@ class TrackerApp:
                 "bar_bg": "#101827",
                 "bg": "#172235",
                 "fg": "#F2F6FF",
+                "disabled_fg": "#C8D5E7",
                 "active_bg": "#355A7C",
                 "select": "#F7C928",
             }
@@ -21535,6 +22187,7 @@ class TrackerApp:
             "bar_bg": "#F8FBFF",
             "bg": "#FFFFFF",
             "fg": "#10214A",
+            "disabled_fg": "#55708E",
             "active_bg": "#1177DD",
             "select": "#1177DD",
         }
@@ -21738,7 +22391,7 @@ class TrackerApp:
                 lightcolor="#355A7C",
                 darkcolor="#355A7C",
                 padding=3,
-                arrowsize=self._ui_px(24),
+                arrowsize=self._ui_px(21),
                 font=("Segoe UI", 10),
             )
             style.map(
@@ -21798,7 +22451,7 @@ class TrackerApp:
                 lightcolor="#B7CEE8",
                 darkcolor="#B7CEE8",
                 padding=3,
-                arrowsize=self._ui_px(24),
+                arrowsize=self._ui_px(21),
                 font=("Segoe UI", 10),
             )
             style.map(
@@ -21845,6 +22498,7 @@ class TrackerApp:
             bordercolor=active_palette["border"],
             lightcolor=active_palette["border"],
             darkcolor=active_palette["border"],
+            arrowsize=self._ui_px(21),
         )
         style.map(
             "TCombobox",
@@ -22033,6 +22687,9 @@ class TrackerApp:
         menu_active_colors = (
             THEME["yellow"],
             THEME["purple"],
+            THEME["purple"],
+            THEME["purple"],
+            THEME["orange"],
             THEME["orange"],
             THEME["blue"],
             THEME["blue"],
@@ -22045,6 +22702,7 @@ class TrackerApp:
                     fg=colors["fg"],
                     activebackground=THEME["orange"],
                     activeforeground="white",
+                    disabledforeground=colors["disabled_fg"],
                     selectcolor=colors["select"],
                 )
                 info_color = (
@@ -22070,7 +22728,10 @@ class TrackerApp:
             (
                 getattr(self, "stats_menu", None),
                 getattr(self, "settings_menu", None),
+                getattr(self, "platform_menu", None),
+                getattr(self, "obs_menu", None),
                 getattr(self, "downloads_menu", None),
+                getattr(self, "fxpak_downloads_menu", None),
                 getattr(self, "appearance_menu", None),
                 getattr(self, "help_menu", None),
             ),
@@ -22085,6 +22746,7 @@ class TrackerApp:
                     fg=colors["fg"],
                     activebackground=active_color,
                     activeforeground="white",
+                    disabledforeground=colors["disabled_fg"],
                     selectcolor=colors["select"],
                 )
             except tk.TclError:
@@ -22106,6 +22768,8 @@ class TrackerApp:
         widget: tk.Misc,
         dark: bool,
     ) -> None:
+        self._center_single_line_box_text(widget)
+
         if isinstance(widget, tk.Toplevel):
             self._set_windows_titlebar_theme(
                 dark,
@@ -22233,6 +22897,112 @@ class TrackerApp:
                 dark=dark,
             )
 
+    @staticmethod
+    def _center_single_line_box_text(widget: tk.Misc) -> None:
+        """Center text in entries, spinboxes, and dropdown selection boxes."""
+        if not isinstance(
+            widget,
+            (
+                tk.Entry,
+                ttk.Entry,
+                tk.Spinbox,
+                ttk.Spinbox,
+                ttk.Combobox,
+            ),
+        ):
+            return
+        try:
+            widget.configure(justify="center")
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _center_mapped_box_text(self, event: tk.Event) -> None:
+        """Apply the shared alignment to dynamically created popup inputs."""
+        self._center_single_line_box_text(event.widget)
+
+    def _center_dropdown_list_items(self, event: tk.Event) -> None:
+        """Center items in the listbox opened by a ttk dropdown."""
+        listbox_path = str(event.widget)
+        if "popdown" not in listbox_path.casefold():
+            return
+
+        # Newer Tk builds can center listbox rows directly.
+        try:
+            self.root.tk.call(
+                listbox_path,
+                "configure",
+                "-justify",
+                "center",
+            )
+            return
+        except tk.TclError:
+            pass
+
+        # Tk 8.6 listboxes do not expose a justify option. The ttk combobox
+        # chooses a row by index, so a display-only centered copy can be used
+        # without adding spaces to the actual selected/filter value.
+        combo_path = listbox_path.split(".popdown", 1)[0]
+        try:
+            raw_values = self.root.tk.call(
+                combo_path,
+                "cget",
+                "-values",
+            )
+            if isinstance(raw_values, (tuple, list)):
+                values = tuple(str(value) for value in raw_values)
+            else:
+                values = tuple(
+                    str(value)
+                    for value in self.root.tk.splitlist(raw_values)
+                )
+            if not values:
+                return
+
+            configured_width = int(
+                self.root.tk.call(
+                    combo_path,
+                    "cget",
+                    "-width",
+                )
+                or 0
+            )
+            display_width = max(
+                configured_width,
+                *(len(value) for value in values),
+            )
+            current_index = int(
+                self.root.tk.call(combo_path, "current")
+            )
+
+            self.root.tk.call(
+                listbox_path,
+                "configure",
+                "-listvariable",
+                "",
+            )
+            self.root.tk.call(listbox_path, "delete", 0, "end")
+            for value in values:
+                self.root.tk.call(
+                    listbox_path,
+                    "insert",
+                    "end",
+                    value.center(display_width),
+                )
+            if current_index >= 0:
+                self.root.tk.call(
+                    listbox_path,
+                    "selection",
+                    "set",
+                    current_index,
+                )
+                self.root.tk.call(
+                    listbox_path,
+                    "see",
+                    current_index,
+                )
+        except (tk.TclError, TypeError, ValueError):
+            pass
+
     def _refresh_open_window_appearances(self) -> None:
         """Retheme every currently open popup without closing user workflows."""
         dark_mode = self.appearance_var.get() == "dark"
@@ -22284,6 +23054,7 @@ class TrackerApp:
                 continue
 
         self._refresh_downloader_window_appearance()
+        self._refresh_fxpak_sd_window_appearance()
         self._refresh_game_library_window_appearance()
         self._refresh_my_tracker_appearance()
         custom_tree = self.custom_hacks_widgets.get("tree")
@@ -22373,6 +23144,7 @@ class TrackerApp:
                 bordercolor=palette["border"],
                 lightcolor=palette["border"],
                 darkcolor=palette["border"],
+                arrowsize=self._ui_px(21),
             )
             downloader_style.map(
                 "Downloader.TCombobox",
@@ -22424,6 +23196,53 @@ class TrackerApp:
             self._schedule_downloader_difficulty_overlays()
         except tk.TclError:
             pass
+
+    def _refresh_fxpak_sd_window_appearance(self) -> None:
+        dialog = getattr(self, "fxpak_sd_dialog", None)
+        try:
+            if dialog is None or not dialog.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        palette = self._library_palette()
+        dark_mode = self.appearance_var.get() == "dark"
+        try:
+            style = ttk.Style(dialog)
+            style.configure(
+                "FXPAKSD.Treeview",
+                background=palette["tree"],
+                fieldbackground=palette["tree"],
+                foreground=palette["text"],
+                bordercolor=palette["border"],
+                lightcolor=palette["border"],
+                darkcolor=palette["border"],
+            )
+            style.map(
+                "FXPAKSD.Treeview",
+                background=[("selected", palette["selected"])],
+                foreground=[("selected", "#FFFFFF")],
+            )
+            style.configure(
+                "FXPAKSD.Treeview.Heading",
+                background="#24344D" if dark_mode else "#DCEEFF",
+                foreground=palette["text"],
+                bordercolor=palette["border"],
+                lightcolor=palette["border"],
+                darkcolor=palette["border"],
+            )
+            style.map(
+                "FXPAKSD.Treeview.Heading",
+                background=[
+                    ("active", "#2D4668" if dark_mode else "#C6E2FA")
+                ],
+            )
+        except tk.TclError:
+            pass
+
+        tree = self.fxpak_sd_widgets.get("tree")
+        if tree is not None:
+            self._apply_statistics_table_colors(tree, "fxpak_sd")
 
     def _refresh_game_library_window_appearance(self) -> None:
         dialog = getattr(self, "game_library_dialog", None)
@@ -22773,6 +23592,7 @@ class TrackerApp:
             self.stats_db.load_catalog()
         )
         self._refresh_database_status()
+        self._check_catalog_freshness_async()
 
         if (
             self.worker is not None
@@ -26698,6 +27518,17 @@ class TrackerApp:
         )
         self.config = updated_config
         save_config(self.config)
+        try:
+            ensure_obs_text_files(self.config)
+        except OSError as error:
+            messagebox.showerror(
+                APP_NAME,
+                f"Could not create the OBS text files:\n{error}",
+                parent=self.root,
+            )
+            return False
+        if self.worker is not None:
+            self.worker.config.update(self.config)
         return True
 
     def parse_timer_override(self, value: str) -> float:
@@ -26922,10 +27753,89 @@ class TrackerApp:
         except Exception as error:
             return "Database error: " + str(error)
 
+    def _catalog_last_refresh_status_text(self) -> str:
+        try:
+            metadata = self.stats_db.metadata()
+            refreshed = format_display_datetime(
+                metadata.get(
+                    "Catalog Last Refresh",
+                    "",
+                )
+            )
+        except Exception:
+            refreshed = "Unknown"
+
+        return "Last refreshed: " + refreshed
+
+    def _check_catalog_freshness_async(self) -> None:
+        if hasattr(self, "catalog_last_refresh_var"):
+            self.catalog_last_refresh_var.set(
+                self._catalog_last_refresh_status_text()
+            )
+
+        if (
+            self.catalog_freshness_thread is not None
+            and self.catalog_freshness_thread.is_alive()
+        ):
+            return
+
+        if hasattr(self, "catalog_new_hacks_var"):
+            self.catalog_new_hacks_var.set(
+                "Checking for new hacks..."
+            )
+
+        self.catalog_freshness_cancel_event.clear()
+        self.catalog_freshness_thread = threading.Thread(
+            target=self._catalog_freshness_worker,
+            daemon=True,
+        )
+        self.catalog_freshness_thread.start()
+
+    def _catalog_freshness_worker(self) -> None:
+        try:
+            payload = github_catalog_get_json(
+                GITHUB_CATALOG_VERSION_URL,
+                self.catalog_freshness_cancel_event,
+            )
+            local_count = self.stats_db.overview().get(
+                "official",
+                0,
+            )
+            available = catalog_available_new_hack_count(
+                local_count,
+                payload,
+            )
+
+            if available is None:
+                raise RuntimeError(
+                    "The remote catalog did not include a hack count."
+                )
+
+            self.event_queue.put(
+                {
+                    "type": "catalog_freshness",
+                    "available": available,
+                }
+            )
+        except Exception as error:
+            if not self.catalog_freshness_cancel_event.is_set():
+                self.event_queue.put(
+                    {
+                        "type": "catalog_freshness",
+                        "available": None,
+                        "error": str(error),
+                    }
+                )
+
     def _refresh_database_status(self) -> None:
         if hasattr(self, "spreadsheet_var"):
             self.spreadsheet_var.set(
                 self._database_status_text()
+            )
+
+        if hasattr(self, "catalog_last_refresh_var"):
+            self.catalog_last_refresh_var.set(
+                self._catalog_last_refresh_status_text()
             )
 
         if hasattr(self, "spreadsheet_dot"):
@@ -27182,6 +28092,17 @@ class TrackerApp:
         missing: list[str] = []
         for iid in tree.get_children(""):
             display_value = self._treeview_display_value(tree, iid, column)
+            heading_label = str(
+                getattr(tree, "_smw_sort_headings", {}).get(column, "")
+            ).strip().casefold()
+            if heading_label in {
+                "hack",
+                "hack title",
+                "rom hack title",
+            }:
+                display_value = self._title_without_leading_article(
+                    display_value
+                )
             sort_value = self._treeview_sort_value(display_value)
             if sort_value[0] == 9:
                 missing.append(iid)
@@ -27311,6 +28232,7 @@ class TrackerApp:
             "complete_catalog": "Complete SMW Central Catalog",
             "missing_hacks": "Download Missing Hacks",
             "game_library": "Game Library",
+            "fxpak_sd": "FXPAK Pro SD Card",
         }.get(table_key, "Statistics table")
 
     @staticmethod
@@ -27340,6 +28262,8 @@ class TrackerApp:
             return self.downloader_dialog or self.root
         if table_key == "game_library":
             return self.game_library_dialog or self.root
+        if table_key == "fxpak_sd":
+            return self.fxpak_sd_dialog or self.root
         return self.root
 
     def _apply_statistics_table_colors(
@@ -28948,6 +29872,36 @@ class TrackerApp:
             sticky="nsew",
         )
 
+        recent_filter_var = tk.StringVar(value="All")
+        recent_filter_bar = tk.Frame(
+            recent_body,
+            bg=palette["panel"],
+        )
+        recent_filter_bar.pack(fill="x", pady=(0, self._ui_px(6)))
+        recent_filter_combo = ttk.Combobox(
+            recent_filter_bar,
+            textvariable=recent_filter_var,
+            values=self._letter_filter_values(),
+            state="readonly",
+            width=8,
+        )
+        OutlinedLabel(
+            recent_filter_bar,
+            text="Filter by letter:",
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+        ).pack(
+            anchor="center",
+            padx=(0, self._ui_px(27)),
+        )
+        recent_filter_combo.pack(
+            anchor="center",
+            pady=(self._ui_px(3), 0),
+        )
+
         recent_table = tk.Frame(
             recent_body,
             bg=palette["panel"],
@@ -29030,25 +29984,6 @@ class TrackerApp:
             foreground=palette["text"],
         )
 
-        for row_index, row in enumerate(overview["recent"]):
-            recent_tree.insert(
-                "",
-                "end",
-                text=str(row["title"]),
-                values=(
-                    str(row["status"]),
-                    format_display_date(
-                        row["date_completed"]
-                        or row["date_started"]
-                    ),
-                ),
-                tags=(
-                    "even"
-                    if row_index % 2 == 0
-                    else "odd",
-                ),
-            )
-
         self._configure_treeview_sorting(
             recent_tree,
             {
@@ -29063,6 +29998,38 @@ class TrackerApp:
                 "recent",
             ),
         )
+
+        def populate_recent_activity() -> None:
+            recent_tree.delete(*recent_tree.get_children(""))
+            selected_letter = recent_filter_var.get()
+            rows = [
+                row
+                for row in overview["recent"]
+                if selected_letter == "All"
+                or self._alphabet_segment(str(row["title"]))
+                == selected_letter
+            ]
+            for row_index, row in enumerate(rows):
+                recent_tree.insert(
+                    "",
+                    "end",
+                    text=str(row["title"]),
+                    values=(
+                        str(row["status"]),
+                        format_display_date(
+                            row["date_completed"] or row["date_started"]
+                        ),
+                    ),
+                    tags=("even" if row_index % 2 == 0 else "odd",),
+                )
+            self._reapply_treeview_sorting(recent_tree)
+            self._apply_statistics_table_colors(recent_tree, "recent")
+
+        recent_filter_var.trace_add(
+            "write",
+            lambda *_args: populate_recent_activity(),
+        )
+        populate_recent_activity()
         difficulty_tree.bind(
             "<Configure>",
             lambda _event: self._schedule_statistics_difficulty_overlays(
@@ -29440,11 +30407,13 @@ class TrackerApp:
         status_filter = tk.StringVar(value="Any")
         difficulty_filter = tk.StringVar(value="Any")
         type_filter = tk.StringVar(value="Any")
+        letter_filter = tk.StringVar(value="All")
         self.tracker_list_widgets = {
             "search_var": search_var,
             "status_filter": status_filter,
             "difficulty_filter": difficulty_filter,
             "type_filter": type_filter,
+            "letter_filter": letter_filter,
             "count_var": count_var,
             "title_gradient": title_gradient,
         }
@@ -29470,7 +30439,9 @@ class TrackerApp:
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
-        ).grid(row=0, column=0, sticky="w")
+            anchor="center",
+            justify="center",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 10))
         search_entry = tk.Entry(
             filters,
             textvariable=search_var,
@@ -29521,6 +30492,11 @@ class TrackerApp:
                     *self._type_tokens(),
                 ),
             ),
+            (
+                "Filter by letter",
+                letter_filter,
+                self._letter_filter_values(),
+            ),
         )
 
         for column_index, (
@@ -29534,11 +30510,13 @@ class TrackerApp:
                 font=("Segoe UI", 9, "bold"),
                 fg=palette["text"],
                 bg=palette["panel"],
+                anchor="center",
+                justify="center",
             ).grid(
                 row=0,
                 column=column_index,
-                sticky="w",
-                padx=(0, 8),
+                sticky="ew",
+                padx=(0, 8 + self._ui_px(27)),
             )
             combo = ttk.Combobox(
                 filters,
@@ -29568,6 +30546,7 @@ class TrackerApp:
                 status_filter.set("Any"),
                 difficulty_filter.set("Any"),
                 type_filter.set("Any"),
+                letter_filter.set("All"),
                 self._refresh_my_tracker(),
             ),
             bg=THEME["blue"],
@@ -29576,7 +30555,7 @@ class TrackerApp:
             pad_y=4,
         ).grid(
             row=1,
-            column=4,
+            column=5,
             sticky="e",
             pady=(3, 0),
         )
@@ -30062,6 +31041,7 @@ class TrackerApp:
                 bordercolor=palette["border"],
                 lightcolor=palette["border"],
                 darkcolor=palette["border"],
+                arrowsize=self._ui_px(21),
             )
             tracker_style.map(
                 "MyTracker.TCombobox",
@@ -30109,6 +31089,9 @@ class TrackerApp:
         type_filter = self.tracker_list_widgets[
             "type_filter"
         ].get()
+        letter_filter = self.tracker_list_widgets[
+            "letter_filter"
+        ].get()
         visible = 0
 
         for record in self.stats_db.list_tracked():
@@ -30119,6 +31102,13 @@ class TrackerApp:
             ).casefold()
 
             if search_text and search_text not in haystack:
+                continue
+
+            if (
+                letter_filter != "All"
+                and self._alphabet_segment(str(record["title"]))
+                != letter_filter
+            ):
                 continue
 
             if (
@@ -33217,14 +34207,18 @@ class TrackerApp:
             pady=8,
         )
         search_panel.pack(fill="x", padx=14, pady=(12, 8))
+        search_panel.columnconfigure(0, weight=1)
         OutlinedLabel(
             search_panel,
             text="Search title or creator:",
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
-        ).pack(side="left", padx=(0, 8))
+            anchor="center",
+            justify="center",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 12))
         search_var = tk.StringVar()
+        letter_filter = tk.StringVar(value="All")
         search_entry = tk.Entry(
             search_panel,
             textvariable=search_var,
@@ -33237,7 +34231,41 @@ class TrackerApp:
             highlightcolor=THEME["purple"],
             highlightthickness=1,
         )
-        search_entry.pack(side="left", fill="x", expand=True, ipady=5)
+        search_entry.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            padx=(0, 12),
+            pady=(3, 0),
+            ipady=5,
+        )
+        OutlinedLabel(
+            search_panel,
+            text="Filter by letter:",
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+        ).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(0, self._ui_px(27)),
+        )
+        letter_combo = ttk.Combobox(
+            search_panel,
+            textvariable=letter_filter,
+            values=self._letter_filter_values(),
+            state="readonly",
+            width=8,
+        )
+        letter_combo.grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            pady=(3, 0),
+        )
 
         tree_frame = tk.Frame(
             dialog,
@@ -33348,6 +34376,7 @@ class TrackerApp:
             "count_var": count_var,
             "search_var": search_var,
             "search_entry": search_entry,
+            "letter_filter": letter_filter,
         }
         self.custom_hacks_records = {}
 
@@ -33421,6 +34450,10 @@ class TrackerApp:
             "write",
             lambda *_args: self._refresh_custom_hacks(),
         )
+        letter_filter.trace_add(
+            "write",
+            lambda *_args: self._refresh_custom_hacks(),
+        )
         self._refresh_custom_hacks()
 
     def _refresh_custom_hacks(self) -> None:
@@ -33450,6 +34483,19 @@ class TrackerApp:
                     + " "
                     + str(record.get("author", ""))
                 ).casefold()
+            ]
+
+        letter_filter = str(
+            self.custom_hacks_widgets.get("letter_filter").get()
+            if self.custom_hacks_widgets.get("letter_filter") is not None
+            else "All"
+        )
+        if letter_filter != "All":
+            records = [
+                record
+                for record in records
+                if self._alphabet_segment(str(record.get("title", "")))
+                == letter_filter
             ]
 
         for record in records:
@@ -35059,13 +36105,7 @@ class TrackerApp:
     def _downloader_catalog_link_target(
         self,
         event,
-    ) -> tuple[str, str] | None:
-        if not self.downloader_widgets.get(
-            "catalog_view_only",
-            False,
-        ):
-            return None
-
+    ) -> tuple[str, str, dict[str, Any]] | None:
         tree = self.downloader_widgets.get("tree")
         if tree is None:
             return None
@@ -35104,7 +36144,7 @@ class TrackerApp:
         url = str(game.get(url_key, "")).strip()
         if urlparse(url).scheme.casefold() not in {"http", "https"}:
             return None
-        return column, url
+        return column, url, game
 
     def _update_downloader_catalog_link_cursor(self, event) -> None:
         tree = self.downloader_widgets.get("tree")
@@ -35126,7 +36166,19 @@ class TrackerApp:
         if target is None:
             return None
 
-        column, url = target
+        column, url, game = target
+        if (
+            column == "download_link"
+            and not self.downloader_widgets.get(
+                "catalog_view_only",
+                False,
+            )
+        ):
+            self._start_filtered_hack_download(
+                games_override=[dict(game)]
+            )
+            return "break"
+
         try:
             opened = webbrowser.open_new_tab(url)
         except Exception as error:
@@ -35290,6 +36342,7 @@ class TrackerApp:
             darkcolor=palette["border"],
             font=("Segoe UI", 10),
             padding=self._ui_px(4),
+            arrowsize=self._ui_px(21),
         )
         downloader_style.map(
             "Downloader.TCombobox",
@@ -35394,6 +36447,7 @@ class TrackerApp:
             value=""
         )
         search_var = tk.StringVar(value="")
+        letter_filter_var = tk.StringVar(value="All")
         count_var = tk.StringVar(
             value=(
                 "Loading moderated catalog…"
@@ -35429,6 +36483,7 @@ class TrackerApp:
             "from_date_var": from_date_var,
             "through_date_var": through_date_var,
             "search_var": search_var,
+            "letter_filter_var": letter_filter_var,
             "count_var": count_var,
             "status_var": status_var,
             "added_sort_desc": None,
@@ -35860,14 +36915,16 @@ class TrackerApp:
                 font=("Segoe UI", 9, "bold"),
                 fg=palette["text"],
                 bg=palette["panel"],
+                anchor="center",
+                justify="center",
             ).grid(
                 row=0,
                 column=column_index,
-                sticky="w",
+                sticky="ew",
                 padx=(
-                    (0, 8)
+                    (0, 8 + self._ui_px(27))
                     if column_index == 0
-                    else (8, 8)
+                    else (8, 8 + self._ui_px(27))
                 ),
             )
             combo = ttk.Combobox(
@@ -35900,10 +36957,12 @@ class TrackerApp:
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
+            anchor="center",
+            justify="center",
         ).grid(
             row=0,
             column=4,
-            sticky="w",
+            sticky="ew",
             padx=(8, 8),
         )
         from_entry = tk.Entry(
@@ -35933,10 +36992,12 @@ class TrackerApp:
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
+            anchor="center",
+            justify="center",
         ).grid(
             row=0,
             column=5,
-            sticky="w",
+            sticky="ew",
             padx=(8, 0),
         )
         through_entry = tk.Entry(
@@ -35996,10 +37057,13 @@ class TrackerApp:
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
+            anchor="center",
+            justify="center",
         ).grid(
             row=3,
             column=0,
-            sticky="w",
+            columnspan=3,
+            sticky="ew",
             pady=(8, 0),
         )
         search_entry = tk.Entry(
@@ -36015,13 +37079,49 @@ class TrackerApp:
             highlightthickness=1,
         )
         search_entry.grid(
+            row=4,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            padx=(0, 8),
+            pady=(3, 0),
+            ipady=4,
+        )
+        OutlinedLabel(
+            filter_panel,
+            text="Filter by letter",
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+        ).grid(
             row=3,
-            column=1,
-            columnspan=4,
+            column=3,
+            columnspan=2,
+            sticky="ew",
+            padx=(8, self._ui_px(27)),
+            pady=(8, 0),
+        )
+        letter_filter_combo = ttk.Combobox(
+            filter_panel,
+            textvariable=letter_filter_var,
+            values=self._letter_filter_values(),
+            state="readonly",
+            width=8,
+            style="Downloader.TCombobox",
+        )
+        letter_filter_combo.grid(
+            row=4,
+            column=3,
+            columnspan=2,
             sticky="ew",
             padx=(8, 0),
-            pady=(8, 0),
-            ipady=4,
+            pady=(3, 0),
+        )
+        letter_filter_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._refresh_downloader_preview(),
         )
         self._make_action_button(
             filter_panel,
@@ -36032,11 +37132,11 @@ class TrackerApp:
             width=12,
             pad_y=4,
         ).grid(
-            row=3,
+            row=4,
             column=5,
             sticky="e",
             padx=(8, 0),
-            pady=(8, 0),
+            pady=(3, 0),
         )
         search_var.trace_add(
             "write",
@@ -36061,11 +37161,8 @@ class TrackerApp:
             "type",
             "rating",
             "added",
-            *(
-                ("page_link", "download_link")
-                if catalog_view_only
-                else ()
-            ),
+            "page_link",
+            "download_link",
             "status",
         )
         tree = ttk.Treeview(
@@ -36095,13 +37192,12 @@ class TrackerApp:
             "rating": "Rating",
             "added": "Added Date",
         }
-        if catalog_view_only:
-            downloader_headings.update(
-                {
-                    "page_link": "SMW Central Page",
-                    "download_link": "Download Patch",
-                }
-            )
+        downloader_headings.update(
+            {
+                "page_link": "SMW Central Page",
+                "download_link": "Download Patch",
+            }
+        )
         downloader_headings["status"] = (
             "Catalog Status"
             if catalog_view_only
@@ -36165,21 +37261,20 @@ class TrackerApp:
             anchor="center",
             stretch=False,
         )
-        if catalog_view_only:
-            tree.column(
-                "page_link",
-                width=self._ui_px(140),
-                minwidth=self._ui_px(125),
-                anchor="center",
-                stretch=False,
-            )
-            tree.column(
-                "download_link",
-                width=self._ui_px(145),
-                minwidth=self._ui_px(125),
-                anchor="center",
-                stretch=False,
-            )
+        tree.column(
+            "page_link",
+            width=self._ui_px(140),
+            minwidth=self._ui_px(125),
+            anchor="center",
+            stretch=False,
+        )
+        tree.column(
+            "download_link",
+            width=self._ui_px(145),
+            minwidth=self._ui_px(125),
+            anchor="center",
+            stretch=False,
+        )
         self._center_treeview_content(tree)
 
         def scroll_downloader_tree(*arguments) -> None:
@@ -36252,22 +37347,21 @@ class TrackerApp:
             self._schedule_downloader_difficulty_overlays,
             add="+",
         )
-        if catalog_view_only:
-            tree.bind(
-                "<Motion>",
-                self._update_downloader_catalog_link_cursor,
-                add="+",
-            )
-            tree.bind(
-                "<Leave>",
-                lambda _event: tree.configure(cursor=""),
-                add="+",
-            )
-            tree.bind(
-                "<ButtonRelease-1>",
-                self._open_downloader_catalog_link,
-                add="+",
-            )
+        tree.bind(
+            "<Motion>",
+            self._update_downloader_catalog_link_cursor,
+            add="+",
+        )
+        tree.bind(
+            "<Leave>",
+            lambda _event: tree.configure(cursor=""),
+            add="+",
+        )
+        tree.bind(
+            "<ButtonRelease-1>",
+            self._open_downloader_catalog_link,
+            add="+",
+        )
 
         progress_panel = tk.Frame(
             dialog,
@@ -36526,6 +37620,11 @@ class TrackerApp:
             variable = self.downloader_widgets.get(key)
             if variable is not None:
                 variable.set("")
+        letter_filter_var = self.downloader_widgets.get(
+            "letter_filter_var"
+        )
+        if letter_filter_var is not None:
+            letter_filter_var.set("All")
         self._refresh_downloader_preview()
 
     def _browse_downloader_library_folder(
@@ -36913,6 +38012,9 @@ class TrackerApp:
         search_text = self.downloader_widgets[
             "search_var"
         ].get().casefold().strip()
+        letter_filter = self.downloader_widgets[
+            "letter_filter_var"
+        ].get()
 
         for game in self.hack_catalog:
             if search_text:
@@ -36923,6 +38025,12 @@ class TrackerApp:
                 ).casefold()
                 if search_text not in searchable:
                     continue
+            if (
+                letter_filter != "All"
+                and self._alphabet_segment(str(game.get("title", "")))
+                != letter_filter
+            ):
+                continue
             if not self._game_matches_downloader_filters(
                 game,
                 type_value,
@@ -37061,25 +38169,24 @@ class TrackerApp:
                     display_game.get("added_date", "")
                 ),
             ]
-            if catalog_view_only:
-                display_values.extend(
+            display_values.extend(
+                (
                     (
-                        (
-                            "Open Page \u2197"
-                            if str(
-                                display_game.get("page_url", "")
-                            ).strip()
-                            else "Unavailable"
-                        ),
-                        (
-                            "Download Patch \u2b07"
-                            if str(
-                                display_game.get("download_url", "")
-                            ).strip()
-                            else "Unavailable"
-                        ),
-                    )
+                        "Open Page \u2197"
+                        if str(
+                            display_game.get("page_url", "")
+                        ).strip()
+                        else "Unavailable"
+                    ),
+                    (
+                        "Download Patch \u2b07"
+                        if str(
+                            display_game.get("download_url", "")
+                        ).strip()
+                        else "Unavailable"
+                    ),
                 )
+            )
             display_values.append(
                 str(
                     display_game.get(
@@ -37398,6 +38505,7 @@ class TrackerApp:
 
     def _start_filtered_hack_download(
         self,
+        games_override: list[dict[str, Any]] | None = None,
     ) -> None:
         if (
             self.downloader_thread is not None
@@ -37586,18 +38694,27 @@ class TrackerApp:
                     except Exception:
                         pass
 
-        self._refresh_downloader_preview()
-        games = [
-            dict(game)
-            for game in self.downloader_preview_games
-        ]
+        if games_override is None:
+            self._refresh_downloader_preview()
+            games = [
+                dict(game)
+                for game in self.downloader_preview_games
+            ]
+        else:
+            games = [
+                dict(game)
+                for game in games_override
+                if str(
+                    game.get("download_url", "")
+                ).strip()
+            ]
 
         if not games:
             messagebox.showinfo(
                 "Hack Downloader",
                 (
                     "There are no missing downloadable games "
-                    "under the selected filters."
+                    "under the selected filters or selected row."
                 ),
                 parent=self.downloader_dialog or self.root,
             )
@@ -37674,7 +38791,11 @@ class TrackerApp:
         self.downloader_widgets[
             "status_var"
         ].set(
-            "Starting missing-only download job…"
+            (
+                "Starting selected patch download…"
+                if games_override is not None
+                else "Starting missing-only download job…"
+            )
         )
 
         self.downloader_thread = threading.Thread(
@@ -38509,8 +39630,26 @@ class TrackerApp:
             "selected": "#1177DD",
         }
 
+    @staticmethod
+    def _title_without_leading_article(title: object) -> str:
+        stripped = str(title or "").strip()
+        match = re.match(
+            r"^(?:the|an|a)\s+(.+)$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        return match.group(1).strip() if match else stripped
+
+    @staticmethod
+    def _letter_filter_values() -> tuple[str, ...]:
+        return (
+            "All",
+            "#",
+            *tuple(chr(code) for code in range(ord("A"), ord("Z") + 1)),
+        )
+
     def _alphabet_segment(self, title: str) -> str:
-        stripped = str(title).strip()
+        stripped = self._title_without_leading_article(title)
         if not stripped:
             return "#"
 
@@ -38868,6 +40007,33 @@ class TrackerApp:
             )
         )
 
+    @staticmethod
+    def _center_listbox_display_values(
+        values: list[str],
+        font: Any,
+        available_width: int,
+    ) -> list[str]:
+        """Pad display-only listbox rows so their text is visually centered."""
+        try:
+            space_width = max(1, int(font.measure(" ")))
+        except (AttributeError, TypeError, ValueError, tk.TclError):
+            space_width = 4
+
+        centered: list[str] = []
+        for value in values:
+            try:
+                text_width = int(font.measure(value))
+            except (AttributeError, TypeError, ValueError, tk.TclError):
+                text_width = len(value) * space_width
+            leading_pixels = max(
+                0,
+                (available_width - text_width) // 2,
+            )
+            centered.append(
+                (" " * int(leading_pixels / space_width)) + value
+            )
+        return centered
+
     def _post_main_hack_selector_popup(
         self,
     ) -> None:
@@ -39032,14 +40198,34 @@ class TrackerApp:
         values = list(
             combo.cget("values")
         )
+        self.main_hack_selector_popup_values = values
+        combo.update_idletasks()
+        popup_width = max(
+            combo.winfo_width(),
+            430,
+        )
+        scrollbar_widget = getattr(
+            self,
+            "main_hack_selector_popup_scrollbar",
+            None,
+        )
+        try:
+            scrollbar_width = scrollbar_widget.winfo_reqwidth()
+        except (AttributeError, tk.TclError):
+            scrollbar_width = 15
+        display_values = self._center_listbox_display_values(
+            values,
+            tkfont.Font(font=listbox.cget("font")),
+            max(40, popup_width - scrollbar_width - 12),
+        )
         listbox.delete(
             0,
             "end",
         )
-        if values:
+        if display_values:
             listbox.insert(
                 "end",
-                *values,
+                *display_values,
             )
 
         listbox.selection_clear(
@@ -39065,11 +40251,6 @@ class TrackerApp:
 
         popup.update_idletasks()
         combo.update_idletasks()
-
-        popup_width = max(
-            combo.winfo_width(),
-            430,
-        )
         visible_rows = min(
             14,
             max(
@@ -39177,19 +40358,27 @@ class TrackerApp:
                 selection[0]
             )
 
-        try:
-            selected_text = listbox.get(
-                index
-            )
-        except tk.TclError:
-            return "break"
+        popup_values = getattr(
+            self,
+            "main_hack_selector_popup_values",
+            [],
+        )
+        if 0 <= index < len(popup_values):
+            selected_text = popup_values[index]
+        else:
+            try:
+                selected_text = listbox.get(
+                    index
+                ).strip()
+            except tk.TclError:
+                return "break"
 
         self.main_hack_selector_var.set(
             selected_text
         )
         self.main_hack_selector_selected_label = selected_text
-        self.main_hack_selector_combo.configure(
-            justify="left",
+        self._align_main_hack_selector_text(
+            selected_text,
         )
         self._unpost_main_hack_selector_popup()
         self.main_hack_selector_combo.focus_set()
@@ -39356,8 +40545,8 @@ class TrackerApp:
         ).strip()
 
         if selected_label and current_text == selected_label:
-            self.main_hack_selector_combo.configure(
-                justify="left",
+            self._align_main_hack_selector_text(
+                selected_label,
             )
             return
 
@@ -39369,6 +40558,37 @@ class TrackerApp:
             values=self.main_hack_selector_labels,
             justify="center",
         )
+
+    def _align_main_hack_selector_text(
+        self,
+        text: str,
+    ) -> None:
+        """Center a selection when it fits; left-align long selections."""
+        combo = getattr(
+            self,
+            "main_hack_selector_combo",
+            None,
+        )
+        if combo is None:
+            return
+
+        try:
+            combo.update_idletasks()
+            field_width = max(
+                combo.winfo_width(),
+                combo.winfo_reqwidth(),
+            ) - self._ui_px(46)
+            text_width = tkfont.Font(
+                font=combo.cget("font")
+            ).measure(str(text))
+            justification = (
+                "center"
+                if text_width + self._ui_px(18) <= field_width
+                else "left"
+            )
+            combo.configure(justify=justification)
+        except tk.TclError:
+            combo.configure(justify="left")
 
     def _blur_main_hack_selector(
         self,
@@ -39492,6 +40712,9 @@ class TrackerApp:
             self.main_hack_selector_selected_label = (
                 selected_label
             )
+            self._align_main_hack_selector_text(
+                selected_label
+            )
 
         self.status_var.set(
             'Selected "'
@@ -39527,8 +40750,8 @@ class TrackerApp:
         selected_label = self._selector_label_for_game(game)
         self.main_hack_selector_var.set(selected_label)
         self.main_hack_selector_selected_label = selected_label
-        self.main_hack_selector_combo.configure(
-            justify="left",
+        self._align_main_hack_selector_text(
+            selected_label,
         )
         self._launch_catalog_game(game)
         return "break" if event is not None else None
@@ -39552,8 +40775,8 @@ class TrackerApp:
         selected_label = self._selector_label_for_game(game)
         self.main_hack_selector_var.set(selected_label)
         self.main_hack_selector_selected_label = selected_label
-        self.main_hack_selector_combo.configure(
-            justify="left",
+        self._align_main_hack_selector_text(
+            selected_label,
         )
         self._launch_catalog_game(game)
 
@@ -39661,6 +40884,7 @@ class TrackerApp:
         difficulty_var = tk.StringVar(value="Any")
         type_var = tk.StringVar(value="Any")
         sort_var = tk.StringVar(value="Title (A-Z)")
+        letter_filter_var = tk.StringVar(value="All")
         jump_var = tk.StringVar(value="Top")
 
         self.game_library_widgets = {
@@ -39669,6 +40893,7 @@ class TrackerApp:
             "difficulty_var": difficulty_var,
             "type_var": type_var,
             "sort_var": sort_var,
+            "letter_filter_var": letter_filter_var,
             "jump_var": jump_var,
             "header_sort_column": "#0",
             "header_sort_descending": False,
@@ -39677,6 +40902,8 @@ class TrackerApp:
         def add_filter_label(
             column: int,
             label_text: str,
+            row: int = 0,
+            dropdown: bool = False,
         ) -> None:
             OutlinedLabel(
                 filter_frame,
@@ -39684,18 +40911,28 @@ class TrackerApp:
                 font=("Segoe UI", 9, "bold"),
                 fg=palette["text"],
                 bg=palette["panel"],
+                anchor="center",
+                justify="center",
             ).grid(
-                row=0,
+                row=row,
                 column=column,
-                sticky="w",
-                padx=(0, 6),
+                sticky="ew",
+                padx=(
+                    0,
+                    10
+                    + (
+                        self._ui_px(27)
+                        if dropdown
+                        else 0
+                    ),
+                ),
             )
 
         add_filter_label(0, "Search")
-        add_filter_label(2, "SMWC Rating")
-        add_filter_label(4, "Difficulty")
-        add_filter_label(6, "Type")
-        add_filter_label(8, "Sort By")
+        add_filter_label(1, "SMWC Rating", dropdown=True)
+        add_filter_label(2, "Difficulty", dropdown=True)
+        add_filter_label(3, "Type", dropdown=True)
+        add_filter_label(4, "Sort By", dropdown=True)
 
         search_entry = tk.Entry(
             filter_frame,
@@ -39711,10 +40948,11 @@ class TrackerApp:
             width=28,
         )
         search_entry.grid(
-            row=0,
-            column=1,
+            row=1,
+            column=0,
             sticky="ew",
             padx=(0, 12),
+            pady=(3, 0),
             ipady=5,
         )
 
@@ -39734,10 +40972,11 @@ class TrackerApp:
             ),
         )
         rating_combo.grid(
-            row=0,
-            column=3,
+            row=1,
+            column=1,
             padx=(0, 12),
-            sticky="w",
+            pady=(3, 0),
+            sticky="ew",
         )
 
         difficulty_combo = ttk.Combobox(
@@ -39751,10 +40990,11 @@ class TrackerApp:
             ),
         )
         difficulty_combo.grid(
-            row=0,
-            column=5,
+            row=1,
+            column=2,
             padx=(0, 12),
-            sticky="w",
+            pady=(3, 0),
+            sticky="ew",
         )
 
         type_combo = ttk.Combobox(
@@ -39768,10 +41008,11 @@ class TrackerApp:
             ),
         )
         type_combo.grid(
-            row=0,
-            column=7,
+            row=1,
+            column=3,
             padx=(0, 10),
-            sticky="w",
+            pady=(3, 0),
+            sticky="ew",
         )
 
         sort_combo = ttk.Combobox(
@@ -39786,13 +41027,14 @@ class TrackerApp:
             ),
         )
         sort_combo.grid(
-            row=0,
-            column=9,
+            row=1,
+            column=4,
             padx=(0, 10),
-            sticky="w",
+            pady=(3, 0),
+            sticky="ew",
         )
 
-        filter_frame.columnconfigure(1, weight=1)
+        filter_frame.columnconfigure(0, weight=1)
 
         self._make_action_button(
             filter_frame,
@@ -39803,9 +41045,31 @@ class TrackerApp:
             width=13,
             pad_y=5,
         ).grid(
-            row=0,
-            column=10,
+            row=1,
+            column=5,
             sticky="e",
+            pady=(3, 0),
+        )
+
+        add_filter_label(
+            0,
+            "Filter by letter",
+            row=2,
+            dropdown=True,
+        )
+        letter_filter_combo = ttk.Combobox(
+            filter_frame,
+            textvariable=letter_filter_var,
+            state="readonly",
+            width=9,
+            values=self._letter_filter_values(),
+        )
+        letter_filter_combo.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            padx=(0, 10),
+            pady=(3, 0),
         )
 
         navigation_frame = tk.Frame(
@@ -39821,15 +41085,22 @@ class TrackerApp:
             pady=(0, 8),
         )
 
-        OutlinedLabel(
+        jump_group = tk.Frame(
             navigation_frame,
+            bg=palette["panel_alt"],
+        )
+        jump_group.pack(side="left")
+        OutlinedLabel(
+            jump_group,
             text="Jump to alphabetical segment:",
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel_alt"],
+            anchor="center",
+            justify="center",
         ).pack(
-            side="left",
-            padx=(0, 8),
+            fill="x",
+            padx=(0, self._ui_px(27)),
         )
 
         jump_values = (
@@ -39844,7 +41115,7 @@ class TrackerApp:
             ],
         )
         jump_combo = ttk.Combobox(
-            navigation_frame,
+            jump_group,
             textvariable=jump_var,
             state="readonly",
             values=jump_values,
@@ -39852,7 +41123,8 @@ class TrackerApp:
             justify="center",
         )
         jump_combo.pack(
-            side="left",
+            anchor="center",
+            pady=(3, 0),
         )
         self.game_library_widgets["jump_combo"] = jump_combo
         jump_combo.bind(
@@ -40195,14 +41467,19 @@ class TrackerApp:
                 font=("Segoe UI", 8, "bold"),
                 fg=palette["muted"],
                 bg=palette["panel"],
-            ).pack(anchor="w")
+                anchor="center",
+                justify="center",
+            ).pack(
+                fill="x",
+                padx=(0, self._ui_px(27)),
+            )
             ttk.Combobox(
                 group,
                 textvariable=variable,
                 state="readonly",
                 values=values,
                 width=width,
-            ).pack(anchor="w")
+            ).pack(anchor="center")
 
         self._make_action_button(
             random_panel,
@@ -40257,6 +41534,7 @@ class TrackerApp:
             difficulty_var,
             type_var,
             sort_var,
+            letter_filter_var,
         ):
             variable.trace_add(
                 "write",
@@ -40484,6 +41762,7 @@ class TrackerApp:
         self.game_library_widgets["difficulty_var"].set("Any")
         self.game_library_widgets["type_var"].set("Any")
         self.game_library_widgets["sort_var"].set("Title (A-Z)")
+        self.game_library_widgets["letter_filter_var"].set("All")
         self.game_library_widgets["header_sort_column"] = "#0"
         self.game_library_widgets["header_sort_descending"] = False
         self.game_library_widgets["jump_var"].set("Top")
@@ -40558,6 +41837,9 @@ class TrackerApp:
         type_value = self.game_library_widgets[
             "type_var"
         ].get()
+        letter_filter = self.game_library_widgets[
+            "letter_filter_var"
+        ].get()
         sort_value = self.game_library_widgets[
             "sort_var"
         ].get()
@@ -40579,10 +41861,10 @@ class TrackerApp:
                 rating_value,
                 difficulty_value,
                 type_value,
-                "All",
+                letter_filter,
             )
         ]
-        title_sort_key = lambda game: str(
+        title_sort_key = lambda game: self._title_without_leading_article(
             game.get("title", "")
         ).casefold()
 
@@ -40614,7 +41896,9 @@ class TrackerApp:
 
         def game_sort_value(game: dict[str, Any]) -> tuple[int, object]:
             if sort_column == "#0":
-                raw_value = game.get("title", "")
+                raw_value = self._title_without_leading_article(
+                    game.get("title", "")
+                )
             elif sort_column == "author":
                 raw_value = game.get("author", "")
             elif sort_column == "difficulty":
@@ -40704,6 +41988,7 @@ class TrackerApp:
             or rating_value != "Any"
             or difficulty_value != "Any"
             or type_value != "Any"
+            or letter_filter != "All"
         )
 
         game_number = 0
@@ -41741,6 +43026,815 @@ class TrackerApp:
                 except OSError:
                     pass
 
+    def open_fxpak_sd_card_browser(self) -> None:
+        if (
+            self.fxpak_sd_dialog is not None
+            and self.fxpak_sd_dialog.winfo_exists()
+        ):
+            self.fxpak_sd_dialog.deiconify()
+            self.fxpak_sd_dialog.lift()
+            self.fxpak_sd_dialog.focus_force()
+            return
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.fxpak_sd_dialog = dialog
+        dialog.title("FXPAK Pro SD Card")
+        self._size_dialog_for_ui(dialog, 1180, 820, 900, 650)
+        dialog.configure(bg=palette["window"])
+        dialog.resizable(True, True)
+        if self.app_icon_photo is not None:
+            try:
+                dialog.iconphoto(True, self.app_icon_photo)
+            except tk.TclError:
+                pass
+
+        dark_mode = self.appearance_var.get() == "dark"
+        style = ttk.Style(dialog)
+        style.configure(
+            "FXPAKSD.Treeview",
+            background=palette["tree"],
+            fieldbackground=palette["tree"],
+            foreground=palette["text"],
+            bordercolor=palette["border"],
+            lightcolor=palette["border"],
+            darkcolor=palette["border"],
+            font=("Segoe UI", 10),
+            rowheight=self._ui_px(30),
+        )
+        style.map(
+            "FXPAKSD.Treeview",
+            background=[("selected", palette["selected"])],
+            foreground=[("selected", "white")],
+        )
+        style.configure(
+            "FXPAKSD.Treeview.Heading",
+            background="#24344D" if dark_mode else "#DCEEFF",
+            foreground=palette["text"],
+            bordercolor=palette["border"],
+            lightcolor=palette["border"],
+            darkcolor=palette["border"],
+            font=("Segoe UI", 10, "bold"),
+            padding=(self._ui_px(6), self._ui_px(5)),
+        )
+        style.map(
+            "FXPAKSD.Treeview.Heading",
+            background=[
+                ("active", "#2D4668" if dark_mode else "#C6E2FA")
+            ],
+        )
+
+        folder_var = tk.StringVar(
+            value=str(
+                self.config.get("rom_builder_usb_folder", "/All_Hacks")
+                or "/All_Hacks"
+            )
+        )
+        search_var = tk.StringVar(value="")
+        letter_filter_var = tk.StringVar(value="All")
+        count_var = tk.StringVar(value="Connect to view SD-card hacks")
+        status_var = tk.StringVar(
+            value=(
+                "Power on the console and FXPAK Pro, connect its USB data "
+                "cable, and keep QUsb2Snes or SNI running."
+            )
+        )
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["orange"],
+            padx=18,
+            pady=12,
+        )
+        title_bar.pack(fill="x")
+        self._add_dialog_window_controls(
+            title_bar,
+            dialog,
+            THEME["orange"],
+        )
+        OutlinedLabel(
+            title_bar,
+            text="FXPAK Pro SD Card",
+            font=("Segoe UI", 16, "bold"),
+            fg="white",
+            bg=THEME["orange"],
+        ).pack(side="left")
+        OutlinedLabel(
+            title_bar,
+            textvariable=count_var,
+            font=("Segoe UI", 10, "bold"),
+            fg="white",
+            bg=THEME["orange"],
+        ).pack(side="right")
+
+        safety_panel = tk.Frame(
+            dialog,
+            bg=palette["panel_alt"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=14,
+            pady=9,
+        )
+        safety_panel.pack(fill="x", padx=14, pady=(12, 8))
+        OutlinedLabel(
+            safety_panel,
+            text=(
+                "This manager shows ROM files on the SD card inside the "
+                "FXPAK Pro. Removing a selected file is permanent on the "
+                "card, but it does not delete the local ROM or tracker progress."
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            wraplength=self._ui_px(1080),
+            justify="left",
+        ).pack(anchor="w")
+
+        controls = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=14,
+            pady=10,
+        )
+        controls.pack(fill="x", padx=14, pady=(0, 8))
+        controls.columnconfigure(0, weight=1)
+        controls.columnconfigure(1, weight=2)
+        OutlinedLabel(
+            controls,
+            text="SD folder:",
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 14))
+        folder_entry = tk.Entry(
+            controls,
+            textvariable=folder_var,
+            justify="center",
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["entry"],
+            insertbackground=palette["text"],
+            relief="flat",
+            highlightbackground=palette["border"],
+            highlightcolor=THEME["blue"],
+            highlightthickness=1,
+        )
+        folder_entry.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            padx=(0, 14),
+            pady=(3, 0),
+            ipady=4,
+        )
+        OutlinedLabel(
+            controls,
+            text="Search:",
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+        ).grid(row=0, column=1, sticky="ew")
+        search_entry = tk.Entry(
+            controls,
+            textvariable=search_var,
+            justify="center",
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["entry"],
+            insertbackground=palette["text"],
+            relief="flat",
+            highlightbackground=palette["border"],
+            highlightcolor=THEME["blue"],
+            highlightthickness=1,
+        )
+        search_entry.grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            pady=(3, 0),
+            ipady=4,
+        )
+        OutlinedLabel(
+            controls,
+            text="Filter by letter:",
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+        ).grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            padx=(0, 14 + self._ui_px(27)),
+            pady=(8, 0),
+        )
+        letter_filter_combo = ttk.Combobox(
+            controls,
+            textvariable=letter_filter_var,
+            values=self._letter_filter_values(),
+            state="readonly",
+            width=9,
+        )
+        letter_filter_combo.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            padx=(0, 14),
+            pady=(3, 0),
+        )
+
+        list_frame = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        list_frame.pack(
+            fill="both",
+            expand=True,
+            padx=14,
+            pady=(0, 8),
+        )
+        columns = ("folder", "filename", "format", "path")
+        tree = ttk.Treeview(
+            list_frame,
+            columns=columns,
+            show="tree headings",
+            selectmode="extended",
+            style="FXPAKSD.Treeview",
+        )
+        headings = {
+            "#0": "Hack Title",
+            "folder": "Folder",
+            "filename": "File Name",
+            "format": "Format",
+            "path": "SD Card Path",
+        }
+        self._configure_treeview_sorting(
+            tree,
+            headings,
+            default_column="#0",
+            after_sort=lambda: self._apply_statistics_table_colors(
+                tree,
+                "fxpak_sd",
+            ),
+        )
+        tree.column(
+            "#0", width=self._ui_px(270), minwidth=self._ui_px(180),
+            anchor="center", stretch=True,
+        )
+        tree.column(
+            "folder", width=self._ui_px(150), minwidth=self._ui_px(100),
+            anchor="center", stretch=False,
+        )
+        tree.column(
+            "filename", width=self._ui_px(240), minwidth=self._ui_px(150),
+            anchor="center", stretch=True,
+        )
+        tree.column(
+            "format", width=self._ui_px(80), minwidth=self._ui_px(65),
+            anchor="center", stretch=False,
+        )
+        tree.column(
+            "path", width=self._ui_px(320), minwidth=self._ui_px(220),
+            anchor="center", stretch=True,
+        )
+        self._center_treeview_content(tree)
+        scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="vertical",
+            command=tree.yview,
+            style="Mario.Vertical.TScrollbar",
+        )
+        horizontal_scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="horizontal",
+            command=tree.xview,
+            style="Mario.Horizontal.TScrollbar",
+        )
+        tree.configure(
+            yscrollcommand=scrollbar.set,
+            xscrollcommand=horizontal_scrollbar.set,
+        )
+        horizontal_scrollbar.pack(side="bottom", fill="x")
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self._bind_fast_vertical_scroll(tree)
+        self._register_customizable_table(tree, "fxpak_sd")
+
+        status_panel = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=14,
+            pady=8,
+        )
+        status_panel.pack(fill="x", padx=14, pady=(0, 8))
+        tk.Label(
+            status_panel,
+            textvariable=status_var,
+            font=("Segoe UI", 9),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="w",
+        ).pack(fill="x")
+
+        button_bar = tk.Frame(dialog, bg=palette["window"])
+        button_bar.pack(fill="x", padx=14, pady=(0, 14))
+        refresh_button = self._make_action_button(
+            button_bar,
+            text="Refresh SD Card",
+            command=self._start_fxpak_sd_scan,
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=16,
+            pad_y=6,
+        )
+        refresh_button.pack(side="left")
+        delete_button = self._make_action_button(
+            button_bar,
+            text="Remove Selected Hack(s)",
+            command=self._delete_selected_fxpak_sd_hacks,
+            bg=THEME["red"],
+            active_bg="#A81F18",
+            width=23,
+            pad_y=6,
+        )
+        delete_button.pack(side="left", padx=(8, 0))
+        self._make_action_button(
+            button_bar,
+            text="Close",
+            command=self._close_fxpak_sd_card_browser,
+            bg="#58728C",
+            active_bg="#3D566F",
+            width=10,
+            pad_y=6,
+        ).pack(side="right")
+
+        self.fxpak_sd_records = []
+        self.fxpak_sd_widgets = {
+            "tree": tree,
+            "folder_var": folder_var,
+            "search_var": search_var,
+            "letter_filter_var": letter_filter_var,
+            "count_var": count_var,
+            "status_var": status_var,
+            "refresh_button": refresh_button,
+            "delete_button": delete_button,
+            "records_by_iid": {},
+        }
+        search_var.trace_add(
+            "write",
+            lambda *_args: self._refresh_fxpak_sd_rows(),
+        )
+        letter_filter_var.trace_add(
+            "write",
+            lambda *_args: self._refresh_fxpak_sd_rows(),
+        )
+        folder_entry.bind(
+            "<Return>",
+            lambda _event: self._start_fxpak_sd_scan(),
+        )
+        dialog.protocol("WM_DELETE_WINDOW", self._close_fxpak_sd_card_browser)
+        self._start_fxpak_sd_scan()
+
+    def _close_fxpak_sd_card_browser(self) -> None:
+        self.fxpak_sd_cancel_event.set()
+        if (
+            self.fxpak_sd_dialog is not None
+            and self.fxpak_sd_dialog.winfo_exists()
+        ):
+            self.fxpak_sd_dialog.destroy()
+        self.fxpak_sd_dialog = None
+        self.fxpak_sd_widgets = {}
+        self.fxpak_sd_records = []
+
+    def _set_fxpak_sd_busy(self, busy: bool) -> None:
+        state = "disabled" if busy else "normal"
+        for key in ("refresh_button", "delete_button"):
+            button = self.fxpak_sd_widgets.get(key)
+            if button is not None:
+                try:
+                    button.configure(state=state)
+                except tk.TclError:
+                    pass
+
+    def _start_fxpak_sd_scan(self) -> None:
+        if (
+            self.fxpak_sd_scan_thread is not None
+            and self.fxpak_sd_scan_thread.is_alive()
+        ):
+            return
+        folder_var = self.fxpak_sd_widgets.get("folder_var")
+        if folder_var is None:
+            return
+        root_folder = self._normalize_fxpak_sd_path(
+            folder_var.get().strip() or "/All_Hacks"
+        )
+        folder_var.set(root_folder)
+        self.config["rom_builder_usb_folder"] = root_folder
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+
+        self.fxpak_sd_cancel_event.clear()
+        self.fxpak_sd_records = []
+        self._refresh_fxpak_sd_rows()
+        self._set_fxpak_sd_busy(True)
+        self.fxpak_sd_widgets["count_var"].set("Scanning SD card…")
+        self.fxpak_sd_widgets["status_var"].set(
+            f"Connecting to FXPAK Pro and scanning {root_folder}…"
+        )
+        websocket_url = str(
+            self.config.get("fxpak_websocket_url", QUSB2SNES_URL)
+        ).strip() or QUSB2SNES_URL
+        preferred_device = str(
+            self.config.get("fxpak_device_name", "")
+        ).strip()
+
+        def worker() -> None:
+            ws: websocket.WebSocket | None = None
+            try:
+                self._ensure_qusb2snes_running(websocket_url)
+                ws, device = self._connect_fxpak_for_launch(
+                    websocket_url,
+                    preferred_device,
+                    "FXPAK Pro",
+                )
+                records = self._scan_fxpak_sd_roms(ws, root_folder)
+                if self.fxpak_sd_cancel_event.is_set():
+                    return
+                self.root.after(
+                    0,
+                    lambda: self._finish_fxpak_sd_scan(
+                        records,
+                        device,
+                        root_folder,
+                    ),
+                )
+            except Exception as error:
+                if not self.fxpak_sd_cancel_event.is_set():
+                    self.root.after(
+                        0,
+                        lambda message=str(error): self._fail_fxpak_sd_action(
+                            "FXPAK Pro SD Card Could Not Be Opened",
+                            message,
+                        ),
+                    )
+            finally:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+
+        self.fxpak_sd_scan_thread = threading.Thread(
+            target=worker,
+            name="FXPAKSDScanner",
+            daemon=True,
+        )
+        self.fxpak_sd_scan_thread.start()
+
+    def _scan_fxpak_sd_roms(
+        self,
+        ws: websocket.WebSocket,
+        root_folder: str,
+    ) -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
+        pending = [self._normalize_fxpak_sd_path(root_folder)]
+        visited: set[str] = set()
+        while pending:
+            if self.fxpak_sd_cancel_event.is_set():
+                break
+            folder = pending.pop()
+            folded = folder.casefold()
+            if folded in visited:
+                continue
+            visited.add(folded)
+            if len(visited) > 10000:
+                raise RuntimeError(
+                    "The SD-card scan stopped after 10,000 folders for safety."
+                )
+            for name, is_directory in self._fxpak_directory_entries(ws, folder):
+                path = self._normalize_fxpak_sd_path(
+                    folder.rstrip("/") + "/" + name
+                )
+                if is_directory:
+                    pending.append(path)
+                    continue
+                suffix = PurePosixPath(name).suffix.casefold()
+                if suffix not in {".sfc", ".smc", ".fig", ".bin"}:
+                    continue
+                records.append(
+                    {
+                        "title": clean_rom_filename(name),
+                        "folder": folder,
+                        "filename": name,
+                        "format": suffix.lstrip(".").upper(),
+                        "path": path,
+                    }
+                )
+                if len(records) > 50000:
+                    raise RuntimeError(
+                        "The SD-card scan stopped after 50,000 ROM files for safety."
+                    )
+        return records
+
+    def _finish_fxpak_sd_scan(
+        self,
+        records: list[dict[str, str]],
+        device: str,
+        root_folder: str,
+    ) -> None:
+        if not self.fxpak_sd_widgets:
+            return
+        self.fxpak_sd_scan_thread = None
+        self.fxpak_sd_records = sorted(
+            records,
+            key=lambda record: (
+                record["title"].casefold(),
+                record["path"].casefold(),
+            ),
+        )
+        self._set_fxpak_sd_busy(False)
+        self.fxpak_sd_widgets["status_var"].set(
+            f'Connected to {device}. Showing ROM files under "{root_folder}".'
+        )
+        self._refresh_fxpak_sd_rows()
+
+    def _fail_fxpak_sd_action(self, title: str, message: str) -> None:
+        if not self.fxpak_sd_widgets:
+            return
+        self.fxpak_sd_scan_thread = None
+        self._set_fxpak_sd_busy(False)
+        self.fxpak_sd_widgets["count_var"].set("SD card unavailable")
+        self.fxpak_sd_widgets["status_var"].set(
+            "Could not access the FXPAK Pro SD card."
+        )
+        messagebox.showerror(
+            title,
+            (
+                "Make sure the console and FXPAK Pro are powered on, a USB "
+                "data cable is connected, and QUsb2Snes or SNI shows the "
+                "FXPAK Pro.\n\n" + message
+            ),
+            parent=self.fxpak_sd_dialog or self.root,
+        )
+
+    def _refresh_fxpak_sd_rows(self) -> None:
+        tree = self.fxpak_sd_widgets.get("tree")
+        search_var = self.fxpak_sd_widgets.get("search_var")
+        if tree is None or search_var is None:
+            return
+        query = str(search_var.get()).strip().casefold()
+        letter_filter_var = self.fxpak_sd_widgets.get("letter_filter_var")
+        letter_filter = (
+            str(letter_filter_var.get())
+            if letter_filter_var is not None
+            else "All"
+        )
+        visible = [
+            record
+            for record in self.fxpak_sd_records
+            if not query
+            or query in " ".join(record.values()).casefold()
+        ]
+        if letter_filter != "All":
+            visible = [
+                record
+                for record in visible
+                if self._alphabet_segment(record["title"]) == letter_filter
+            ]
+        try:
+            tree.delete(*tree.get_children(""))
+        except tk.TclError:
+            return
+        records_by_iid: dict[str, dict[str, str]] = {}
+        for index, record in enumerate(visible):
+            iid = f"fxpak-rom-{index}"
+            tree.insert(
+                "",
+                "end",
+                iid=iid,
+                text=record["title"],
+                values=(
+                    record["folder"],
+                    record["filename"],
+                    record["format"],
+                    record["path"],
+                ),
+            )
+            records_by_iid[iid] = record
+        self.fxpak_sd_widgets["records_by_iid"] = records_by_iid
+        total = len(self.fxpak_sd_records)
+        self.fxpak_sd_widgets["count_var"].set(
+            f"{len(visible):,} shown • {total:,} ROM file(s)"
+        )
+        self._reapply_treeview_sorting(tree)
+        self._apply_statistics_table_colors(tree, "fxpak_sd")
+
+    @staticmethod
+    def _fxpak_info_rom_paths(response: dict[str, Any]) -> set[str]:
+        paths: set[str] = set()
+        for value in response.get("Results", []):
+            text = str(value).strip().replace("\\", "/")
+            if text.casefold().endswith((".sfc", ".smc", ".fig", ".bin")):
+                if not text.startswith("/"):
+                    text = "/" + text
+                paths.add(re.sub(r"/+", "/", text).casefold())
+        return paths
+
+    def _delete_selected_fxpak_sd_hacks(self) -> None:
+        tree = self.fxpak_sd_widgets.get("tree")
+        records_by_iid = self.fxpak_sd_widgets.get("records_by_iid", {})
+        if tree is None:
+            return
+        selected = [
+            records_by_iid[iid]
+            for iid in tree.selection()
+            if iid in records_by_iid
+        ]
+        if not selected:
+            messagebox.showinfo(
+                "Select an SD-Card Hack",
+                "Select one or more ROM files to remove from the FXPAK Pro SD card.",
+                parent=self.fxpak_sd_dialog or self.root,
+            )
+            return
+        preview = "\n".join(
+            f"• {record['path']}" for record in selected[:8]
+        )
+        if len(selected) > 8:
+            preview += f"\n• …and {len(selected) - 8} more"
+        confirmed = messagebox.askyesno(
+            "Permanently Remove SD-Card Hack(s)?",
+            (
+                f"Remove {len(selected)} selected ROM file(s) from the "
+                "FXPAK Pro SD card?\n\n"
+                + preview
+                + "\n\nThis cannot be undone on the card. Local ROM files "
+                "and tracker progress will not be deleted."
+            ),
+            icon="warning",
+            parent=self.fxpak_sd_dialog or self.root,
+        )
+        if not confirmed:
+            return
+
+        paths = [record["path"] for record in selected]
+        websocket_url = str(
+            self.config.get("fxpak_websocket_url", QUSB2SNES_URL)
+        ).strip() or QUSB2SNES_URL
+        preferred_device = str(
+            self.config.get("fxpak_device_name", "")
+        ).strip()
+        self.fxpak_sd_cancel_event.clear()
+        self._set_fxpak_sd_busy(True)
+        self.fxpak_sd_widgets["status_var"].set(
+            f"Removing {len(paths)} selected ROM file(s)…"
+        )
+
+        def worker() -> None:
+            ws: websocket.WebSocket | None = None
+            try:
+                self._ensure_qusb2snes_running(websocket_url)
+                ws, _device = self._connect_fxpak_for_launch(
+                    websocket_url,
+                    preferred_device,
+                    "FXPAK Pro",
+                )
+                self._fxpak_request(ws, "Info")
+                info_response = json.loads(ws.recv())
+                active_paths = self._fxpak_info_rom_paths(info_response)
+                selected_normalized = {
+                    self._normalize_fxpak_sd_path(path).casefold()
+                    for path in paths
+                }
+                if active_paths & selected_normalized:
+                    raise RuntimeError(
+                        "One selected ROM is currently loaded. Return to the "
+                        "FXPAK menu or load a different game before removing it."
+                    )
+                for path in paths:
+                    if self.fxpak_sd_cancel_event.is_set():
+                        return
+                    self._fxpak_request(
+                        ws,
+                        "Remove",
+                        [self._normalize_fxpak_sd_path(path)],
+                    )
+                self._fxpak_request(ws, "Info")
+                confirmation = json.loads(ws.recv())
+                if not isinstance(confirmation.get("Results"), list):
+                    raise RuntimeError(
+                        "QUsb2Snes did not confirm the removal commands."
+                    )
+                remaining: list[str] = []
+                by_parent: dict[str, set[str]] = {}
+                for path in paths:
+                    posix = PurePosixPath(path)
+                    parent = self._normalize_fxpak_sd_path(str(posix.parent))
+                    by_parent.setdefault(parent, set()).add(
+                        posix.name.casefold()
+                    )
+                for parent, deleted_names in by_parent.items():
+                    entries = self._fxpak_directory_entries(ws, parent)
+                    visible_names = {
+                        name.casefold()
+                        for name, is_directory in entries
+                        if not is_directory
+                    }
+                    remaining.extend(
+                        name for name in deleted_names if name in visible_names
+                    )
+                if remaining:
+                    raise RuntimeError(
+                        "The FXPAK Pro still reports one or more selected files "
+                        "after the removal command. No local data was changed."
+                    )
+                self.root.after(
+                    0,
+                    lambda: self._finish_fxpak_sd_delete(paths),
+                )
+            except Exception as error:
+                if not self.fxpak_sd_cancel_event.is_set():
+                    self.root.after(
+                        0,
+                        lambda message=str(error): self._fail_fxpak_sd_action(
+                            "FXPAK Pro Hack Could Not Be Removed",
+                            message,
+                        ),
+                    )
+            finally:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+
+        self.fxpak_sd_scan_thread = threading.Thread(
+            target=worker,
+            name="FXPAKSDRemover",
+            daemon=True,
+        )
+        self.fxpak_sd_scan_thread.start()
+
+    def _finish_fxpak_sd_delete(self, paths: list[str]) -> None:
+        self.fxpak_sd_scan_thread = None
+        normalized = {
+            self._normalize_fxpak_sd_path(path).casefold() for path in paths
+        }
+        try:
+            self.stats_db.clear_remote_rom_paths(paths)
+        except Exception as error:
+            append_error_log(
+                "Could not clear removed FXPAK mappings",
+                f"{type(error).__name__}: {error}",
+            )
+        for game in self.hack_catalog:
+            if self._normalize_fxpak_sd_path(
+                str(game.get("rom_path", ""))
+            ).casefold() in normalized:
+                game["rom_path"] = ""
+        mappings = self.config.get("fxpak_rom_mappings", {})
+        if isinstance(mappings, dict):
+            self.config["fxpak_rom_mappings"] = {
+                key: value
+                for key, value in mappings.items()
+                if self._normalize_fxpak_sd_path(value).casefold()
+                not in normalized
+            }
+        if isinstance(getattr(self, "fxpak_path_map", None), dict):
+            self.fxpak_path_map = {
+                key: value
+                for key, value in self.fxpak_path_map.items()
+                if self._normalize_fxpak_sd_path(value).casefold()
+                not in normalized
+            }
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        if not self.fxpak_sd_widgets:
+            return
+        messagebox.showinfo(
+            "FXPAK Pro SD Card",
+            (
+                f"Removed {len(paths)} ROM file(s) from the FXPAK Pro SD "
+                "card. Local ROM files and tracker progress were left unchanged."
+            ),
+            parent=self.fxpak_sd_dialog or self.root,
+        )
+        self._set_fxpak_sd_busy(False)
+        self._start_fxpak_sd_scan()
+
     def _normalize_fxpak_sd_path(self, value: str) -> str:
         normalized = str(value or "/").strip().replace("\\", "/")
         normalized = re.sub(r"/+", "/", normalized)
@@ -42187,18 +44281,20 @@ class TrackerApp:
         sd_root: str,
     ) -> list[str]:
         root = self._normalize_fxpak_sd_path(sd_root)
-        segment = self._alphabet_segment(
-            str(game.get("title", ""))
+        title = str(game.get("title", "")).strip()
+        raw_segment = (
+            title[0].upper()
+            if title and "A" <= title[0].upper() <= "Z"
+            else "#"
         )
-        folders = []
-        if root == "/":
-            folders.extend(
-                ["/" + segment, "/#", "/"]
-            )
-        else:
-            folders.extend(
-                [root + "/" + segment, root + "/#", root]
-            )
+        segments = list(
+            dict.fromkeys((self._alphabet_segment(title), raw_segment, "#"))
+        )
+        folders = [
+            (("" if root == "/" else root) + "/" + segment)
+            for segment in segments
+        ]
+        folders.append(root)
 
         unique: list[str] = []
         for folder in folders:
@@ -43750,16 +45846,438 @@ class TrackerApp:
         )
         self._fit_dialog_height_to_contents(dialog, padding=8)
 
-    def open_output_folder(self) -> None:
-        folder = Path(self.output_folder_var.get().strip())
+    def open_obs_settings_dialog(self) -> None:
+        if self.obs_settings_dialog is not None:
+            try:
+                if self.obs_settings_dialog.winfo_exists():
+                    self.obs_settings_dialog.lift()
+                    self.obs_settings_dialog.focus_force()
+                    return
+            except tk.TclError:
+                pass
 
-        if not folder.exists():
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.obs_settings_dialog = dialog
+        dialog.title("OBS Text Settings")
+        dialog.configure(bg=palette["window"])
+        dialog.transient(self.root)
+        dialog.resizable(True, False)
+        self._size_dialog_for_ui(dialog, 860, 500, 700, 450)
+
+        title_bar = tk.Frame(dialog, bg=THEME["purple"])
+        title_bar.pack(fill="x")
+        self._add_dialog_window_controls(
+            title_bar,
+            dialog,
+            THEME["purple"],
+        )
+        OutlinedLabel(
+            title_bar,
+            text="OBS TEXT SETTINGS",
+            font=("Segoe UI", 16, "bold"),
+            fg="white",
+            bg=THEME["purple"],
+        ).pack(side="left", padx=18, pady=12)
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=18,
+            pady=16,
+        )
+        body.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        body.columnconfigure(1, weight=1)
+
+        folder_var = tk.StringVar(value=self.output_folder_var.get())
+        author_format_var = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "obs_author_text_format",
+                    "By: {author}",
+                )
+            )
+        )
+        exits_format_var = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "obs_exits_text_format",
+                    "Exits: {completed} / {total}",
+                )
+            )
+        )
+        author_preview_var = tk.StringVar()
+        exits_preview_var = tk.StringVar()
+
+        def add_label(row: int, text_value: str) -> None:
+            tk.Label(
+                body,
+                text=text_value,
+                font=("Segoe UI", 10, "bold"),
+                fg=palette["text"],
+                bg=palette["panel"],
+                anchor="w",
+            ).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(0, 12),
+                pady=7,
+            )
+
+        def make_entry(row: int, variable: tk.StringVar) -> tk.Entry:
+            entry = tk.Entry(
+                body,
+                textvariable=variable,
+                font=("Segoe UI", 10),
+                bg=palette["entry"],
+                fg=palette["text"],
+                insertbackground=palette["text"],
+                relief="solid",
+                bd=1,
+            )
+            entry.grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                pady=7,
+                ipady=7,
+            )
+            return entry
+
+        add_label(0, "OBS text folder:")
+        make_entry(0, folder_var)
+        folder_actions = tk.Frame(body, bg=palette["panel"])
+        folder_actions.grid(row=0, column=2, sticky="e", padx=(10, 0))
+
+        def browse_folder() -> None:
+            current = Path(folder_var.get().strip())
+            initial_directory = (
+                str(current)
+                if current.is_dir()
+                else str(Path.home())
+            )
+            selected = filedialog.askdirectory(
+                title="Select OBS text-file folder",
+                initialdir=initial_directory,
+                parent=dialog,
+            )
+            if selected:
+                folder_var.set(selected)
+
+        self._make_action_button(
+            folder_actions,
+            "Browse...",
+            browse_folder,
+            THEME["blue"],
+            THEME["navy"],
+            width=10,
+        ).pack(side="left")
+
+        add_label(1, "Author file format:")
+        author_entry = make_entry(1, author_format_var)
+        tk.Label(
+            body,
+            text="Use {author}. Examples:  By: {author}   or   {author}",
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            anchor="w",
+        ).grid(row=2, column=1, sticky="ew", pady=(0, 5))
+
+        add_label(3, "Exits file format:")
+        make_entry(3, exits_format_var)
+        tk.Label(
+            body,
+            text=(
+                "Use {completed} and optionally {total}. Examples:  "
+                "Exits: {completed} / {total}   or   {completed} / {total}"
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            anchor="w",
+        ).grid(row=4, column=1, sticky="ew", pady=(0, 8))
+
+        preview = tk.Frame(
+            body,
+            bg=palette["panel_alt"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=14,
+            pady=10,
+        )
+        preview.grid(
+            row=5,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(8, 10),
+        )
+        tk.Label(
+            preview,
+            text="Preview",
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            preview,
+            textvariable=author_preview_var,
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).pack(fill="x", pady=(5, 0))
+        tk.Label(
+            preview,
+            textvariable=exits_preview_var,
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).pack(fill="x")
+
+        def update_previews(*_args: object) -> None:
+            try:
+                author_text = author_format_var.get().format(
+                    author="Sample Creator"
+                )
+            except (KeyError, ValueError, AttributeError, IndexError):
+                author_text = "Invalid author format"
+            try:
+                exits_text = exits_format_var.get().format(
+                    completed=7,
+                    total=12,
+                )
+            except (KeyError, ValueError, AttributeError, IndexError):
+                exits_text = "Invalid exits format"
+            author_preview_var.set(f"author.txt:  {author_text}")
+            exits_preview_var.set(f"exits.txt:  {exits_text}")
+
+        author_format_var.trace_add("write", update_previews)
+        exits_format_var.trace_add("write", update_previews)
+        update_previews()
+
+        actions = tk.Frame(body, bg=palette["panel"])
+        actions.grid(
+            row=6,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(5, 0),
+        )
+
+        def close_dialog() -> None:
+            try:
+                dialog.destroy()
+            finally:
+                self.obs_settings_dialog = None
+
+        def validate_template(
+            template: str,
+            allowed_fields: set[str],
+            required_fields: set[str],
+            label: str,
+        ) -> bool:
+            try:
+                fields = {
+                    field_name
+                    for _literal, field_name, _format, _conversion
+                    in Formatter().parse(template)
+                    if field_name
+                }
+            except ValueError as error:
+                messagebox.showerror(
+                    "OBS Text Settings",
+                    f"The {label} format is invalid:\n{error}",
+                    parent=dialog,
+                )
+                return False
+            unknown_fields = fields - allowed_fields
+            if unknown_fields:
+                messagebox.showerror(
+                    "OBS Text Settings",
+                    (
+                        f"The {label} format contains an unknown placeholder: "
+                        f"{{{sorted(unknown_fields)[0]}}}."
+                    ),
+                    parent=dialog,
+                )
+                return False
+            missing_fields = required_fields - fields
+            if missing_fields:
+                messagebox.showerror(
+                    "OBS Text Settings",
+                    (
+                        f"The {label} format must include "
+                        f"{{{sorted(missing_fields)[0]}}}."
+                    ),
+                    parent=dialog,
+                )
+                return False
+            return True
+
+        def save_obs_settings() -> None:
+            folder_text = folder_var.get().strip()
+            author_template = author_format_var.get()
+            exits_template = exits_format_var.get()
+            if not folder_text:
+                messagebox.showerror(
+                    "OBS Text Settings",
+                    "Choose the folder where OBS text files should be saved.",
+                    parent=dialog,
+                )
+                return
+            if not validate_template(
+                author_template,
+                {"author"},
+                {"author"},
+                "author",
+            ):
+                return
+            if not validate_template(
+                exits_template,
+                {"completed", "total"},
+                {"completed"},
+                "exits",
+            ):
+                return
+
+            updated_config = dict(self.config)
+            updated_config.update(
+                {
+                    "output_folder": folder_text,
+                    "obs_author_text_format": author_template,
+                    "obs_exits_text_format": exits_template,
+                }
+            )
+            try:
+                ensure_obs_text_files(updated_config)
+                save_config(updated_config)
+            except OSError as error:
+                messagebox.showerror(
+                    "OBS Text Settings",
+                    f"Could not save the OBS text files:\n{error}",
+                    parent=dialog,
+                )
+                return
+
+            self.config = updated_config
+            self.output_folder_var.set(folder_text)
+            output_folder = Path(folder_text)
+            if self.worker is not None:
+                self.worker.config.update(self.config)
+                current_title = (
+                    self.worker.current_hack_title
+                    or "No game detected"
+                )
+                current_record = self.worker.current_hack_record
+                current_author = str(
+                    current_record.get("author")
+                    or current_record.get("creator")
+                    or current_record.get("created_by")
+                    or "Unknown"
+                )
+                current_exits = self.worker.displayed_exit_count
+                if current_exits is None:
+                    current_exits = 0
+                self.worker.update_title_files(
+                    current_title,
+                    current_author,
+                )
+                self.worker.update_exit_file(
+                    current_exits,
+                    self.worker.current_total,
+                )
+            else:
+                (output_folder / "author.txt").write_text(
+                    author_template.format(author="Unknown"),
+                    encoding="utf-8",
+                )
+                (output_folder / "exits.txt").write_text(
+                    exits_template.format(completed=0, total="Unknown"),
+                    encoding="utf-8",
+                )
+            self.status_var.set("OBS text settings saved")
+            close_dialog()
+
+        def open_selected_folder() -> None:
+            folder_text = folder_var.get().strip()
+            if not folder_text:
+                messagebox.showerror(
+                    "OBS Text Settings",
+                    "Choose an OBS text folder first.",
+                    parent=dialog,
+                )
+                return
+            try:
+                Path(folder_text).mkdir(parents=True, exist_ok=True)
+                os.startfile(folder_text)
+            except OSError as error:
+                messagebox.showerror(
+                    "OBS Text Settings",
+                    f"Could not open the OBS text folder:\n{error}",
+                    parent=dialog,
+                )
+
+        self._make_action_button(
+            actions,
+            "Open OBS Text Folder",
+            open_selected_folder,
+            THEME["blue"],
+            THEME["navy"],
+            width=18,
+        ).pack(side="left")
+        self._make_action_button(
+            actions,
+            "Save",
+            save_obs_settings,
+            THEME["green"],
+            THEME["green_dark"],
+            width=10,
+        ).pack(side="right", padx=(8, 0))
+        self._make_action_button(
+            actions,
+            "Cancel",
+            close_dialog,
+            "#60758D",
+            "#40566E",
+            width=10,
+        ).pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        author_entry.focus_set()
+
+    def open_output_folder(self) -> None:
+        folder_text = self.output_folder_var.get().strip()
+        if not folder_text:
             messagebox.showerror(
                 APP_NAME,
-                f"Folder not found:\n{folder}",
+                "Choose an OBS text folder in OBS Settings first.",
+                parent=self.root,
             )
             return
 
+        self.config["output_folder"] = folder_text
+        try:
+            folder = ensure_obs_text_files(self.config)
+        except OSError as error:
+            messagebox.showerror(
+                APP_NAME,
+                f"Could not create the OBS text folder:\n{error}",
+                parent=self.root,
+            )
+            return
+        if folder is None:
+            return
         os.startfile(str(folder))
 
     def _test_selected_platform(self) -> None:
@@ -44278,7 +46796,38 @@ class TrackerApp:
                 event = self.event_queue.get_nowait()
                 event_type = event.get("type")
 
-                if event_type == "spreadsheet":
+                if event_type == "catalog_freshness":
+                    available = event.get("available")
+                    if available is None:
+                        freshness_text = (
+                            "New-hack count unavailable"
+                        )
+                    else:
+                        available_count = max(
+                            0,
+                            int(available),
+                        )
+                        freshness_text = (
+                            f"{available_count:,} new "
+                            + (
+                                "hack"
+                                if available_count == 1
+                                else "hacks"
+                            )
+                            + " since last refresh"
+                        )
+                    self.catalog_new_hacks_var.set(
+                        freshness_text
+                    )
+                    try:
+                        self.catalog_new_hacks_label.configure(
+                            fg=THEME["bad"]
+                        )
+                    except tk.TclError:
+                        pass
+                    self.catalog_freshness_thread = None
+
+                elif event_type == "spreadsheet":
                     if event.get("loaded"):
                         entries = int(event.get("entries", 0))
                         self.spreadsheet_var.set(
@@ -44776,6 +47325,8 @@ class TrackerApp:
 
     def shutdown(self) -> None:
         self._dismiss_main_hack_selector_popup()
+        self.catalog_freshness_cancel_event.set()
+        self.fxpak_sd_cancel_event.set()
         try:
             self.main_canvas.unbind_all("<MouseWheel>")
         except Exception:
