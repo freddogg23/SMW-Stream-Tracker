@@ -1,23 +1,14 @@
-Release 1.1.3
+Release 1.0.0
 
-* Colors only the Difficulty cells in Progress by Difficulty instead of the entire row.
-* Adds a value-based gradient data bar to Rate, with editable starting and ending colors.
-* Adds persistent solid, gradient, and alternating-row appearance controls to every application table.
-
-* Adds clickable SMW Central page and patch-download links to the complete catalog.
-* Centers headers and cell contents throughout tracker, catalog, downloader, library, difficulty, and recent-activity lists.
-* Makes Progress by Difficulty colors directly editable by right-clicking a difficulty row.
-* Adds horizontal scrolling so all complete-catalog link columns remain accessible at smaller window sizes.
-
-* Restores the in-app Feedback & Suggestions window by packaging pywebview, pythonnet, and the Windows WebView2 bridge with the application.
-* Detects an embedded-feedback child process that exits during startup and shows the in-app fallback panel instead of silently doing nothing.
-
+* First public release of SMW Stream Tracker.
+* Supports always-on FXPAK Pro and RetroArch tracking.
+* Includes the searchable SMW Central catalog, filtered missing-hack downloads, tracker statistics, exports, backups, and stream timer output.
+* Colors only Difficulty cells in Progress by Difficulty.
+* Displays Rate as an editable, value-based gradient data bar.
+* Adds persistent solid, gradient, alternating-row, Overview, and default appearance controls to every application table.
+* Includes searchable and sortable lists, centered table contents, clickable SMW Central page and patch links, and horizontal scrolling where needed.
 * Keeps the level timer through older-hack death-to-overworld transitions and resets it only after a confirmed finish or a different level selection.
-* Adds search and click-to-sort behavior throughout catalog and tracker lists, plus combined download filters for difficulty, type, and rating.
-* Adds clipboard editing to My Tracker and the renamed Add Unmoderated Hack window.
-* Preserves existing appearance choices while giving first-time users the new tracker colors and data-bar defaults.
-* Adds an in-app Help menu with the installed-language guide, SMW Central links and credits, About and Updates, and anonymous feedback.
-* Keeps the embedded feedback form synchronized with light and dark appearance changes.
-* Moves Appearance into Settings and improves update, download, and installer dialog sizing and file selection.
-* Expands the setup guides with LiveSplit, OBS Studio, and Streamlabs Desktop instructions.
-* Removes legacy signed v1.0.2 build artifacts and personal publisher references from the release source.
+* Preserves user appearance choices and supplies first-use tracker colors and data-bar defaults.
+* Includes multilingual setup guides for LiveSplit, OBS Studio, and Streamlabs Desktop.
+* Includes in-app Help, About and Updates, SMW Central credits, and anonymous Feedback & Suggestions.
+* Distributes unsigned installers with SHA-256 verification and rollback-capable in-app updates.
