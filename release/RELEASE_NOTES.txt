@@ -1,4 +1,9 @@
-Release 1.1.1
+Release 1.1.2
+
+* Adds clickable SMW Central page and patch-download links to the complete catalog.
+* Centers headers and cell contents throughout tracker, catalog, downloader, library, difficulty, and recent-activity lists.
+* Makes Progress by Difficulty colors directly editable by right-clicking a difficulty row.
+* Adds horizontal scrolling so all complete-catalog link columns remain accessible at smaller window sizes.
 
 * Restores the in-app Feedback & Suggestions window by packaging pywebview, pythonnet, and the Windows WebView2 bridge with the application.
 * Detects an embedded-feedback child process that exits during startup and shows the in-app fallback panel instead of silently doing nothing.

@@ -1,8 +1,12 @@
 {
     "schema":  1,
-    "version":  "1.1.1",
+    "version":  "1.1.2",
     "release_date":  "2026-08-04",
     "notes":  [
+                  "Adds clickable SMW Central page and patch-download links to the complete catalog.",
+                  "Centers headers and cell contents throughout tracker, catalog, downloader, library, difficulty, and recent-activity lists.",
+                  "Makes Progress by Difficulty colors directly editable by right-clicking a difficulty row.",
+                  "Adds horizontal scrolling so all complete-catalog link columns remain accessible at smaller window sizes.",
                   "Restores the in-app Feedback \u0026 Suggestions window by packaging pywebview, pythonnet, and the Windows WebView2 bridge with the application.",
                   "Detects an embedded-feedback child process that exits during startup and shows the in-app fallback panel instead of silently doing nothing.",
                   "Keeps the level timer through older-hack death-to-overworld transitions and resets it only after a confirmed finish or a different level selection.",
@@ -15,8 +19,8 @@
                   "Expands the setup guides with LiveSplit, OBS Studio, and Streamlabs Desktop instructions.",
                   "Removes legacy signed v1.0.2 build artifacts and personal publisher references from the release source."
               ],
-    "updater_url":  "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.1.1/SMWStreamTracker_Update_1.1.1.exe",
+    "updater_url":  "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.1.2/SMWStreamTracker_Update_1.1.2.exe",
     "verification":  "sha256",
-    "sha256":  "68ddd1af11b734534a64717335f499214b35781f2d064ef2784831d15f599bf6",
-    "size":  75507419
+    "sha256":  "d594a2931d2241e086ae4532a372a25cb1d1285eba62b20043f20a500f34b7ff",
+    "size":  75512851
 }

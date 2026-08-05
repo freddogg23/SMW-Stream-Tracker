@@ -64,7 +64,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 APP_BUILD_DATE = "2026-08-04"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
@@ -27048,6 +27048,21 @@ class TrackerApp:
             )
         self._update_treeview_sort_headings(tree)
 
+    @staticmethod
+    def _center_treeview_content(tree: ttk.Treeview) -> None:
+        """Center every visible heading and cell in an application list."""
+        try:
+            columns = ("#0", *tuple(tree.cget("columns")))
+        except tk.TclError:
+            return
+
+        for column in columns:
+            try:
+                tree.heading(column, anchor="center")
+                tree.column(column, anchor="center")
+            except tk.TclError:
+                continue
+
     def _update_treeview_sort_headings(self, tree: ttk.Treeview) -> None:
         headings = getattr(tree, "_smw_sort_headings", {})
         active_column = getattr(tree, "_smw_sort_column", None)
@@ -27418,6 +27433,7 @@ class TrackerApp:
         tree: ttk.Treeview,
         table_key: str,
     ) -> str:
+        iid = ""
         try:
             iid = str(tree.identify_row(event.y) or "")
             if iid:
@@ -27437,47 +27453,105 @@ class TrackerApp:
             activeforeground="#FFFFFF",
             font=("Segoe UI", 10),
         )
-        menu.add_command(
-            label=f"Solid color for {label}...",
-            command=lambda: self._set_statistics_table_style(
-                tree,
-                table_key,
-                "solid",
-            ),
-        )
-        menu.add_command(
-            label=f"Two-color gradient for {label}...",
-            command=lambda: self._set_statistics_table_style(
-                tree,
-                table_key,
-                "gradient",
-            ),
-        )
-        menu.add_command(
-            label=f"Alternating row colors for {label}...",
-            command=lambda: self._set_statistics_table_style(
-                tree,
-                table_key,
-                "alternating",
-            ),
-        )
-        menu.add_command(
-            label="Use Overview alternating colors",
-            command=lambda: (
-                self._set_statistics_overview_alternating(
+        if table_key == "difficulty":
+            selected_difficulty = ""
+            if iid:
+                try:
+                    selected_difficulty = str(
+                        tree.item(iid, "text") or "Unknown"
+                    ).strip() or "Unknown"
+                except tk.TclError:
+                    selected_difficulty = ""
+
+            if selected_difficulty:
+                menu.add_command(
+                    label=f"Set color for {selected_difficulty}...",
+                    command=lambda value=selected_difficulty: (
+                        self._set_tracker_difficulty_color(value)
+                    ),
+                )
+                menu.add_command(
+                    label=f"Reset {selected_difficulty} color",
+                    command=lambda value=selected_difficulty: (
+                        self._reset_tracker_difficulty_color(value)
+                    ),
+                )
+                menu.add_separator()
+
+            difficulty_menu = tk.Menu(
+                menu,
+                tearoff=False,
+                bg=palette["panel"],
+                fg=palette["text"],
+                activebackground=THEME["blue"],
+                activeforeground="#FFFFFF",
+                font=("Segoe UI", 10),
+            )
+            difficulty_names = list(
+                dict.fromkeys(
+                    (
+                        *DIFFICULTY_ROW_COLORS.keys(),
+                        *self._difficulty_values(),
+                    )
+                )
+            )
+            for difficulty_name in difficulty_names:
+                difficulty_menu.add_command(
+                    label=f"{difficulty_name}...",
+                    command=lambda value=difficulty_name: (
+                        self._set_tracker_difficulty_color(value)
+                    ),
+                )
+            menu.add_cascade(
+                label="Choose another difficulty color",
+                menu=difficulty_menu,
+            )
+            menu.add_command(
+                label="Reset all difficulty colors",
+                command=lambda: self._reset_tracker_difficulty_color(),
+            )
+        else:
+            menu.add_command(
+                label=f"Solid color for {label}...",
+                command=lambda: self._set_statistics_table_style(
                     tree,
                     table_key,
-                )
-            ),
-        )
-        menu.add_separator()
-        menu.add_command(
-            label="Restore default table colors",
-            command=lambda: self._reset_statistics_table_style(
-                tree,
-                table_key,
-            ),
-        )
+                    "solid",
+                ),
+            )
+            menu.add_command(
+                label=f"Two-color gradient for {label}...",
+                command=lambda: self._set_statistics_table_style(
+                    tree,
+                    table_key,
+                    "gradient",
+                ),
+            )
+            menu.add_command(
+                label=f"Alternating row colors for {label}...",
+                command=lambda: self._set_statistics_table_style(
+                    tree,
+                    table_key,
+                    "alternating",
+                ),
+            )
+            menu.add_command(
+                label="Use Overview alternating colors",
+                command=lambda: (
+                    self._set_statistics_overview_alternating(
+                        tree,
+                        table_key,
+                    )
+                ),
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="Restore default table colors",
+                command=lambda: self._reset_statistics_table_style(
+                    tree,
+                    table_key,
+                ),
+            )
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -28595,8 +28669,9 @@ class TrackerApp:
         difficulty_tree.column(
             "#0",
             width=self._ui_px(145),
-            anchor="w",
+            anchor="center",
         )
+        self._center_treeview_content(difficulty_tree)
         difficulty_scrollbar = ttk.Scrollbar(
             difficulty_table,
             orient="vertical",
@@ -28795,6 +28870,7 @@ class TrackerApp:
         recent_tree.column(
             "#0",
             width=self._ui_px(245),
+            anchor="center",
             stretch=True,
         )
         recent_tree.column(
@@ -28809,6 +28885,7 @@ class TrackerApp:
             anchor="center",
             stretch=False,
         )
+        self._center_treeview_content(recent_tree)
         recent_scrollbar = ttk.Scrollbar(
             recent_table,
             orient="vertical",
@@ -28954,8 +29031,8 @@ class TrackerApp:
         tk.Label(
             button_bar,
             text=(
-                "Right-click either table to customize "
-                "its colors"
+                "Right-click a difficulty to set its color, or "
+                "Recent Activity to customize that table"
             ),
             font=("Segoe UI", 9, "bold"),
             fg=palette["muted"],
@@ -29521,6 +29598,7 @@ class TrackerApp:
                 anchor="center",
                 stretch=False,
             )
+        self._center_treeview_content(tree)
 
         def scroll_tracker_tree(*arguments) -> None:
             tree.yview(*arguments)
@@ -30377,7 +30455,12 @@ class TrackerApp:
         self,
         difficulty: str,
     ) -> None:
-        parent = self.tracker_list_dialog or self.root
+        parent = (
+            self.tracker_list_dialog
+            or self.stats_overview_dialog
+            or self.downloader_dialog
+            or self.root
+        )
         current = self._tracker_difficulty_color(
             difficulty
         )
@@ -32657,6 +32740,7 @@ class TrackerApp:
         tree.column(
             "#0",
             width=310,
+            anchor="center",
             stretch=True,
         )
         tree.column(
@@ -32678,6 +32762,7 @@ class TrackerApp:
                 anchor="center",
                 stretch=False,
             )
+        self._center_treeview_content(tree)
 
         scrollbar = ttk.Scrollbar(
             tree_frame,
@@ -34414,6 +34499,98 @@ class TrackerApp:
             catalog_view_only=True,
         )
 
+    def _downloader_catalog_link_target(
+        self,
+        event,
+    ) -> tuple[str, str] | None:
+        if not self.downloader_widgets.get(
+            "catalog_view_only",
+            False,
+        ):
+            return None
+
+        tree = self.downloader_widgets.get("tree")
+        if tree is None:
+            return None
+
+        try:
+            if tree.identify_region(event.x, event.y) != "cell":
+                return None
+            iid = str(tree.identify_row(event.y) or "")
+            display_column = str(
+                tree.identify_column(event.x) or ""
+            )
+            if not iid or display_column == "#0":
+                return None
+            display_index = int(display_column.lstrip("#")) - 1
+            columns = tuple(tree.cget("columns"))
+            if not 0 <= display_index < len(columns):
+                return None
+            column = str(columns[display_index])
+        except (tk.TclError, TypeError, ValueError):
+            return None
+
+        url_key = {
+            "page_link": "page_url",
+            "download_link": "download_url",
+        }.get(column)
+        if url_key is None:
+            return None
+
+        game = self.downloader_widgets.get(
+            "games_by_iid",
+            {},
+        ).get(iid)
+        if not isinstance(game, dict):
+            return None
+
+        url = str(game.get(url_key, "")).strip()
+        if urlparse(url).scheme.casefold() not in {"http", "https"}:
+            return None
+        return column, url
+
+    def _update_downloader_catalog_link_cursor(self, event) -> None:
+        tree = self.downloader_widgets.get("tree")
+        if tree is None:
+            return
+        try:
+            tree.configure(
+                cursor=(
+                    "hand2"
+                    if self._downloader_catalog_link_target(event)
+                    else ""
+                )
+            )
+        except tk.TclError:
+            pass
+
+    def _open_downloader_catalog_link(self, event) -> str | None:
+        target = self._downloader_catalog_link_target(event)
+        if target is None:
+            return None
+
+        column, url = target
+        try:
+            opened = webbrowser.open_new_tab(url)
+        except Exception as error:
+            opened = False
+            append_error_log(
+                "Could not open an SMW Central catalog link",
+                f"{type(error).__name__}: {error}",
+            )
+
+        if not opened:
+            messagebox.showerror(
+                (
+                    "SMW Central Page Could Not Be Opened"
+                    if column == "page_link"
+                    else "Patch Link Could Not Be Opened"
+                ),
+                "Windows could not open this link in your default browser.",
+                parent=self.downloader_dialog or self.root,
+            )
+        return "break"
+
     def open_hack_downloader(
         self,
         *,
@@ -35327,6 +35504,11 @@ class TrackerApp:
             "type",
             "rating",
             "added",
+            *(
+                ("page_link", "download_link")
+                if catalog_view_only
+                else ()
+            ),
             "status",
         )
         tree = ttk.Treeview(
@@ -35355,12 +35537,19 @@ class TrackerApp:
             "type": "Type",
             "rating": "Rating",
             "added": "Added Date",
-            "status": (
-                "Catalog Status"
-                if catalog_view_only
-                else "Library Status"
-            ),
         }
+        if catalog_view_only:
+            downloader_headings.update(
+                {
+                    "page_link": "SMW Central Page",
+                    "download_link": "Download Patch",
+                }
+            )
+        downloader_headings["status"] = (
+            "Catalog Status"
+            if catalog_view_only
+            else "Library Status"
+        )
         self._configure_treeview_sorting(
             tree,
             downloader_headings,
@@ -35376,8 +35565,11 @@ class TrackerApp:
         )
         tree.column(
             "#0",
-            width=self._ui_px(390),
+            width=self._ui_px(
+                315 if catalog_view_only else 390
+            ),
             minwidth=self._ui_px(240),
+            anchor="center",
             stretch=True,
         )
         tree.column(
@@ -35406,10 +35598,28 @@ class TrackerApp:
         )
         tree.column(
             "status",
-            width=self._ui_px(190),
+            width=self._ui_px(
+                150 if catalog_view_only else 190
+            ),
             anchor="center",
             stretch=False,
         )
+        if catalog_view_only:
+            tree.column(
+                "page_link",
+                width=self._ui_px(140),
+                minwidth=self._ui_px(125),
+                anchor="center",
+                stretch=False,
+            )
+            tree.column(
+                "download_link",
+                width=self._ui_px(145),
+                minwidth=self._ui_px(125),
+                anchor="center",
+                stretch=False,
+            )
+        self._center_treeview_content(tree)
 
         def scroll_downloader_tree(*arguments) -> None:
             tree.yview(*arguments)
@@ -35422,6 +35632,17 @@ class TrackerApp:
             style="Mario.Vertical.TScrollbar",
         )
 
+        def scroll_downloader_horizontally(*arguments) -> None:
+            tree.xview(*arguments)
+            self._schedule_downloader_difficulty_overlays()
+
+        horizontal_scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="horizontal",
+            command=scroll_downloader_horizontally,
+            style="Mario.Horizontal.TScrollbar",
+        )
+
         def update_downloader_scrollbar(
             first: str,
             last: str,
@@ -35430,7 +35651,12 @@ class TrackerApp:
             self._schedule_downloader_difficulty_overlays()
 
         tree.configure(
-            yscrollcommand=update_downloader_scrollbar
+            yscrollcommand=update_downloader_scrollbar,
+            xscrollcommand=horizontal_scrollbar.set,
+        )
+        horizontal_scrollbar.pack(
+            side="bottom",
+            fill="x",
         )
         tree.pack(
             side="left",
@@ -35460,6 +35686,22 @@ class TrackerApp:
             self._schedule_downloader_difficulty_overlays,
             add="+",
         )
+        if catalog_view_only:
+            tree.bind(
+                "<Motion>",
+                self._update_downloader_catalog_link_cursor,
+                add="+",
+            )
+            tree.bind(
+                "<Leave>",
+                lambda _event: tree.configure(cursor=""),
+                add="+",
+            )
+            tree.bind(
+                "<ButtonRelease-1>",
+                self._open_downloader_catalog_link,
+                add="+",
+            )
 
         progress_panel = tk.Frame(
             dialog,
@@ -36235,6 +36477,51 @@ class TrackerApp:
                 if rating is not None
                 else "Unrated"
             )
+            display_values = [
+                str(
+                    display_game.get(
+                        "difficulty",
+                        "Unknown",
+                    )
+                ),
+                str(
+                    display_game.get(
+                        "hack_type",
+                        "Unknown",
+                    )
+                ),
+                rating_text,
+                format_display_date(
+                    display_game.get("added_date", "")
+                ),
+            ]
+            if catalog_view_only:
+                display_values.extend(
+                    (
+                        (
+                            "Open Page \u2197"
+                            if str(
+                                display_game.get("page_url", "")
+                            ).strip()
+                            else "Unavailable"
+                        ),
+                        (
+                            "Download Patch \u2b07"
+                            if str(
+                                display_game.get("download_url", "")
+                            ).strip()
+                            else "Unavailable"
+                        ),
+                    )
+                )
+            display_values.append(
+                str(
+                    display_game.get(
+                        "download_status",
+                        "",
+                    )
+                )
+            )
             downloader_iid = f"download::{row_index}"
             tree.insert(
                 "",
@@ -36243,30 +36530,7 @@ class TrackerApp:
                 text=str(
                     display_game.get("title", "Unknown")
                 ),
-                values=(
-                    str(
-                        display_game.get(
-                            "difficulty",
-                            "Unknown",
-                        )
-                    ),
-                    str(
-                        display_game.get(
-                            "hack_type",
-                            "Unknown",
-                        )
-                    ),
-                    rating_text,
-                    format_display_date(
-                        display_game.get("added_date", "")
-                    ),
-                    str(
-                        display_game.get(
-                            "download_status",
-                            "",
-                        )
-                    ),
-                ),
+                values=tuple(display_values),
                 tags=(
                     "downloader_even"
                     if row_index % 2 == 0
@@ -36299,7 +36563,8 @@ class TrackerApp:
         if catalog_view_only:
             status_message = (
                 f"Showing {len(filtered):,} moderated catalog hack(s). "
-                "Click any column heading to change the sort order."
+                "Click any column heading to sort. Select Open Page or "
+                "Download Patch to open that SMW Central link."
             )
         elif not selected_folder:
             status_message = (
@@ -39114,7 +39379,7 @@ class TrackerApp:
             width=360,
             minwidth=220,
             stretch=True,
-            anchor="w",
+            anchor="center",
         )
         tree.column(
             "author",
@@ -39166,6 +39431,7 @@ class TrackerApp:
             stretch=False,
             anchor="center",
         )
+        self._center_treeview_content(tree)
 
         def scroll_library_tree(*arguments) -> None:
             tree.yview(*arguments)
