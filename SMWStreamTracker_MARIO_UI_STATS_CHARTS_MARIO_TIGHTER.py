@@ -26,7 +26,7 @@ import traceback
 import webbrowser
 from pathlib import Path, PurePosixPath
 from string import Formatter
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -65,7 +65,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 APP_BUILD_DATE = "2026-08-05"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
@@ -11249,6 +11249,9 @@ def append_error_log(context: str, error_text: str) -> None:
         pass
 
 
+PRESERVE_TRACKER_TOTAL_DEATHS = object()
+
+
 class TrackerDatabase:
     """SQLite-backed catalog, tracker, statistics, and ROM mappings."""
 
@@ -11275,6 +11278,16 @@ class TrackerDatabase:
 
     def initialize(self) -> None:
         with self.connect() as connection:
+            existing_tracker_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(tracked_hacks)"
+                ).fetchall()
+            }
+            upgrading_pre_death_tracker = bool(
+                existing_tracker_columns
+                and "total_deaths" not in existing_tracker_columns
+            )
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_hacks (
@@ -11320,6 +11333,8 @@ class TrackerDatabase:
                     status TEXT NOT NULL DEFAULT 'Planned',
                     personal_rating REAL,
                     playtime_seconds INTEGER NOT NULL DEFAULT 0,
+                    total_deaths INTEGER,
+                    death_count_legacy INTEGER NOT NULL DEFAULT 0,
                     notes TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -11360,6 +11375,31 @@ class TrackerDatabase:
                 );
                 """
             )
+
+            tracker_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(tracked_hacks)"
+                ).fetchall()
+            }
+            if "total_deaths" not in tracker_columns:
+                connection.execute(
+                    "ALTER TABLE tracked_hacks ADD COLUMN total_deaths INTEGER"
+                )
+            if "death_count_legacy" not in tracker_columns:
+                connection.execute(
+                    "ALTER TABLE tracked_hacks ADD COLUMN "
+                    "death_count_legacy INTEGER NOT NULL DEFAULT 0"
+                )
+            if upgrading_pre_death_tracker:
+                connection.execute(
+                    """
+                    UPDATE tracked_hacks
+                    SET death_count_legacy = 1
+                    WHERE status = 'Completed'
+                      AND total_deaths IS NULL
+                    """
+                )
 
     @staticmethod
     def _integer(
@@ -12208,6 +12248,11 @@ class TrackerDatabase:
                                 headers,
                                 "Completed Exits",
                             )
+                            total_deaths_column = self._column(
+                                headers,
+                                "Total Deaths",
+                                "Deaths",
+                            )
                             personal_rating_column = self._column(
                                 headers,
                                 "Rating (1–5)",
@@ -12393,6 +12438,30 @@ class TrackerDatabase:
                                 else:
                                     status = "Planned"
 
+                                imported_total_deaths = None
+                                death_count_legacy = 0
+                                if total_deaths_column is not None:
+                                    raw_total_deaths = tracker_sheet.cell(
+                                        row=row_number,
+                                        column=total_deaths_column,
+                                    ).value
+                                    deaths_text = str(
+                                        raw_total_deaths or ""
+                                    ).strip()
+                                    if deaths_text == "*":
+                                        death_count_legacy = 1
+                                    elif deaths_text:
+                                        imported_total_deaths = max(
+                                            0,
+                                            self._integer(
+                                                raw_total_deaths
+                                            ),
+                                        )
+                                elif status == "Completed":
+                                    # Older tracker workbooks had no death
+                                    # column, so zero would be misleading.
+                                    death_count_legacy = 1
+
                                 personal_rating = self._float(
                                     tracker_sheet.cell(
                                         row=row_number,
@@ -12453,12 +12522,14 @@ class TrackerDatabase:
                                         status,
                                         personal_rating,
                                         playtime_seconds,
+                                        total_deaths,
+                                        death_count_legacy,
                                         notes,
                                         created_at,
                                         updated_at
                                     ) VALUES (
                                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                        ?, ?, ?, ?, ?,
+                                        ?, ?, ?, ?, ?, ?, ?,
                                         CURRENT_TIMESTAMP,
                                         CURRENT_TIMESTAMP
                                     )
@@ -12476,6 +12547,8 @@ class TrackerDatabase:
                                         status = excluded.status,
                                         personal_rating = excluded.personal_rating,
                                         playtime_seconds = excluded.playtime_seconds,
+                                        total_deaths = excluded.total_deaths,
+                                        death_count_legacy = excluded.death_count_legacy,
                                         notes = excluded.notes,
                                         updated_at = CURRENT_TIMESTAMP
                                     """,
@@ -12500,6 +12573,8 @@ class TrackerDatabase:
                                         status,
                                         personal_rating,
                                         playtime_seconds,
+                                        imported_total_deaths,
+                                        death_count_legacy,
                                         notes,
                                     ),
                                 )
@@ -13459,6 +13534,7 @@ class TrackerDatabase:
         playtime_seconds: int,
         rating: float,
         notes: str,
+        total_deaths: int = 0,
     ) -> dict[str, Any]:
         if rating < 1 or rating > 5:
             raise ValueError(
@@ -13516,6 +13592,10 @@ class TrackerDatabase:
                 0,
                 int(playtime_seconds),
             )
+            recorded_deaths = max(
+                0,
+                int(total_deaths),
+            )
             is_complete = (
                 total > 0
                 and completed >= total
@@ -13550,6 +13630,8 @@ class TrackerDatabase:
                             playtime_seconds,
                             ?
                         ),
+                        total_deaths = ?,
+                        death_count_legacy = 0,
                         notes = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE catalog_key = ?
@@ -13562,6 +13644,7 @@ class TrackerDatabase:
                         completed_date,
                         float(rating),
                         playtime,
+                        recorded_deaths,
                         str(notes),
                         catalog_key,
                     ),
@@ -13597,10 +13680,12 @@ class TrackerDatabase:
                         status,
                         personal_rating,
                         playtime_seconds,
+                        total_deaths,
+                        death_count_legacy,
                         notes,
                         created_at,
                         updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (
                         catalog_key,
@@ -13617,6 +13702,7 @@ class TrackerDatabase:
                         status,
                         float(rating),
                         playtime,
+                        recorded_deaths,
                         str(notes),
                     ),
                 )
@@ -13640,6 +13726,7 @@ class TrackerDatabase:
                 "total": total,
                 "percentage": percentage,
                 "status": status,
+                "total_deaths": recorded_deaths,
             }
 
     def overview(self) -> dict[str, Any]:
@@ -13931,6 +14018,9 @@ class TrackerDatabase:
         date_started: str,
         date_completed: str,
         notes: str,
+        total_deaths: int | None | object = (
+            PRESERVE_TRACKER_TOTAL_DEATHS
+        ),
     ) -> None:
         self.initialize()
         valid_statuses = {
@@ -13995,6 +14085,24 @@ class TrackerDatabase:
             else:
                 completed_date = ""
 
+            if total_deaths is PRESERVE_TRACKER_TOTAL_DEATHS:
+                saved_total_deaths = row["total_deaths"]
+                death_count_legacy = int(
+                    row["death_count_legacy"] or 0
+                )
+            elif total_deaths is None:
+                saved_total_deaths = None
+                death_count_legacy = (
+                    1 if status == "Completed" else 0
+                )
+            else:
+                saved_total_deaths = int(total_deaths)
+                if saved_total_deaths < 0:
+                    raise ValueError(
+                        "Total deaths cannot be negative."
+                    )
+                death_count_legacy = 0
+
             connection.execute(
                 """
                 UPDATE tracked_hacks
@@ -14005,6 +14113,8 @@ class TrackerDatabase:
                     playtime_seconds = ?,
                     date_started = ?,
                     date_completed = ?,
+                    total_deaths = ?,
+                    death_count_legacy = ?,
                     notes = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
@@ -14016,6 +14126,8 @@ class TrackerDatabase:
                     max(0, int(playtime_seconds)),
                     started,
                     completed_date,
+                    saved_total_deaths,
+                    death_count_legacy,
                     str(notes),
                     int(record_id),
                 ),
@@ -14320,6 +14432,7 @@ class TrackerDatabase:
             "Date Started",
             "Date Completed",
             "Completed Exits",
+            "Total Deaths",
             "Status",
             "Rating (1-5)",
             "Playtime Seconds",
@@ -14357,6 +14470,16 @@ class TrackerDatabase:
                         str(row["completed_exits"])
                         + "/"
                         + str(row["total_exits"])
+                    ),
+                    "Total Deaths": (
+                        "*"
+                        if bool(row.get("death_count_legacy"))
+                        and row.get("total_deaths") is None
+                        else (
+                            row.get("total_deaths")
+                            if row.get("total_deaths") is not None
+                            else ""
+                        )
                     ),
                     "Status": row["status"],
                     "Rating (1-5)": row[
@@ -14817,6 +14940,7 @@ def blend_hex_colors(
 
 CONFIG_FILE = Path.home() / "SMWStreamTrackerConfig.json"
 TIMER_SAVE_FILE = Path.home() / "SMWStreamTrackerTimes.json"
+DEATH_SAVE_FILE = Path.home() / "SMWStreamTrackerDeaths.json"
 
 # These are first-run defaults only. load_config() replaces each value with
 # the user's saved value when one exists, so an app update never resets a
@@ -14868,6 +14992,8 @@ DEFAULT_CONFIG = {
     ),
     "obs_author_text_format": "By: {author}",
     "obs_exits_text_format": "Exits: {completed} / {total}",
+    "obs_deaths_text_format": "Level Deaths: {deaths}",
+    "obs_total_deaths_text_format": "Total Deaths: {total_deaths}",
     "overworld_idle_seconds": 30,
     "livesplit_host": "127.0.0.1",
     "game_livesplit_port": 16834,
@@ -14882,6 +15008,8 @@ DEFAULT_CONFIG = {
     "retroarch_host": "127.0.0.1",
     "retroarch_port": 55355,
     "platform_last_roms": {},
+    "last_launched_hack": {},
+    "recent_launched_hacks": [],
     "platform_rom_mappings": {},
     "fxpak_sd_root": "/All_Hacks",
     "fxpak_websocket_url": "ws://localhost:23074",
@@ -14954,6 +15082,7 @@ DOWNLOAD_URL_COLUMN_NAME = "Direct Download URL"
 GAME_MODE_ADDRESS = "F50100"       # $7E0100
 SAVE_SLOT_ADDRESS = "F5010A"       # $7E010A; 0=A, 1=B, 2=C
 PLAYER_STATE_ADDRESS = "F50071"    # $7E0071; 09 = death animation
+PLAYER_LIVES_ADDRESS = "F50DBE"    # $7E0DBE; current player's lives
 PAUSE_FLAG_ADDRESS = "F513D4"      # $7E13D4
 TRANSLEVEL_ADDRESS = "F513BF"      # $7E13BF
 EXIT_COUNTER_ADDRESS = "F51F2E"    # $7E1F2E
@@ -15081,6 +15210,23 @@ def ensure_obs_text_files(
             "Exits: {completed} / {total}",
             completed=0,
             total="Unknown",
+        ),
+        "level_deaths.txt": render_obs_text_template(
+            config.get("obs_deaths_text_format"),
+            "Level Deaths: {deaths}",
+            deaths=0,
+        ),
+        # Keep the original filename as a mirror of Level Deaths so existing
+        # OBS and Streamlabs scenes continue working after this update.
+        "death_counter.txt": render_obs_text_template(
+            config.get("obs_deaths_text_format"),
+            "Level Deaths: {deaths}",
+            deaths=0,
+        ),
+        "total_deaths.txt": render_obs_text_template(
+            config.get("obs_total_deaths_text_format"),
+            "Total Deaths: {total_deaths}",
+            total_deaths=0,
         ),
         "hack_name.txt": "No game detected",
         "level_timer.txt": "00:00",
@@ -15285,12 +15431,29 @@ class TrackerWorker:
         self.pause_combo_was_pressed = False
         self.level_livesplit_running = False
         self.level_waiting_for_start = True
+        # Opening story/intro levels use the same game mode as normal levels.
+        # Automatic level timing is armed only after the ROM reaches its
+        # overworld once, keeping cutscenes and scripted deaths out of both
+        # the level timer and death counters.
+        self.level_auto_tracking_armed = False
+        self.intro_level_notice_logged = False
+        self.level_overworld_entered_at: float | None = None
+        self.level_livesplit_overworld_paused = False
         self.game_livesplit_overworld_paused = False
         self.current_rom_key: str | None = None
         self.current_time_key: str | None = None
         self.active_save_slot: int | None = None
         self.parked_time_key: str | None = None
         self.slot_blank_states: dict[int, bool] = {}
+        # death_count is the saved total for the active ROM + Mario slot.
+        # level_death_count is intentionally session-only and resets when a
+        # genuinely different level starts, never on an ordinary retry.
+        self.death_count = 0
+        self.level_death_count = 0
+        self.previous_player_state: int | None = None
+        self.previous_player_lives: int | None = None
+        self.death_detection_latched = False
+        self.death_alive_samples = 0
         self.last_time_save = 0.0
         self.game_time_parked_at_title = False
         self.run_reached_gameplay = False
@@ -15333,6 +15496,16 @@ class TrackerWorker:
     def reset_game_timer(self) -> None:
         self.command_queue.put("reset_game")
 
+    def reset_death_counter(self) -> None:
+        """Backward-compatible alias for the visible Level Deaths reset."""
+        self.reset_level_death_counter()
+
+    def reset_level_death_counter(self) -> None:
+        self.command_queue.put("reset_level_deaths")
+
+    def reset_total_death_counter(self) -> None:
+        self.command_queue.put("reset_total_deaths")
+
     def toggle_game_timer(self) -> None:
         self.command_queue.put("toggle_game")
 
@@ -15371,11 +15544,15 @@ class TrackerWorker:
         self,
         game_seconds: float | None,
         level_seconds: float | None,
+        level_deaths: int | None = None,
+        total_deaths: int | None = None,
     ) -> None:
         payload = json.dumps(
             {
                 "game_seconds": game_seconds,
                 "level_seconds": level_seconds,
+                "level_deaths": level_deaths,
+                "total_deaths": total_deaths,
             }
         )
         self.command_queue.put(
@@ -15425,6 +15602,35 @@ class TrackerWorker:
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return {}
 
+    def load_saved_deaths(self) -> dict[str, int]:
+        if not DEATH_SAVE_FILE.exists():
+            return {}
+
+        try:
+            data = json.loads(
+                DEATH_SAVE_FILE.read_text(encoding="utf-8")
+            )
+
+            if not isinstance(data, dict):
+                return {}
+
+            return {
+                str(key): max(0, int(value))
+                for key, value in data.items()
+            }
+
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+
+    def write_saved_deaths(self, saved_deaths: dict[str, int]) -> None:
+        try:
+            DEATH_SAVE_FILE.write_text(
+                json.dumps(saved_deaths, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as error:
+            self.log(f"Could not save death counter: {error}")
+
     def slot_name(self, slot: int | None) -> str:
         return {
             0: "Mario A",
@@ -15462,6 +15668,16 @@ class TrackerWorker:
             self.current_rom_key,
             slot,
         )
+        self.death_count = self.load_saved_deaths().get(
+            self.current_time_key,
+            0,
+        )
+        self.level_death_count = 0
+        self.previous_player_state = None
+        self.previous_player_lives = None
+        self.death_detection_latched = False
+        self.death_alive_samples = 0
+        self.update_death_file()
 
     def save_current_game_time(self) -> None:
         if not self.current_time_key:
@@ -15480,6 +15696,17 @@ class TrackerWorker:
             )
         except OSError as error:
             self.log(f"Could not save game time: {error}")
+
+    def save_current_death_count(self) -> None:
+        if not self.current_time_key:
+            return
+
+        saved_deaths = self.load_saved_deaths()
+        saved_deaths[self.current_time_key] = max(
+            0,
+            int(self.death_count),
+        )
+        self.write_saved_deaths(saved_deaths)
 
     def get_saved_game_time_for_slot(self, slot: int) -> float:
         self.select_save_slot(slot)
@@ -15506,6 +15733,25 @@ class TrackerWorker:
             )
         except OSError as error:
             self.log(f"Could not reset saved game time: {error}")
+
+    def clear_saved_death_count(self) -> bool:
+        if not self.current_time_key:
+            return False
+
+        self.death_count = 0
+        saved_deaths = self.load_saved_deaths()
+        saved_deaths[self.current_time_key] = 0
+        self.write_saved_deaths(saved_deaths)
+        self.update_death_file()
+        return True
+
+    def clear_level_death_count(self) -> bool:
+        if not self.current_time_key:
+            return False
+
+        self.level_death_count = 0
+        self.update_death_file()
+        return True
 
     def format_livesplit_time(self, seconds: float) -> str:
         total_ms = max(0, int(seconds * 1000))
@@ -15663,6 +15909,30 @@ class TrackerWorker:
             ),
         )
 
+    def update_death_file(self) -> None:
+        level_deaths = max(0, int(self.level_death_count))
+        total_deaths = max(0, int(self.death_count))
+        level_death_text = render_obs_text_template(
+            self.config.get("obs_deaths_text_format"),
+            "Level Deaths: {deaths}",
+            deaths=level_deaths,
+        )
+        total_death_text = render_obs_text_template(
+            self.config.get("obs_total_deaths_text_format"),
+            "Total Deaths: {total_deaths}",
+            total_deaths=total_deaths,
+        )
+        self.write_text_file("level_deaths.txt", level_death_text)
+        self.write_text_file("death_counter.txt", level_death_text)
+        self.write_text_file("total_deaths.txt", total_death_text)
+        self.send_event(
+            "deaths",
+            # deaths remains for compatibility with older UI consumers.
+            deaths=level_deaths,
+            level_deaths=level_deaths,
+            total_deaths=total_deaths,
+        )
+
     def update_timer_files(self) -> None:
         game_text = format_timer(self.game_elapsed, milliseconds=False)
         level_text = format_timer(self.level_elapsed, milliseconds=False)
@@ -15706,6 +15976,9 @@ class TrackerWorker:
     def write_no_game_files(self) -> None:
         self.update_title_files("No game detected", "Unknown")
         self.update_exit_file(0, "Unknown")
+        self.death_count = 0
+        self.level_death_count = 0
+        self.update_death_file()
         self.update_timer_files()
 
     def reset_all_timers_for_new_rom(self) -> None:
@@ -15720,12 +15993,20 @@ class TrackerWorker:
 
         self.previous_mode = None
         self.previous_exit_count = None
+        self.previous_player_state = None
+        self.previous_player_lives = None
+        self.death_detection_latched = False
+        self.death_alive_samples = 0
         self.displayed_exit_count = None
         self.provisional_goal_exit = False
         self.timers_paused = False
         self.pause_combo_was_pressed = False
         self.level_livesplit_running = False
         self.level_waiting_for_start = True
+        self.level_auto_tracking_armed = False
+        self.intro_level_notice_logged = False
+        self.level_overworld_entered_at = None
+        self.level_livesplit_overworld_paused = False
         self.game_livesplit_overworld_paused = False
         self.game_time_parked_at_title = False
         self.run_reached_gameplay = False
@@ -15733,6 +16014,8 @@ class TrackerWorker:
         self.last_progress_exit_count = None
         self.current_mode = None
         self.current_translevel = None
+        self.death_count = 0
+        self.level_death_count = 0
         self.game_manual_paused = False
         self.level_manual_paused = False
 
@@ -15740,6 +16023,7 @@ class TrackerWorker:
             self.pending_progress_sync = None
 
         self.reset_both_livesplits()
+        self.update_death_file()
         self.update_timer_files()
 
     def queue_completed_exit_sync(
@@ -15899,6 +16183,54 @@ class TrackerWorker:
                     "timer_action",
                     success=True,
                     action="reset_game",
+                    message=message,
+                )
+
+            elif command in {"reset_deaths", "reset_level_deaths"}:
+                if not self.clear_level_death_count():
+                    message = (
+                        "Select Mario A, B, or C before resetting "
+                        "the level death counter."
+                    )
+                    self.send_event(
+                        "timer_action",
+                        success=False,
+                        action="reset_level_deaths",
+                        message=message,
+                    )
+                    continue
+
+                message = "Level Deaths reset to 0 for the current level."
+                self.log(message)
+                self.send_event(
+                    "timer_action",
+                    success=True,
+                    action="reset_level_deaths",
+                    message=message,
+                )
+
+            elif command == "reset_total_deaths":
+                if not self.clear_saved_death_count():
+                    message = (
+                        "Select Mario A, B, or C before resetting "
+                        "the total death counter."
+                    )
+                    self.send_event(
+                        "timer_action",
+                        success=False,
+                        action="reset_total_deaths",
+                        message=message,
+                    )
+                    continue
+
+                message = (
+                    "Total Deaths reset to 0 for the active save file."
+                )
+                self.log(message)
+                self.send_event(
+                    "timer_action",
+                    success=True,
+                    action="reset_total_deaths",
                     message=message,
                 )
 
@@ -16165,6 +16497,9 @@ class TrackerWorker:
                         ),
                         rating=rating,
                         notes=notes,
+                        total_deaths=int(
+                            self.death_count
+                        ),
                     )
                     self.send_event(
                         "database_write",
@@ -16194,6 +16529,12 @@ class TrackerWorker:
                         ),
                         rating=rating,
                         notes=notes,
+                        total_deaths=int(
+                            result.get(
+                                "total_deaths",
+                                self.death_count,
+                            )
+                        ),
                     )
 
                 except Exception as error:
@@ -16269,6 +16610,9 @@ class TrackerWorker:
                             self.current_translevel or 0
                         )
                         self.level_elapsed = 0.0
+                        self.level_death_count = 0
+                        self.level_auto_tracking_armed = True
+                        self.intro_level_notice_logged = False
                         self.send_livesplit_command(
                             "level",
                             "reset",
@@ -16287,6 +16631,9 @@ class TrackerWorker:
                     self.level_manual_paused = False
                     self.level_waiting_for_start = False
                     self.level_livesplit_running = True
+                    if self.current_mode != OVERWORLD_MODE:
+                        self.level_overworld_entered_at = None
+                        self.level_livesplit_overworld_paused = False
                     message = "Level timer started/resumed."
 
                 self.log(message)
@@ -16347,6 +16694,9 @@ class TrackerWorker:
                                 self.current_translevel or 0
                             )
                             self.level_elapsed = 0.0
+                            self.level_death_count = 0
+                            self.level_auto_tracking_armed = True
+                            self.intro_level_notice_logged = False
                             self.send_livesplit_command(
                                 "level",
                                 "reset",
@@ -16364,6 +16714,8 @@ class TrackerWorker:
 
                         self.level_waiting_for_start = False
                         self.level_livesplit_running = True
+                        self.level_overworld_entered_at = None
+                        self.level_livesplit_overworld_paused = False
                         message = (
                             "Game and level timers started/resumed."
                         )
@@ -16390,6 +16742,8 @@ class TrackerWorker:
                 self.level_manual_paused = False
                 self.level_livesplit_running = False
                 self.level_waiting_for_start = False
+                self.level_overworld_entered_at = None
+                self.level_livesplit_overworld_paused = False
                 self.send_livesplit_command(
                     "level",
                     "reset",
@@ -16420,6 +16774,12 @@ class TrackerWorker:
                     raw_level_seconds = payload.get(
                         "level_seconds"
                     )
+                    raw_level_deaths = payload.get(
+                        "level_deaths"
+                    )
+                    raw_total_deaths = payload.get(
+                        "total_deaths"
+                    )
 
                     game_seconds = (
                         max(
@@ -16435,6 +16795,16 @@ class TrackerWorker:
                             float(raw_level_seconds),
                         )
                         if raw_level_seconds is not None
+                        else None
+                    )
+                    level_deaths = (
+                        max(0, int(raw_level_deaths))
+                        if raw_level_deaths is not None
+                        else None
+                    )
+                    total_deaths = (
+                        max(0, int(raw_total_deaths))
+                        if raw_total_deaths is not None
                         else None
                     )
 
@@ -16459,9 +16829,31 @@ class TrackerWorker:
                 if (
                     game_seconds is None
                     and level_seconds is None
+                    and level_deaths is None
+                    and total_deaths is None
                 ):
                     message = (
-                        "No timer override value was supplied."
+                        "No override value was supplied."
+                    )
+                    self.log(message)
+                    self.send_event(
+                        "timer_action",
+                        success=False,
+                        action="override",
+                        message=message,
+                    )
+                    continue
+
+                if (
+                    (
+                        level_deaths is not None
+                        or total_deaths is not None
+                    )
+                    and not self.current_time_key
+                ):
+                    message = (
+                        "Select Mario A, B, or C before overriding "
+                        "the death counters."
                     )
                     self.log(message)
                     self.send_event(
@@ -16553,10 +16945,29 @@ class TrackerWorker:
                         )
                     )
 
+                if level_deaths is not None:
+                    self.level_death_count = level_deaths
+                    changed_messages.append(
+                        f"Level Deaths {self.level_death_count}"
+                    )
+
+                if total_deaths is not None:
+                    self.death_count = total_deaths
+                    self.save_current_death_count()
+                    changed_messages.append(
+                        f"Total Deaths {self.death_count}"
+                    )
+
+                if (
+                    level_deaths is not None
+                    or total_deaths is not None
+                ):
+                    self.update_death_file()
+
                 self.update_timer_files()
 
                 message = (
-                    "Timer override applied: "
+                    "Override applied: "
                     + " | ".join(changed_messages)
                     + "."
                 )
@@ -16568,14 +16979,15 @@ class TrackerWorker:
                     message=message,
                 )
 
-                self.log(
-                    "Game timer manually overridden to "
-                    + format_timer(
-                        self.game_elapsed,
-                        milliseconds=False,
+                if game_seconds is not None:
+                    self.log(
+                        "Game timer manually overridden to "
+                        + format_timer(
+                            self.game_elapsed,
+                            milliseconds=False,
+                        )
+                        + "."
                     )
-                    + "."
-                )
 
             self.update_timer_files()
 
@@ -18936,19 +19348,26 @@ finally {
             )
             return
 
+        saved_deaths = self.load_saved_deaths()
+        saved_deaths[key] = 0
+        self.write_saved_deaths(saved_deaths)
+
         # If this is the currently active slot, reset the visible and
-        # LiveSplit game timers immediately as well.
+        # LiveSplit game timers and death counter immediately as well.
         if self.active_save_slot == slot:
             self.game_elapsed = 0.0
             self.game_started = False
             self.game_finished = False
             self.current_time_key = key
+            self.death_count = 0
+            self.level_death_count = 0
             self.send_livesplit_command("game", "reset")
+            self.update_death_file()
             self.update_timer_files()
 
         self.log(
             f"{self.slot_name(slot)} was erased; "
-            f"its saved game timer was reset to 00:00."
+            f"its saved game timer and death counters were reset."
         )
 
     def check_for_erased_slots(
@@ -18991,6 +19410,10 @@ finally {
                 ws,
                 PLAYER_STATE_ADDRESS,
             ),
+            "player_lives": self.read_byte(
+                ws,
+                PLAYER_LIVES_ADDRESS,
+            ),
             "paused": self.read_byte(ws, PAUSE_FLAG_ADDRESS),
             "translevel": self.read_byte(
                 ws,
@@ -19008,6 +19431,125 @@ finally {
             ),
         }
 
+    def update_death_counter_from_state(
+        self,
+        player_state: int,
+        mode: int,
+        player_lives: int | None = None,
+    ) -> bool:
+        previous_player_state = self.previous_player_state
+        previous_player_lives = self.previous_player_lives
+        self.previous_player_state = player_state
+        if player_lives is not None:
+            self.previous_player_lives = player_lives
+
+        entered_death_state = (
+            previous_player_state is not None
+            and player_state == 0x09
+            and previous_player_state != 0x09
+        )
+        lives_decreased = (
+            player_lives is not None
+            and previous_player_lives is not None
+            and player_lives != previous_player_lives
+            and (
+                player_lives < previous_player_lives
+                or (
+                    previous_player_lives == 0x00
+                    and player_lives == 0xFF
+                )
+            )
+        )
+        death_context = (
+            mode in {0x0F, 0x10, 0x11, 0x12, 0x13, LEVEL_MODE}
+            or player_state == 0x09
+            or (
+                mode == OVERWORLD_MODE
+                and self.level_id is not None
+            )
+        )
+
+        # A normal SMW death sets $71 to 09 and decrements $0DBE. Depending
+        # on the hack and the timing of the memory samples, either signal can
+        # arrive first or one can be skipped entirely. Keep the event latched
+        # until several normal gameplay samples have been observed so the two
+        # signals can never count the same death twice.
+        if self.death_detection_latched:
+            if (
+                mode == LEVEL_MODE
+                and player_state != 0x09
+                and not lives_decreased
+            ):
+                self.death_alive_samples += 1
+                if self.death_alive_samples >= 3:
+                    self.death_detection_latched = False
+                    self.death_alive_samples = 0
+            else:
+                self.death_alive_samples = 0
+            return False
+
+        if (
+            not death_context
+            or not (entered_death_state or lives_decreased)
+            or not self.current_time_key
+        ):
+            return False
+
+        source = (
+            "the death animation and lives counter"
+            if entered_death_state and lives_decreased
+            else "the death animation"
+            if entered_death_state
+            else "the lives counter"
+        )
+        return self.record_death(source)
+
+    def record_death(self, source: str) -> bool:
+        """Record one death and latch all alternate detection signals."""
+        if (
+            not self.current_time_key
+            or self.death_detection_latched
+            or self.level_id is None
+            or self.level_waiting_for_start
+        ):
+            return False
+
+        self.death_detection_latched = True
+        self.death_alive_samples = 0
+        self.level_death_count += 1
+        self.death_count += 1
+        self.save_current_death_count()
+        self.update_death_file()
+        self.log(
+            f"Level death {self.level_death_count}; total death "
+            f"{self.death_count} recorded for "
+            f"{self.slot_name(self.active_save_slot)} using {source}."
+        )
+        return True
+
+    def start_fresh_level_tracking(self, translevel: int) -> None:
+        """Activate a newly selected playable level before sampling deaths."""
+        self.level_id = translevel
+        self.level_elapsed = 0.0
+        self.level_death_count = 0
+        self.level_finished = False
+        self.level_manual_paused = False
+        self.timers_paused = False
+        self.level_overworld_entered_at = None
+        self.level_livesplit_overworld_paused = False
+
+        # Reset first so LiveSplit is guaranteed to be stopped at zero.
+        self.send_livesplit_command("level", "reset")
+        self.send_livesplit_command("level", "starttimer")
+        self.level_livesplit_running = True
+        self.level_waiting_for_start = False
+        self.update_death_file()
+
+        self.log(
+            f"Level timer started for level "
+            f"{translevel:02X}."
+        )
+
     def update_timers_from_state(
         self,
         state: dict[str, int],
@@ -19019,6 +19561,14 @@ finally {
         translevel = state["translevel"]
         self.current_mode = mode
         self.current_translevel = translevel
+
+        if mode == OVERWORLD_MODE and not self.level_auto_tracking_armed:
+            self.level_auto_tracking_armed = True
+            self.intro_level_notice_logged = False
+            self.log(
+                "Opening intro/cutscene finished; automatic level timing "
+                "and death counting are now armed."
+            )
 
         # The save-slot byte can be transient while leaving the title/file
         # menu. Keep checking during overworld and level gameplay until a
@@ -19097,6 +19647,10 @@ finally {
                 if (
                     self.level_id is not None
                     and not self.level_finished
+                    and not (
+                        mode == OVERWORLD_MODE
+                        and self.level_livesplit_overworld_paused
+                    )
                 ):
                     self.send_livesplit_command("level", "resume")
                     self.level_livesplit_running = True
@@ -19140,6 +19694,9 @@ finally {
             # back over the saved value while sitting at the title screen.
             self.parked_time_key = self.current_time_key
             self.current_time_key = None
+            self.death_count = 0
+            self.level_death_count = 0
+            self.update_death_file()
 
             self.game_started = False
             self.game_finished = False
@@ -19151,8 +19708,18 @@ finally {
             self.timers_paused = False
             self.game_manual_paused = False
             self.level_manual_paused = False
+            self.level_id = None
+            self.level_elapsed = 0.0
+            self.level_finished = False
+            self.level_waiting_for_start = True
+            self.level_livesplit_running = False
+            self.level_auto_tracking_armed = False
+            self.intro_level_notice_logged = False
+            self.level_overworld_entered_at = None
+            self.level_livesplit_overworld_paused = False
 
             self.send_livesplit_command("game", "reset")
+            self.send_livesplit_command("level", "reset")
             self.update_timer_files()
             self.log(
                 f"Saved {saved_text} for "
@@ -19222,6 +19789,23 @@ finally {
                 )
             )
 
+        # Activate the first playable level before checking this sample's
+        # death signals. Without this ordering, a very fast first death could
+        # arrive in the same USB sample as the level transition and be ignored
+        # because the level had not officially started yet.
+        if (
+            mode == LEVEL_MODE
+            and self.level_waiting_for_start
+            and self.level_auto_tracking_armed
+        ):
+            self.start_fresh_level_tracking(translevel)
+
+        death_detected_this_sample = self.update_death_counter_from_state(
+            state["player_state"],
+            mode,
+            state.get("player_lives"),
+        )
+
         if (
             self.game_started
             and not self.game_finished
@@ -19231,6 +19815,8 @@ finally {
             self.timers_paused = True
             self.pause_both_livesplits()
             self.level_livesplit_running = False
+            self.level_overworld_entered_at = None
+            self.level_livesplit_overworld_paused = False
             self.save_current_game_time()
             self.log(
                 f"Both timers stopped at ending mode {mode:02X}."
@@ -19338,20 +19924,16 @@ finally {
                 f"{format_timer(self.level_elapsed, False)}."
             )
 
-        # Older hacks can send Mario back to the overworld after a death.
-        # A return to the overworld therefore does not, by itself, prove that
-        # the level ended. Keep the current level and elapsed time parked until
-        # either the goal/exit logic above confirms completion or the player
-        # selects a different translevel.
+        # Older hacks can send Mario back to the overworld after a death. A
+        # return to the overworld therefore does not, by itself, prove that the
+        # level ended. Keep the level timer running for the same configurable
+        # overworld grace period used by the game timer. If that period expires,
+        # temporarily pause it until gameplay resumes.
         if (
             mode == OVERWORLD_MODE
             and self.previous_mode != OVERWORLD_MODE
             and self.level_id is not None
         ):
-            if self.level_livesplit_running:
-                self.send_livesplit_command("level", "pause")
-            self.level_livesplit_running = False
-
             if self.level_finished:
                 self.send_livesplit_command("level", "reset")
                 self.level_manual_paused = False
@@ -19359,13 +19941,61 @@ finally {
                 self.level_id = None
                 self.level_elapsed = 0.0
                 self.level_finished = False
+                self.level_overworld_entered_at = None
+                self.level_livesplit_overworld_paused = False
                 self.log(
                     "Completed level timer reset on return to overworld."
                 )
             else:
+                # Some older or heavily patched hacks return directly to the
+                # overworld without leaving $71 at 09 long enough for a USB
+                # memory sample, and some infinite-lives patches also leave
+                # $0DBE unchanged. An uncleared return from an active level is
+                # therefore the final fallback signal. The shared death latch
+                # prevents this from double-counting a death already caught by
+                # the animation or lives counter.
+                if (
+                    not death_detected_this_sample
+                    and not self.death_detection_latched
+                    and not self.level_waiting_for_start
+                ):
+                    self.record_death(
+                        "the uncleared level-to-overworld fallback"
+                    )
+                self.level_overworld_entered_at = now
+                self.level_livesplit_overworld_paused = False
                 self.log(
-                    "Level timer parked on the overworld after a death; "
-                    "elapsed time will resume if the same level is selected."
+                    "Level timer continuing on the overworld after a death "
+                    "during the configured grace period."
+                )
+
+        if (
+            mode == OVERWORLD_MODE
+            and self.level_id is not None
+            and not self.level_finished
+        ):
+            if self.level_overworld_entered_at is None:
+                self.level_overworld_entered_at = now
+                self.level_livesplit_overworld_paused = False
+
+            level_idle_limit = max(
+                0,
+                int(self.config["overworld_idle_seconds"]),
+            )
+            level_overworld_age = (
+                now - self.level_overworld_entered_at
+            )
+            if (
+                level_overworld_age >= level_idle_limit
+                and not self.level_livesplit_overworld_paused
+            ):
+                if self.level_livesplit_running:
+                    self.send_livesplit_command("level", "pause")
+                self.level_livesplit_running = False
+                self.level_livesplit_overworld_paused = True
+                self.log(
+                    f"Level timer paused after {level_idle_limit} "
+                    "seconds on the overworld."
                 )
 
         # When gameplay resumes after a death-to-overworld transition, keep
@@ -19380,11 +20010,15 @@ finally {
         ):
             if translevel == self.level_id:
                 if (
+                    self.level_livesplit_overworld_paused
+                    and
                     not self.timers_paused
                     and not self.level_manual_paused
                 ):
                     self.send_livesplit_command("level", "resume")
                     self.level_livesplit_running = True
+                self.level_overworld_entered_at = None
+                self.level_livesplit_overworld_paused = False
                 self.log(
                     f"Level timer resumed for level {translevel:02X} at "
                     f"{format_timer(self.level_elapsed, False)}."
@@ -19394,9 +20028,12 @@ finally {
                 self.send_livesplit_command("level", "reset")
                 self.level_id = None
                 self.level_elapsed = 0.0
+                self.level_death_count = 0
                 self.level_finished = False
                 self.level_manual_paused = False
                 self.level_waiting_for_start = True
+                self.level_overworld_entered_at = None
+                self.level_livesplit_overworld_paused = False
                 self.log(
                     f"New level selected ({previous_level_id:02X} -> "
                     f"{translevel:02X}); starting a fresh level timer."
@@ -19416,9 +20053,12 @@ finally {
             self.level_livesplit_running = False
             self.level_id = None
             self.level_elapsed = 0.0
+            self.level_death_count = 0
             self.level_finished = False
             self.level_manual_paused = False
             self.level_waiting_for_start = True
+            self.level_overworld_entered_at = None
+            self.level_livesplit_overworld_paused = False
             self.log(
                 f"Direct level change detected ({previous_level_id:02X} -> "
                 f"{translevel:02X}); starting a fresh level timer."
@@ -19427,40 +20067,57 @@ finally {
         # Start a fresh level timer only after a ROM reset, a confirmed goal,
         # or selection of a different level. Deaths and retry prompts never
         # arm this flag, so they cannot restart the timer.
-        if mode == LEVEL_MODE and self.level_waiting_for_start:
-            self.level_id = translevel
-            self.level_elapsed = 0.0
-            self.level_finished = False
-            self.level_manual_paused = False
-            self.timers_paused = False
+        if (
+            mode == LEVEL_MODE
+            and self.level_waiting_for_start
+            and self.level_auto_tracking_armed
+        ):
+            self.start_fresh_level_tracking(translevel)
 
-            # Reset first so LiveSplit is guaranteed to be stopped at zero.
-            self.send_livesplit_command("level", "reset")
-            self.send_livesplit_command("level", "starttimer")
-            self.level_livesplit_running = True
-            self.level_waiting_for_start = False
-
+        elif (
+            mode == LEVEL_MODE
+            and self.level_waiting_for_start
+            and not self.level_auto_tracking_armed
+            and not self.intro_level_notice_logged
+        ):
+            self.intro_level_notice_logged = True
             self.log(
-                f"Level timer started for level "
-                f"{translevel:02X}."
+                "Opening intro/cutscene detected; level timing and death "
+                "counting will begin after the overworld and first level "
+                "selection."
             )
 
-        # Keep counting through death animations and retry prompts.
-        # Pause only after a physical Start-button press, or once the
-        # player returns to the overworld / finishes the level.
+        # Keep counting through death animations, retry prompts, and the
+        # configured overworld grace period. A completed level is stopped by
+        # the goal/exit logic above and reset only after reaching overworld.
+        level_within_overworld_grace = (
+            mode == OVERWORLD_MODE
+            and self.level_overworld_entered_at is not None
+            and not self.level_livesplit_overworld_paused
+            and (
+                now - self.level_overworld_entered_at
+                < max(
+                    0,
+                    int(self.config["overworld_idle_seconds"]),
+                )
+            )
+        )
         level_should_run = (
             self.level_id is not None
             and not self.level_finished
             and not self.timers_paused
             and not self.level_manual_paused
-            and mode not in {
-                PLAYER_SELECT_MODE,
-                OVERWORLD_MODE,
-                0x00,
-                0x01,
-                0x02,
-                *ENDING_MODES,
-            }
+            and (
+                level_within_overworld_grace
+                or mode not in {
+                    PLAYER_SELECT_MODE,
+                    OVERWORLD_MODE,
+                    0x00,
+                    0x01,
+                    0x02,
+                    *ENDING_MODES,
+                }
+            )
         )
 
         if level_should_run:
@@ -19501,6 +20158,7 @@ finally {
                 if rom_path != self.previous_rom_path:
                     if self.previous_rom_path:
                         self.save_current_game_time()
+                        self.save_current_death_count()
                         self.log(
                             "Saved "
                             + self.slot_name(self.active_save_slot)
@@ -19643,6 +20301,7 @@ finally {
 
         finally:
             self.save_current_game_time()
+            self.save_current_death_count()
 
             try:
                 ws.close()
@@ -19828,11 +20487,68 @@ class TrackerApp:
         self.level_timer_var = tk.StringVar(
             value="00:00"
         )
+        self.death_counter_var = tk.StringVar(
+            value="0"
+        )
+        self.total_death_counter_var = tk.StringVar(
+            value="0"
+        )
         self.status_var = tk.StringVar(
             value="Ready"
         )
         self.current_hack_url = ""
         self.current_hack_record: dict[str, Any] = {}
+        saved_last_hack = self.config.get(
+            "last_launched_hack",
+            {},
+        )
+        self.last_launched_hack: dict[str, Any] = (
+            dict(saved_last_hack)
+            if isinstance(saved_last_hack, dict)
+            else {}
+        )
+        saved_recent_hacks = self.config.get(
+            "recent_launched_hacks",
+            [],
+        )
+        self.recent_launched_hacks: list[dict[str, Any]] = []
+        recent_identities: set[str] = set()
+        for saved_hack in (
+            saved_recent_hacks
+            if isinstance(saved_recent_hacks, list)
+            else []
+        ):
+            if not isinstance(saved_hack, dict):
+                continue
+            snapshot = self._replay_hack_snapshot(saved_hack)
+            if not str(snapshot.get("title", "")).strip():
+                continue
+            identity = self._replay_hack_identity(snapshot)
+            if identity in recent_identities:
+                continue
+            recent_identities.add(identity)
+            self.recent_launched_hacks.append(snapshot)
+            if len(self.recent_launched_hacks) >= 5:
+                break
+        if self.last_launched_hack:
+            last_identity = self._replay_hack_identity(
+                self.last_launched_hack
+            )
+            if last_identity not in recent_identities:
+                self.recent_launched_hacks.insert(
+                    0,
+                    dict(self.last_launched_hack),
+                )
+                self.recent_launched_hacks = (
+                    self.recent_launched_hacks[:5]
+                )
+        self.replay_recent_hack_var = tk.StringVar(
+            value="No recent hacks"
+        )
+        self.replay_recent_hack_games: dict[
+            str,
+            dict[str, Any],
+        ] = {}
         try:
             self.hack_catalog: list[dict[str, Any]] = (
                 self.stats_db.load_catalog()
@@ -19915,6 +20631,12 @@ class TrackerApp:
             value=""
         )
         self.level_time_override_var = tk.StringVar(
+            value=""
+        )
+        self.level_deaths_override_var = tk.StringVar(
+            value=""
+        )
+        self.total_deaths_override_var = tk.StringVar(
             value=""
         )
         self.game_livesplit_port_var = tk.StringVar(
@@ -20622,7 +21344,41 @@ class TrackerApp:
             trailing_photo=self.mario_card_photos.get(
                 "mario"
             ),
+            header_action_text="↻  Replay Recent Hack",
+            header_action_command=self.replay_last_hack,
+            header_action_bg=THEME["orange"],
         )
+        self.replay_last_hack_button = getattr(
+            game_body,
+            "header_action_button",
+            None,
+        )
+        if self.replay_last_hack_button is not None:
+            self.replay_last_hack_button.configure(width=21)
+        replay_header = getattr(
+            game_body,
+            "header_frame",
+            None,
+        )
+        self.replay_recent_hack_combo = None
+        if replay_header is not None:
+            self.replay_recent_hack_combo = ttk.Combobox(
+                replay_header,
+                textvariable=self.replay_recent_hack_var,
+                state="readonly",
+                style="HackPicker.TCombobox",
+                width=27,
+                height=5,
+                font=("Segoe UI", 10),
+                justify="center",
+            )
+            self.replay_recent_hack_combo.pack(
+                side="right",
+                padx=(self._ui_px(6), 0),
+                pady=self._ui_px(3),
+                ipady=self._ui_px(2),
+            )
+        self._update_replay_last_hack_button()
 
         game_layout = tk.Frame(
             game_body,
@@ -20748,6 +21504,107 @@ class TrackerApp:
         ).pack(
             side="left",
             padx=(8, 0),
+        )
+
+        death_panel = tk.Frame(
+            game_layout,
+            bg="#F1FFF0",
+            highlightbackground=THEME["red"],
+            highlightthickness=self._ui_px(2),
+            padx=self._ui_px(10),
+            pady=self._ui_px(7),
+        )
+        self.current_hack_death_panel = death_panel
+        death_panel.place(
+            relx=0.5,
+            rely=0.5,
+            anchor="center",
+        )
+
+        death_contents = tk.Frame(death_panel, bg="#F1FFF0")
+        death_contents.pack(fill="both", expand=True)
+        if self.mario_death_photo is not None:
+            tk.Label(
+                death_contents,
+                image=self.mario_death_photo,
+                bg="#F1FFF0",
+                bd=0,
+                highlightthickness=0,
+            ).pack(
+                side="left",
+                padx=(0, self._ui_px(10)),
+            )
+
+        counter_area = tk.Frame(death_contents, bg="#F1FFF0")
+        counter_area.pack(side="left", fill="both", expand=True)
+
+        def make_death_counter(
+            title: str,
+            variable: tk.StringVar,
+            reset_text: str,
+            reset_command: Callable[[], None],
+            accent: str,
+        ) -> tuple[tk.Frame, tk.Button]:
+            counter = tk.Frame(
+                counter_area,
+                bg="#F1FFF0",
+            )
+            counter.pack(
+                side="left",
+                fill="both",
+                expand=True,
+                padx=self._ui_px(5),
+            )
+            tk.Label(
+                counter,
+                text=title,
+                font=("Segoe UI", 9, "bold"),
+                fg=accent,
+                bg="#F1FFF0",
+                anchor="center",
+            ).pack(fill="x")
+            OutlinedLabel(
+                counter,
+                textvariable=variable,
+                font=("Segoe UI", 20, "bold"),
+                fg=THEME["text"],
+                bg="#F1FFF0",
+                anchor="center",
+                justify="center",
+            ).pack(fill="x")
+
+            button = self._make_action_button(
+                counter,
+                text=reset_text,
+                command=reset_command,
+                bg=accent,
+                active_bg=THEME["navy"],
+                width=17,
+                pad_y=3,
+                font_size=8,
+            )
+            button.pack(fill="x", pady=(self._ui_px(5), 0))
+            return counter, button
+
+        (
+            self.current_hack_level_death_panel,
+            self.reset_deaths_button,
+        ) = make_death_counter(
+            "LEVEL DEATHS",
+            self.death_counter_var,
+            "Reset Level Deaths",
+            self.reset_death_counter,
+            THEME["red"],
+        )
+        (
+            self.current_hack_total_death_panel,
+            self.reset_total_deaths_button,
+        ) = make_death_counter(
+            "TOTAL DEATHS",
+            self.total_death_counter_var,
+            "Reset Total Deaths",
+            self.reset_total_death_counter,
+            THEME["purple"],
         )
 
         spreadsheet_actions = tk.Frame(
@@ -20988,7 +21845,6 @@ class TrackerApp:
             weight=1,
             uniform="timer_action_row",
         )
-
         self.game_toggle_button = self._make_action_button(
             action_grid,
             text="▶  Start Game Timer",
@@ -21130,6 +21986,7 @@ class TrackerApp:
             highlightcolor=THEME["blue"],
             highlightthickness=1,
             width=11,
+            justify="center",
         )
         game_override_entry.grid(
             row=0,
@@ -21165,12 +22022,85 @@ class TrackerApp:
             highlightcolor=THEME["green"],
             highlightthickness=1,
             width=11,
+            justify="center",
         )
         level_override_entry.grid(
             row=0,
             column=3,
             padx=(0, 9),
             pady=(5, 2),
+            sticky="w",
+        )
+
+        tk.Label(
+            override_frame,
+            text="☠  Level Deaths:",
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["red"],
+            bg="#EDF7FF",
+        ).grid(
+            row=1,
+            column=0,
+            padx=(10, 5),
+            pady=(2, 2),
+            sticky="w",
+        )
+
+        level_deaths_override_entry = tk.Entry(
+            override_frame,
+            textvariable=self.level_deaths_override_var,
+            font=("Consolas", 12, "bold"),
+            bg="white",
+            fg=THEME["text"],
+            insertbackground=THEME["text"],
+            relief="flat",
+            highlightbackground="#B7CEE8",
+            highlightcolor=THEME["red"],
+            highlightthickness=1,
+            width=11,
+            justify="center",
+        )
+        level_deaths_override_entry.grid(
+            row=1,
+            column=1,
+            padx=(0, 9),
+            pady=(2, 2),
+            sticky="w",
+        )
+
+        tk.Label(
+            override_frame,
+            text="☠  Total Deaths:",
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["red"],
+            bg="#EDF7FF",
+        ).grid(
+            row=1,
+            column=2,
+            padx=(0, 5),
+            pady=(2, 2),
+            sticky="w",
+        )
+
+        total_deaths_override_entry = tk.Entry(
+            override_frame,
+            textvariable=self.total_deaths_override_var,
+            font=("Consolas", 12, "bold"),
+            bg="white",
+            fg=THEME["text"],
+            insertbackground=THEME["text"],
+            relief="flat",
+            highlightbackground="#B7CEE8",
+            highlightcolor=THEME["red"],
+            highlightthickness=1,
+            width=11,
+            justify="center",
+        )
+        total_deaths_override_entry.grid(
+            row=1,
+            column=3,
+            padx=(0, 9),
+            pady=(2, 2),
             sticky="w",
         )
 
@@ -21185,22 +22115,24 @@ class TrackerApp:
         ).grid(
             row=0,
             column=4,
+            rowspan=2,
             padx=(0, 10),
-            pady=(4, 2),
-            sticky="e",
+            pady=4,
+            sticky="nse",
         )
 
         tk.Label(
             override_frame,
             text=(
                 "Use SS, MM:SS, or H:MM:SS. "
-                "Leave either field blank to keep that timer unchanged."
+                "Deaths must be whole numbers. Leave any field blank "
+                "to keep it unchanged."
             ),
             font=("Segoe UI", 9),
             fg=THEME["muted"],
             bg="#EDF7FF",
         ).grid(
-            row=1,
+            row=2,
             column=0,
             columnspan=5,
             padx=12,
@@ -24047,7 +24979,7 @@ class TrackerApp:
 
         OutlinedLabel(
             body,
-            text="Overworld idle pause:",
+            text="Overworld timer grace:",
             font=("Segoe UI", 10, "bold"),
             fg=THEME["text"],
             bg="#F9F5FF",
@@ -24413,6 +25345,7 @@ class TrackerApp:
         self.coin_block_photo = None
         self.mario_timer_photo = None
         self.piranha_pipe_photo = None
+        self.mario_death_photo = None
         self.background_photo = None
         self.footer_sprite_photos: list = []
         self.mario_menu_photos: dict[str, object] = {}
@@ -24504,6 +25437,45 @@ class TrackerApp:
             self.extra_banner_character_sources[
                 "piranha_pipe"
             ] = pipe_image.copy()
+
+            death_image_path = (
+                bundled_resource_path("app_assets")
+                / "mario_death.png"
+            )
+            if death_image_path.exists():
+                death_image = Image.open(
+                    death_image_path
+                ).convert("RGBA")
+                death_pixels = []
+                for red, green, blue, alpha in death_image.getdata():
+                    is_checkerboard = (
+                        max(red, green, blue)
+                        - min(red, green, blue)
+                        <= 3
+                        and min(red, green, blue) >= 225
+                    )
+                    death_pixels.append(
+                        (
+                            red,
+                            green,
+                            blue,
+                            0 if is_checkerboard else alpha,
+                        )
+                    )
+                death_image.putdata(death_pixels)
+                death_bounds = death_image.getbbox()
+                if death_bounds is not None:
+                    death_image = death_image.crop(death_bounds)
+                death_image.thumbnail(
+                    (
+                        self._ui_px(58),
+                        self._ui_px(64),
+                    ),
+                    Image.Resampling.NEAREST,
+                )
+                self.mario_death_photo = ImageTk.PhotoImage(
+                    death_image
+                )
 
             muncher_image = Image.new(
                 "RGBA",
@@ -26941,6 +27913,9 @@ class TrackerApp:
         icon: str,
         icon_photo=None,
         trailing_photo=None,
+        header_action_text: str | None = None,
+        header_action_command=None,
+        header_action_bg: str | None = None,
     ) -> tk.Frame:
         shadow = tk.Frame(
             parent,
@@ -27020,6 +27995,23 @@ class TrackerApp:
                 pady=self._ui_px(2),
             )
 
+        header_action_button = None
+        if header_action_text and header_action_command is not None:
+            header_action_button = self._make_action_button(
+                header,
+                text=header_action_text,
+                command=header_action_command,
+                bg=header_action_bg or THEME["blue"],
+                active_bg=THEME["navy"],
+                width=18,
+                pad_y=3,
+            )
+            header_action_button.pack(
+                side="right",
+                padx=(self._ui_px(6), self._ui_px(4)),
+                pady=self._ui_px(3),
+            )
+
         body = tk.Frame(
             card,
             bg=THEME["panel"],
@@ -27029,6 +28021,8 @@ class TrackerApp:
             padx=self._ui_px(12),
             pady=(self._ui_px(6), self._ui_px(10)),
         )
+        body.header_action_button = header_action_button
+        body.header_frame = header
         return body
 
     def _make_status_tile(
@@ -27577,13 +28571,26 @@ class TrackerApp:
         level_text = (
             self.level_time_override_var.get().strip()
         )
+        level_deaths_text = (
+            self.level_deaths_override_var.get().strip()
+        )
+        total_deaths_text = (
+            self.total_deaths_override_var.get().strip()
+        )
 
-        if not game_text and not level_text:
+        if not any(
+            (
+                game_text,
+                level_text,
+                level_deaths_text,
+                total_deaths_text,
+            )
+        ):
             messagebox.showerror(
                 APP_NAME,
                 (
-                    "Enter a Game Time, a Level Time, "
-                    "or both before applying the override."
+                    "Enter at least one timer or death-counter value "
+                    "before applying the override."
                 ),
                 parent=self.root,
             )
@@ -27591,6 +28598,8 @@ class TrackerApp:
 
         game_seconds: float | None = None
         level_seconds: float | None = None
+        level_deaths: int | None = None
+        total_deaths: int | None = None
 
         if game_text:
             try:
@@ -27626,11 +28635,44 @@ class TrackerApp:
                 )
                 return
 
+        for label, text_value, target_name in (
+            (
+                "Level Deaths",
+                level_deaths_text,
+                "level_deaths",
+            ),
+            (
+                "Total Deaths",
+                total_deaths_text,
+                "total_deaths",
+            ),
+        ):
+            if not text_value:
+                continue
+            try:
+                parsed_value = int(text_value)
+                if parsed_value < 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror(
+                    APP_NAME,
+                    (
+                        f"The {label} override is invalid.\n\n"
+                        "Enter a whole number that is 0 or greater."
+                    ),
+                    parent=self.root,
+                )
+                return
+            if target_name == "level_deaths":
+                level_deaths = parsed_value
+            else:
+                total_deaths = parsed_value
+
         if not self.worker:
             messagebox.showerror(
                 APP_NAME,
                 (
-                    "The tracker is reconnecting. Try the timer "
+                    "The tracker is reconnecting. Try the "
                     "override again in a moment."
                 ),
                 parent=self.root,
@@ -27640,18 +28682,24 @@ class TrackerApp:
         self.worker.override_timers(
             game_seconds=game_seconds,
             level_seconds=level_seconds,
+            level_deaths=level_deaths,
+            total_deaths=total_deaths,
         )
 
         targets: list[str] = []
         if game_seconds is not None:
-            targets.append("game")
+            targets.append("game timer")
         if level_seconds is not None:
-            targets.append("level")
+            targets.append("level timer")
+        if level_deaths is not None:
+            targets.append("level deaths")
+        if total_deaths is not None:
+            targets.append("total deaths")
 
         self.status_var.set(
             "Applying "
             + " and ".join(targets)
-            + " timer override…"
+            + " override…"
         )
 
     def apply_idle_time(self) -> None:
@@ -27662,7 +28710,7 @@ class TrackerApp:
         except ValueError:
             messagebox.showerror(
                 APP_NAME,
-                "Overworld idle seconds must be a whole number "
+                "Overworld timer grace must be a whole number "
                 "that is 0 or greater.",
             )
             return
@@ -27674,7 +28722,7 @@ class TrackerApp:
             self.worker.config["overworld_idle_seconds"] = idle_seconds
 
         self.status_var.set(
-            f"Overworld pause time set to {idle_seconds} seconds."
+            f"Overworld timer grace set to {idle_seconds} seconds."
         )
 
     def toggle_pause_timers(self) -> None:
@@ -30578,6 +31626,7 @@ class TrackerApp:
             "difficulty",
             "type",
             "exits",
+            "deaths",
             "percentage",
             "rating",
             "playtime",
@@ -30642,6 +31691,7 @@ class TrackerApp:
             "difficulty": "Difficulty",
             "type": "Type",
             "exits": "Completed Exits",
+            "deaths": "Total Deaths",
             "percentage": "% Complete",
             "rating": "My Rating",
             "playtime": "Playtime",
@@ -30690,6 +31740,7 @@ class TrackerApp:
             ("difficulty", 130),
             ("type", 140),
             ("exits", 125),
+            ("deaths", 115),
             ("percentage", 110),
             ("rating", 100),
             ("playtime", 120),
@@ -30833,6 +31884,35 @@ class TrackerApp:
         self.tracker_list_widgets["cell_overlays"] = {}
         self.tracker_list_records = {}
 
+        legacy_note_frame = tk.Frame(
+            dialog,
+            bg=palette["window"],
+        )
+        legacy_note_frame.pack(
+            fill="x",
+            padx=14,
+            pady=(0, 5),
+        )
+        legacy_note_star = tk.Label(
+            legacy_note_frame,
+            text="*",
+            font=("Segoe UI", 11, "bold"),
+            fg=THEME["yellow"],
+            bg=palette["window"],
+        )
+        legacy_note_star.pack(side="left")
+        legacy_note_label = tk.Label(
+            legacy_note_frame,
+            text=(
+                " Played before the death-counter update; "
+                "a historical death total is not available."
+            ),
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["muted"],
+            bg=palette["window"],
+        )
+        legacy_note_label.pack(side="left")
+
         button_bar = tk.Frame(
             dialog,
             bg=palette["window"],
@@ -30908,6 +31988,9 @@ class TrackerApp:
                 "search_entry": search_entry,
                 "button_bar": button_bar,
                 "button_hint_label": button_hint_label,
+                "legacy_note_frame": legacy_note_frame,
+                "legacy_note_star": legacy_note_star,
+                "legacy_note_label": legacy_note_label,
             }
         )
 
@@ -30959,6 +32042,7 @@ class TrackerApp:
                 ("filters", palette["panel"]),
                 ("tree_frame", palette["panel"]),
                 ("button_bar", palette["window"]),
+                ("legacy_note_frame", palette["window"]),
             ):
                 widget = self.tracker_list_widgets.get(
                     widget_key
@@ -30987,6 +32071,23 @@ class TrackerApp:
                 button_hint_label.configure(
                     bg=palette["window"],
                     fg=palette["muted"],
+                )
+
+            legacy_note_label = self.tracker_list_widgets.get(
+                "legacy_note_label"
+            )
+            if legacy_note_label is not None:
+                legacy_note_label.configure(
+                    bg=palette["window"],
+                    fg=palette["muted"],
+                )
+            legacy_note_star = self.tracker_list_widgets.get(
+                "legacy_note_star"
+            )
+            if legacy_note_star is not None:
+                legacy_note_star.configure(
+                    bg=palette["window"],
+                    fg=THEME["yellow"],
                 )
 
             tree_frame = self.tracker_list_widgets.get(
@@ -31184,6 +32285,13 @@ class TrackerApp:
                 if smwc_rating is not None
                 else None
             )
+            total_deaths = record.get("total_deaths")
+            legacy_death_count = bool(
+                record.get("death_count_legacy")
+            ) and total_deaths is None
+            display_record["_legacy_death_count"] = (
+                legacy_death_count
+            )
             self.tracker_list_records[
                 iid
             ] = display_record
@@ -31208,6 +32316,15 @@ class TrackerApp:
                         str(completed_exits)
                         + "/"
                         + str(total_exits)
+                    ),
+                    (
+                        "*"
+                        if legacy_death_count
+                        else (
+                            str(max(0, int(total_deaths)))
+                            if total_deaths is not None
+                            else "—"
+                        )
                     ),
                     f"{percentage_complete}%",
                     (
@@ -31292,6 +32409,7 @@ class TrackerApp:
             "difficulty": "Difficulty",
             "type": "Type",
             "exits": "Completed Exits",
+            "deaths": "Total Deaths",
             "percentage": "% Complete",
             "rating": "My Rating",
             "playtime": "Playtime",
@@ -32348,6 +33466,7 @@ class TrackerApp:
     ) -> None:
         editable_columns = {
             "exits",
+            "deaths",
             "percentage",
             "rating",
             "playtime",
@@ -32366,6 +33485,9 @@ class TrackerApp:
         total_exits = max(0, int(record.get("total_exits") or 0))
         personal_rating = record.get("personal_rating")
         playtime_seconds = max(0, int(record.get("playtime_seconds") or 0))
+        total_deaths_update: int | None | object = (
+            PRESERVE_TRACKER_TOTAL_DEATHS
+        )
         date_started = str(record.get("date_started") or "")
         date_completed = str(record.get("date_completed") or "")
         stripped = str(value).strip()
@@ -32392,6 +33514,15 @@ class TrackerApp:
                 personal_rating = float(stripped)
                 if not 1 <= personal_rating <= 5:
                     raise ValueError("My Rating must be from 1 through 5.")
+        elif column == "deaths":
+            if not stripped or stripped in {"*", "—", "-"}:
+                total_deaths_update = None
+            else:
+                total_deaths_update = int(stripped)
+                if total_deaths_update < 0:
+                    raise ValueError(
+                        "Total deaths cannot be negative."
+                    )
         elif column == "playtime":
             playtime_seconds = (
                 int(self.parse_timer_override(stripped))
@@ -32424,6 +33555,7 @@ class TrackerApp:
             date_started,
             date_completed,
             str(record.get("notes") or ""),
+            total_deaths=total_deaths_update,
         )
         self._refresh_my_tracker()
         self._refresh_database_status()
@@ -32511,7 +33643,7 @@ class TrackerApp:
             )
             menu.add_separator()
             menu.add_command(
-                label="Edit rating, progress, and tracker entry",
+                label="Edit deaths, rating, progress, and tracker entry",
                 command=self._edit_tracker_record,
             )
             menu.add_separator()
@@ -32735,6 +33867,7 @@ class TrackerApp:
             "difficulty",
             "type",
             "exits",
+            "deaths",
             "percentage",
             "rating",
             "playtime",
@@ -33165,6 +34298,19 @@ class TrackerApp:
                         text_outline_color = None
                         bold = True
 
+                elif column == "deaths":
+                    # Match the clean alternating colors used by Overview.
+                    # A custom column or entire-table style can still replace
+                    # these colors in the shared customization block below.
+                    background = (
+                        palette["tree"]
+                        if row_index % 2 == 0
+                        else palette["panel_alt"]
+                    )
+                    foreground = palette["text"]
+                    cell_gradient_start = None
+                    cell_gradient_end = None
+
                 elif column in {
                     "#0",
                     "title",
@@ -33226,6 +34372,16 @@ class TrackerApp:
                         bar_start_color = None
                         bar_end_color = None
                         text_outline_color = None
+
+                if (
+                    column == "deaths"
+                    and bool(record.get("_legacy_death_count"))
+                ):
+                    # The marker stays conspicuously yellow even when the
+                    # user gives the rest of this column a custom color.
+                    foreground = THEME["yellow"]
+                    text_outline_color = "#000000"
+                    bold = True
 
                 if is_selected:
                     background = (
@@ -33819,6 +34975,16 @@ class TrackerApp:
                 False,
             )
         )
+        total_deaths_value = record.get("total_deaths")
+        total_deaths_var = tk.StringVar(
+            value=(
+                str(max(0, int(total_deaths_value)))
+                if total_deaths_value is not None
+                else "*"
+                if bool(record.get("death_count_legacy"))
+                else ""
+            )
+        )
         started_var = tk.StringVar(
             value=str(record["date_started"] or "")
         )
@@ -33919,14 +35085,22 @@ class TrackerApp:
             "Playtime:",
             playtime_var,
         )
+        total_deaths_entry = add_field(
+            6,
+            "Total deaths:",
+            total_deaths_var,
+        )
         tk.Label(
             body,
-            text="Use YYYY-MM-DD for dates and H:MM:SS for playtime.",
+            text=(
+                "Use YYYY-MM-DD for dates and H:MM:SS for playtime. "
+                "Enter a whole number for known deaths, or * if unknown."
+            ),
             font=("Segoe UI", 8),
             fg=palette["muted"],
             bg=palette["panel"],
         ).grid(
-            row=6,
+            row=7,
             column=0,
             columnspan=2,
             sticky="w",
@@ -33939,7 +35113,7 @@ class TrackerApp:
             fg=palette["text"],
             bg=palette["panel"],
         ).grid(
-            row=7,
+            row=8,
             column=0,
             columnspan=2,
             sticky="w",
@@ -33958,7 +35132,7 @@ class TrackerApp:
             highlightthickness=1,
         )
         notes_box.grid(
-            row=8,
+            row=9,
             column=0,
             columnspan=2,
             sticky="nsew",
@@ -33974,7 +35148,7 @@ class TrackerApp:
             bg=palette["panel"],
         )
         button_bar.grid(
-            row=9,
+            row=10,
             column=0,
             columnspan=2,
             sticky="e",
@@ -34010,6 +35184,22 @@ class TrackerApp:
                     if playtime_text
                     else 0
                 )
+                total_deaths_text = (
+                    total_deaths_var.get().strip()
+                )
+                if total_deaths_text in {
+                    "",
+                    "*",
+                    "—",
+                    "-",
+                }:
+                    total_deaths = None
+                else:
+                    total_deaths = int(total_deaths_text)
+                    if total_deaths < 0:
+                        raise ValueError(
+                            "Total deaths cannot be negative."
+                        )
 
                 for date_text in (
                     started_var.get().strip(),
@@ -34027,6 +35217,7 @@ class TrackerApp:
                     started_var.get().strip(),
                     completed_date_var.get().strip(),
                     notes_box.get("1.0", "end-1c"),
+                    total_deaths=total_deaths,
                 )
 
             except ValueError as error:
@@ -34034,11 +35225,11 @@ class TrackerApp:
                     "Invalid Tracker Data",
                     str(error)
                     or (
-                        "Check exits, dates, rating, and playtime."
+                        "Check exits, deaths, dates, rating, and playtime."
                     ),
                     parent=dialog,
                 )
-                completed_entry.focus_set()
+                total_deaths_entry.focus_set()
                 return
 
             dialog.destroy()
@@ -34232,7 +35423,7 @@ class TrackerApp:
             highlightthickness=1,
         )
         search_entry.grid(
-            row=1,
+            row=2,
             column=0,
             sticky="ew",
             padx=(0, 12),
@@ -42429,6 +43620,215 @@ class TrackerApp:
         )
         self._launch_catalog_game(game)
 
+    @staticmethod
+    def _replay_hack_identity(
+        game: dict[str, Any],
+    ) -> str:
+        catalog_key = str(
+            game.get("catalog_key", "")
+        ).strip()
+        if catalog_key:
+            return "catalog:" + catalog_key.casefold()
+        smwc_id = str(game.get("smwc_id", "")).strip()
+        if smwc_id:
+            return "smwc:" + smwc_id.casefold()
+        return "title:" + normalize_title(
+            game.get("title", "")
+        )
+
+    @staticmethod
+    def _replay_hack_snapshot(
+        game: dict[str, Any],
+    ) -> dict[str, Any]:
+        allowed_fields = (
+            "catalog_key",
+            "title",
+            "author",
+            "total_exits",
+            "difficulty",
+            "hack_type",
+            "rating",
+            "added_date",
+            "download_url",
+            "smwc_id",
+            "page_url",
+            "rom_path",
+            "local_rom_path",
+            "mapping_key",
+            "is_custom",
+        )
+        return {
+            field: game.get(field)
+            for field in allowed_fields
+            if game.get(field) is not None
+        }
+
+    @classmethod
+    def _updated_recent_hack_history(
+        cls,
+        history: list[dict[str, Any]],
+        game: dict[str, Any],
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        snapshot = cls._replay_hack_snapshot(game)
+        if not str(snapshot.get("title", "")).strip():
+            return [
+                dict(item)
+                for item in history[: max(0, limit)]
+                if isinstance(item, dict)
+            ]
+
+        wanted_identity = cls._replay_hack_identity(snapshot)
+        updated = [snapshot]
+        for existing in history:
+            if not isinstance(existing, dict):
+                continue
+            existing_snapshot = cls._replay_hack_snapshot(existing)
+            if not str(existing_snapshot.get("title", "")).strip():
+                continue
+            if (
+                cls._replay_hack_identity(existing_snapshot)
+                == wanted_identity
+            ):
+                continue
+            updated.append(existing_snapshot)
+            if len(updated) >= max(1, limit):
+                break
+        return updated[: max(1, limit)]
+
+    def _recent_replay_label_map(
+        self,
+    ) -> dict[str, dict[str, Any]]:
+        history = getattr(self, "recent_launched_hacks", [])
+        title_counts: dict[str, int] = {}
+        for game in history:
+            title_key = str(game.get("title", "")).strip().casefold()
+            title_counts[title_key] = title_counts.get(title_key, 0) + 1
+
+        label_map: dict[str, dict[str, Any]] = {}
+        for position, game in enumerate(history, start=1):
+            title = str(game.get("title", "Unknown")).strip() or "Unknown"
+            label = title
+            if title_counts.get(title.casefold(), 0) > 1:
+                author = str(game.get("author", "Unknown")).strip()
+                label = f"{title} - {author or 'Unknown'}"
+            if label in label_map:
+                label = f"{label} [{position}]"
+            label_map[label] = game
+        return label_map
+
+    def _update_replay_last_hack_button(self) -> None:
+        button = getattr(
+            self,
+            "replay_last_hack_button",
+            None,
+        )
+        combo = getattr(self, "replay_recent_hack_combo", None)
+        variable = getattr(self, "replay_recent_hack_var", None)
+        label_map = self._recent_replay_label_map()
+        self.replay_recent_hack_games = label_map
+        labels = list(label_map)
+
+        if variable is not None:
+            selected_label = str(variable.get()).strip()
+            if selected_label not in label_map:
+                variable.set(labels[0] if labels else "No recent hacks")
+
+        if combo is not None:
+            try:
+                combo.configure(
+                    values=labels,
+                    state="readonly" if labels else "disabled",
+                    justify="center",
+                )
+            except tk.TclError:
+                pass
+
+        if button is not None:
+            try:
+                button.configure(
+                    state="normal" if labels else "disabled"
+                )
+            except tk.TclError:
+                pass
+
+    def _remember_last_launched_hack(
+        self,
+        game: dict[str, Any],
+    ) -> None:
+        snapshot = self._replay_hack_snapshot(game)
+        if not str(snapshot.get("title", "")).strip():
+            return
+        self.last_launched_hack = snapshot
+        self.recent_launched_hacks = (
+            self._updated_recent_hack_history(
+                getattr(self, "recent_launched_hacks", []),
+                snapshot,
+            )
+        )
+        self.config["last_launched_hack"] = dict(snapshot)
+        self.config["recent_launched_hacks"] = [
+            dict(recent_hack)
+            for recent_hack in self.recent_launched_hacks
+        ]
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        replay_variable = getattr(
+            self,
+            "replay_recent_hack_var",
+            None,
+        )
+        if replay_variable is not None:
+            replay_variable.set("")
+        self._update_replay_last_hack_button()
+
+    def _selected_recent_replay_hack(self) -> dict[str, Any] | None:
+        variable = getattr(self, "replay_recent_hack_var", None)
+        label_map = getattr(self, "replay_recent_hack_games", {})
+        if variable is not None and isinstance(label_map, dict):
+            selected = label_map.get(str(variable.get()).strip())
+            if isinstance(selected, dict):
+                return selected
+        history = getattr(self, "recent_launched_hacks", [])
+        if history and isinstance(history[0], dict):
+            return history[0]
+        stored = getattr(self, "last_launched_hack", {})
+        return stored if isinstance(stored, dict) else None
+
+    def _resolved_replay_hack(
+        self,
+        stored: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if stored is None:
+            stored = self._selected_recent_replay_hack()
+        if not isinstance(stored, dict) or not str(
+            stored.get("title", "")
+        ).strip():
+            return None
+        wanted_identity = self._replay_hack_identity(stored)
+        for game in self.hack_catalog:
+            if self._replay_hack_identity(game) == wanted_identity:
+                return game
+        return dict(stored)
+
+    def replay_last_hack(self) -> None:
+        game = self._resolved_replay_hack()
+        if game is None:
+            messagebox.showinfo(
+                "Replay Recent Hack",
+                "Play a hack once and it will appear in the recent list.",
+                parent=self.root,
+            )
+            return
+        selected_label = self._selector_label_for_game(game)
+        if selected_label in self.main_hack_selector_games:
+            self.main_hack_selector_var.set(selected_label)
+            self.main_hack_selector_selected_label = selected_label
+            self._align_main_hack_selector_text(selected_label)
+        self._launch_catalog_game(game)
+
     def _launch_catalog_game(
         self,
         game: dict[str, Any],
@@ -42517,6 +43917,7 @@ class TrackerApp:
                 message + "  Method: " + method
             )
         self.status_var.set(message)
+        self._remember_last_launched_hack(game)
 
         selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
         if rom_path and selected_platform == "FXPAK Pro":
@@ -45021,6 +46422,11 @@ class TrackerApp:
                     archive.write(CONFIG_FILE, "SMWStreamTrackerConfig.json")
                 if TIMER_SAVE_FILE.is_file():
                     archive.write(TIMER_SAVE_FILE, "SMWStreamTrackerTimes.json")
+                if DEATH_SAVE_FILE.is_file():
+                    archive.write(
+                        DEATH_SAVE_FILE,
+                        "SMWStreamTrackerDeaths.json",
+                    )
                 archive.writestr("backup_info.json", json.dumps(metadata, indent=2))
             backups = sorted(
                 AUTOMATIC_BACKUP_DIR.glob("SMWStreamTracker_*.zip"),
@@ -45862,8 +47268,8 @@ class TrackerApp:
         dialog.title("OBS Text Settings")
         dialog.configure(bg=palette["window"])
         dialog.transient(self.root)
-        dialog.resizable(True, False)
-        self._size_dialog_for_ui(dialog, 860, 500, 700, 450)
+        dialog.resizable(True, True)
+        self._size_dialog_for_ui(dialog, 900, 760, 760, 660)
 
         title_bar = tk.Frame(dialog, bg=THEME["purple"])
         title_bar.pack(fill="x")
@@ -45908,8 +47314,26 @@ class TrackerApp:
                 )
             )
         )
+        deaths_format_var = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "obs_deaths_text_format",
+                    "Level Deaths: {deaths}",
+                )
+            )
+        )
+        total_deaths_format_var = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "obs_total_deaths_text_format",
+                    "Total Deaths: {total_deaths}",
+                )
+            )
+        )
         author_preview_var = tk.StringVar()
         exits_preview_var = tk.StringVar()
+        deaths_preview_var = tk.StringVar()
+        total_deaths_preview_var = tk.StringVar()
 
         def add_label(row: int, text_value: str) -> None:
             tk.Label(
@@ -46001,6 +47425,33 @@ class TrackerApp:
             anchor="w",
         ).grid(row=4, column=1, sticky="ew", pady=(0, 8))
 
+        add_label(5, "Level deaths file format:")
+        make_entry(5, deaths_format_var)
+        tk.Label(
+            body,
+            text=(
+                "Use {deaths}. Examples:  Level Deaths: {deaths}   or   {deaths}"
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            anchor="w",
+        ).grid(row=6, column=1, sticky="ew", pady=(0, 8))
+
+        add_label(7, "Total deaths file format:")
+        make_entry(7, total_deaths_format_var)
+        tk.Label(
+            body,
+            text=(
+                "Use {total_deaths}. Examples:  Total Deaths: "
+                "{total_deaths}   or   {total_deaths}"
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            anchor="w",
+        ).grid(row=8, column=1, sticky="ew", pady=(0, 8))
+
         preview = tk.Frame(
             body,
             bg=palette["panel_alt"],
@@ -46010,7 +47461,7 @@ class TrackerApp:
             pady=10,
         )
         preview.grid(
-            row=5,
+            row=10,
             column=0,
             columnspan=3,
             sticky="ew",
@@ -46040,6 +47491,22 @@ class TrackerApp:
             bg=palette["panel_alt"],
             anchor="w",
         ).pack(fill="x")
+        tk.Label(
+            preview,
+            textvariable=deaths_preview_var,
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            preview,
+            textvariable=total_deaths_preview_var,
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).pack(fill="x")
 
         def update_previews(*_args: object) -> None:
             try:
@@ -46055,16 +47522,36 @@ class TrackerApp:
                 )
             except (KeyError, ValueError, AttributeError, IndexError):
                 exits_text = "Invalid exits format"
+            try:
+                deaths_text = deaths_format_var.get().format(
+                    deaths=9,
+                )
+            except (KeyError, ValueError, AttributeError, IndexError):
+                deaths_text = "Invalid deaths format"
+            try:
+                total_deaths_text = total_deaths_format_var.get().format(
+                    total_deaths=42,
+                )
+            except (KeyError, ValueError, AttributeError, IndexError):
+                total_deaths_text = "Invalid total deaths format"
             author_preview_var.set(f"author.txt:  {author_text}")
             exits_preview_var.set(f"exits.txt:  {exits_text}")
+            deaths_preview_var.set(
+                f"level_deaths.txt:  {deaths_text}"
+            )
+            total_deaths_preview_var.set(
+                f"total_deaths.txt:  {total_deaths_text}"
+            )
 
         author_format_var.trace_add("write", update_previews)
         exits_format_var.trace_add("write", update_previews)
+        deaths_format_var.trace_add("write", update_previews)
+        total_deaths_format_var.trace_add("write", update_previews)
         update_previews()
 
         actions = tk.Frame(body, bg=palette["panel"])
         actions.grid(
-            row=6,
+            row=10,
             column=0,
             columnspan=3,
             sticky="ew",
@@ -46125,6 +47612,8 @@ class TrackerApp:
             folder_text = folder_var.get().strip()
             author_template = author_format_var.get()
             exits_template = exits_format_var.get()
+            deaths_template = deaths_format_var.get()
+            total_deaths_template = total_deaths_format_var.get()
             if not folder_text:
                 messagebox.showerror(
                     "OBS Text Settings",
@@ -46146,6 +47635,20 @@ class TrackerApp:
                 "exits",
             ):
                 return
+            if not validate_template(
+                deaths_template,
+                {"deaths"},
+                {"deaths"},
+                "deaths",
+            ):
+                return
+            if not validate_template(
+                total_deaths_template,
+                {"total_deaths"},
+                {"total_deaths"},
+                "total deaths",
+            ):
+                return
 
             updated_config = dict(self.config)
             updated_config.update(
@@ -46153,6 +47656,8 @@ class TrackerApp:
                     "output_folder": folder_text,
                     "obs_author_text_format": author_template,
                     "obs_exits_text_format": exits_template,
+                    "obs_deaths_text_format": deaths_template,
+                    "obs_total_deaths_text_format": total_deaths_template,
                 }
             )
             try:
@@ -46193,6 +47698,7 @@ class TrackerApp:
                     current_exits,
                     self.worker.current_total,
                 )
+                self.worker.update_death_file()
             else:
                 (output_folder / "author.txt").write_text(
                     author_template.format(author="Unknown"),
@@ -46200,6 +47706,18 @@ class TrackerApp:
                 )
                 (output_folder / "exits.txt").write_text(
                     exits_template.format(completed=0, total="Unknown"),
+                    encoding="utf-8",
+                )
+                (output_folder / "death_counter.txt").write_text(
+                    deaths_template.format(deaths=0),
+                    encoding="utf-8",
+                )
+                (output_folder / "level_deaths.txt").write_text(
+                    deaths_template.format(deaths=0),
+                    encoding="utf-8",
+                )
+                (output_folder / "total_deaths.txt").write_text(
+                    total_deaths_template.format(total_deaths=0),
                     encoding="utf-8",
                 )
             self.status_var.set("OBS text settings saved")
@@ -46458,6 +47976,28 @@ class TrackerApp:
     def reset_game_timer(self) -> None:
         if self.worker:
             self.worker.reset_game_timer()
+
+    def reset_death_counter(self) -> None:
+        if not self.worker:
+            messagebox.showerror(
+                APP_NAME,
+                "The tracker is reconnecting. Try resetting the death "
+                "counter again in a moment.",
+                parent=self.root,
+            )
+            return
+        self.worker.reset_level_death_counter()
+
+    def reset_total_death_counter(self) -> None:
+        if not self.worker:
+            messagebox.showerror(
+                APP_NAME,
+                "The tracker is reconnecting. Try resetting Total "
+                "Deaths again in a moment.",
+                parent=self.root,
+            )
+            return
+        self.worker.reset_total_death_counter()
 
     def toggle_game_timer(self) -> None:
         if not self.worker:
@@ -46964,6 +48504,9 @@ class TrackerApp:
                         "smwc_id": str(event.get("smwc_id", "")),
                         "page_url": self.current_hack_url,
                     }
+                    self._remember_last_launched_hack(
+                        self.current_hack_record
+                    )
 
                 elif event_type == "exits":
                     self.exits_var.set(
@@ -46971,6 +48514,29 @@ class TrackerApp:
                         + str(event.get("completed", 0))
                         + " / "
                         + str(event.get("total", "Unknown"))
+                    )
+
+                elif event_type == "deaths":
+                    self.death_counter_var.set(
+                        str(
+                            max(
+                                0,
+                                int(
+                                    event.get(
+                                        "level_deaths",
+                                        event.get("deaths", 0),
+                                    )
+                                ),
+                            )
+                        )
+                    )
+                    self.total_death_counter_var.set(
+                        str(
+                            max(
+                                0,
+                                int(event.get("total_deaths", 0)),
+                            )
+                        )
                     )
 
                 elif event_type == "timers":
@@ -47092,6 +48658,10 @@ class TrackerApp:
                         )
                         game_time = str(event.get("game_time", "00:00"))
                         rating = float(event.get("rating", 0.0))
+                        total_deaths = max(
+                            0,
+                            int(event.get("total_deaths", 0)),
+                        )
                         is_complete = (
                             tracker_status == "Completed"
                             and total > 0
@@ -47108,7 +48678,8 @@ class TrackerApp:
                             f"({percentage}% complete)\n"
                             f"Status: {tracker_status}\n"
                             f"Rating: {format(rating, '.15g')}/5\n"
-                            f"Playtime: {game_time}\n\n"
+                            f"Playtime: {game_time}\n"
+                            f"Total deaths: {total_deaths}\n\n"
                             "The local tracker database was saved successfully."
                         )
                         self.status_var.set(message)
@@ -47334,6 +48905,7 @@ class TrackerApp:
 
         if self.worker:
             self.worker.save_current_game_time()
+            self.worker.save_current_death_count()
             self.worker.stop()
 
         if self.tray_icon:

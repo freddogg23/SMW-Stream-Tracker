@@ -45,8 +45,24 @@ class ObsTextFileTests(unittest.TestCase):
             ),
             "7 / 12",
         )
+        self.assertEqual(
+            self.tracker.render_obs_text_template(
+                "{deaths}",
+                "Level Deaths: {deaths}",
+                deaths=9,
+            ),
+            "9",
+        )
+        self.assertEqual(
+            self.tracker.render_obs_text_template(
+                "{total_deaths}",
+                "Total Deaths: {total_deaths}",
+                total_deaths=42,
+            ),
+            "42",
+        )
 
-    def test_all_five_obs_files_are_created_without_overwriting(self):
+    def test_all_obs_files_are_created_without_overwriting(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_folder = Path(temporary_directory)
             existing_hack_name = output_folder / "hack_name.txt"
@@ -58,6 +74,8 @@ class ObsTextFileTests(unittest.TestCase):
                 "output_folder": str(output_folder),
                 "obs_author_text_format": "{author}",
                 "obs_exits_text_format": "{completed}/{total}",
+                "obs_deaths_text_format": "{deaths}",
+                "obs_total_deaths_text_format": "{total_deaths}",
             }
 
             result = self.tracker.ensure_obs_text_files(config)
@@ -67,6 +85,9 @@ class ObsTextFileTests(unittest.TestCase):
                 {path.name for path in output_folder.glob("*.txt")},
                 {
                     "author.txt",
+                    "death_counter.txt",
+                    "level_deaths.txt",
+                    "total_deaths.txt",
                     "exits.txt",
                     "hack_name.txt",
                     "level_timer.txt",
@@ -88,6 +109,24 @@ class ObsTextFileTests(unittest.TestCase):
                     encoding="utf-8"
                 ),
                 "0/Unknown",
+            )
+            self.assertEqual(
+                (output_folder / "death_counter.txt").read_text(
+                    encoding="utf-8"
+                ),
+                "0",
+            )
+            self.assertEqual(
+                (output_folder / "level_deaths.txt").read_text(
+                    encoding="utf-8"
+                ),
+                "0",
+            )
+            self.assertEqual(
+                (output_folder / "total_deaths.txt").read_text(
+                    encoding="utf-8"
+                ),
+                "0",
             )
 
 

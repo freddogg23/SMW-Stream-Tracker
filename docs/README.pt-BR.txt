@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUIA COMPLETO DE CONFIGURAÇÃO
-Versão 1.0.1
+Versão 1.0.2
 
 IDIOMAS
 English: README.en.txt
@@ -38,7 +38,7 @@ O SMW Stream Tracker não inclui nem baixa uma ROM-base comercial.
 
 2. INSTALAR O PROGRAMA
 
-1. Execute SMWStreamTracker_Setup_1.0.1.exe.
+1. Execute SMWStreamTracker_Setup_1.0.2.exe.
 2. Escolha um idioma na primeira tela.
 3. Leia o aviso sobre software opcional e ROMs.
 4. Escolha FXPAK Pro ou RetroArch como plataforma inicial.
@@ -189,7 +189,12 @@ USAR OS ARQUIVOS DOS CRONÔMETROS NO OBS OU STREAMLABS
 5. Ative Ler do arquivo e escolha game_timer.txt.
 6. Adicione outra fonte Texto e escolha level_timer.txt.
 7. Configure fonte, cor, contorno, alinhamento e tamanho.
-8. Repita, se desejar, para hack_name.txt, author.txt ou exits.txt.
+8. Repita, se desejar, para hack_name.txt, author.txt, exits.txt, level_deaths.txt ou total_deaths.txt.
+
+Mortes no nível mantém as tentativas e zera quando outro nível começa. Mortes
+totais é salvo separadamente para cada ROM e arquivo Mario A, B ou C. Altere os
+dois textos em Arquivo > Configurações do OBS. death_counter.txt continua como
+espelho de level_deaths.txt para cenas existentes.
 
 O SMW Stream Tracker precisa ficar aberto para atualizar os arquivos. Se uma
 fonte estiver vazia ou desatualizada, confira a pasta e opere o cronômetro

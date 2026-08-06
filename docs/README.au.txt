@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.0.1
+Version 1.0.2
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -45,7 +45,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.0.1.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.0.2.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro or RetroArch as your first cab off the rank.
@@ -181,7 +181,11 @@ once, and Bob's your uncle.
 11. TIMERS, MY TRACKER, AND STATISTICS
 
 Start, pause, reset, and override the game and level timers from the main
-screen. My Tracker supports searching, filters, editable fields, difficulty
+screen. When an older hack boots Mario back to the overworld after a death, the
+level timer keeps ticking through the Overworld timer grace period. It only
+parks after that grace runs out and picks up again in the same level. A proper
+clear stops it, the overworld return resets it, and the next level starts it.
+My Tracker supports searching, filters, editable fields, difficulty
 colours, rating and completion bars, and CSV/XLSX export. Right-click supported
 areas to change solid fills, gradients, or difficulty colours.
 
@@ -243,7 +247,12 @@ USE THE TIMER TEXT FILES IN OBS OR STREAMLABS
 5. Enable Read from file and choose game_timer.txt.
 6. Add another Text source and choose level_timer.txt.
 7. Set your font, colour, outline, alignment, and size.
-8. Repeat for hack_name.txt, author.txt, or exits.txt if you fancy.
+8. Repeat for hack_name.txt, author.txt, exits.txt, level_deaths.txt, or total_deaths.txt if you fancy.
+
+Level Deaths hangs onto every retry until you crack into a different level.
+Total Deaths remembers every ROM and Mario A, B, or C save file, so it won't
+chuck a wobbly when you leave and come back. Change either label in File > OBS
+Settings. death_counter.txt still mirrors level_deaths.txt for your old scenes.
 
 Keep SMW Stream Tracker running so the files stay fresh. If a source shows
 yesterday's news, make sure it reads the same folder selected in the tracker,

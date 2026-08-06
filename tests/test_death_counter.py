@@ -1,0 +1,432 @@
+import importlib.util
+import json
+from pathlib import Path
+import queue
+import sys
+import tempfile
+import unittest
+
+
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py"
+)
+
+
+def load_tracker_module():
+    spec = importlib.util.spec_from_file_location(
+        "smw_tracker_death_counter_test",
+        MODULE_PATH,
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class DeathCounterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tracker = load_tracker_module()
+
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.temporary_path = Path(self.temporary_directory.name)
+        self.original_death_save_file = self.tracker.DEATH_SAVE_FILE
+        self.tracker.DEATH_SAVE_FILE = (
+            self.temporary_path / "SMWStreamTrackerDeaths.json"
+        )
+        self.config = dict(self.tracker.DEFAULT_CONFIG)
+        self.config["output_folder"] = str(self.temporary_path / "obs")
+
+    def tearDown(self):
+        self.tracker.DEATH_SAVE_FILE = self.original_death_save_file
+        self.temporary_directory.cleanup()
+
+    def make_worker(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.config),
+            queue.Queue(),
+        )
+        worker.current_rom_key = "samplehack"
+        worker.game_started = True
+        worker.level_id = 1
+        worker.level_waiting_for_start = False
+        worker.level_auto_tracking_armed = True
+        worker.send_livesplit_command = lambda *_args, **_kwargs: True
+        return worker
+
+    def make_state(
+        self,
+        mode,
+        save_slot=0,
+        player_state=0x00,
+        translevel=1,
+    ):
+        return {
+            "mode": mode,
+            "save_slot": save_slot,
+            "player_state": player_state,
+            "paused": 0,
+            "translevel": translevel,
+            "exits": 0,
+            "level_end_timer": 0,
+            "joypad": 0,
+            "joypad_axlr": 0,
+        }
+
+    def settle_after_death(self, worker, lives=4):
+        for _ in range(3):
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.LEVEL_MODE,
+                lives,
+            )
+
+    def test_override_updates_level_and_total_deaths_together(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+
+        worker.override_timers(
+            game_seconds=None,
+            level_seconds=None,
+            level_deaths=7,
+            total_deaths=42,
+        )
+        worker.process_commands()
+
+        self.assertEqual(worker.level_death_count, 7)
+        self.assertEqual(worker.death_count, 42)
+        self.assertEqual(
+            worker.load_saved_deaths()[worker.current_time_key],
+            42,
+        )
+        self.assertEqual(
+            (self.temporary_path / "obs" / "level_deaths.txt").read_text(
+                encoding="utf-8"
+            ),
+            "Level Deaths: 7",
+        )
+        self.assertEqual(
+            (self.temporary_path / "obs" / "total_deaths.txt").read_text(
+                encoding="utf-8"
+            ),
+            "Total Deaths: 42",
+        )
+
+    def test_death_transition_counts_once_and_writes_obs_file(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+
+        self.assertFalse(
+            worker.update_death_counter_from_state(
+                0x09,
+                self.tracker.LEVEL_MODE,
+            )
+        )
+        self.assertEqual(worker.death_count, 0)
+        self.assertEqual(worker.level_death_count, 0)
+
+        worker.update_death_counter_from_state(
+            0x00,
+            self.tracker.LEVEL_MODE,
+        )
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x09,
+                self.tracker.LEVEL_MODE,
+            )
+        )
+        self.assertFalse(
+            worker.update_death_counter_from_state(
+                0x09,
+                self.tracker.LEVEL_MODE,
+            )
+        )
+
+        self.assertEqual(worker.death_count, 1)
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(
+            (self.temporary_path / "obs" / "death_counter.txt").read_text(
+                encoding="utf-8"
+            ),
+            "Level Deaths: 1",
+        )
+        self.assertEqual(
+            (self.temporary_path / "obs" / "level_deaths.txt").read_text(
+                encoding="utf-8"
+            ),
+            "Level Deaths: 1",
+        )
+        self.assertEqual(
+            (self.temporary_path / "obs" / "total_deaths.txt").read_text(
+                encoding="utf-8"
+            ),
+            "Total Deaths: 1",
+        )
+
+    def test_each_mario_slot_restores_its_own_death_count(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.previous_player_state = 0x00
+        worker.update_death_counter_from_state(
+            0x09,
+            self.tracker.LEVEL_MODE,
+        )
+        self.settle_after_death(worker)
+        worker.previous_player_state = 0x00
+        worker.update_death_counter_from_state(
+            0x09,
+            self.tracker.LEVEL_MODE,
+        )
+        self.assertEqual(worker.death_count, 2)
+        self.assertEqual(worker.level_death_count, 2)
+
+        worker.select_save_slot(1)
+        self.assertEqual(worker.death_count, 0)
+        self.assertEqual(worker.level_death_count, 0)
+        worker.previous_player_state = 0x00
+        worker.update_death_counter_from_state(
+            0x09,
+            self.tracker.LEVEL_MODE,
+        )
+        self.assertEqual(worker.death_count, 1)
+        self.assertEqual(worker.level_death_count, 1)
+
+        restored_worker = self.make_worker()
+        restored_worker.select_save_slot(0)
+        self.assertEqual(restored_worker.death_count, 2)
+        self.assertEqual(restored_worker.level_death_count, 0)
+        restored_worker.select_save_slot(1)
+        self.assertEqual(restored_worker.death_count, 1)
+        restored_worker.select_save_slot(2)
+        self.assertEqual(restored_worker.death_count, 0)
+
+        saved = json.loads(
+            self.tracker.DEATH_SAVE_FILE.read_text(encoding="utf-8")
+        )
+        self.assertEqual(saved["samplehack::slot0"], 2)
+        self.assertEqual(saved["samplehack::slot1"], 1)
+
+    def test_lives_decrement_catches_a_missed_death_animation(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.level_id = 1
+
+        self.assertFalse(
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.LEVEL_MODE,
+                5,
+            )
+        )
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.LEVEL_MODE,
+                4,
+            )
+        )
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 1)
+
+    def test_animation_and_lives_change_count_only_once(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.level_id = 1
+        worker.update_death_counter_from_state(
+            0x00,
+            self.tracker.LEVEL_MODE,
+            5,
+        )
+
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x09,
+                self.tracker.LEVEL_MODE,
+                5,
+            )
+        )
+        self.assertFalse(
+            worker.update_death_counter_from_state(
+                0x09,
+                self.tracker.LEVEL_MODE,
+                4,
+            )
+        )
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 1)
+
+    def test_lives_change_on_death_to_overworld_is_counted(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.level_id = 1
+        worker.previous_mode = self.tracker.LEVEL_MODE
+        worker.update_death_counter_from_state(
+            0x00,
+            self.tracker.LEVEL_MODE,
+            5,
+        )
+
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.OVERWORLD_MODE,
+                4,
+            )
+        )
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 1)
+
+    def test_uncleared_overworld_transition_is_a_death_fallback(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.level_id = 1
+        worker.level_waiting_for_start = False
+        worker.previous_mode = self.tracker.LEVEL_MODE
+        worker.previous_player_state = 0x00
+        worker.previous_player_lives = 5
+
+        worker.update_timers_from_state(
+            self.make_state(
+                self.tracker.OVERWORLD_MODE,
+                player_state=0x00,
+            )
+            | {"player_lives": 5},
+            delta=0.1,
+            now=25.0,
+        )
+
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 1)
+
+    def test_overworld_fallback_does_not_double_count_a_normal_signal(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.level_id = 1
+        worker.level_waiting_for_start = False
+        worker.previous_mode = self.tracker.LEVEL_MODE
+        worker.previous_player_state = 0x00
+        worker.previous_player_lives = 5
+
+        worker.update_timers_from_state(
+            self.make_state(
+                self.tracker.OVERWORLD_MODE,
+                player_state=0x09,
+            )
+            | {"player_lives": 4},
+            delta=0.1,
+            now=30.0,
+        )
+
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 1)
+
+    def test_death_counter_does_not_depend_on_game_timer_started(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.game_started = False
+        worker.previous_player_state = 0x00
+
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x09,
+                self.tracker.LEVEL_MODE,
+                4,
+            )
+        )
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 1)
+
+    def test_death_detection_rearms_after_respawn(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.level_id = 1
+        worker.update_death_counter_from_state(
+            0x00,
+            self.tracker.LEVEL_MODE,
+            5,
+        )
+        worker.update_death_counter_from_state(
+            0x09,
+            self.tracker.LEVEL_MODE,
+            4,
+        )
+        self.settle_after_death(worker, lives=4)
+
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x09,
+                self.tracker.LEVEL_MODE,
+                3,
+            )
+        )
+        self.assertEqual(worker.level_death_count, 2)
+        self.assertEqual(worker.death_count, 2)
+
+    def test_leaving_and_reselecting_the_same_slot_restores_deaths(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.death_count = 4
+        worker.level_death_count = 2
+        worker.save_current_death_count()
+        worker.previous_mode = self.tracker.LEVEL_MODE
+        worker.run_reached_gameplay = True
+
+        worker.update_timers_from_state(
+            self.make_state(self.tracker.PLAYER_SELECT_MODE),
+            delta=0.1,
+            now=10.0,
+        )
+        self.assertEqual(worker.death_count, 0)
+        self.assertEqual(worker.level_death_count, 0)
+        self.assertIsNone(worker.current_time_key)
+
+        worker.update_timers_from_state(
+            self.make_state(self.tracker.OVERWORLD_MODE),
+            delta=0.1,
+            now=10.1,
+        )
+        self.assertEqual(worker.death_count, 4)
+        self.assertEqual(worker.level_death_count, 0)
+        self.assertEqual(worker.current_time_key, "samplehack::slot0")
+
+    def test_new_level_resets_level_deaths_but_keeps_total(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.level_id = 1
+        worker.level_waiting_for_start = False
+        worker.previous_mode = self.tracker.LEVEL_MODE
+        worker.previous_player_state = 0x00
+        worker.level_death_count = 3
+        worker.death_count = 8
+
+        worker.update_timers_from_state(
+            self.make_state(self.tracker.LEVEL_MODE, translevel=2),
+            delta=0.1,
+            now=20.0,
+        )
+
+        self.assertEqual(worker.level_death_count, 0)
+        self.assertEqual(worker.death_count, 8)
+        self.assertEqual(worker.level_id, 2)
+
+    def test_level_and_total_resets_are_independent(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.level_death_count = 4
+        worker.death_count = 12
+        worker.save_current_death_count()
+
+        self.assertTrue(worker.clear_level_death_count())
+        self.assertEqual(worker.level_death_count, 0)
+        self.assertEqual(worker.death_count, 12)
+
+        worker.level_death_count = 2
+        self.assertTrue(worker.clear_saved_death_count())
+        self.assertEqual(worker.level_death_count, 2)
+        self.assertEqual(worker.death_count, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - COMPLETE SETUP GUIDE
-Version 1.0.1
+Version 1.0.2
 
 LANGUAGES
 English: README.en.txt
@@ -38,7 +38,7 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 
 2. INSTALL THE PROGRAM
 
-1. Start SMWStreamTracker_Setup_1.0.1.exe.
+1. Start SMWStreamTracker_Setup_1.0.2.exe.
 2. Select a language on the first screen.
 3. Read the optional-software and ROM notice.
 4. Choose FXPAK Pro or RetroArch as the initial platform.
@@ -142,6 +142,10 @@ but permanent bulk copying usually requires an SD-card reader.
 11. TIMERS, MY TRACKER, AND STATISTICS
 
 Start, pause, reset, and override game and level timers from the main screen.
+If an older hack returns to the overworld after a death, the level timer keeps
+counting for the configured Overworld timer grace period. It pauses only after
+that grace expires and resumes when the same level is entered. A confirmed
+clear stops it, the overworld return resets it, and the next level starts it.
 My Tracker supports search, filters, editable fields, difficulty colors,
 rating and completion data bars, and CSV/XLSX export. Right-click supported
 areas to change solid or gradient colors. Statistics summarizes progress,
@@ -202,7 +206,12 @@ USE THE TIMER TEXT FILES IN OBS OR STREAMLABS
 5. Enable Read from file and select game_timer.txt.
 6. Add another Text source and select level_timer.txt.
 7. Set the font, color, outline, alignment, and size you want.
-8. Repeat for hack_name.txt, author.txt, or exits.txt if desired.
+8. Repeat for hack_name.txt, author.txt, exits.txt, level_deaths.txt, or total_deaths.txt if desired.
+
+Level Deaths survives ordinary retries and resets when a different level starts.
+Total Deaths is saved separately for every ROM and Mario A, B, or C save file.
+Both labels can be changed in File > OBS Settings. death_counter.txt remains a
+compatibility mirror of level_deaths.txt for existing OBS scenes.
 
 SMW Stream Tracker must remain running for the files to update. If a source is
 blank or stale, verify it uses the same folder selected in the tracker and

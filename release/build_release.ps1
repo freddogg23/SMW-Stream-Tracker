@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.1',
+    [string]$Version = '1.0.2',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -135,6 +135,7 @@ $sourceItems = @(
     'banner_element_assets',
     'banner_foreground_assets',
     'banner_title_assets',
+    'build_helpers',
     'build_tracker_icons.py',
     'create_bowser_fixed_flame_overlay.py',
     'create_bowser_uncropped_fixed_flame_overlay.py',
@@ -153,7 +154,21 @@ $sourceItems = @(
 if (Test-Path -LiteralPath $sourceZip) {
     Remove-Item -LiteralPath $sourceZip -Force
 }
-Compress-Archive -LiteralPath $sourceItems -DestinationPath $sourceZip -CompressionLevel Optimal
+$sourceStaging = Join-Path $dist "source-staging-$Version"
+if (Test-Path -LiteralPath $sourceStaging) {
+    Remove-Item -LiteralPath $sourceStaging -Recurse -Force
+}
+New-Item -ItemType Directory -Path $sourceStaging | Out-Null
+foreach ($sourceItem in $sourceItems) {
+    Copy-Item -LiteralPath $sourceItem -Destination $sourceStaging -Recurse -Force
+}
+Get-ChildItem -LiteralPath $sourceStaging -Directory -Recurse -Force |
+    Where-Object { $_.Name -eq '__pycache__' } |
+    Remove-Item -Recurse -Force
+Get-ChildItem -LiteralPath $sourceStaging -File -Recurse -Force -Filter '*.pyc' |
+    Remove-Item -Force
+Compress-Archive -Path (Join-Path $sourceStaging '*') -DestinationPath $sourceZip -CompressionLevel Optimal
+Remove-Item -LiteralPath $sourceStaging -Recurse -Force
 
 $checksumLines = @($appExe, $setupExe, $updaterExe, $sourceZip) | ForEach-Object {
     $artifactHash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()

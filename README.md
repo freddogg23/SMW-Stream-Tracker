@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.0.1**
+**Version 1.0.2**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports two playable platforms:
 
@@ -209,7 +209,7 @@ Open **File → Settings** and configure the fields you use.
 | Local ROM library | Folder containing patched `.sfc` or `.smc` files |
 | RetroArch | `retroarch.exe` |
 | RetroArch core | A SNES Libretro core such as `bsnes_mercury_performance_libretro.dll` |
-| Overworld idle pause | Seconds before overworld/idle behavior pauses timing |
+| Overworld timer grace | Seconds that game and active-level timers continue on the overworld before temporarily pausing |
 | Game LiveSplit port | TCP port for the full-game LiveSplit window; default `16834` |
 | Level LiveSplit port | TCP port for a separate level LiveSplit window; default `16835` |
 
@@ -292,10 +292,14 @@ Clicking outside the search list collapses it. The placeholder remains until a h
 - **Start Timers** controls both timers together.
 - **Reset Game Timer** clears only the game timer.
 - **Reset Level Timer** clears only the level timer.
+- **Reset Level Deaths** clears only the current level's deaths.
+- **Reset Total Deaths** clears the saved total only for the active ROM and Mario A, B, or C save file.
 - **Finish Game Timer** records the final game time.
-- **Apply Override** lets you enter corrected game or level time manually.
+- **Apply Override** lets you enter corrected game time, level time, Level Deaths, or Total Deaths manually.
 
-Accepted override formats include seconds, `MM:SS`, and `H:MM:SS`.
+When an older hack sends Mario back to the overworld after a death, the level timer keeps counting for the configured **Overworld timer grace** period. If that period expires, it pauses and resumes when the same level is entered again. A confirmed goal tape, orb, or exit increase stops the level timer immediately; returning to the overworld then resets it to zero, and entering the next level starts a fresh timer.
+
+Accepted timer override formats include seconds, `MM:SS`, and `H:MM:SS`. Death overrides accept whole numbers.
 
 The tracker connection is always enabled. Use the **Refresh** button in the platform status box when you need to reconnect.
 
@@ -375,10 +379,10 @@ If a LiveSplit window is blank in OBS, keep it restored instead of minimized and
 
 This method is recommended when you only want the timer numbers and prefer to style the font directly in the streaming program.
 
-1. In SMW Stream Tracker, open **File → Settings**.
-2. Choose an **OBS text folder** and save the settings.
-3. Select or start a hack, then operate each timer once so the files are created.
-4. Use **File → Open OBS Text Folder** to open that folder.
+1. In SMW Stream Tracker, open **File → OBS Settings**.
+2. Choose an **OBS text folder**, customize the author, exits, and deaths labels if desired, and save the settings.
+3. The app creates all six OBS text files automatically.
+4. Use **Open OBS Text Folder** in that window to open the selected folder.
 5. In OBS Studio or Streamlabs Desktop, select the scene and add a **Text (GDI+)** source.
 6. Enable **Read from file**.
 7. Select `game_timer.txt` for the full-game timer.
@@ -393,8 +397,13 @@ Other files in the same folder can be added the same way:
 | `hack_name.txt` | Current hack title |
 | `author.txt` | Current creator, prefixed with `By:` |
 | `exits.txt` | Completed and total exits |
+| `level_deaths.txt` | Deaths in the current level; resets when a different level begins |
+| `total_deaths.txt` | Saved death total for the active ROM and Mario A, B, or C save file |
+| `death_counter.txt` | Compatibility mirror of `level_deaths.txt` for existing scenes |
 | `game_timer.txt` | Full-game time |
 | `level_timer.txt` | Current-level time |
+
+Both counters increase once when Mario enters the death animation. Level Deaths survives ordinary retries and death-to-overworld transitions, then resets only when a genuinely different level begins or you press its reset button. Total Deaths is stored separately for each ROM and Mario A, B, or C save file and is restored when you return to that game and save file. Both labels can be edited under **File > OBS Settings**.
 
 SMW Stream Tracker must remain running so these files continue to update. If a source shows old or blank text, verify it is reading from the same folder selected under **OBS text folder**, then operate the timer once more.
 
