@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUIDE COMPLET DE CONFIGURATION
-Version 1.0.3
+Version 1.0.4
 
 LANGUES
 English : README.en.txt
@@ -38,7 +38,7 @@ SMW Stream Tracker n'inclut et ne télécharge aucune ROM commerciale de base.
 
 2. INSTALLER LE PROGRAMME
 
-1. Lancez SMWStreamTracker_Setup_1.0.3.exe.
+1. Lancez SMWStreamTracker_Setup_1.0.4.exe.
 2. Choisissez une langue sur le premier écran.
 3. Lisez l'avis sur les logiciels facultatifs et les ROMs.
 4. Choisissez FXPAK Pro ou RetroArch comme plateforme initiale.
@@ -231,6 +231,10 @@ avant toute modification importante du système ou du stockage.
 14. DÉPANNAGE ET CONFIDENTIALITÉ
 
 * FXPAK déconnecté : vérifiez SNI/QUsb2Snes, USB, firmware et le port 23074.
+* Hack actuel ne détecte plus les jeux après une mise à jour dans
+  l’application : ouvrez Téléchargements > Configuration de la connexion et
+  de l’émulateur > Installer ou trouver SNI (fortement recommandé). Laissez le
+  tracker trouver ou réinstaller SNI, redémarrez SNI, puis choisissez Actualiser.
 * RetroArch ne suit pas : activez les commandes réseau sur le port 55355.
 * Le jeu ne démarre pas : vérifiez ROM, exécutable, cœur et chemins.
 * Catalogue lent : laissez les nouvelles tentatives espacées se terminer.

@@ -66,6 +66,27 @@ class StreamerPrivacyWarningTests(unittest.TestCase):
             )
         )
 
+    def test_warning_sentence_templates_use_active_language(self):
+        app = self.tracker.TrackerApp.__new__(
+            self.tracker.TrackerApp
+        )
+        app.app_language = "de"
+
+        warning = app._format_ui_text(
+            "Opening {action} may display local file names, folder "
+            "paths, account names, or other personal information.",
+            action="Diagnostics",
+        )
+        scope = app._format_ui_text(
+            "Don't show this warning again for {scope}",
+            scope="Settings and file tools",
+        )
+
+        self.assertIn("Diagnose", warning)
+        self.assertNotIn("Opening", warning)
+        self.assertIn("Einstellungen und Dateiwerkzeuge", scope)
+        self.assertNotIn("Don't show", scope)
+
 
 if __name__ == "__main__":
     unittest.main()

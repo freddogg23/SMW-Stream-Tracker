@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - COMPLETE SETUP GUIDE
-Version 1.0.3
+Version 1.0.4
 
 LANGUAGES
 English: README.en.txt
@@ -38,7 +38,7 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 
 2. INSTALL THE PROGRAM
 
-1. Start SMWStreamTracker_Setup_1.0.3.exe.
+1. Start SMWStreamTracker_Setup_1.0.4.exe.
 2. Select a language on the first screen.
 3. Read the optional-software and ROM notice.
 4. Choose FXPAK Pro or RetroArch as the initial platform.
@@ -242,6 +242,9 @@ library before major Windows or storage changes.
 14. TROUBLESHOOTING AND PRIVACY
 
 * Disconnected FXPAK Pro: verify SNI/QUsb2Snes, USB, firmware, and port 23074.
+* Current Hack no longer detects games after an in-app update: open Downloads
+  > Connection & Emulator Setup > Install or Find SNI (Strongly Recommended).
+  Let the tracker find or reinstall SNI, restart SNI, and select Refresh.
 * RetroArch launches but does not track: enable Network Commands on port 55355.
   With SNI, launch games with bsnes-mercury Performance. With QUsb2Snes,
   enable its RetroArch virtual device from the Devices menu.

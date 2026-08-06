@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.0.3**
+**Version 1.0.4**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports two playable platforms:
 
@@ -14,10 +14,10 @@ The app does **not** include, download, or upload a commercial Super Mario World
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.3 dashboard with replay controls, level and total death counters, platform status, and timers">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.4 dashboard with replay controls, level and total death counters, platform status, and timers">
 </p>
 
-The v1.0.3 dashboard keeps recent hacks ready to replay and shows separate level and save-file death counters with matching OBS text output and manual overrides.
+The v1.0.4 dashboard keeps recent hacks ready to replay and shows separate level and save-file death counters with matching OBS text output and manual overrides.
 
 <table>
   <tr>
@@ -488,6 +488,11 @@ The copied report redacts usernames, ROM names, and full personal paths. Use:
 5. Confirm the connection service detects the cartridge.
 6. Select **Refresh**.
 7. Run **File → Test Selected Platform**.
+
+If **Current Hack** stops detecting games after an in-app update, open
+**Downloads → Connection & Emulator Setup → Install or Find SNI (Strongly
+Recommended)**. Let the tracker find or reinstall SNI, restart SNI, and then
+select **Refresh**.
 
 ### RetroArch launches games but shows Disconnected
 

@@ -77,6 +77,18 @@ class ConnectionServiceTests(unittest.TestCase):
         self.assertEqual(prompt, "Hack suchen oder auswählen...")
         self.assertTrue(app._is_main_hack_selector_prompt(prompt))
 
+    def test_retroarch_reconnect_error_uses_active_language(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        app.app_language = "de"
+        error = app._translate_ui_text(
+            "RetroArch Network Commands are not responding. In "
+            "RetroArch, enable Settings > Network > Network Commands "
+            "on port 55355, launch a game, and try Refresh."
+        )
+
+        self.assertIn("RetroArch-Netzwerkbefehle", error)
+        self.assertNotIn("are not responding", error)
+
     def test_running_retroarch_is_ready_without_strict_saved_paths(self):
         class Value:
             def get(self):

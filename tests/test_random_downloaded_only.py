@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 from pathlib import Path
 import sys
@@ -119,6 +120,77 @@ class RandomDownloadedOnlyTests(unittest.TestCase):
         expected = translation_sets["es"]
         for language, translated_keys in translation_sets.items():
             self.assertEqual(expected, translated_keys, language)
+
+    def test_secondary_menu_commands_are_translated(self):
+        app = self.make_app("FXPAK Pro")
+        app.app_language = "de"
+
+        self.assertEqual(
+            app._translate_ui_text("Manage SD Card Hacks…"),
+            "Hacks auf der SD-Karte verwalten…",
+        )
+        self.assertEqual(
+            app._translate_ui_text("Google Sheets Sync…"),
+            "Google-Sheets-Synchronisierung…",
+        )
+        self.assertEqual(
+            app._translate_ui_text("Open Automatic Backups Folder"),
+            "Ordner für automatische Sicherungen öffnen",
+        )
+
+    def test_every_menu_label_has_a_translation_key(self):
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        translation_keys = set(
+            next(iter(self.tracker.UI_TRANSLATIONS.values()))
+        )
+        labels = set()
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else (
+                    node.func.attr
+                    if isinstance(node.func, ast.Attribute)
+                    else ""
+                )
+            )
+            label_index = 0 if function_name == "create_menu_button" else 1
+            if (
+                function_name in {
+                    "create_menu_button",
+                    "add_mario_command",
+                    "add_mario_radio",
+                }
+                and len(node.args) > label_index
+                and isinstance(node.args[label_index], ast.Constant)
+                and isinstance(node.args[label_index].value, str)
+            ):
+                labels.add(node.args[label_index].value)
+            if function_name == "add_cascade":
+                for keyword in node.keywords:
+                    if (
+                        keyword.arg == "label"
+                        and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, str)
+                    ):
+                        labels.add(keyword.value.value)
+            if function_name == "protected_menu_action":
+                for index in (1, 2):
+                    if (
+                        len(node.args) > index
+                        and isinstance(node.args[index], ast.Constant)
+                        and isinstance(node.args[index].value, str)
+                    ):
+                        labels.add(node.args[index].value)
+
+        untranslated = labels - translation_keys - {
+            "FXPAK Pro",
+            "RetroArch",
+        }
+        self.assertEqual(untranslated, set())
 
     def test_switching_from_german_relocalizes_persistent_main_labels(self):
         app = self.make_app("FXPAK Pro")

@@ -114,23 +114,10 @@ class DeathCounterTests(unittest.TestCase):
             "Total Deaths: 42",
         )
 
-    def test_death_transition_counts_once_and_writes_obs_file(self):
+    def test_first_observed_death_counts_once_and_writes_obs_file(self):
         worker = self.make_worker()
         worker.select_save_slot(0)
 
-        self.assertFalse(
-            worker.update_death_counter_from_state(
-                0x09,
-                self.tracker.LEVEL_MODE,
-            )
-        )
-        self.assertEqual(worker.death_count, 0)
-        self.assertEqual(worker.level_death_count, 0)
-
-        worker.update_death_counter_from_state(
-            0x00,
-            self.tracker.LEVEL_MODE,
-        )
         self.assertTrue(
             worker.update_death_counter_from_state(
                 0x09,
@@ -223,6 +210,61 @@ class DeathCounterTests(unittest.TestCase):
         self.assertTrue(
             worker.update_death_counter_from_state(
                 0x00,
+                self.tracker.LEVEL_MODE,
+                4,
+            )
+        )
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 1)
+
+    def test_switching_slots_does_not_treat_lives_sync_as_a_death(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.update_death_counter_from_state(
+            0x00,
+            self.tracker.LEVEL_MODE,
+            5,
+        )
+
+        worker.select_save_slot(1)
+        for lives in (5, 4):
+            self.assertFalse(
+                worker.update_death_counter_from_state(
+                    0x00,
+                    self.tracker.LEVEL_MODE,
+                    lives,
+                )
+            )
+
+        self.assertEqual(worker.level_death_count, 0)
+        self.assertEqual(worker.death_count, 0)
+
+        # Immediately after the two slot-handoff readings, Mario B's first
+        # actual life loss remains available as the fallback for hacks whose
+        # death animation is missed.
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.LEVEL_MODE,
+                3,
+            )
+        )
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 1)
+
+    def test_slot_handoff_never_suppresses_primary_death_signal(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.update_death_counter_from_state(
+            0x00,
+            self.tracker.LEVEL_MODE,
+            5,
+        )
+        worker.select_save_slot(1)
+
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x09,
                 self.tracker.LEVEL_MODE,
                 4,
             )
@@ -390,6 +432,42 @@ class DeathCounterTests(unittest.TestCase):
         self.assertEqual(worker.death_count, 4)
         self.assertEqual(worker.level_death_count, 0)
         self.assertEqual(worker.current_time_key, "samplehack::slot0")
+
+    def test_reopening_started_slot_directly_into_level_rearms_deaths(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.game_elapsed = 45.0
+        worker.death_count = 4
+        worker.level_death_count = 2
+        worker.save_current_game_time()
+        worker.save_current_death_count()
+        worker.previous_mode = self.tracker.LEVEL_MODE
+        worker.run_reached_gameplay = True
+
+        worker.update_timers_from_state(
+            self.make_state(self.tracker.PLAYER_SELECT_MODE),
+            delta=0.1,
+            now=50.0,
+        )
+
+        self.assertFalse(worker.game_started)
+        self.assertIsNone(worker.current_time_key)
+
+        worker.update_timers_from_state(
+            self.make_state(
+                self.tracker.LEVEL_MODE,
+                player_state=0x09,
+                translevel=1,
+            ),
+            delta=0.1,
+            now=50.1,
+        )
+
+        self.assertTrue(worker.level_auto_tracking_armed)
+        self.assertEqual(worker.current_time_key, "samplehack::slot0")
+        self.assertEqual(worker.level_id, 1)
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 5)
 
     def test_new_level_resets_level_deaths_but_keeps_total(self):
         worker = self.make_worker()

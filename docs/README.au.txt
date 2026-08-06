@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.0.3
+Version 1.0.4
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -45,7 +45,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.0.3.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.0.4.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro or RetroArch as your first cab off the rank.
@@ -294,6 +294,9 @@ right up until you aren't.
 
 * FXPAK Pro says Disconnected: check SNI/QUsb2Snes, the USB data cable,
   firmware, console power, and port 23074. Then select Refresh.
+* Current Hack has gone walkabout after an in-app update: open Downloads >
+  Connection & Emulator Setup > Install or Find SNI (Strongly Recommended).
+  Let the tracker find or reinstall SNI, restart it, then give Refresh a burl.
 * RetroArch launches but doesn't track: enable Network Commands on port 55355
   and restart RetroArch. With SNI, use bsnes-mercury Performance. With
   QUsb2Snes, enable its RetroArch virtual device from the Devices menu.

@@ -65,7 +65,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 APP_BUILD_DATE = "2026-08-06"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
@@ -15474,6 +15474,29 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Stop Timers": "Detener temporizadores",
         "Preferred service": "Servicio preferido",
         "Automatic": "Automático",
+        "Google Sheets Sync…": "Sincronización con Google Sheets…",
+        "Open Automatic Backups Folder": "Abrir carpeta de copias de seguridad automáticas",
+        "Create Recovery Backup Now": "Crear copia de recuperación ahora",
+        "Sync Google Sheets Now": "Sincronizar Google Sheets ahora",
+        "Manage SD Card Hacks…": "Administrar hacks de la tarjeta SD…",
+        "Catalog Version: Unknown": "Versión del catálogo: desconocida",
+        "Last Refresh: Never": "Última actualización: nunca",
+        "Source: Live SMW Central Catalog": "Fuente: catálogo en vivo de SMW Central",
+        "Back Up Database": "Crear copia de seguridad de la base de datos",
+        "Download Missing Hacks": "Descargar hacks faltantes",
+        "Export My Tracker": "Exportar Mi Tracker",
+        "FXPAK Pro SD Card": "Tarjeta SD de FXPAK Pro",
+        "Google Sheets Sync": "Sincronización con Google Sheets",
+        "Import / Refresh from Spreadsheet": "Importar o actualizar desde una hoja de cálculo",
+        "Import Existing Spreadsheet": "Importar hoja de cálculo existente",
+        "Restore Database": "Restaurar la base de datos",
+        "Restore Previous App Version": "Restaurar la versión anterior de la aplicación",
+        "Settings and file tools": "Configuración y herramientas de archivos",
+        "Stats file tools": "Herramientas de archivos de estadísticas",
+        "Opening {action} may display local file names, folder paths, account names, or other personal information.": "Al abrir {action} se pueden mostrar nombres de archivos locales, rutas de carpetas, nombres de cuentas u otra información personal.",
+        "If you are streaming, recording, or sharing your screen, pause the capture or crop this window before continuing.": "Si estás transmitiendo, grabando o compartiendo la pantalla, pausa la captura o recorta esta ventana antes de continuar.",
+        "Don't show this warning again for {scope}": "No volver a mostrar esta advertencia para {scope}",
+        "RetroArch Network Commands are not responding. In RetroArch, enable Settings > Network > Network Commands on port 55355, launch a game, and try Refresh.": "Los comandos de red de RetroArch no responden. En RetroArch, activa Configuración > Red > Comandos de red en el puerto 55355, inicia un juego e inténtalo de nuevo con Actualizar.",
     },
     "fr": {
         "Hack": "Hack", "Date": "Date", "Tracked": "Suivis",
@@ -15545,6 +15568,29 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Stop Timers": "Arrêter les chronomètres",
         "Preferred service": "Service préféré",
         "Automatic": "Automatique",
+        "Google Sheets Sync…": "Synchronisation Google Sheets…",
+        "Open Automatic Backups Folder": "Ouvrir le dossier des sauvegardes automatiques",
+        "Create Recovery Backup Now": "Créer une sauvegarde de récupération maintenant",
+        "Sync Google Sheets Now": "Synchroniser Google Sheets maintenant",
+        "Manage SD Card Hacks…": "Gérer les hacks de la carte SD…",
+        "Catalog Version: Unknown": "Version du catalogue : inconnue",
+        "Last Refresh: Never": "Dernière actualisation : jamais",
+        "Source: Live SMW Central Catalog": "Source : catalogue SMW Central en direct",
+        "Back Up Database": "Sauvegarder la base de données",
+        "Download Missing Hacks": "Télécharger les hacks manquants",
+        "Export My Tracker": "Exporter Mon Tracker",
+        "FXPAK Pro SD Card": "Carte SD FXPAK Pro",
+        "Google Sheets Sync": "Synchronisation Google Sheets",
+        "Import / Refresh from Spreadsheet": "Importer ou actualiser depuis une feuille",
+        "Import Existing Spreadsheet": "Importer une feuille existante",
+        "Restore Database": "Restaurer la base de données",
+        "Restore Previous App Version": "Restaurer la version précédente de l’application",
+        "Settings and file tools": "Paramètres et outils de fichiers",
+        "Stats file tools": "Outils de fichiers statistiques",
+        "Opening {action} may display local file names, folder paths, account names, or other personal information.": "L’ouverture de {action} peut afficher des noms de fichiers locaux, des chemins de dossiers, des noms de comptes ou d’autres informations personnelles.",
+        "If you are streaming, recording, or sharing your screen, pause the capture or crop this window before continuing.": "Si vous diffusez, enregistrez ou partagez votre écran, mettez la capture en pause ou recadrez cette fenêtre avant de continuer.",
+        "Don't show this warning again for {scope}": "Ne plus afficher cet avertissement pour {scope}",
+        "RetroArch Network Commands are not responding. In RetroArch, enable Settings > Network > Network Commands on port 55355, launch a game, and try Refresh.": "Les commandes réseau de RetroArch ne répondent pas. Dans RetroArch, activez Paramètres > Réseau > Commandes réseau sur le port 55355, lancez un jeu, puis réessayez avec Actualiser.",
     },
     "de": {
         "Hack": "Hack", "Date": "Datum", "Tracked": "Verfolgt",
@@ -15616,6 +15662,29 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Stop Timers": "Timer anhalten",
         "Preferred service": "Bevorzugter Dienst",
         "Automatic": "Automatisch",
+        "Google Sheets Sync…": "Google-Sheets-Synchronisierung…",
+        "Open Automatic Backups Folder": "Ordner für automatische Sicherungen öffnen",
+        "Create Recovery Backup Now": "Wiederherstellungssicherung jetzt erstellen",
+        "Sync Google Sheets Now": "Google Sheets jetzt synchronisieren",
+        "Manage SD Card Hacks…": "Hacks auf der SD-Karte verwalten…",
+        "Catalog Version: Unknown": "Katalogversion: unbekannt",
+        "Last Refresh: Never": "Letzte Aktualisierung: nie",
+        "Source: Live SMW Central Catalog": "Quelle: Live-Katalog von SMW Central",
+        "Back Up Database": "Datenbank sichern",
+        "Download Missing Hacks": "Fehlende Hacks herunterladen",
+        "Export My Tracker": "Mein Tracker exportieren",
+        "FXPAK Pro SD Card": "FXPAK-Pro-SD-Karte",
+        "Google Sheets Sync": "Google-Sheets-Synchronisierung",
+        "Import / Refresh from Spreadsheet": "Aus Tabelle importieren oder aktualisieren",
+        "Import Existing Spreadsheet": "Vorhandene Tabelle importieren",
+        "Restore Database": "Datenbank wiederherstellen",
+        "Restore Previous App Version": "Vorherige App-Version wiederherstellen",
+        "Settings and file tools": "Einstellungen und Dateiwerkzeuge",
+        "Stats file tools": "Dateiwerkzeuge für Statistiken",
+        "Opening {action} may display local file names, folder paths, account names, or other personal information.": "Beim Öffnen von {action} können lokale Dateinamen, Ordnerpfade, Kontonamen oder andere personenbezogene Daten angezeigt werden.",
+        "If you are streaming, recording, or sharing your screen, pause the capture or crop this window before continuing.": "Wenn Sie streamen, aufzeichnen oder Ihren Bildschirm teilen, pausieren Sie die Aufnahme oder schneiden Sie dieses Fenster aus, bevor Sie fortfahren.",
+        "Don't show this warning again for {scope}": "Diese Warnung für {scope} nicht mehr anzeigen",
+        "RetroArch Network Commands are not responding. In RetroArch, enable Settings > Network > Network Commands on port 55355, launch a game, and try Refresh.": "RetroArch-Netzwerkbefehle antworten nicht. Aktivieren Sie in RetroArch Einstellungen > Netzwerk > Netzwerkbefehle auf Port 55355, starten Sie ein Spiel und wählen Sie erneut Aktualisieren.",
     },
     "pt-BR": {
         "Hack": "Hack", "Date": "Data", "Tracked": "Acompanhados",
@@ -15687,6 +15756,29 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Stop Timers": "Parar cronômetros",
         "Preferred service": "Serviço preferido",
         "Automatic": "Automático",
+        "Google Sheets Sync…": "Sincronização com o Google Sheets…",
+        "Open Automatic Backups Folder": "Abrir pasta de backups automáticos",
+        "Create Recovery Backup Now": "Criar backup de recuperação agora",
+        "Sync Google Sheets Now": "Sincronizar Google Sheets agora",
+        "Manage SD Card Hacks…": "Gerenciar hacks do cartão SD…",
+        "Catalog Version: Unknown": "Versão do catálogo: desconhecida",
+        "Last Refresh: Never": "Última atualização: nunca",
+        "Source: Live SMW Central Catalog": "Fonte: catálogo ao vivo do SMW Central",
+        "Back Up Database": "Fazer backup do banco de dados",
+        "Download Missing Hacks": "Baixar hacks ausentes",
+        "Export My Tracker": "Exportar Meu Tracker",
+        "FXPAK Pro SD Card": "Cartão SD do FXPAK Pro",
+        "Google Sheets Sync": "Sincronização com o Google Sheets",
+        "Import / Refresh from Spreadsheet": "Importar ou atualizar de uma planilha",
+        "Import Existing Spreadsheet": "Importar planilha existente",
+        "Restore Database": "Restaurar banco de dados",
+        "Restore Previous App Version": "Restaurar versão anterior do aplicativo",
+        "Settings and file tools": "Configurações e ferramentas de arquivos",
+        "Stats file tools": "Ferramentas de arquivos de estatísticas",
+        "Opening {action} may display local file names, folder paths, account names, or other personal information.": "Ao abrir {action}, podem ser exibidos nomes de arquivos locais, caminhos de pastas, nomes de contas ou outras informações pessoais.",
+        "If you are streaming, recording, or sharing your screen, pause the capture or crop this window before continuing.": "Se você estiver transmitindo, gravando ou compartilhando a tela, pause a captura ou recorte esta janela antes de continuar.",
+        "Don't show this warning again for {scope}": "Não mostrar este aviso novamente para {scope}",
+        "RetroArch Network Commands are not responding. In RetroArch, enable Settings > Network > Network Commands on port 55355, launch a game, and try Refresh.": "Os comandos de rede do RetroArch não estão respondendo. No RetroArch, ative Configurações > Rede > Comandos de rede na porta 55355, inicie um jogo e tente Atualizar novamente.",
     },
 }
 for _language_code, _extra_translations in _UI_TRANSLATION_EXTRAS.items():
@@ -16299,6 +16391,13 @@ class TrackerWorker:
         self.level_death_count = 0
         self.previous_player_state: int | None = None
         self.previous_player_lives: int | None = None
+        # $0DBE (current player lives) can lag behind $010A (save slot)
+        # briefly while switching between Mario A/B/C. During that handoff,
+        # learn the new slot's stable lives value before using a decrease as
+        # the backup death signal. The primary $71 = $09 signal stays active.
+        self.slot_lives_baseline_pending = False
+        self.slot_lives_baseline_value: int | None = None
+        self.slot_lives_baseline_samples = 0
         self.death_detection_latched = False
         self.death_alive_samples = 0
         self.last_time_save = 0.0
@@ -16514,6 +16613,10 @@ class TrackerWorker:
         if slot not in {0, 1, 2}:
             return
 
+        switching_slots = (
+            self.active_save_slot is not None
+            and self.active_save_slot != slot
+        )
         self.active_save_slot = slot
         self.current_time_key = self.make_time_save_key(
             self.current_rom_key,
@@ -16526,6 +16629,9 @@ class TrackerWorker:
         self.level_death_count = 0
         self.previous_player_state = None
         self.previous_player_lives = None
+        self.slot_lives_baseline_pending = switching_slots
+        self.slot_lives_baseline_value = None
+        self.slot_lives_baseline_samples = 0
         self.death_detection_latched = False
         self.death_alive_samples = 0
         self.update_death_file()
@@ -16846,6 +16952,9 @@ class TrackerWorker:
         self.previous_exit_count = None
         self.previous_player_state = None
         self.previous_player_lives = None
+        self.slot_lives_baseline_pending = False
+        self.slot_lives_baseline_value = None
+        self.slot_lives_baseline_samples = 0
         self.death_detection_latched = False
         self.death_alive_samples = 0
         self.displayed_exit_count = None
@@ -20344,12 +20453,35 @@ finally {
         if player_lives is not None:
             self.previous_player_lives = player_lives
 
+        suppress_lives_decrease = self.slot_lives_baseline_pending
+        if self.slot_lives_baseline_pending and player_lives is not None:
+            self.slot_lives_baseline_value = player_lives
+            self.slot_lives_baseline_samples += 1
+
+            # The save-slot handoff occupies at most the first couple of
+            # usable samples: one can still contain the old slot's lives and
+            # the next contains the new slot's value. Do not wait for several
+            # identical readings, because that can hide the first real death
+            # after a fast file-select/retry. This sample stays suppressed;
+            # the next one is immediately eligible for lives-based detection.
+            if self.slot_lives_baseline_samples >= 2:
+                self.slot_lives_baseline_pending = False
+
+        # $7E:0071 = $09 is SMW's standard player-death action. Treat the
+        # first observed $09 as an edge too. Save-slot selection, reconnects,
+        # and very fast retries can make the first usable sample arrive after
+        # Mario has already entered the death routine; requiring an earlier
+        # non-death sample silently loses that death. record_death() still
+        # requires an armed, active level and the shared latch prevents the
+        # sustained $09 value (or the later lives decrement) from counting it
+        # more than once.
         entered_death_state = (
-            previous_player_state is not None
-            and player_state == 0x09
+            player_state == 0x09
             and previous_player_state != 0x09
         )
         lives_decreased = (
+            not suppress_lives_decrease
+            and
             player_lives is not None
             and previous_player_lives is not None
             and player_lives != previous_player_lives
@@ -20691,13 +20823,15 @@ finally {
             )
 
             # When the tracker reconnects to a ROM/slot that was already in
-            # progress, there may be no new overworld transition available to
-            # arm level tracking. A restored time or death total proves this
-            # is not the opening cutscene of a brand-new run, so resume death
-            # counting and the level timer immediately. New runs at 00:00
-            # still wait for the first overworld exactly as before.
+            # progress, or the player leaves file select directly into a
+            # previously started level, there may be no new overworld
+            # transition available to arm level tracking. A restored time or
+            # death total proves this is not the opening cutscene of a
+            # brand-new run, so resume death counting and the level timer
+            # immediately. New runs at 00:00 still wait for the first
+            # overworld exactly as before.
             if (
-                already_in_game
+                (already_in_game or left_player_select)
                 and mode == LEVEL_MODE
                 and (
                     self.game_elapsed > 0
@@ -21762,6 +21896,24 @@ class TrackerApp:
         ):
             localized = localized.replace(english, translated)
         return localized
+
+    def _format_ui_text(
+        self,
+        text: str,
+        **values: object,
+    ) -> str:
+        """Translate a sentence template and its inserted UI labels."""
+        localized_values = {
+            key: (
+                self._translate_ui_text(value)
+                if isinstance(value, str)
+                else value
+            )
+            for key, value in values.items()
+        }
+        return self._translate_ui_text(text).format(
+            **localized_values
+        )
 
     def _localize_mapped_toplevel(self, event=None) -> None:
         widget = getattr(event, "widget", None)
@@ -24715,7 +24867,11 @@ class TrackerApp:
     ) -> bool:
         palette = self._library_palette()
         dialog = tk.Toplevel(self.root)
-        dialog.title("Streamer Privacy Warning")
+        dialog.title(
+            self._translate_ui_text(
+                "Streamer Privacy Warning"
+            )
+        )
         self._size_dialog_for_ui(
             dialog,
             700,
@@ -24741,7 +24897,9 @@ class TrackerApp:
         title_bar.pack(fill="x")
         OutlinedLabel(
             title_bar,
-            text="⚠  STREAMER PRIVACY WARNING",
+            text=self._translate_ui_text(
+                "⚠  STREAMER PRIVACY WARNING"
+            ),
             font=("Segoe UI", 16, "bold"),
             fg="white",
             bg=THEME["orange"],
@@ -24765,9 +24923,10 @@ class TrackerApp:
 
         tk.Label(
             body,
-            text=(
-                f"Opening {action_label} may display local file names, "
-                "folder paths, account names, or other personal information."
+            text=self._format_ui_text(
+                "Opening {action} may display local file names, folder "
+                "paths, account names, or other personal information.",
+                action=action_label,
             ),
             font=("Segoe UI", 12, "bold"),
             fg=palette["text"],
@@ -24778,7 +24937,7 @@ class TrackerApp:
         ).pack(fill="x")
         tk.Label(
             body,
-            text=(
+            text=self._translate_ui_text(
                 "If you are streaming, recording, or sharing your screen, "
                 "pause the capture or crop this window before continuing."
             ),
@@ -24792,7 +24951,10 @@ class TrackerApp:
 
         scope_checkbox = tk.Checkbutton(
             body,
-            text=f"Don't show this warning again for {scope_label}",
+            text=self._format_ui_text(
+                "Don't show this warning again for {scope}",
+                scope=scope_label,
+            ),
             variable=disable_scope_var,
             bg=palette["panel"],
             fg=palette["text"],
@@ -24813,7 +24975,7 @@ class TrackerApp:
 
         tk.Checkbutton(
             body,
-            text=(
+            text=self._translate_ui_text(
                 "Don't show streamer privacy warnings anywhere in the app"
             ),
             variable=disable_everywhere_var,
@@ -24872,7 +25034,7 @@ class TrackerApp:
 
         self._make_action_button(
             button_bar,
-            text="Continue",
+            text=self._translate_ui_text("Continue"),
             command=continue_action,
             bg=THEME["green"],
             active_bg=THEME["green_dark"],
@@ -24881,7 +25043,7 @@ class TrackerApp:
         ).pack(side="right")
         self._make_action_button(
             button_bar,
-            text="Cancel",
+            text=self._translate_ui_text("Cancel"),
             command=cancel,
             bg=THEME["muted"],
             active_bg="#384D65",
@@ -50687,7 +50849,9 @@ class TrackerApp:
                         self.status_var.set(
                             self._translate_ui_text("Reconnecting:")
                             + " "
-                            + str(event.get("error", ""))
+                            + self._translate_ui_text(
+                                str(event.get("error", ""))
+                            )
                         )
                     self._set_tracking_icon(
                         bool(event.get("connected"))
