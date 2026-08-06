@@ -1,24 +1,24 @@
 {
-    "schema":  1,
-    "version":  "1.0.3",
-    "release_date":  "2026-08-06",
-    "notes":  [
-                  "Adds a File \u003e Language menu and rebuilds the interface immediately when the language changes.",
-                  "Translates the Search or select a hack prompt and keeps its result list attached when the app moves between monitors.",
-                  "Keeps the full banner composition readable when the app is not maximized.",
-                  "Separates SNI and QUsb2Snes setup so either service can be configured and used independently.",
-                  "Adds in-app SNI, QUsb2Snes, and RetroArch installation and discovery, including recommended RetroArch core setup.",
-                  "Improves Setup \u0026 Health Check so a working RetroArch connection is reported as ready.",
-                  "Limits Play Random Hack to downloaded, launchable games and reliably starts the next game timer.",
-                  "Keeps resumed save-slot deaths and game time working, and no longer treats castle destruction as game completion.",
-                  "Removes the duplicate About \u0026 Updates command from File; it remains available from Help.",
-                  "Removes the local database path from the Statistics header for safer screenshots and streams.",
-                  "Credits tester Jole_12 and thanks them for their testing, feedback, and contributions.",
-                  "Includes refreshed privacy-safe feature screenshots and expanded regression coverage.",
-                  "Distributes unsigned installers with SHA-256 verification and rollback-capable in-app updates."
-              ],
-    "updater_url":  "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.3/SMWStreamTracker_Update_1.0.3.exe",
-    "verification":  "sha256",
-    "sha256":  "9ffd6f370ca18e3034068347a08c6b32521a73464ddc7ba8ecf363feaed7bccd",
-    "size":  79525064
+  "schema": 1,
+  "version": "1.0.3",
+  "release_date": "2026-08-06",
+  "notes": [
+    "Adds a File > Language menu and rebuilds the interface immediately when the language changes.",
+    "Translates the Search or select a hack prompt and keeps its result list attached when the app moves between monitors.",
+    "Keeps the full banner composition readable when the app is not maximized.",
+    "Separates SNI and QUsb2Snes setup so either service can be configured and used independently.",
+    "Adds in-app SNI, QUsb2Snes, and RetroArch installation and discovery, including recommended RetroArch core setup.",
+    "Improves Setup & Health Check so a working RetroArch connection is reported as ready.",
+    "Limits Play Random Hack to downloaded, launchable games and reliably starts the next game timer.",
+    "Keeps resumed save-slot deaths and game time working, and no longer treats castle destruction as game completion.",
+    "Removes the duplicate About & Updates command from File; it remains available from Help.",
+    "Removes the local database path from the Statistics header for safer screenshots and streams.",
+    "Credits tester Jole_12 and thanks them for their testing, feedback, and contributions.",
+    "Includes refreshed privacy-safe feature screenshots and expanded regression coverage.",
+    "Distributes unsigned installers with SHA-256 verification and rollback-capable in-app updates."
+  ],
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.3/SMWStreamTracker_Update_1.0.3.exe",
+  "verification": "sha256",
+  "sha256": "dc709623ce8afcfffb6c247740ca73f1ea6eae707f714dc3ab32196321d28cb9",
+  "size": 61375633
 }
