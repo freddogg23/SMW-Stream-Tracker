@@ -14,15 +14,17 @@ The app does **not** include, download, or upload a commercial Super Mario World
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker main dashboard with platform status, current hack controls, and timers">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.2 dashboard with replay controls, level and total death counters, platform status, and timers">
 </p>
+
+The v1.0.2 dashboard keeps recent hacks ready to replay and shows separate level and save-file death counters with matching OBS text output and manual overrides.
 
 <table>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/screenshots/my-tracker.png" alt="My Tracker searchable progress table"><br>
       <strong>My Tracker</strong><br>
-      Search, filter, sort, rate, launch, and manage every tracked hack.
+      Search, filter, sort, rate, launch, and manage every tracked hack, including editable total-death history.
     </td>
     <td width="50%" valign="top">
       <img src="docs/screenshots/stats-overview.png" alt="Tracker statistics, difficulty progress, and recent activity"><br>
