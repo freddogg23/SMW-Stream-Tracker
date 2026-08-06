@@ -1,21 +1,21 @@
 {
-    "schema":  1,
-    "version":  "1.0.2",
-    "release_date":  "2026-08-05",
-    "notes":  [
-                  "Adds separate Level Deaths and Total Deaths counters with OBS files and per-ROM, per-save-slot persistence.",
-                  "Adds Level Deaths and Total Deaths to the main override area, using the same Apply Override button.",
-                  "Adds a five-item Replay Recent Hack selector that remembers recent games across sessions.",
-                  "Adds an editable Total Deaths column to My Tracker and marks older completions with a yellow asterisk when no historical death count exists.",
-                  "Prevents opening intro cutscenes from starting the level timer or counting deaths.",
-                  "Keeps older-hack level timing through death-to-overworld transitions and resets only after a confirmed clear or different level.",
-                  "Improves first-death and missed-death detection while avoiding duplicate counts.",
-                  "Expands OBS text settings and multilingual setup documentation for both death counters.",
-                  "Includes regression coverage for recent replay history, death persistence, timer transitions, overrides, and tracker exports.",
-                  "Distributes unsigned installers with SHA-256 verification and rollback-capable in-app updates."
-              ],
-    "updater_url":  "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.2/SMWStreamTracker_Update_1.0.2.exe",
-    "verification":  "sha256",
-    "sha256":  "3b816ee6275a09a4653252958f266b81345541afcf8b8118b1373e6e38918580",
-    "size":  62735856
+  "schema": 1,
+  "version": "1.0.2",
+  "release_date": "2026-08-06",
+  "notes": [
+    "Adds separate Level Deaths and Total Deaths counters with OBS files and per-ROM, per-save-slot persistence.",
+    "Adds Level Deaths and Total Deaths to the main override area, using the same Apply Override button.",
+    "Adds a five-item Replay Recent Hack selector that remembers recent games across sessions.",
+    "Adds an editable Total Deaths column to My Tracker and marks older completions with a yellow asterisk when no historical death count exists.",
+    "Prevents opening intro cutscenes from starting the level timer or counting deaths.",
+    "Keeps older-hack level timing through death-to-overworld transitions and resets only after a confirmed clear or different level.",
+    "Improves first-death and missed-death detection while avoiding duplicate counts.",
+    "Expands OBS text settings and multilingual setup documentation for both death counters.",
+    "Includes regression coverage for recent replay history, death persistence, timer transitions, overrides, and tracker exports.",
+    "Distributes unsigned installers with SHA-256 verification and rollback-capable in-app updates."
+  ],
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.2/SMWStreamTracker_Update_1.0.2.exe",
+  "verification": "sha256",
+  "sha256": "9a7b79c5f5e468f67be0f3834305f8b11e4e34854455df45a17f26fa8a3695ef",
+  "size": 62540239
 }
