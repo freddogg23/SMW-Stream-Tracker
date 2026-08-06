@@ -65,8 +65,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.2"
-APP_BUILD_DATE = "2026-08-05"
+APP_VERSION = "1.0.3"
+APP_BUILD_DATE = "2026-08-06"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
 FEEDBACK_FORM_URL = (
@@ -84,6 +84,29 @@ LEGACY_UPDATE_MANIFEST_URLS = {
     "https://raw.githubusercontent.com/freddogg23/"
     "smwc_tracker/main/release/update_manifest.json",
 }
+
+SNI_DOWNLOAD_URL = (
+    "https://github.com/alttpo/sni/releases/download/v0.0.103/"
+    "sni-v0.0.103-windows-amd64.zip"
+)
+SNI_DOWNLOAD_SHA256 = (
+    "4c0885769518c8b6ed7db038a29fdbdaf28b64c3b54689a5b2e0d6dd33074f87"
+)
+QUSB2SNES_DOWNLOAD_URL = (
+    "https://github.com/usb2snes/usb2snes/releases/download/2025-10-20/"
+    "QUsb2Snes-bundle-2025-10-20.7z"
+)
+QUSB2SNES_DOWNLOAD_SHA256 = (
+    "104c4a01454d4a5e46998b0ddecf3f95ece71853c614e9e906c287f77de9806f"
+)
+RETROARCH_DOWNLOAD_URL = (
+    "https://buildbot.libretro.com/stable/1.22.2/windows/x86_64/"
+    "RetroArch-Win64-setup.exe"
+)
+RETROARCH_CORE_DOWNLOAD_URL = (
+    "https://buildbot.libretro.com/nightly/windows/x86_64/latest/"
+    "bsnes_mercury_performance_libretro.dll.zip"
+)
 
 
 def bundled_resource_path(*parts: str) -> Path:
@@ -11225,6 +11248,119 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def write_retroarch_tracker_settings(config_path: Path) -> None:
+    """Enable the network controls required by live RetroArch tracking."""
+    required_settings = {
+        "network_cmd_enable": '"true"',
+        "network_cmd_port": '"55355"',
+        # One quit command must close the running content so Play/Random can
+        # save state and switch games without waiting for a second key press.
+        "quit_press_twice": '"false"',
+        "config_save_on_exit": '"true"',
+    }
+    try:
+        existing_text = config_path.read_text(
+            encoding="utf-8-sig",
+            errors="replace",
+        )
+    except OSError:
+        existing_text = ""
+
+    lines = existing_text.splitlines()
+    found: set[str] = set()
+    updated_lines: list[str] = []
+    setting_pattern = re.compile(
+        r"^\s*([A-Za-z0-9_]+)\s*="
+    )
+    for line in lines:
+        match = setting_pattern.match(line)
+        key = match.group(1) if match else ""
+        if key in required_settings:
+            if key not in found:
+                updated_lines.append(
+                    f"{key} = {required_settings[key]}"
+                )
+                found.add(key)
+            continue
+        updated_lines.append(line)
+
+    if updated_lines and updated_lines[-1].strip():
+        updated_lines.append("")
+    for key, value in required_settings.items():
+        if key not in found:
+            updated_lines.append(f"{key} = {value}")
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(updated_lines).rstrip() + "\n",
+        encoding="utf-8",
+    )
+
+
+def extract_7z_archive(archive_path: Path, destination: Path) -> None:
+    """Extract a QUsb2Snes 7z bundle using available Windows tooling."""
+    destination.mkdir(parents=True, exist_ok=True)
+    extractor_candidates: list[list[str]] = []
+    tar_executable = shutil.which("tar")
+    if tar_executable:
+        extractor_candidates.append(
+            [
+                tar_executable,
+                "-xf",
+                str(archive_path),
+                "-C",
+                str(destination),
+            ]
+        )
+    for candidate in (
+        shutil.which("7z"),
+        str(
+            Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
+            / "7-Zip"
+            / "7z.exe"
+        ),
+        str(
+            Path(
+                os.environ.get(
+                    "PROGRAMFILES(X86)",
+                    "C:/Program Files (x86)",
+                )
+            )
+            / "7-Zip"
+            / "7z.exe"
+        ),
+    ):
+        if candidate and Path(candidate).is_file():
+            extractor_candidates.append(
+                [
+                    candidate,
+                    "x",
+                    "-y",
+                    f"-o{destination}",
+                    str(archive_path),
+                ]
+            )
+
+    errors: list[str] = []
+    for command in extractor_candidates:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if result.returncode == 0:
+            return
+        errors.append(
+            (result.stderr or result.stdout or "unknown error").strip()
+        )
+    raise RuntimeError(
+        "Windows could not extract the QUsb2Snes 7z archive. Install "
+        "7-Zip or use SNI instead."
+        + ("\n\n" + "\n".join(errors[-2:]) if errors else "")
+    )
+
+
 def installed_document_path(filename: str) -> Path:
     external = application_directory() / filename
     if external.is_file():
@@ -14981,8 +15117,587 @@ DEFAULT_TRACKER_DIFFICULTY_COLORS = {
     "Unknown": "#ADB1B6",
 }
 
+APP_LANGUAGE_LABELS = {
+    "en": "English",
+    "au": "Australian",
+    "es": "Español",
+    "fr": "Français",
+    "de": "Deutsch",
+    "pt-BR": "Português (Brasil)",
+}
+
+# Exact, reviewed interface wording is used instead of machine translation.
+# Dynamic values (hack titles, file paths, authors and catalog data) are never
+# translated or modified.
+UI_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "es": {
+        "File": "Archivo", "Stats": "Estadísticas",
+        "Settings": "Configuración", "Downloads": "Descargas",
+        "Help": "Ayuda", "Select Platform": "Seleccionar plataforma",
+        "Appearance": "Apariencia", "App language": "Idioma de la aplicación",
+        "Light Mode": "Modo claro",
+        "Dark Mode": "Modo oscuro", "Save Settings": "Guardar configuración",
+        "Cancel": "Cancelar", "Close": "Cerrar", "Browse": "Examinar",
+        "Play": "Jugar", "Play Random Hack": "Jugar hack aleatorio",
+        "Replay Recent Hack": "Volver a jugar un hack reciente",
+        "Add to My Tracker": "Añadir a Mi Tracker",
+        "Complete Hack": "Completar hack", "Current Hack": "Hack actual",
+        "Timers": "Temporizadores", "Game Time": "Tiempo de juego",
+        "Level Time": "Tiempo de nivel", "Level Deaths": "Muertes del nivel",
+        "Total Deaths": "Muertes totales", "Reset": "Reiniciar",
+        "Language": "Idioma", "Start Game Timer": "Iniciar tiempo de juego",
+        "Start Level Timer": "Iniciar tiempo de nivel",
+        "Start Timers": "Iniciar temporizadores",
+        "Reset Game Timer": "Reiniciar tiempo de juego",
+        "Reset Level Timer": "Reiniciar tiempo de nivel",
+        "Finish Game Timer": "Finalizar tiempo de juego",
+        "Apply Override": "Aplicar corrección",
+        "Game Time:": "Tiempo de juego:", "Level Time:": "Tiempo de nivel:",
+        "Level Deaths:": "Muertes del nivel:", "Total Deaths:": "Muertes totales:",
+        "Created by FredDOGG23": "Creado por FredDOGG23",
+        "Save": "Guardar", "Open": "Abrir", "Refresh": "Actualizar",
+        "Overview…": "Resumen…", "My Tracker…": "Mi Tracker…",
+        "Import Existing Spreadsheet…": "Importar hoja de cálculo existente…",
+        "Export My Tracker…": "Exportar Mi Tracker…",
+        "Back Up Database…": "Crear copia de la base de datos…",
+        "Restore Database…": "Restaurar base de datos…",
+        "Open Database Folder": "Abrir carpeta de la base de datos",
+        "Test Selected Platform": "Probar plataforma seleccionada",
+        "OBS Settings": "Configuración de OBS",
+        "Import / Refresh from Spreadsheet…": "Importar o actualizar desde una hoja de cálculo…",
+        "Restore Previous App Version...": "Restaurar la versión anterior...",
+        "Download Missing Hacks…": "Descargar hacks faltantes…",
+        "Add Unmoderated Hack…": "Añadir hack no moderado…",
+        "Use SS, MM:SS, or H:MM:SS. Deaths must be whole numbers. Leave any field blank to keep it unchanged.": "Usa SS, MM:SS o H:MM:SS. Las muertes deben ser números enteros. Deja un campo vacío para conservar su valor.",
+        "Status": "Estado", "My Tracker": "Mi Tracker",
+        "Search or select a hack...": "Buscar o seleccionar un hack...",
+        "Hack catalog is loading...": "El catálogo de hacks se está cargando...",
+        "Download Missing Hacks…": "Descargar hacks faltantes…",
+        "Add Unmoderated Hack…": "Añadir hack no moderado…",
+        "Connection & Emulator Setup": "Configuración de conexión y emulador",
+        "Install or Find SNI (Strongly Recommended)...": "Instalar o buscar SNI (muy recomendado)...",
+        "Install or Find QUsb2Snes...": "Instalar o buscar QUsb2Snes...",
+        "Install or Configure RetroArch...": "Instalar o configurar RetroArch...",
+        "SMW Central Catalog": "Catálogo de SMW Central",
+        "View Complete Catalog…": "Ver catálogo completo…",
+        "Refresh Moderated Hacks from SMW Central…": "Actualizar hacks moderados desde SMW Central…",
+        "Visit SMW Central Website...": "Visitar el sitio de SMW Central...",
+        "Read Me / Setup Guide...": "Guía de instalación y uso...",
+        "Feedback & Suggestions...": "Comentarios y sugerencias...",
+        "About & Updates...": "Acerca de y actualizaciones...",
+        "Open OBS Text Folder": "Abrir carpeta de texto de OBS",
+        "Edit OBS Text Settings...": "Editar textos de OBS...",
+        "Setup & Health Check...": "Configuración y diagnóstico...",
+        "Diagnostics...": "Diagnósticos...", "Minimize to Tray": "Minimizar al área de notificación",
+        "Exit": "Salir", "ROM Hack Title": "Título del hack",
+        "Created By": "Creado por", "Difficulty": "Dificultad",
+        "Type": "Tipo", "Rating": "Puntuación", "Added Date": "Fecha de publicación",
+        "Library Status": "Estado de la biblioteca", "Search": "Buscar",
+        "Filter by letter": "Filtrar por letra", "Any": "Cualquiera",
+        "All": "Todos", "Refresh Preview": "Actualizar vista previa",
+        "Download All Matching Hacks": "Descargar todos los hacks coincidentes",
+    },
+    "fr": {
+        "File": "Fichier", "Stats": "Statistiques",
+        "Settings": "Paramètres", "Downloads": "Téléchargements",
+        "Help": "Aide", "Select Platform": "Choisir la plateforme",
+        "Appearance": "Apparence", "App language": "Langue de l’application",
+        "Light Mode": "Mode clair",
+        "Dark Mode": "Mode sombre", "Save Settings": "Enregistrer les paramètres",
+        "Cancel": "Annuler", "Close": "Fermer", "Browse": "Parcourir",
+        "Play": "Jouer", "Play Random Hack": "Jouer à un hack aléatoire",
+        "Replay Recent Hack": "Rejouer à un hack récent",
+        "Add to My Tracker": "Ajouter à Mon Tracker",
+        "Complete Hack": "Terminer le hack", "Current Hack": "Hack actuel",
+        "Timers": "Chronomètres", "Game Time": "Temps de jeu",
+        "Level Time": "Temps du niveau", "Level Deaths": "Morts du niveau",
+        "Total Deaths": "Morts totales", "Reset": "Réinitialiser",
+        "Language": "Langue", "Start Game Timer": "Démarrer le temps de jeu",
+        "Start Level Timer": "Démarrer le temps du niveau",
+        "Start Timers": "Démarrer les chronomètres",
+        "Reset Game Timer": "Réinitialiser le temps de jeu",
+        "Reset Level Timer": "Réinitialiser le temps du niveau",
+        "Finish Game Timer": "Terminer le temps de jeu",
+        "Apply Override": "Appliquer la correction",
+        "Game Time:": "Temps de jeu :", "Level Time:": "Temps du niveau :",
+        "Level Deaths:": "Morts du niveau :", "Total Deaths:": "Morts totales :",
+        "Created by FredDOGG23": "Créé par FredDOGG23",
+        "Save": "Enregistrer", "Open": "Ouvrir", "Refresh": "Actualiser",
+        "Overview…": "Vue d’ensemble…", "My Tracker…": "Mon Tracker…",
+        "Import Existing Spreadsheet…": "Importer une feuille existante…",
+        "Export My Tracker…": "Exporter Mon Tracker…",
+        "Back Up Database…": "Sauvegarder la base de données…",
+        "Restore Database…": "Restaurer la base de données…",
+        "Open Database Folder": "Ouvrir le dossier de la base de données",
+        "Test Selected Platform": "Tester la plateforme sélectionnée",
+        "OBS Settings": "Paramètres OBS",
+        "Import / Refresh from Spreadsheet…": "Importer ou actualiser depuis une feuille…",
+        "Restore Previous App Version...": "Restaurer la version précédente...",
+        "Download Missing Hacks…": "Télécharger les hacks manquants…",
+        "Add Unmoderated Hack…": "Ajouter un hack non modéré…",
+        "Use SS, MM:SS, or H:MM:SS. Deaths must be whole numbers. Leave any field blank to keep it unchanged.": "Utilisez SS, MM:SS ou H:MM:SS. Les morts doivent être des nombres entiers. Laissez un champ vide pour conserver sa valeur.",
+        "Status": "État", "My Tracker": "Mon Tracker",
+        "Search or select a hack...": "Rechercher ou choisir un hack...",
+        "Hack catalog is loading...": "Chargement du catalogue de hacks...",
+        "Download Missing Hacks…": "Télécharger les hacks manquants…",
+        "Add Unmoderated Hack…": "Ajouter un hack non modéré…",
+        "Connection & Emulator Setup": "Configuration de la connexion et de l’émulateur",
+        "Install or Find SNI (Strongly Recommended)...": "Installer ou trouver SNI (fortement recommandé)...",
+        "Install or Find QUsb2Snes...": "Installer ou trouver QUsb2Snes...",
+        "Install or Configure RetroArch...": "Installer ou configurer RetroArch...",
+        "SMW Central Catalog": "Catalogue SMW Central",
+        "View Complete Catalog…": "Afficher le catalogue complet…",
+        "Refresh Moderated Hacks from SMW Central…": "Actualiser les hacks modérés depuis SMW Central…",
+        "Visit SMW Central Website...": "Visiter le site de SMW Central...",
+        "Read Me / Setup Guide...": "Guide d’installation et d’utilisation...",
+        "Feedback & Suggestions...": "Commentaires et suggestions...",
+        "About & Updates...": "À propos et mises à jour...",
+        "Open OBS Text Folder": "Ouvrir le dossier de textes OBS",
+        "Edit OBS Text Settings...": "Modifier les textes OBS...",
+        "Setup & Health Check...": "Configuration et diagnostic...",
+        "Diagnostics...": "Diagnostics...", "Minimize to Tray": "Réduire dans la zone de notification",
+        "Exit": "Quitter", "ROM Hack Title": "Titre du hack",
+        "Created By": "Créé par", "Difficulty": "Difficulté",
+        "Type": "Type", "Rating": "Note", "Added Date": "Date de publication",
+        "Library Status": "État de la bibliothèque", "Search": "Rechercher",
+        "Filter by letter": "Filtrer par lettre", "Any": "Tous",
+        "All": "Tous", "Refresh Preview": "Actualiser l’aperçu",
+        "Download All Matching Hacks": "Télécharger tous les hacks correspondants",
+    },
+    "de": {
+        "File": "Datei", "Stats": "Statistiken",
+        "Settings": "Einstellungen", "Downloads": "Downloads",
+        "Help": "Hilfe", "Select Platform": "Plattform auswählen",
+        "Appearance": "Darstellung", "App language": "Sprache der App",
+        "Light Mode": "Heller Modus",
+        "Dark Mode": "Dunkler Modus", "Save Settings": "Einstellungen speichern",
+        "Cancel": "Abbrechen", "Close": "Schließen", "Browse": "Durchsuchen",
+        "Play": "Spielen", "Play Random Hack": "Zufälligen Hack spielen",
+        "Replay Recent Hack": "Kürzlich gespielten Hack erneut spielen",
+        "Add to My Tracker": "Zu Mein Tracker hinzufügen",
+        "Complete Hack": "Hack abschließen", "Current Hack": "Aktueller Hack",
+        "Timers": "Timer", "Game Time": "Spielzeit",
+        "Level Time": "Levelzeit", "Level Deaths": "Level-Tode",
+        "Total Deaths": "Tode insgesamt", "Reset": "Zurücksetzen",
+        "Language": "Sprache", "Start Game Timer": "Spielzeit starten",
+        "Start Level Timer": "Levelzeit starten",
+        "Start Timers": "Timer starten",
+        "Reset Game Timer": "Spielzeit zurücksetzen",
+        "Reset Level Timer": "Levelzeit zurücksetzen",
+        "Finish Game Timer": "Spielzeit beenden",
+        "Apply Override": "Korrektur anwenden",
+        "Game Time:": "Spielzeit:", "Level Time:": "Levelzeit:",
+        "Level Deaths:": "Level-Tode:", "Total Deaths:": "Tode insgesamt:",
+        "Created by FredDOGG23": "Erstellt von FredDOGG23",
+        "Save": "Speichern", "Open": "Öffnen", "Refresh": "Aktualisieren",
+        "Overview…": "Übersicht…", "My Tracker…": "Mein Tracker…",
+        "Import Existing Spreadsheet…": "Vorhandene Tabelle importieren…",
+        "Export My Tracker…": "Mein Tracker exportieren…",
+        "Back Up Database…": "Datenbank sichern…",
+        "Restore Database…": "Datenbank wiederherstellen…",
+        "Open Database Folder": "Datenbankordner öffnen",
+        "Test Selected Platform": "Ausgewählte Plattform testen",
+        "OBS Settings": "OBS-Einstellungen",
+        "Import / Refresh from Spreadsheet…": "Aus Tabelle importieren oder aktualisieren…",
+        "Restore Previous App Version...": "Vorherige App-Version wiederherstellen...",
+        "Download Missing Hacks…": "Fehlende Hacks herunterladen…",
+        "Add Unmoderated Hack…": "Nicht moderierten Hack hinzufügen…",
+        "Use SS, MM:SS, or H:MM:SS. Deaths must be whole numbers. Leave any field blank to keep it unchanged.": "Verwenden Sie SS, MM:SS oder H:MM:SS. Todeszahlen müssen ganzzahlig sein. Lassen Sie ein Feld leer, um seinen Wert beizubehalten.",
+        "Status": "Status", "My Tracker": "Mein Tracker",
+        "Search or select a hack...": "Hack suchen oder auswählen...",
+        "Hack catalog is loading...": "Hack-Katalog wird geladen...",
+        "Download Missing Hacks…": "Fehlende Hacks herunterladen…",
+        "Add Unmoderated Hack…": "Nicht moderierten Hack hinzufügen…",
+        "Connection & Emulator Setup": "Verbindungs- und Emulator-Einrichtung",
+        "Install or Find SNI (Strongly Recommended)...": "SNI installieren oder suchen (dringend empfohlen)...",
+        "Install or Find QUsb2Snes...": "QUsb2Snes installieren oder suchen...",
+        "Install or Configure RetroArch...": "RetroArch installieren oder einrichten...",
+        "SMW Central Catalog": "SMW-Central-Katalog",
+        "View Complete Catalog…": "Vollständigen Katalog anzeigen…",
+        "Refresh Moderated Hacks from SMW Central…": "Moderierte Hacks von SMW Central aktualisieren…",
+        "Visit SMW Central Website...": "SMW-Central-Webseite besuchen...",
+        "Read Me / Setup Guide...": "Einrichtungs- und Bedienungsanleitung...",
+        "Feedback & Suggestions...": "Feedback und Vorschläge...",
+        "About & Updates...": "Info und Updates...",
+        "Open OBS Text Folder": "OBS-Textordner öffnen",
+        "Edit OBS Text Settings...": "OBS-Texte bearbeiten...",
+        "Setup & Health Check...": "Einrichtung und Systemprüfung...",
+        "Diagnostics...": "Diagnose...", "Minimize to Tray": "In den Infobereich minimieren",
+        "Exit": "Beenden", "ROM Hack Title": "Hack-Titel",
+        "Created By": "Erstellt von", "Difficulty": "Schwierigkeit",
+        "Type": "Typ", "Rating": "Bewertung", "Added Date": "Veröffentlichungsdatum",
+        "Library Status": "Bibliotheksstatus", "Search": "Suchen",
+        "Filter by letter": "Nach Buchstaben filtern", "Any": "Beliebig",
+        "All": "Alle", "Refresh Preview": "Vorschau aktualisieren",
+        "Download All Matching Hacks": "Alle passenden Hacks herunterladen",
+    },
+    "pt-BR": {
+        "File": "Arquivo", "Stats": "Estatísticas",
+        "Settings": "Configurações", "Downloads": "Downloads",
+        "Help": "Ajuda", "Select Platform": "Selecionar plataforma",
+        "Appearance": "Aparência", "App language": "Idioma do aplicativo",
+        "Light Mode": "Modo claro",
+        "Dark Mode": "Modo escuro", "Save Settings": "Salvar configurações",
+        "Cancel": "Cancelar", "Close": "Fechar", "Browse": "Procurar",
+        "Play": "Jogar", "Play Random Hack": "Jogar hack aleatório",
+        "Replay Recent Hack": "Jogar novamente um hack recente",
+        "Add to My Tracker": "Adicionar ao Meu Tracker",
+        "Complete Hack": "Concluir hack", "Current Hack": "Hack atual",
+        "Timers": "Cronômetros", "Game Time": "Tempo de jogo",
+        "Level Time": "Tempo da fase", "Level Deaths": "Mortes na fase",
+        "Total Deaths": "Mortes totais", "Reset": "Redefinir",
+        "Language": "Idioma", "Start Game Timer": "Iniciar tempo de jogo",
+        "Start Level Timer": "Iniciar tempo da fase",
+        "Start Timers": "Iniciar cronômetros",
+        "Reset Game Timer": "Redefinir tempo de jogo",
+        "Reset Level Timer": "Redefinir tempo da fase",
+        "Finish Game Timer": "Finalizar tempo de jogo",
+        "Apply Override": "Aplicar correção",
+        "Game Time:": "Tempo de jogo:", "Level Time:": "Tempo da fase:",
+        "Level Deaths:": "Mortes na fase:", "Total Deaths:": "Mortes totais:",
+        "Created by FredDOGG23": "Criado por FredDOGG23",
+        "Save": "Salvar", "Open": "Abrir", "Refresh": "Atualizar",
+        "Overview…": "Visão geral…", "My Tracker…": "Meu Tracker…",
+        "Import Existing Spreadsheet…": "Importar planilha existente…",
+        "Export My Tracker…": "Exportar Meu Tracker…",
+        "Back Up Database…": "Fazer backup do banco de dados…",
+        "Restore Database…": "Restaurar banco de dados…",
+        "Open Database Folder": "Abrir pasta do banco de dados",
+        "Test Selected Platform": "Testar plataforma selecionada",
+        "OBS Settings": "Configurações do OBS",
+        "Import / Refresh from Spreadsheet…": "Importar ou atualizar pela planilha…",
+        "Restore Previous App Version...": "Restaurar versão anterior do aplicativo...",
+        "Download Missing Hacks…": "Baixar hacks ausentes…",
+        "Add Unmoderated Hack…": "Adicionar hack não moderado…",
+        "Use SS, MM:SS, or H:MM:SS. Deaths must be whole numbers. Leave any field blank to keep it unchanged.": "Use SS, MM:SS ou H:MM:SS. As mortes devem ser números inteiros. Deixe um campo vazio para manter o valor atual.",
+        "Status": "Status", "My Tracker": "Meu Tracker",
+        "Search or select a hack...": "Pesquisar ou selecionar um hack...",
+        "Hack catalog is loading...": "Carregando o catálogo de hacks...",
+        "Download Missing Hacks…": "Baixar hacks ausentes…",
+        "Add Unmoderated Hack…": "Adicionar hack não moderado…",
+        "Connection & Emulator Setup": "Configuração de conexão e emulador",
+        "Install or Find SNI (Strongly Recommended)...": "Instalar ou localizar o SNI (altamente recomendado)...",
+        "Install or Find QUsb2Snes...": "Instalar ou localizar o QUsb2Snes...",
+        "Install or Configure RetroArch...": "Instalar ou configurar o RetroArch...",
+        "SMW Central Catalog": "Catálogo do SMW Central",
+        "View Complete Catalog…": "Ver catálogo completo…",
+        "Refresh Moderated Hacks from SMW Central…": "Atualizar hacks moderados do SMW Central…",
+        "Visit SMW Central Website...": "Visitar o site do SMW Central...",
+        "Read Me / Setup Guide...": "Guia de instalação e uso...",
+        "Feedback & Suggestions...": "Comentários e sugestões...",
+        "About & Updates...": "Sobre e atualizações...",
+        "Open OBS Text Folder": "Abrir pasta de textos do OBS",
+        "Edit OBS Text Settings...": "Editar textos do OBS...",
+        "Setup & Health Check...": "Configuração e diagnóstico...",
+        "Diagnostics...": "Diagnóstico...", "Minimize to Tray": "Minimizar para a bandeja",
+        "Exit": "Sair", "ROM Hack Title": "Título do hack",
+        "Created By": "Criado por", "Difficulty": "Dificuldade",
+        "Type": "Tipo", "Rating": "Avaliação", "Added Date": "Data de publicação",
+        "Library Status": "Status da biblioteca", "Search": "Pesquisar",
+        "Filter by letter": "Filtrar por letra", "Any": "Qualquer",
+        "All": "Todos", "Refresh Preview": "Atualizar prévia",
+        "Download All Matching Hacks": "Baixar todos os hacks correspondentes",
+    },
+}
+
+# Secondary windows use the same live language switcher as the main screen.
+# Keep these keys aligned across every translated language so changing the
+# language never leaves a dialog, table heading, or context menu in English.
+_UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
+    "es": {
+        "Hack": "Hack", "Date": "Fecha", "Tracked": "Seguidos",
+        "Completed": "Completados", "Exits": "Salidas", "Rate": "Progreso",
+        "Tracker Statistics": "Estadísticas del tracker",
+        "Exit completion by difficulty": "Salidas completadas por dificultad",
+        "No tracker data yet": "Todavía no hay datos del tracker",
+        "No difficulty data yet": "Todavía no hay datos de dificultad",
+        "Filter by letter:": "Filtrar por letra:",
+        "Unmoderated Hacks": "Hacks no moderados",
+        "Search title or creator": "Buscar título o creador",
+        "Search title or creator:": "Buscar título o creador:",
+        "Reset Filters": "Restablecer filtros", "Edit Selected": "Editar selección",
+        "Open SMWCentral": "Abrir SMW Central", "Launch Game": "Iniciar juego",
+        "Remove from Tracker": "Eliminar del tracker", "Status:": "Estado:",
+        "Notes:": "Notas:", "Save Changes": "Guardar cambios",
+        "Add Unmoderated Hack": "Añadir hack no moderado",
+        "Delete Selected": "Eliminar selección",
+        "Save Unmoderated Hack": "Guardar hack no moderado",
+        "Cut": "Cortar", "Copy": "Copiar", "Paste": "Pegar",
+        "Select All": "Seleccionar todo", "Copy cell": "Copiar celda",
+        "Cut cell": "Cortar celda", "Paste into cell": "Pegar en la celda",
+        "Expand All": "Expandir todo", "Cancel Download": "Cancelar descarga",
+        "Clean SMW base ROM:": "ROM base limpia de SMW:",
+        "ROM game-library folder:": "Carpeta de biblioteca de ROMs:",
+        "Copy new ROMs to a mounted SD folder:": "Copiar ROMs nuevas a una carpeta SD montada:",
+        "Upload new ROMs through FXPAK Pro USB:": "Subir ROMs nuevas por USB a FXPAK Pro:",
+        "Added from": "Añadido desde", "Added through": "Añadido hasta",
+        "Test USB": "Probar USB", "Refresh SD Card": "Actualizar tarjeta SD",
+        "Remove Selected Hack(s)": "Eliminar hack(s) seleccionado(s)",
+        "SD folder:": "Carpeta SD:", "Search:": "Buscar:",
+        "Jump to alphabetical segment:": "Ir al segmento alfabético:",
+        "Launch Selected": "Iniciar selección", "Random Game": "Juego aleatorio",
+        "Play Random Game": "Jugar juego aleatorio",
+        "Diagnostics": "Diagnósticos", "Setup & Health Check": "Configuración y diagnóstico",
+        "Update Available": "Actualización disponible",
+        "Read Me / Setup Guide": "Guía de instalación y uso",
+        "Feedback & Suggestions": "Comentarios y sugerencias",
+        "About & Updates": "Acerca de y actualizaciones",
+        "OBS Text Settings": "Configuración de textos de OBS", "Preview": "Vista previa",
+        "Rating (1–5):": "Puntuación (1–5):",
+        "No game detected": "No se detectó ningún juego",
+        "Streamer Privacy Warning": "Aviso de privacidad para streamers",
+        "Don't show streamer privacy warnings anywhere in the app": "No mostrar avisos de privacidad para streamers en toda la aplicación",
+        "Continue": "Continuar", "Overworld timer grace:": "Margen del temporizador en el mapa:",
+        "seconds": "segundos", "Game LiveSplit port:": "Puerto LiveSplit del juego:",
+        "Level LiveSplit port:": "Puerto LiveSplit del nivel:",
+        "Choose another difficulty color": "Elegir otro color de dificultad",
+        "Reset all difficulty colors": "Restablecer todos los colores de dificultad",
+        "Edit Rate gradient data bar...": "Editar barra de gradiente de progreso...",
+        "Restore default Rate data bar": "Restaurar barra de progreso predeterminada",
+        "Use Overview alternating colors": "Usar colores alternos del resumen",
+        "Restore default table colors": "Restaurar colores predeterminados de la tabla",
+        "Connection & Emulator Setup": "Configuración de conexión y emulador",
+        "Hack Details": "Detalles del hack", "Source & Library Details": "Detalles de origen y biblioteca",
+        "Mario World Progress": "Progreso de Mario World",
+        "Official Hacks": "Hacks oficiales", "Tracked Hacks": "Hacks seguidos",
+        "Completion Rate": "Porcentaje completado", "Completed Exits": "Salidas completadas",
+        "Average Rating": "Puntuación media", "Total Playtime": "Tiempo total de juego",
+        "By:": "Por:", "Exits:": "Salidas:", "Difficulty:": "Dificultad:",
+        "SMWCentral Rating:": "Puntuación de SMW Central:", "Unrated": "Sin puntuación",
+        "Unknown": "Desconocido", "Ready": "Listo", "Last refreshed:": "Última actualización:",
+        "Checking for new hacks...": "Buscando hacks nuevos...",
+        "New-hack count unavailable": "No se pudo obtener el número de hacks nuevos",
+        "new hack": "hack nuevo", "new hacks": "hacks nuevos",
+        "since last refresh": "desde la última actualización",
+        "Connected": "Conectado", "Disconnected": "Desconectado", "Reconnecting:": "Reconectando:",
+        "Stop Game Timer": "Detener tiempo de juego", "Stop Level Timer": "Detener tiempo de nivel",
+        "Stop Timers": "Detener temporizadores",
+        "Preferred service": "Servicio preferido",
+        "Automatic": "Automático",
+    },
+    "fr": {
+        "Hack": "Hack", "Date": "Date", "Tracked": "Suivis",
+        "Completed": "Terminés", "Exits": "Sorties", "Rate": "Progression",
+        "Tracker Statistics": "Statistiques du tracker",
+        "Exit completion by difficulty": "Sorties terminées par difficulté",
+        "No tracker data yet": "Aucune donnée du tracker pour le moment",
+        "No difficulty data yet": "Aucune donnée de difficulté pour le moment",
+        "Filter by letter:": "Filtrer par lettre :",
+        "Unmoderated Hacks": "Hacks non modérés",
+        "Search title or creator": "Rechercher un titre ou un auteur",
+        "Search title or creator:": "Rechercher un titre ou un auteur :",
+        "Reset Filters": "Réinitialiser les filtres", "Edit Selected": "Modifier la sélection",
+        "Open SMWCentral": "Ouvrir SMW Central", "Launch Game": "Lancer le jeu",
+        "Remove from Tracker": "Retirer du tracker", "Status:": "État :",
+        "Notes:": "Notes :", "Save Changes": "Enregistrer les modifications",
+        "Add Unmoderated Hack": "Ajouter un hack non modéré",
+        "Delete Selected": "Supprimer la sélection",
+        "Save Unmoderated Hack": "Enregistrer le hack non modéré",
+        "Cut": "Couper", "Copy": "Copier", "Paste": "Coller",
+        "Select All": "Tout sélectionner", "Copy cell": "Copier la cellule",
+        "Cut cell": "Couper la cellule", "Paste into cell": "Coller dans la cellule",
+        "Expand All": "Tout développer", "Cancel Download": "Annuler le téléchargement",
+        "Clean SMW base ROM:": "ROM de base SMW propre :",
+        "ROM game-library folder:": "Dossier de bibliothèque de ROM :",
+        "Copy new ROMs to a mounted SD folder:": "Copier les nouvelles ROM dans un dossier SD monté :",
+        "Upload new ROMs through FXPAK Pro USB:": "Envoyer les nouvelles ROM par USB vers FXPAK Pro :",
+        "Added from": "Ajouté à partir du", "Added through": "Ajouté jusqu’au",
+        "Test USB": "Tester l’USB", "Refresh SD Card": "Actualiser la carte SD",
+        "Remove Selected Hack(s)": "Supprimer le ou les hacks sélectionnés",
+        "SD folder:": "Dossier SD :", "Search:": "Rechercher :",
+        "Jump to alphabetical segment:": "Aller à la section alphabétique :",
+        "Launch Selected": "Lancer la sélection", "Random Game": "Jeu aléatoire",
+        "Play Random Game": "Jouer à un jeu aléatoire",
+        "Diagnostics": "Diagnostics", "Setup & Health Check": "Configuration et diagnostic",
+        "Update Available": "Mise à jour disponible",
+        "Read Me / Setup Guide": "Guide d’installation et d’utilisation",
+        "Feedback & Suggestions": "Commentaires et suggestions",
+        "About & Updates": "À propos et mises à jour",
+        "OBS Text Settings": "Paramètres des textes OBS", "Preview": "Aperçu",
+        "Rating (1–5):": "Note (1–5) :",
+        "No game detected": "Aucun jeu détecté",
+        "Streamer Privacy Warning": "Avertissement de confidentialité pour les streamers",
+        "Don't show streamer privacy warnings anywhere in the app": "Ne plus afficher les avertissements de confidentialité dans l’application",
+        "Continue": "Continuer", "Overworld timer grace:": "Délai du chronomètre sur la carte :",
+        "seconds": "secondes", "Game LiveSplit port:": "Port LiveSplit du jeu :",
+        "Level LiveSplit port:": "Port LiveSplit du niveau :",
+        "Choose another difficulty color": "Choisir une autre couleur de difficulté",
+        "Reset all difficulty colors": "Réinitialiser toutes les couleurs de difficulté",
+        "Edit Rate gradient data bar...": "Modifier la barre de progression en dégradé...",
+        "Restore default Rate data bar": "Restaurer la barre de progression par défaut",
+        "Use Overview alternating colors": "Utiliser les couleurs alternées de la vue d’ensemble",
+        "Restore default table colors": "Restaurer les couleurs de tableau par défaut",
+        "Connection & Emulator Setup": "Configuration de la connexion et de l’émulateur",
+        "Hack Details": "Détails du hack", "Source & Library Details": "Détails de la source et de la bibliothèque",
+        "Mario World Progress": "Progression de Mario World",
+        "Official Hacks": "Hacks officiels", "Tracked Hacks": "Hacks suivis",
+        "Completion Rate": "Taux d’achèvement", "Completed Exits": "Sorties terminées",
+        "Average Rating": "Note moyenne", "Total Playtime": "Temps de jeu total",
+        "By:": "Par :", "Exits:": "Sorties :", "Difficulty:": "Difficulté :",
+        "SMWCentral Rating:": "Note SMW Central :", "Unrated": "Non noté",
+        "Unknown": "Inconnu", "Ready": "Prêt", "Last refreshed:": "Dernière actualisation :",
+        "Checking for new hacks...": "Recherche de nouveaux hacks...",
+        "New-hack count unavailable": "Nombre de nouveaux hacks indisponible",
+        "new hack": "nouveau hack", "new hacks": "nouveaux hacks",
+        "since last refresh": "depuis la dernière actualisation",
+        "Connected": "Connecté", "Disconnected": "Déconnecté", "Reconnecting:": "Reconnexion :",
+        "Stop Game Timer": "Arrêter le temps de jeu", "Stop Level Timer": "Arrêter le temps du niveau",
+        "Stop Timers": "Arrêter les chronomètres",
+        "Preferred service": "Service préféré",
+        "Automatic": "Automatique",
+    },
+    "de": {
+        "Hack": "Hack", "Date": "Datum", "Tracked": "Verfolgt",
+        "Completed": "Abgeschlossen", "Exits": "Ausgänge", "Rate": "Fortschritt",
+        "Tracker Statistics": "Tracker-Statistiken",
+        "Exit completion by difficulty": "Ausgänge nach Schwierigkeit abgeschlossen",
+        "No tracker data yet": "Noch keine Tracker-Daten",
+        "No difficulty data yet": "Noch keine Schwierigkeitsdaten",
+        "Filter by letter:": "Nach Buchstaben filtern:",
+        "Unmoderated Hacks": "Nicht moderierte Hacks",
+        "Search title or creator": "Titel oder Ersteller suchen",
+        "Search title or creator:": "Titel oder Ersteller suchen:",
+        "Reset Filters": "Filter zurücksetzen", "Edit Selected": "Auswahl bearbeiten",
+        "Open SMWCentral": "SMW Central öffnen", "Launch Game": "Spiel starten",
+        "Remove from Tracker": "Aus Tracker entfernen", "Status:": "Status:",
+        "Notes:": "Notizen:", "Save Changes": "Änderungen speichern",
+        "Add Unmoderated Hack": "Nicht moderierten Hack hinzufügen",
+        "Delete Selected": "Auswahl löschen",
+        "Save Unmoderated Hack": "Nicht moderierten Hack speichern",
+        "Cut": "Ausschneiden", "Copy": "Kopieren", "Paste": "Einfügen",
+        "Select All": "Alles auswählen", "Copy cell": "Zelle kopieren",
+        "Cut cell": "Zelle ausschneiden", "Paste into cell": "In Zelle einfügen",
+        "Expand All": "Alle erweitern", "Cancel Download": "Download abbrechen",
+        "Clean SMW base ROM:": "Saubere SMW-Basis-ROM:",
+        "ROM game-library folder:": "ROM-Spielebibliotheksordner:",
+        "Copy new ROMs to a mounted SD folder:": "Neue ROMs in einen eingebundenen SD-Ordner kopieren:",
+        "Upload new ROMs through FXPAK Pro USB:": "Neue ROMs per FXPAK-Pro-USB hochladen:",
+        "Added from": "Hinzugefügt ab", "Added through": "Hinzugefügt bis",
+        "Test USB": "USB testen", "Refresh SD Card": "SD-Karte aktualisieren",
+        "Remove Selected Hack(s)": "Ausgewählte Hacks entfernen",
+        "SD folder:": "SD-Ordner:", "Search:": "Suchen:",
+        "Jump to alphabetical segment:": "Zum alphabetischen Abschnitt springen:",
+        "Launch Selected": "Auswahl starten", "Random Game": "Zufälliges Spiel",
+        "Play Random Game": "Zufälliges Spiel starten",
+        "Diagnostics": "Diagnose", "Setup & Health Check": "Einrichtung und Systemprüfung",
+        "Update Available": "Update verfügbar",
+        "Read Me / Setup Guide": "Einrichtungs- und Bedienungsanleitung",
+        "Feedback & Suggestions": "Feedback und Vorschläge",
+        "About & Updates": "Info und Updates",
+        "OBS Text Settings": "OBS-Texteinstellungen", "Preview": "Vorschau",
+        "Rating (1–5):": "Bewertung (1–5):",
+        "No game detected": "Kein Spiel erkannt",
+        "Streamer Privacy Warning": "Datenschutzhinweis für Streamer",
+        "Don't show streamer privacy warnings anywhere in the app": "Datenschutzhinweise für Streamer in der gesamten App nicht mehr anzeigen",
+        "Continue": "Weiter", "Overworld timer grace:": "Kulanzzeit des Timers auf der Karte:",
+        "seconds": "Sekunden", "Game LiveSplit port:": "LiveSplit-Port für das Spiel:",
+        "Level LiveSplit port:": "LiveSplit-Port für das Level:",
+        "Choose another difficulty color": "Andere Schwierigkeitsfarbe auswählen",
+        "Reset all difficulty colors": "Alle Schwierigkeitsfarben zurücksetzen",
+        "Edit Rate gradient data bar...": "Fortschrittsbalken mit Verlauf bearbeiten...",
+        "Restore default Rate data bar": "Standard-Fortschrittsbalken wiederherstellen",
+        "Use Overview alternating colors": "Abwechselnde Farben der Übersicht verwenden",
+        "Restore default table colors": "Standard-Tabellenfarben wiederherstellen",
+        "Connection & Emulator Setup": "Verbindungs- und Emulator-Einrichtung",
+        "Hack Details": "Hack-Details", "Source & Library Details": "Quell- und Bibliotheksdetails",
+        "Mario World Progress": "Mario-World-Fortschritt",
+        "Official Hacks": "Offizielle Hacks", "Tracked Hacks": "Verfolgte Hacks",
+        "Completion Rate": "Abschlussrate", "Completed Exits": "Abgeschlossene Ausgänge",
+        "Average Rating": "Durchschnittsbewertung", "Total Playtime": "Gesamtspielzeit",
+        "By:": "Von:", "Exits:": "Ausgänge:", "Difficulty:": "Schwierigkeit:",
+        "SMWCentral Rating:": "SMW-Central-Bewertung:", "Unrated": "Unbewertet",
+        "Unknown": "Unbekannt", "Ready": "Bereit", "Last refreshed:": "Zuletzt aktualisiert:",
+        "Checking for new hacks...": "Suche nach neuen Hacks...",
+        "New-hack count unavailable": "Anzahl neuer Hacks nicht verfügbar",
+        "new hack": "neuer Hack", "new hacks": "neue Hacks",
+        "since last refresh": "seit der letzten Aktualisierung",
+        "Connected": "Verbunden", "Disconnected": "Getrennt", "Reconnecting:": "Verbindung wird wiederhergestellt:",
+        "Stop Game Timer": "Spielzeit anhalten", "Stop Level Timer": "Levelzeit anhalten",
+        "Stop Timers": "Timer anhalten",
+        "Preferred service": "Bevorzugter Dienst",
+        "Automatic": "Automatisch",
+    },
+    "pt-BR": {
+        "Hack": "Hack", "Date": "Data", "Tracked": "Acompanhados",
+        "Completed": "Concluídos", "Exits": "Saídas", "Rate": "Progresso",
+        "Tracker Statistics": "Estatísticas do tracker",
+        "Exit completion by difficulty": "Saídas concluídas por dificuldade",
+        "No tracker data yet": "Ainda não há dados do tracker",
+        "No difficulty data yet": "Ainda não há dados de dificuldade",
+        "Filter by letter:": "Filtrar por letra:",
+        "Unmoderated Hacks": "Hacks não moderados",
+        "Search title or creator": "Pesquisar título ou criador",
+        "Search title or creator:": "Pesquisar título ou criador:",
+        "Reset Filters": "Redefinir filtros", "Edit Selected": "Editar seleção",
+        "Open SMWCentral": "Abrir SMW Central", "Launch Game": "Iniciar jogo",
+        "Remove from Tracker": "Remover do tracker", "Status:": "Status:",
+        "Notes:": "Observações:", "Save Changes": "Salvar alterações",
+        "Add Unmoderated Hack": "Adicionar hack não moderado",
+        "Delete Selected": "Excluir seleção",
+        "Save Unmoderated Hack": "Salvar hack não moderado",
+        "Cut": "Recortar", "Copy": "Copiar", "Paste": "Colar",
+        "Select All": "Selecionar tudo", "Copy cell": "Copiar célula",
+        "Cut cell": "Recortar célula", "Paste into cell": "Colar na célula",
+        "Expand All": "Expandir tudo", "Cancel Download": "Cancelar download",
+        "Clean SMW base ROM:": "ROM base limpa do SMW:",
+        "ROM game-library folder:": "Pasta da biblioteca de ROMs:",
+        "Copy new ROMs to a mounted SD folder:": "Copiar novas ROMs para uma pasta SD montada:",
+        "Upload new ROMs through FXPAK Pro USB:": "Enviar novas ROMs por USB para o FXPAK Pro:",
+        "Added from": "Adicionado a partir de", "Added through": "Adicionado até",
+        "Test USB": "Testar USB", "Refresh SD Card": "Atualizar cartão SD",
+        "Remove Selected Hack(s)": "Remover hack(s) selecionado(s)",
+        "SD folder:": "Pasta SD:", "Search:": "Pesquisar:",
+        "Jump to alphabetical segment:": "Ir para o segmento alfabético:",
+        "Launch Selected": "Iniciar seleção", "Random Game": "Jogo aleatório",
+        "Play Random Game": "Jogar jogo aleatório",
+        "Diagnostics": "Diagnóstico", "Setup & Health Check": "Configuração e diagnóstico",
+        "Update Available": "Atualização disponível",
+        "Read Me / Setup Guide": "Guia de instalação e uso",
+        "Feedback & Suggestions": "Comentários e sugestões",
+        "About & Updates": "Sobre e atualizações",
+        "OBS Text Settings": "Configurações de textos do OBS", "Preview": "Prévia",
+        "Rating (1–5):": "Avaliação (1–5):",
+        "No game detected": "Nenhum jogo detectado",
+        "Streamer Privacy Warning": "Aviso de privacidade para streamers",
+        "Don't show streamer privacy warnings anywhere in the app": "Não mostrar avisos de privacidade para streamers em todo o aplicativo",
+        "Continue": "Continuar", "Overworld timer grace:": "Tolerância do cronômetro no mapa:",
+        "seconds": "segundos", "Game LiveSplit port:": "Porta LiveSplit do jogo:",
+        "Level LiveSplit port:": "Porta LiveSplit da fase:",
+        "Choose another difficulty color": "Escolher outra cor de dificuldade",
+        "Reset all difficulty colors": "Redefinir todas as cores de dificuldade",
+        "Edit Rate gradient data bar...": "Editar barra de progresso em gradiente...",
+        "Restore default Rate data bar": "Restaurar barra de progresso padrão",
+        "Use Overview alternating colors": "Usar cores alternadas da visão geral",
+        "Restore default table colors": "Restaurar cores padrão da tabela",
+        "Connection & Emulator Setup": "Configuração de conexão e emulador",
+        "Hack Details": "Detalhes do hack", "Source & Library Details": "Detalhes da origem e da biblioteca",
+        "Mario World Progress": "Progresso de Mario World",
+        "Official Hacks": "Hacks oficiais", "Tracked Hacks": "Hacks acompanhados",
+        "Completion Rate": "Taxa de conclusão", "Completed Exits": "Saídas concluídas",
+        "Average Rating": "Avaliação média", "Total Playtime": "Tempo total de jogo",
+        "By:": "Por:", "Exits:": "Saídas:", "Difficulty:": "Dificuldade:",
+        "SMWCentral Rating:": "Avaliação do SMW Central:", "Unrated": "Sem avaliação",
+        "Unknown": "Desconhecido", "Ready": "Pronto", "Last refreshed:": "Última atualização:",
+        "Checking for new hacks...": "Procurando novos hacks...",
+        "New-hack count unavailable": "Contagem de novos hacks indisponível",
+        "new hack": "novo hack", "new hacks": "novos hacks",
+        "since last refresh": "desde a última atualização",
+        "Connected": "Conectado", "Disconnected": "Desconectado", "Reconnecting:": "Reconectando:",
+        "Stop Game Timer": "Parar tempo de jogo", "Stop Level Timer": "Parar tempo da fase",
+        "Stop Timers": "Parar cronômetros",
+        "Preferred service": "Serviço preferido",
+        "Automatic": "Automático",
+    },
+}
+for _language_code, _extra_translations in _UI_TRANSLATION_EXTRAS.items():
+    UI_TRANSLATIONS[_language_code].update(_extra_translations)
+
+
 DEFAULT_CONFIG = {
+    "app_language": "en",
+    "sni_path": "",
     "qusb2snes_path": "",
+    "connection_service_preference": "Automatic",
     "spreadsheet_path": "",
     "output_folder": str(
         Path.home()
@@ -15101,7 +15816,11 @@ LEVEL_MODE = 0x14
 
 # Standard SMW ending/credits sequence. Custom endings may require
 # the "Finish Game Timer" button in the app.
-ENDING_MODES = {0x1A, 0x1B, 0x1C}
+# $0100 = 1A is the castle-destruction scene in the original game and many
+# hacks. It is a transition after an exit, not the end of the full run, so
+# the game timer must continue through it. The later credits/end modes still
+# finish the run automatically.
+ENDING_MODES = {0x1B, 0x1C}
 
 CHECK_INTERVAL_SECONDS = 0.10
 RECONNECT_DELAY_SECONDS = 5
@@ -15241,6 +15960,7 @@ def ensure_obs_text_files(
 
 def load_config() -> dict[str, Any]:
     config = DEFAULT_CONFIG.copy()
+    saved: dict[str, Any] = {}
 
     if CONFIG_FILE.exists():
         try:
@@ -15272,52 +15992,126 @@ def load_config() -> dict[str, Any]:
     else:
         application_directory = Path(__file__).resolve().parent
 
-    interface_text = str(
+    # Versions before the full UI localization update saved the selected
+    # installer guide but not the language itself.  Recover that choice from
+    # the installed README once, so existing non-English installations do not
+    # silently fall back to an English interface after updating.
+    if "app_language" not in saved:
+        installed_readme = application_directory / "README.txt"
+        try:
+            readme_sample = installed_readme.read_text(
+                encoding="utf-8-sig"
+            )[:2500].casefold()
+        except OSError:
+            readme_sample = ""
+        language_markers = (
+            ("es", ("guía completa", "configuración inicial")),
+            ("fr", ("guide complet", "configuration initiale")),
+            ("de", ("vollständige", "erste einrichtung")),
+            ("pt-BR", ("guia completo", "configuração inicial")),
+            ("au", ("g'day", "first cab off the rank", "bits and bobs")),
+        )
+        for language_code, markers in language_markers:
+            if any(marker in readme_sample for marker in markers):
+                config["app_language"] = language_code
+                break
+
+    # Older versions stored SNI and QUsb2Snes in one shared field. Split that
+    # value by executable name, then discover and retain both tools
+    # independently so either service can be selected or used as a fallback.
+    legacy_interface_text = str(
         config.get("platform_interface_path", "")
-        or config.get("qusb2snes_path", "")
     ).strip()
-    if not interface_text or not Path(interface_text).is_file():
-        interface_candidates = (
+    saved_sni_text = str(config.get("sni_path", "")).strip()
+    saved_qusb_text = str(config.get("qusb2snes_path", "")).strip()
+    if Path(saved_qusb_text).name.casefold() == "sni.exe":
+        if not saved_sni_text:
+            saved_sni_text = saved_qusb_text
+        saved_qusb_text = ""
+    legacy_name = Path(legacy_interface_text).name.casefold()
+    if legacy_name == "sni.exe" and not saved_sni_text:
+        saved_sni_text = legacy_interface_text
+    elif legacy_name == "qusb2snes.exe" and not saved_qusb_text:
+        saved_qusb_text = legacy_interface_text
+
+    local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
+
+    def discover_connection_service(
+        configured_text: str,
+        executable_name: str,
+        candidates: tuple[Path, ...],
+        search_roots: tuple[Path, ...],
+    ) -> str:
+        configured_path = Path(configured_text)
+        if (
+            configured_text
+            and configured_path.is_file()
+            and configured_path.name.casefold()
+            == executable_name.casefold()
+        ):
+            return str(configured_path)
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+        for search_root in search_roots:
+            if not search_root.is_dir():
+                continue
+            try:
+                return str(
+                    next(
+                        candidate
+                        for candidate in search_root.rglob(executable_name)
+                        if candidate.is_file()
+                    )
+                )
+            except StopIteration:
+                continue
+        return configured_text
+
+    sni_text = discover_connection_service(
+        saved_sni_text,
+        "sni.exe",
+        (
             application_directory / "Tools" / "SNI" / "sni.exe",
+            APP_DATA_DIR / "Tools" / "SNI" / "sni.exe",
+            local_app_data / "Programs" / "SNI" / "sni.exe",
+        ),
+        (
+            application_directory / "Tools" / "SNI",
+            APP_DATA_DIR / "Tools" / "SNI",
+        ),
+    )
+    qusb_text = discover_connection_service(
+        saved_qusb_text,
+        "QUsb2Snes.exe",
+        (
             application_directory
             / "Tools"
             / "QUsb2Snes"
             / "QUsb2Snes.exe",
-        )
-        for interface_candidate in interface_candidates:
-            if interface_candidate.is_file():
-                interface_text = str(interface_candidate)
-                config["platform_interface_path"] = interface_text
-                config["qusb2snes_path"] = interface_text
-                break
-
-        # Third-party archives sometimes add a versioned directory around
-        # the executable. Search the installer-owned tool folders as a
-        # fallback so either archive layout works without user configuration.
-        if not interface_text or not Path(interface_text).is_file():
-            interface_searches = (
-                (
-                    application_directory / "Tools" / "SNI",
-                    "sni.exe",
-                ),
-                (
-                    application_directory / "Tools" / "QUsb2Snes",
-                    "QUsb2Snes.exe",
-                ),
-            )
-            for search_root, executable_name in interface_searches:
-                if not search_root.is_dir():
-                    continue
-                try:
-                    interface_candidate = next(
-                        search_root.rglob(executable_name)
-                    )
-                except StopIteration:
-                    continue
-                interface_text = str(interface_candidate)
-                config["platform_interface_path"] = interface_text
-                config["qusb2snes_path"] = interface_text
-                break
+            APP_DATA_DIR / "Tools" / "QUsb2Snes" / "QUsb2Snes.exe",
+            local_app_data
+            / "Programs"
+            / "QUsb2Snes"
+            / "QUsb2Snes.exe",
+        ),
+        (
+            application_directory / "Tools" / "QUsb2Snes",
+            APP_DATA_DIR / "Tools" / "QUsb2Snes",
+        ),
+    )
+    config["sni_path"] = sni_text
+    config["qusb2snes_path"] = qusb_text
+    preference = str(
+        config.get("connection_service_preference", "Automatic")
+    ).strip()
+    if preference not in {"Automatic", "SNI", "QUsb2Snes"}:
+        preference = "Automatic"
+    config["connection_service_preference"] = preference
+    if preference == "QUsb2Snes":
+        config["platform_interface_path"] = qusb_text or sni_text
+    else:
+        config["platform_interface_path"] = sni_text or qusb_text
 
     retroarch_text = str(
         config.get("retroarch_executable_path", "")
@@ -15325,6 +16119,10 @@ def load_config() -> dict[str, Any]:
     if not retroarch_text or not Path(retroarch_text).is_file():
         retroarch_candidates = [
             Path("C:/RetroArch-Win64/retroarch.exe"),
+            APP_DATA_DIR
+            / "Tools"
+            / "RetroArch"
+            / "retroarch.exe",
             Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
             / "RetroArch-Win64"
             / "retroarch.exe",
@@ -15332,7 +16130,13 @@ def load_config() -> dict[str, Any]:
             / "Programs"
             / "RetroArch"
             / "retroarch.exe",
+            Path(os.environ.get("APPDATA", ""))
+            / "RetroArch"
+            / "retroarch.exe",
         ]
+        path_retroarch = shutil.which("retroarch")
+        if path_retroarch:
+            retroarch_candidates.append(Path(path_retroarch))
         for retroarch_candidate in retroarch_candidates:
             if retroarch_candidate.is_file():
                 retroarch_text = str(retroarch_candidate)
@@ -15396,6 +16200,49 @@ def save_config(config: dict[str, Any]) -> None:
         json.dumps(config, indent=2),
         encoding="utf-8",
     )
+
+
+def connection_service_candidates(
+    config: dict[str, Any],
+) -> list[tuple[str, str]]:
+    """Return both configured SNES bridges in the requested fallback order."""
+    configured = [
+        ("SNI", str(config.get("sni_path", "")).strip()),
+        (
+            "QUsb2Snes",
+            str(config.get("qusb2snes_path", "")).strip(),
+        ),
+    ]
+    preference = str(
+        config.get("connection_service_preference", "Automatic")
+    ).strip()
+    if preference == "QUsb2Snes":
+        configured.reverse()
+
+    legacy_path = str(
+        config.get("platform_interface_path", "")
+    ).strip()
+    if legacy_path:
+        legacy_name = Path(legacy_path).name.casefold()
+        legacy_service = (
+            "SNI"
+            if legacy_name == "sni.exe"
+            else "QUsb2Snes"
+            if legacy_name == "qusb2snes.exe"
+            else ""
+        )
+        if legacy_service and all(
+            Path(path).resolve() != Path(legacy_path).resolve()
+            for _, path in configured
+            if path
+        ):
+            configured.append((legacy_service, legacy_path))
+    return [(service, path) for service, path in configured if path]
+
+
+def preferred_connection_service_path(config: dict[str, Any]) -> str:
+    candidates = connection_service_candidates(config)
+    return candidates[0][1] if candidates else ""
 
 
 class TrackerWorker:
@@ -15562,6 +16409,10 @@ class TrackerWorker:
     def reload_spreadsheet(self, spreadsheet_path: str) -> None:
         self.config["spreadsheet_path"] = spreadsheet_path
         self.command_queue.put("reload_spreadsheet")
+
+    def notify_catalog_launch(self) -> None:
+        """Re-arm ROM detection after an app-initiated platform launch."""
+        self.command_queue.put("catalog_launch")
 
     def send_event(self, event_type: str, **data: object) -> None:
         self.event_queue.put({"type": event_type, **data})
@@ -16163,6 +17014,29 @@ class TrackerWorker:
                     self.log(
                         "Database reload failed: " + str(error)
                     )
+                continue
+
+            elif command == "catalog_launch":
+                # A platform can replace one ROM with another without ever
+                # exposing a blank ROM path between USB/network samples. In
+                # that case normal path-change detection cannot know a fresh
+                # launch occurred and the next game's timer may stay stopped.
+                # Save the outgoing slot, detach it, and make the next sample
+                # pass through the normal new-ROM initialization path. This
+                # also handles replaying the same ROM intentionally.
+                if self.current_time_key:
+                    self.save_current_game_time()
+                    self.save_current_death_count()
+                self.previous_rom_path = None
+                self.current_rom_key = None
+                self.current_time_key = None
+                self.active_save_slot = None
+                self.parked_time_key = None
+                self.slot_blank_states = {}
+                self.reset_all_timers_for_new_rom()
+                self.log(
+                    "App launch detected; re-armed ROM and timer detection."
+                )
                 continue
 
             elif command == "reset_game":
@@ -18963,27 +19837,54 @@ finally {
         except Exception:
             pass
 
-        executable_text = str(
-            self.config.get("platform_interface_path", "")
-            or self.config.get("qusb2snes_path", "")
-        ).strip()
-        executable_path = Path(executable_text)
+        candidates: list[tuple[str, Path]] = []
+        invalid_paths: list[str] = []
+        for service_name, executable_text in connection_service_candidates(
+            self.config
+        ):
+            executable_path = Path(executable_text)
+            if executable_path.is_file():
+                candidates.append((service_name, executable_path))
+            elif executable_text:
+                invalid_paths.append(executable_text)
 
-        if not executable_text or not executable_path.exists():
+        if not candidates:
             raise FileNotFoundError(
                 "No SNES connection service is running. In Settings, "
-                "select SNI.exe or QUsb2Snes.exe for the chosen platform."
+                "configure SNI.exe, QUsb2Snes.exe, or both."
             )
 
-        if executable_path.is_dir():
-            raise RuntimeError(
-                f"The SNES interface path points to a folder: "
-                f"{executable_path}"
+        startup_errors: list[str] = []
+        for service_name, executable_path in candidates:
+            try:
+                os.startfile(str(executable_path))
+                self.log(
+                    f"Started {service_name}: {executable_path.name}."
+                )
+            except OSError as error:
+                startup_errors.append(f"{service_name}: {error}")
+                continue
+
+            deadline = time.monotonic() + QUSB_STARTUP_WAIT_SECONDS
+            while time.monotonic() < deadline:
+                if self.stop_event.wait(0.25):
+                    return
+                try:
+                    test_ws = self.try_connect_websocket()
+                    test_ws.close()
+                    self.log(f"{service_name} is responding.")
+                    return
+                except Exception:
+                    continue
+            startup_errors.append(
+                f"{service_name} did not respond on port 23074."
             )
 
-        os.startfile(str(executable_path))
-        self.log(f"Started SNES interface: {executable_path.name}.")
-        self.stop_event.wait(QUSB_STARTUP_WAIT_SECONDS)
+        details = "; ".join(startup_errors or invalid_paths)
+        raise RuntimeError(
+            "Neither configured SNES connection service started successfully."
+            + (f" {details}" if details else "")
+        )
 
     def connect_to_fxpak(
         self,
@@ -19789,6 +20690,27 @@ finally {
                 )
             )
 
+            # When the tracker reconnects to a ROM/slot that was already in
+            # progress, there may be no new overworld transition available to
+            # arm level tracking. A restored time or death total proves this
+            # is not the opening cutscene of a brand-new run, so resume death
+            # counting and the level timer immediately. New runs at 00:00
+            # still wait for the first overworld exactly as before.
+            if (
+                already_in_game
+                and mode == LEVEL_MODE
+                and (
+                    self.game_elapsed > 0
+                    or self.death_count > 0
+                )
+            ):
+                self.level_auto_tracking_armed = True
+                self.intro_level_notice_logged = False
+                self.log(
+                    "Restored an in-progress level; level timing and death "
+                    "counting are armed."
+                )
+
         # Activate the first playable level before checking this sample's
         # death signals. Without this ordering, a very fast first death could
         # arrive in the same USB sample as the level transition and be ignored
@@ -20389,13 +21311,24 @@ class TrackerApp:
             pass
         self.root.title(APP_NAME)
         self.root.geometry("1180x950")
-        self.root.minsize(1080, 860)
+        # Leave room for Windows borders and the taskbar on compact 720p and
+        # 768p displays. The responsive layout scales the controls while the
+        # banner keeps its intended visual height.
+        self.root.minsize(900, 640)
         try:
             self.root.state("zoomed")
         except tk.TclError:
             pass
 
         self.config = load_config()
+        saved_language = str(
+            self.config.get("app_language", "en")
+        ).strip()
+        if saved_language not in APP_LANGUAGE_LABELS:
+            saved_language = "en"
+            self.config["app_language"] = saved_language
+        self.app_language = saved_language
+        self.language_var = tk.StringVar(value=saved_language)
         try:
             ensure_obs_text_files(self.config)
         except OSError:
@@ -20442,8 +21375,9 @@ class TrackerApp:
         )
 
         self.connection_var = tk.StringVar(
-            value="Disconnected"
+            value=self._translate_ui_text("Disconnected")
         )
+        self.connection_is_connected = False
         self.spreadsheet_var = tk.StringVar(
             value=database_bootstrap_status
         )
@@ -20453,7 +21387,7 @@ class TrackerApp:
             catalog_metadata = {}
         self.catalog_last_refresh_var = tk.StringVar(
             value=(
-                "Last refreshed: "
+                self._translate_ui_text("Last refreshed:") + " "
                 + format_display_datetime(
                     catalog_metadata.get(
                         "Catalog Last Refresh",
@@ -20463,23 +21397,39 @@ class TrackerApp:
             )
         )
         self.catalog_new_hacks_var = tk.StringVar(
-            value="Checking for new hacks..."
+            value=self._translate_ui_text("Checking for new hacks...")
         )
         self.game_var = tk.StringVar(
-            value="No game detected"
+            value=self._translate_ui_text("No game detected")
         )
         self.author_var = tk.StringVar(
-            value="By: Unknown"
+            value=(
+                self._translate_ui_text("By:")
+                + " "
+                + self._translate_ui_text("Unknown")
+            )
         )
         self.exits_var = tk.StringVar(
-            value="Exits: 0 / Unknown"
+            value=(
+                self._translate_ui_text("Exits:")
+                + " 0 / "
+                + self._translate_ui_text("Unknown")
+            )
         )
         self.difficulty_var = tk.StringVar(
-            value="Difficulty: Unknown"
+            value=(
+                self._translate_ui_text("Difficulty:")
+                + " "
+                + self._translate_ui_text("Unknown")
+            )
         )
         self.difficulty_color_trace_id: str | None = None
         self.smwc_rating_var = tk.StringVar(
-            value="SMWCentral Rating: Unrated"
+            value=(
+                self._translate_ui_text("SMWCentral Rating:")
+                + " "
+                + self._translate_ui_text("Unrated")
+            )
         )
         self.game_timer_var = tk.StringVar(
             value="00:00"
@@ -20494,7 +21444,7 @@ class TrackerApp:
             value="0"
         )
         self.status_var = tk.StringVar(
-            value="Ready"
+            value=self._translate_ui_text("Ready")
         )
         self.current_hack_url = ""
         self.current_hack_record: dict[str, Any] = {}
@@ -20613,8 +21563,19 @@ class TrackerApp:
         self.feedback_webview_process: subprocess.Popen | None = None
         self.obs_settings_dialog: tk.Toplevel | None = None
 
+        self.sni_path_var = tk.StringVar(
+            value=str(self.config.get("sni_path", ""))
+        )
         self.qusb_path_var = tk.StringVar(
             value=str(self.config["qusb2snes_path"])
+        )
+        self.connection_service_var = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "connection_service_preference",
+                    "Automatic",
+                )
+            )
         )
         self.spreadsheet_path_var = tk.StringVar(
             value=str(self.config["spreadsheet_path"])
@@ -20647,6 +21608,9 @@ class TrackerApp:
         )
 
         self._build_ui()
+        self.root.after_idle(
+            lambda: self._localize_widget_tree(self.root)
+        )
         self._configure_tray()
         self.root.report_callback_exception = (
             self._report_tk_callback_exception
@@ -20658,6 +21622,11 @@ class TrackerApp:
             add="+",
         )
         self.root.bind(
+            "<Configure>",
+            self._follow_main_hack_selector_popup,
+            add="+",
+        )
+        self.root.bind(
             "<Unmap>",
             self._dismiss_main_hack_selector_popup,
             add="+",
@@ -20665,6 +21634,12 @@ class TrackerApp:
         self.root.bind(
             "<ButtonPress-1>",
             self._dismiss_main_hack_selector_popup,
+            add="+",
+        )
+        self.root.bind_class(
+            "Toplevel",
+            "<Map>",
+            self._localize_mapped_toplevel,
             add="+",
         )
 
@@ -20713,6 +21688,148 @@ class TrackerApp:
             minimum,
             round(float(value) * self.main_ui_scale),
         )
+
+    def _translate_ui_text(self, text: object) -> str:
+        source_text = str(text)
+        language = getattr(self, "app_language", "en")
+        # First turn any already-localized phrases back into their English
+        # source. This also handles labels with icons or dynamic suffixes,
+        # allowing an open window to switch languages immediately.
+        canonical_text = source_text
+        plain_source = re.sub(
+            r"^[^0-9A-Za-zÀ-ÿ]+",
+            "",
+            source_text,
+        ).strip()
+        english_phrases = tuple(
+            UI_TRANSLATIONS.get("es", {}).keys()
+        )
+        source_already_english = any(
+            plain_source == english
+            or plain_source == english.upper()
+            or plain_source.startswith(english + " ")
+            or plain_source.startswith(english.upper() + " ")
+            or (
+                len(english) >= 6
+                and (
+                    english in plain_source
+                    or english.upper() in plain_source
+                )
+            )
+            for english in english_phrases
+            if english
+        )
+        if not source_already_english:
+            for other_translations in UI_TRANSLATIONS.values():
+                for english, translated in sorted(
+                    other_translations.items(),
+                    key=lambda item: len(item[1]),
+                    reverse=True,
+                ):
+                    if translated and translated != english:
+                        canonical_text = canonical_text.replace(
+                            translated,
+                            english,
+                        )
+                        if translated.upper() != translated:
+                            canonical_text = canonical_text.replace(
+                                translated.upper(),
+                                english.upper(),
+                            )
+
+        if language in {"en", "au"}:
+            return canonical_text
+
+        translations = UI_TRANSLATIONS.get(language, {})
+        if canonical_text in translations:
+            return translations[canonical_text]
+        for english, translated in translations.items():
+            if canonical_text == english.upper():
+                return translated.upper()
+
+        # Translate exact phrases embedded after an icon or before a dynamic
+        # value (for example "⚙ SETTINGS" or "Catalog Version: 2026...").
+        localized = canonical_text
+        replacements: list[tuple[str, str]] = []
+        for english, translated in translations.items():
+            replacements.append((english, translated))
+            if english.upper() != english:
+                replacements.append((english.upper(), translated.upper()))
+        for english, translated in sorted(
+            replacements,
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            localized = localized.replace(english, translated)
+        return localized
+
+    def _localize_mapped_toplevel(self, event=None) -> None:
+        widget = getattr(event, "widget", None)
+        if widget is None:
+            return
+        try:
+            widget.after_idle(
+                lambda: self._localize_widget_tree(widget)
+            )
+        except tk.TclError:
+            pass
+
+    def _localize_widget_tree(self, widget) -> None:
+        try:
+            if isinstance(widget, (tk.Tk, tk.Toplevel)):
+                current_title = widget.title()
+                widget.title(self._translate_ui_text(current_title))
+
+            if isinstance(widget, tk.Menu):
+                last_index = widget.index("end")
+                if last_index is not None:
+                    for index in range(int(last_index) + 1):
+                        try:
+                            entry_type = widget.type(index)
+                            if entry_type in {"command", "cascade", "checkbutton", "radiobutton"}:
+                                label = widget.entrycget(index, "label")
+                                widget.entryconfigure(
+                                    index,
+                                    label=self._translate_ui_text(label),
+                                )
+                            if entry_type == "cascade":
+                                child_name = widget.entrycget(index, "menu")
+                                if child_name:
+                                    child_menu = widget.nametowidget(child_name)
+                                    self._localize_widget_tree(child_menu)
+                        except (tk.TclError, KeyError):
+                            continue
+            elif isinstance(widget, ttk.Treeview):
+                for column in ("#0", *widget["columns"]):
+                    try:
+                        heading_text = widget.heading(column, "text")
+                        if heading_text:
+                            widget.heading(
+                                column,
+                                text=self._translate_ui_text(heading_text),
+                            )
+                    except tk.TclError:
+                        pass
+            elif not isinstance(
+                widget,
+                (tk.Entry, tk.Text, tk.Listbox, ttk.Entry, ttk.Combobox),
+            ):
+                try:
+                    if "textvariable" not in widget.keys() or not str(
+                        widget.cget("textvariable")
+                    ):
+                        current_text = widget.cget("text")
+                        if current_text:
+                            widget.configure(
+                                text=self._translate_ui_text(current_text)
+                            )
+                except (tk.TclError, AttributeError, TypeError):
+                    pass
+
+            for child in widget.winfo_children():
+                self._localize_widget_tree(child)
+        except tk.TclError:
+            pass
 
     def _size_dialog_for_ui(
         self,
@@ -20793,7 +21910,10 @@ class TrackerApp:
             width / 1920,
             height / 1080,
         )
-        target = max(1.0, min(2.0, target))
+        # Compact the controls when the app is restored or placed on a
+        # smaller display. The banner keeps its own fixed visual height, so
+        # the scene no longer collapses while the rest of the page fits.
+        target = max(0.70, min(2.0, target))
         return round(target * 20) / 20
 
     def _queue_responsive_ui_scale(self, event=None) -> None:
@@ -20926,8 +22046,84 @@ class TrackerApp:
             self.banner_render_size = None
             self._build_ui()
             self._restore_main_ui_state(captured)
+            self.root.after_idle(
+                lambda: self._localize_widget_tree(self.root)
+            )
         finally:
             self.responsive_ui_rebuilding = False
+
+    def _relocalize_main_text_variables(self) -> None:
+        """Convert persistent live labels to the newly selected language."""
+        for variable_name in (
+            "connection_var",
+            "catalog_last_refresh_var",
+            "catalog_new_hacks_var",
+            "author_var",
+            "exits_var",
+            "difficulty_var",
+            "smwc_rating_var",
+        ):
+            variable = getattr(self, variable_name, None)
+            if variable is None:
+                continue
+            try:
+                variable.set(
+                    self._translate_ui_text(variable.get())
+                )
+            except (tk.TclError, AttributeError):
+                continue
+
+    def _set_app_language(
+        self,
+        language_code: str,
+        *,
+        persist: bool = True,
+        rebuild: bool = True,
+    ) -> None:
+        selected = str(language_code).strip()
+        if selected not in APP_LANGUAGE_LABELS:
+            selected = "en"
+        self.app_language = selected
+        self.language_var.set(selected)
+        self.config["app_language"] = selected
+        self._relocalize_main_text_variables()
+        if persist:
+            try:
+                save_config(self.config)
+            except OSError as error:
+                messagebox.showerror(
+                    APP_NAME,
+                    f"Could not save the language setting:\n{error}",
+                    parent=self.root,
+                )
+                return
+        if not rebuild:
+            return
+
+        # Recreate the main widgets from their original English source text,
+        # then apply the selected translation. Translating already-translated
+        # labels in place caused mixed languages and could leave German text
+        # behind when returning to English.
+        captured = self._capture_main_ui_state()
+        for options in captured.values():
+            options.pop("text", None)
+        self.responsive_ui_rebuilding = True
+        try:
+            for widget_name in ("custom_menu_bar", "main_shell"):
+                widget = getattr(self, widget_name, None)
+                if widget is not None and widget.winfo_exists():
+                    widget.destroy()
+            self.banner_render_size = None
+            self._build_ui()
+            self._restore_main_ui_state(captured)
+            self.root.after_idle(
+                lambda: self._localize_widget_tree(self.root)
+            )
+        finally:
+            self.responsive_ui_rebuilding = False
+
+    def _on_app_language_selected(self) -> None:
+        self._set_app_language(self.language_var.get())
 
     def _build_ui(self) -> None:
         self.root.configure(bg=THEME["sky_dark"])
@@ -21051,18 +22247,18 @@ class TrackerApp:
                 self.root.winfo_screenheight(),
             )
             if screen_height <= 950:
-                banner_height_limit = self._ui_px(210)
+                banner_height_limit = 210
             elif screen_height <= 1080:
-                banner_height_limit = self._ui_px(240)
+                banner_height_limit = 240
             else:
-                banner_height_limit = self._ui_px(270)
+                banner_height_limit = 270
 
             self.banner_height = min(
                 max(
-                    self._ui_px(190),
+                    210,
                     int(
                         self.banner_source_image.height
-                        * self.main_ui_scale
+                        * max(1.0, self.main_ui_scale)
                     ),
                 ),
                 banner_height_limit,
@@ -21645,7 +22841,7 @@ class TrackerApp:
         selector_row.rowconfigure(0, weight=1)
 
         self.main_hack_selector_var.set(
-            "Search or select a hack…"
+            self._main_hack_selector_prompt_text()
         )
         self.main_hack_selector_combo = ttk.Combobox(
             selector_row,
@@ -22575,6 +23771,32 @@ class TrackerApp:
             label="Select Platform",
             menu=platform_menu,
         )
+        language_menu = tk.Menu(
+            settings_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["purple"],
+            activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        for language_code, language_label in APP_LANGUAGE_LABELS.items():
+            add_mario_radio(
+                language_menu,
+                language_label,
+                language_code,
+                self._on_app_language_selected,
+                "star",
+                variable=self.language_var,
+            )
+        settings_menu.add_cascade(
+            label="Language",
+            menu=language_menu,
+        )
         settings_menu.add_separator()
         add_mario_command(
             settings_menu,
@@ -22680,12 +23902,6 @@ class TrackerApp:
             ),
             "mushroom",
         )
-        add_mario_command(
-            settings_menu,
-            "About & Updates...",
-            self.open_about_dialog,
-            "mario_head",
-        )
         settings_menu.add_separator()
         add_mario_command(
             settings_menu,
@@ -22731,6 +23947,44 @@ class TrackerApp:
                 ),
             ),
             "yoshi",
+        )
+        downloads_menu.add_separator()
+
+        software_menu = tk.Menu(
+            downloads_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["green"],
+            activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        add_mario_command(
+            software_menu,
+            "Install or Find SNI (Strongly Recommended)...",
+            lambda: self.install_optional_software("sni"),
+            "star",
+        )
+        add_mario_command(
+            software_menu,
+            "Install or Find QUsb2Snes...",
+            lambda: self.install_optional_software("qusb2snes"),
+            "mario",
+        )
+        software_menu.add_separator()
+        add_mario_command(
+            software_menu,
+            "Install or Configure RetroArch...",
+            lambda: self.install_optional_software("retroarch"),
+            "mushroom",
+        )
+        downloads_menu.add_cascade(
+            label="Connection & Emulator Setup",
+            menu=software_menu,
         )
         downloads_menu.add_separator()
 
@@ -22866,9 +24120,551 @@ class TrackerApp:
         self.platform_menu = platform_menu
         self.obs_menu = obs_menu
         self.downloads_menu = downloads_menu
+        self.software_menu = software_menu
         self.fxpak_downloads_menu = fxpak_downloads_menu
         self.appearance_menu = None
         self.help_menu = help_menu
+
+    def _find_optional_software_executable(
+        self,
+        software: str,
+    ) -> Path | None:
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
+        program_files = Path(
+            os.environ.get("PROGRAMFILES", "C:/Program Files")
+        )
+        user_tools = APP_DATA_DIR / "Tools"
+        app_tools = application_directory() / "Tools"
+
+        if software == "sni":
+            executable_name = "sni.exe"
+            candidates = [
+                Path(str(self.config.get("sni_path", ""))),
+                Path(str(self.config.get("platform_interface_path", ""))),
+                user_tools / "SNI" / executable_name,
+                app_tools / "SNI" / executable_name,
+                local_app_data / "Programs" / "SNI" / executable_name,
+                program_files / "SNI" / executable_name,
+            ]
+            search_roots = (
+                user_tools / "SNI",
+                app_tools / "SNI",
+            )
+        elif software == "qusb2snes":
+            executable_name = "QUsb2Snes.exe"
+            candidates = [
+                Path(str(self.config.get("platform_interface_path", ""))),
+                Path(str(self.config.get("qusb2snes_path", ""))),
+                user_tools / "QUsb2Snes" / executable_name,
+                app_tools / "QUsb2Snes" / executable_name,
+                local_app_data
+                / "Programs"
+                / "QUsb2Snes"
+                / executable_name,
+                program_files / "QUsb2Snes" / executable_name,
+            ]
+            search_roots = (
+                user_tools / "QUsb2Snes",
+                app_tools / "QUsb2Snes",
+            )
+        else:
+            executable_name = "retroarch.exe"
+            candidates = [
+                Path(
+                    str(
+                        self.config.get(
+                            "retroarch_executable_path",
+                            "",
+                        )
+                    )
+                ),
+                Path("C:/RetroArch-Win64/retroarch.exe"),
+                user_tools / "RetroArch" / executable_name,
+                app_tools / "RetroArch" / executable_name,
+                program_files
+                / "RetroArch-Win64"
+                / executable_name,
+                local_app_data
+                / "Programs"
+                / "RetroArch"
+                / executable_name,
+            ]
+            path_candidate = shutil.which("retroarch")
+            if path_candidate:
+                candidates.append(Path(path_candidate))
+            search_roots = (
+                user_tools / "RetroArch",
+                app_tools / "RetroArch",
+            )
+
+        for candidate in candidates:
+            if candidate.is_file() and (
+                candidate.name.casefold()
+                == executable_name.casefold()
+            ):
+                return candidate.resolve()
+
+        for search_root in search_roots:
+            if not search_root.is_dir():
+                continue
+            try:
+                return next(
+                    candidate.resolve()
+                    for candidate in search_root.rglob(executable_name)
+                    if candidate.is_file()
+                )
+            except StopIteration:
+                continue
+        return None
+
+    def _show_optional_install_progress(
+        self,
+        title: str,
+    ) -> tuple[tk.Toplevel, tk.StringVar]:
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        self._size_dialog_for_ui(dialog, 680, 250, 620, 230)
+        dialog.configure(bg=palette["window"])
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        tk.Label(
+            dialog,
+            text="CONNECTION & EMULATOR SETUP",
+            font=("Segoe UI", 17, "bold"),
+            fg="white",
+            bg=THEME["green"],
+            padx=18,
+            pady=12,
+            anchor="w",
+        ).pack(fill="x")
+        status_variable = tk.StringVar(value="Preparing download...")
+        tk.Label(
+            dialog,
+            textvariable=status_variable,
+            font=("Segoe UI", 11, "bold"),
+            fg=palette["text"],
+            bg=palette["window"],
+            wraplength=self._ui_px(610),
+            justify="left",
+            anchor="w",
+            padx=18,
+            pady=18,
+        ).pack(fill="x")
+        progress = ttk.Progressbar(
+            dialog,
+            mode="indeterminate",
+            length=self._ui_px(610),
+        )
+        progress.pack(fill="x", padx=18, pady=(0, 18))
+        progress.start(12)
+        dialog.progress_widget = progress
+        return dialog, status_variable
+
+    def _set_optional_install_status(
+        self,
+        status_variable: tk.StringVar,
+        message: str,
+    ) -> None:
+        self.root.after(0, lambda: status_variable.set(message))
+
+    def _download_dependency_file(
+        self,
+        url: str,
+        destination: Path,
+        *,
+        expected_sha256: str = "",
+        maximum_bytes: int,
+        status_variable: tk.StringVar,
+        description: str,
+    ) -> Path:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self._set_optional_install_status(
+            status_variable,
+            f"Downloading {description}...",
+        )
+        request = Request(
+            url,
+            headers={"User-Agent": f"SMWStreamTracker/{APP_VERSION}"},
+        )
+        digest = hashlib.sha256()
+        downloaded = 0
+        with urlopen(request, timeout=60) as response, destination.open(
+            "wb"
+        ) as output:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                downloaded += len(chunk)
+                if downloaded > maximum_bytes:
+                    raise RuntimeError(
+                        f"The {description} download exceeded its safety "
+                        "size limit."
+                    )
+                digest.update(chunk)
+                output.write(chunk)
+                self._set_optional_install_status(
+                    status_variable,
+                    f"Downloading {description}: "
+                    f"{downloaded / 1024 / 1024:.1f} MB",
+                )
+        if expected_sha256 and (
+            digest.hexdigest().casefold()
+            != expected_sha256.casefold()
+        ):
+            destination.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"The downloaded {description} failed its SHA-256 "
+                "integrity check."
+            )
+        return destination
+
+    @staticmethod
+    def _extract_dependency_zip(
+        archive_path: Path,
+        destination: Path,
+    ) -> None:
+        destination.mkdir(parents=True, exist_ok=True)
+        destination_root = destination.resolve()
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            for member in archive.infolist():
+                member_target = (
+                    destination / member.filename
+                ).resolve()
+                if (
+                    member_target != destination_root
+                    and destination_root not in member_target.parents
+                ):
+                    raise RuntimeError(
+                        "The downloaded archive contains an unsafe path."
+                    )
+            archive.extractall(destination)
+
+    def _save_discovered_interface(self, executable: Path) -> None:
+        executable_text = str(executable.resolve())
+        executable_name = executable.name.casefold()
+        if executable_name == "sni.exe":
+            config_key = "sni_path"
+            path_variable = self.sni_path_var
+        elif executable_name == "qusb2snes.exe":
+            config_key = "qusb2snes_path"
+            path_variable = self.qusb_path_var
+        else:
+            raise ValueError(
+                f"Unsupported connection service executable: {executable.name}"
+            )
+        self.config[config_key] = executable_text
+        path_variable.set(executable_text)
+        self.config["platform_interface_path"] = (
+            preferred_connection_service_path(self.config)
+        )
+        save_config(self.config)
+        if self.worker:
+            self.worker.config.update(self.config)
+
+    def _install_retroarch_core_and_settings(
+        self,
+        executable: Path,
+        status_variable: tk.StringVar,
+    ) -> Path:
+        core_directory = executable.parent / "cores"
+        core_path = (
+            core_directory / "bsnes_mercury_performance_libretro.dll"
+        )
+        if not core_path.is_file():
+            archive_path = (
+                APP_DATA_DIR
+                / "DependencyDownloads"
+                / "bsnes_mercury_performance_libretro.dll.zip"
+            )
+            self._download_dependency_file(
+                RETROARCH_CORE_DOWNLOAD_URL,
+                archive_path,
+                maximum_bytes=25 * 1024 * 1024,
+                status_variable=status_variable,
+                description="the recommended bsnes-mercury core",
+            )
+            self._set_optional_install_status(
+                status_variable,
+                "Installing the recommended bsnes-mercury core...",
+            )
+            self._extract_dependency_zip(
+                archive_path,
+                core_directory,
+            )
+            archive_path.unlink(missing_ok=True)
+        if not core_path.is_file():
+            matches = list(
+                core_directory.rglob(
+                    "bsnes_mercury_performance_libretro.dll"
+                )
+            )
+            if matches:
+                core_path = matches[0]
+        if not core_path.is_file():
+            raise FileNotFoundError(
+                "The recommended RetroArch core could not be installed."
+            )
+
+        self._set_optional_install_status(
+            status_variable,
+            "Enabling RetroArch network commands and one-press game switching...",
+        )
+        write_retroarch_tracker_settings(
+            executable.parent / "retroarch.cfg"
+        )
+        return core_path.resolve()
+
+    def install_optional_software(self, software: str) -> None:
+        names = {
+            "sni": "SNI",
+            "qusb2snes": "QUsb2Snes",
+            "retroarch": "RetroArch",
+        }
+        name = names.get(software)
+        if name is None:
+            return
+
+        existing = self._find_optional_software_executable(software)
+        if existing is not None:
+            use_existing = messagebox.askyesno(
+                f"{name} Found",
+                (
+                    f"The app found {name} here:\n\n{existing}\n\n"
+                    "Use and configure this installation automatically?\n\n"
+                    "Choose No to download a fresh copy instead."
+                ),
+                parent=self.root,
+            )
+            if use_existing and software != "retroarch":
+                try:
+                    self._save_discovered_interface(existing)
+                except OSError as error:
+                    messagebox.showerror(name, str(error), parent=self.root)
+                    return
+                messagebox.showinfo(
+                    f"{name} Ready",
+                    f"Settings now point to:\n\n{existing}",
+                    parent=self.root,
+                )
+                if self._tracker_is_running():
+                    self.refresh_tracker()
+                return
+        else:
+            use_existing = False
+
+        if existing is None or not use_existing:
+            if not messagebox.askyesno(
+                f"Download {name}",
+                (
+                    f"Download and set up {name} now?\n\n"
+                    "The download comes from the project's official release "
+                    "server."
+                ),
+                parent=self.root,
+            ):
+                return
+
+        dialog, status_variable = self._show_optional_install_progress(
+            f"Set Up {name}"
+        )
+
+        def worker() -> None:
+            try:
+                executable = existing if use_existing else None
+                download_directory = APP_DATA_DIR / "DependencyDownloads"
+                tools_directory = APP_DATA_DIR / "Tools"
+
+                if software == "sni" and executable is None:
+                    archive_path = download_directory / "sni-v0.0.103.zip"
+                    self._download_dependency_file(
+                        SNI_DOWNLOAD_URL,
+                        archive_path,
+                        expected_sha256=SNI_DOWNLOAD_SHA256,
+                        maximum_bytes=40 * 1024 * 1024,
+                        status_variable=status_variable,
+                        description="SNI",
+                    )
+                    self._set_optional_install_status(
+                        status_variable,
+                        "Extracting SNI...",
+                    )
+                    self._extract_dependency_zip(
+                        archive_path,
+                        tools_directory / "SNI",
+                    )
+                    archive_path.unlink(missing_ok=True)
+                    executable = self._find_optional_software_executable(
+                        "sni"
+                    )
+
+                elif software == "qusb2snes" and executable is None:
+                    archive_path = (
+                        download_directory / "QUsb2Snes-bundle.7z"
+                    )
+                    self._download_dependency_file(
+                        QUSB2SNES_DOWNLOAD_URL,
+                        archive_path,
+                        expected_sha256=QUSB2SNES_DOWNLOAD_SHA256,
+                        maximum_bytes=140 * 1024 * 1024,
+                        status_variable=status_variable,
+                        description="QUsb2Snes",
+                    )
+                    self._set_optional_install_status(
+                        status_variable,
+                        "Extracting QUsb2Snes...",
+                    )
+                    extract_7z_archive(
+                        archive_path,
+                        tools_directory / "QUsb2Snes",
+                    )
+                    archive_path.unlink(missing_ok=True)
+                    executable = self._find_optional_software_executable(
+                        "qusb2snes"
+                    )
+
+                elif software == "retroarch" and executable is None:
+                    installer_path = (
+                        download_directory / "RetroArch-Win64-setup.exe"
+                    )
+                    self._download_dependency_file(
+                        RETROARCH_DOWNLOAD_URL,
+                        installer_path,
+                        maximum_bytes=350 * 1024 * 1024,
+                        status_variable=status_variable,
+                        description="RetroArch",
+                    )
+                    self._set_optional_install_status(
+                        status_variable,
+                        "Installing RetroArch. Approve the Windows prompt if it appears...",
+                    )
+                    powershell_command = (
+                        "Start-Process -FilePath $args[0] "
+                        "-ArgumentList '/S' -Verb RunAs -Wait"
+                    )
+                    completed = subprocess.run(
+                        [
+                            "powershell.exe",
+                            "-NoProfile",
+                            "-Command",
+                            powershell_command,
+                            str(installer_path),
+                        ],
+                        timeout=900,
+                    )
+                    if completed.returncode != 0:
+                        raise RuntimeError(
+                            "The RetroArch installer did not complete."
+                        )
+                    installer_path.unlink(missing_ok=True)
+                    executable = self._find_optional_software_executable(
+                        "retroarch"
+                    )
+
+                if executable is None or not executable.is_file():
+                    raise FileNotFoundError(
+                        f"{name} was not found after setup completed."
+                    )
+
+                core_path: Path | None = None
+                if software == "retroarch":
+                    core_path = self._install_retroarch_core_and_settings(
+                        executable,
+                        status_variable,
+                    )
+
+                self.root.after(
+                    0,
+                    lambda: self._finish_optional_software_install(
+                        software,
+                        executable,
+                        core_path,
+                        dialog,
+                        "",
+                    ),
+                )
+            except Exception as error:
+                append_error_log(
+                    f"{name} setup failed",
+                    traceback.format_exc(),
+                )
+                error_text = str(error)
+                self.root.after(
+                    0,
+                    lambda: self._finish_optional_software_install(
+                        software,
+                        None,
+                        None,
+                        dialog,
+                        error_text,
+                    ),
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_optional_software_install(
+        self,
+        software: str,
+        executable: Path | None,
+        core_path: Path | None,
+        dialog: tk.Toplevel,
+        error_text: str,
+    ) -> None:
+        try:
+            dialog.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            dialog.destroy()
+        except tk.TclError:
+            pass
+
+        names = {
+            "sni": "SNI",
+            "qusb2snes": "QUsb2Snes",
+            "retroarch": "RetroArch",
+        }
+        name = names.get(software, software)
+        if error_text or executable is None:
+            messagebox.showerror(
+                f"{name} Setup Failed",
+                error_text or f"{name} could not be found.",
+                parent=self.root,
+            )
+            return
+
+        try:
+            if software == "retroarch":
+                self.config["retroarch_executable_path"] = str(executable)
+                if core_path is not None:
+                    self.config["retroarch_core_path"] = str(core_path)
+                self.config["retroarch_host"] = "127.0.0.1"
+                self.config["retroarch_port"] = 55355
+                save_config(self.config)
+            else:
+                self._save_discovered_interface(executable)
+        except OSError as error:
+            messagebox.showerror(name, str(error), parent=self.root)
+            return
+
+        details = f"Executable:\n{executable}"
+        if core_path is not None:
+            details += f"\n\nRecommended core:\n{core_path}"
+        messagebox.showinfo(
+            f"{name} Ready",
+            (
+                f"{name} is configured and its locations were saved in "
+                f"Settings.\n\n{details}"
+            ),
+            parent=self.root,
+        )
+        self.status_var.set(f"{name} setup is complete.")
+        if software != "retroarch" and self._tracker_is_running():
+            self.refresh_tracker()
 
     def _streamer_privacy_warning_is_suppressed(
         self,
@@ -24681,8 +26477,14 @@ class TrackerApp:
         )
         body.columnconfigure(1, weight=1)
 
+        local_sni = tk.StringVar(
+            value=self.sni_path_var.get()
+        )
         local_qusb = tk.StringVar(
             value=self.qusb_path_var.get()
+        )
+        local_connection_service = tk.StringVar(
+            value=self.connection_service_var.get()
         )
         local_spreadsheet = tk.StringVar(
             value=self.spreadsheet_path_var.get()
@@ -24701,6 +26503,16 @@ class TrackerApp:
         )
         local_appearance = tk.StringVar(
             value=self.appearance_var.get()
+        )
+        language_labels_to_codes = {
+            label: code
+            for code, label in APP_LANGUAGE_LABELS.items()
+        }
+        local_language = tk.StringVar(
+            value=APP_LANGUAGE_LABELS.get(
+                self.app_language,
+                APP_LANGUAGE_LABELS["en"],
+            )
         )
         local_rom_library = tk.StringVar(
             value=str(
@@ -24786,10 +26598,19 @@ class TrackerApp:
                 pady=7,
             )
 
+        def choose_sni() -> None:
+            selected = filedialog.askopenfilename(
+                parent=dialog,
+                title="Select SNI.exe",
+                filetypes=[("Executable", "*.exe")],
+            )
+            if selected:
+                local_sni.set(selected)
+
         def choose_qusb() -> None:
             selected = filedialog.askopenfilename(
                 parent=dialog,
-                title="Select SNI.exe or QUsb2Snes.exe",
+                title="Select QUsb2Snes.exe",
                 filetypes=[("Executable", "*.exe")],
             )
             if selected:
@@ -24850,33 +26671,73 @@ class TrackerApp:
         add_path_setting(
             0,
             "▣",
-            "SNI / QUsb2Snes",
-            local_qusb,
-            choose_qusb,
+            "SNI",
+            local_sni,
+            choose_sni,
         )
         add_path_setting(
             1,
+            "▣",
+            "QUsb2Snes",
+            local_qusb,
+            choose_qusb,
+        )
+
+        tk.Label(
+            body,
+            text="⇄",
+            font=("Segoe UI Symbol", 14, "bold"),
+            fg=THEME["purple"],
+            bg="#F9F5FF",
+            width=2,
+        ).grid(row=2, column=0, padx=(0, 8), pady=7)
+        OutlinedLabel(
+            body,
+            text="Preferred service",
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["text"],
+            bg="#F9F5FF",
+            anchor="w",
+            width=17,
+        ).grid(row=2, column=1, sticky="w", pady=7)
+        ttk.Combobox(
+            body,
+            textvariable=local_connection_service,
+            values=("Automatic", "SNI", "QUsb2Snes"),
+            state="readonly",
+            justify="center",
+            width=24,
+        ).grid(
+            row=2,
+            column=2,
+            sticky="w",
+            padx=(8, 0),
+            pady=7,
+            ipady=4,
+        )
+        add_path_setting(
+            3,
             "▦",
             "Import workbook",
             local_spreadsheet,
             choose_spreadsheet,
         )
         add_path_setting(
-            2,
+            4,
             "▰",
             "OBS text folder",
             local_output,
             choose_output,
         )
         add_path_setting(
-            3,
+            5,
             "▤",
             "Local ROM library",
             local_rom_library,
             choose_rom_library,
         )
         add_path_setting(
-            4,
+            6,
             "◉",
             "RetroArch",
             local_retroarch,
@@ -24886,7 +26747,7 @@ class TrackerApp:
             ),
         )
         add_path_setting(
-            5,
+            7,
             "◌",
             "RetroArch core",
             local_retroarch_core,
@@ -24901,7 +26762,7 @@ class TrackerApp:
             bg="#F9F5FF",
             width=2,
         ).grid(
-            row=7,
+            row=8,
             column=0,
             padx=(0, 8),
             pady=7,
@@ -24916,7 +26777,7 @@ class TrackerApp:
             anchor="w",
             width=17,
         ).grid(
-            row=7,
+            row=8,
             column=1,
             sticky="w",
             pady=7,
@@ -24927,7 +26788,7 @@ class TrackerApp:
             bg="#F9F5FF",
         )
         appearance_frame.grid(
-            row=7,
+            row=8,
             column=2,
             columnspan=2,
             sticky="w",
@@ -24953,11 +26814,55 @@ class TrackerApp:
                 padx=8,
             ).pack(side="left", padx=(0, 12))
 
+        tk.Label(
+            body,
+            text="文",
+            font=("Segoe UI Symbol", 14, "bold"),
+            fg=THEME["purple"],
+            bg="#F9F5FF",
+            width=2,
+        ).grid(
+            row=9,
+            column=0,
+            padx=(0, 8),
+            pady=7,
+        )
+        OutlinedLabel(
+            body,
+            text="App language",
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["text"],
+            bg="#F9F5FF",
+            anchor="w",
+            width=17,
+        ).grid(
+            row=9,
+            column=1,
+            sticky="w",
+            pady=7,
+        )
+        language_box = ttk.Combobox(
+            body,
+            textvariable=local_language,
+            values=tuple(APP_LANGUAGE_LABELS.values()),
+            state="readonly",
+            justify="center",
+            width=24,
+        )
+        language_box.grid(
+            row=9,
+            column=2,
+            sticky="w",
+            padx=(8, 0),
+            pady=7,
+            ipady=4,
+        )
+
         ttk.Separator(
             body,
             orient="horizontal",
         ).grid(
-            row=9,
+            row=10,
             column=0,
             columnspan=4,
             sticky="ew",
@@ -24971,7 +26876,7 @@ class TrackerApp:
             fg=THEME["purple"],
             bg="#F9F5FF",
         ).grid(
-            row=10,
+            row=11,
             column=0,
             padx=(0, 8),
             pady=7,
@@ -24984,7 +26889,7 @@ class TrackerApp:
             fg=THEME["text"],
             bg="#F9F5FF",
         ).grid(
-            row=10,
+            row=11,
             column=1,
             sticky="w",
             pady=7,
@@ -24995,7 +26900,7 @@ class TrackerApp:
             bg="#F9F5FF",
         )
         idle_value_frame.grid(
-            row=10,
+            row=11,
             column=2,
             sticky="w",
             padx=(8, 0),
@@ -25028,7 +26933,7 @@ class TrackerApp:
             fg=THEME["purple"],
             bg="#F9F5FF",
         ).grid(
-            row=11,
+            row=12,
             column=0,
             padx=(0, 8),
             pady=7,
@@ -25041,7 +26946,7 @@ class TrackerApp:
             fg=THEME["text"],
             bg="#F9F5FF",
         ).grid(
-            row=11,
+            row=12,
             column=1,
             sticky="w",
             pady=7,
@@ -25052,7 +26957,7 @@ class TrackerApp:
             local_game_port,
             width=10,
         ).grid(
-            row=11,
+            row=12,
             column=2,
             sticky="w",
             padx=(8, 0),
@@ -25066,7 +26971,7 @@ class TrackerApp:
             fg=THEME["purple"],
             bg="#F9F5FF",
         ).grid(
-            row=12,
+            row=13,
             column=0,
             padx=(0, 8),
             pady=7,
@@ -25079,7 +26984,7 @@ class TrackerApp:
             fg=THEME["text"],
             bg="#F9F5FF",
         ).grid(
-            row=12,
+            row=13,
             column=1,
             sticky="w",
             pady=7,
@@ -25090,7 +26995,7 @@ class TrackerApp:
             local_level_port,
             width=10,
         ).grid(
-            row=12,
+            row=13,
             column=2,
             sticky="w",
             padx=(8, 0),
@@ -25110,7 +27015,7 @@ class TrackerApp:
             justify="left",
             wraplength=900,
         ).grid(
-            row=13,
+            row=14,
             column=0,
             columnspan=4,
             sticky="w",
@@ -25122,7 +27027,7 @@ class TrackerApp:
             bg="#F9F5FF",
         )
         button_row.grid(
-            row=14,
+            row=15,
             column=0,
             columnspan=4,
             sticky="e",
@@ -25188,8 +27093,23 @@ class TrackerApp:
                 self.spreadsheet_path_var.get().strip()
             )
 
+            self.sni_path_var.set(
+                local_sni.get().strip()
+            )
             self.qusb_path_var.set(
                 local_qusb.get().strip()
+            )
+            selected_connection_service = (
+                local_connection_service.get().strip()
+            )
+            if selected_connection_service not in {
+                "Automatic",
+                "SNI",
+                "QUsb2Snes",
+            }:
+                selected_connection_service = "Automatic"
+            self.connection_service_var.set(
+                selected_connection_service
             )
             self.spreadsheet_path_var.set(
                 spreadsheet_text
@@ -25208,7 +27128,11 @@ class TrackerApp:
             )
             self.config.update(
                 {
-                    "platform_interface_path": local_qusb.get().strip(),
+                    "sni_path": local_sni.get().strip(),
+                    "qusb2snes_path": local_qusb.get().strip(),
+                    "connection_service_preference": (
+                        selected_connection_service
+                    ),
                     "platform_websocket_url": str(
                         self.config.get(
                             "platform_websocket_url",
@@ -25230,11 +27154,20 @@ class TrackerApp:
                     ),
                 }
             )
+            self.config["platform_interface_path"] = (
+                preferred_connection_service_path(self.config)
+            )
 
             selected_appearance = local_appearance.get().strip().casefold()
             if selected_appearance not in {"light", "dark"}:
                 selected_appearance = "light"
             self.appearance_var.set(selected_appearance)
+            selected_language = language_labels_to_codes.get(
+                local_language.get(),
+                "en",
+            )
+            self.language_var.set(selected_language)
+            self.config["app_language"] = selected_language
 
             if not self.save_settings():
                 return
@@ -25266,6 +27199,12 @@ class TrackerApp:
                 "Settings saved."
             )
             dialog.destroy()
+
+            self._set_app_language(
+                selected_language,
+                persist=False,
+                rebuild=True,
+            )
 
             messagebox.showinfo(
                 APP_NAME,
@@ -27794,11 +29733,21 @@ class TrackerApp:
         if requested_size == self.banner_render_size:
             return
 
+        # Keep the cast, scenery, and logo at their designed proportions in a
+        # restored/narrow window. Rendering every position against the narrow
+        # width squeezed the characters together around the title. Instead,
+        # render a full scene and crop equally from the two outside edges.
+        scene_width = max(width, round(height * 7.0))
         user_banner = self._build_user_character_banner(
-            width,
+            scene_width,
             height,
         )
         if user_banner is not None:
+            if scene_width > width:
+                crop_left = (scene_width - width) // 2
+                user_banner = user_banner.crop(
+                    (crop_left, 0, crop_left + width, height)
+                )
             self.banner_photo = ImageTk.PhotoImage(
                 user_banner
             )
@@ -28495,7 +30444,12 @@ class TrackerApp:
         updated_config = dict(self.config)
         updated_config.update(
             {
+                "sni_path": self.sni_path_var.get().strip(),
                 "qusb2snes_path": self.qusb_path_var.get().strip(),
+                "connection_service_preference": (
+                    self.connection_service_var.get().strip()
+                    or "Automatic"
+                ),
                 "spreadsheet_path": (
                     self.spreadsheet_path_var.get().strip()
                 ),
@@ -28509,6 +30463,9 @@ class TrackerApp:
                 "ui_theme": self.appearance_var.get(),
                 "selected_platform": self.platform_var.get(),
             }
+        )
+        updated_config["platform_interface_path"] = (
+            preferred_connection_service_path(updated_config)
         )
         self.config = updated_config
         save_config(self.config)
@@ -30225,8 +32182,6 @@ class TrackerApp:
                 + catalog_version
                 + "  •  Refreshed "
                 + last_refresh_text
-                + "  •  "
-                + str(STATS_DB_FILE)
             ),
             font=("Segoe UI", 9, "bold"),
             fg="white",
@@ -40957,14 +42912,44 @@ class TrackerApp:
 
         return True
 
+    def _main_hack_selector_prompt_text(self) -> str:
+        return self._translate_ui_text(
+            "Search or select a hack..."
+        )
+
+    def _main_hack_selector_loading_text(self) -> str:
+        return self._translate_ui_text(
+            "Hack catalog is loading..."
+        )
+
+    @staticmethod
+    def _main_hack_selector_prompt_values() -> set[str]:
+        prompts = {
+            "Search or select a hack...",
+            "Search or select a hack…",
+            "Hack catalog is loading...",
+            "Hack catalog is loading…",
+        }
+        for translations in UI_TRANSLATIONS.values():
+            for english in (
+                "Search or select a hack...",
+                "Hack catalog is loading...",
+            ):
+                translated = str(translations.get(english, "")).strip()
+                if translated:
+                    prompts.add(translated)
+                    if translated.endswith("..."):
+                        prompts.add(translated[:-3] + "…")
+        return prompts
+
+    def _is_main_hack_selector_prompt(self, text: object) -> bool:
+        return str(text).strip() in self._main_hack_selector_prompt_values()
+
     def _matching_main_hack_labels(
         self,
         query: str,
     ) -> list[str]:
-        if query.strip() in {
-            "Search or select a hack…",
-            "Hack catalog is loading…",
-        }:
+        if self._is_main_hack_selector_prompt(query):
             query = ""
 
         tokens = [
@@ -41031,7 +43016,7 @@ class TrackerApp:
             self.main_hack_selector_games = {}
             self.main_hack_selector_labels = []
             self.main_hack_selector_var.set(
-                "Hack catalog is loading…"
+                self._main_hack_selector_loading_text()
             )
             combo.configure(
                 values=(),
@@ -41098,10 +43083,8 @@ class TrackerApp:
         self.main_hack_selector_labels = labels
         combo.configure(state="normal")
 
-        if current_text == "Hack catalog is loading…":
-            current_text = (
-                "Search or select a hack…"
-            )
+        if self._is_main_hack_selector_prompt(current_text):
+            current_text = self._main_hack_selector_prompt_text()
             self.main_hack_selector_var.set(
                 current_text
             )
@@ -41124,10 +43107,9 @@ class TrackerApp:
         self.main_hack_selector_combo.configure(
             justify="left",
         )
-        if self.main_hack_selector_var.get().strip() in {
-            "Search or select a hack…",
-            "Hack catalog is loading…",
-        }:
+        if self._is_main_hack_selector_prompt(
+            self.main_hack_selector_var.get()
+        ):
             self.main_hack_selector_var.set("")
             self.main_hack_selector_combo.configure(
                 values=self.main_hack_selector_labels,
@@ -41197,6 +43179,88 @@ class TrackerApp:
                 self._post_main_hack_selector_popup,
             )
         )
+
+    def _follow_main_hack_selector_popup(self, event=None) -> None:
+        """Keep the detached list attached while the app changes monitors."""
+        if event is not None and event.widget is not self.root:
+            return
+        if self._main_hack_selector_popup_is_open():
+            self._queue_main_hack_selector_popup()
+
+    @staticmethod
+    def _monitor_work_area_for_widget(
+        widget,
+    ) -> tuple[int, int, int, int]:
+        """Return the usable bounds of the monitor containing a widget."""
+        try:
+            center_x = widget.winfo_rootx() + widget.winfo_width() // 2
+            center_y = widget.winfo_rooty() + widget.winfo_height() // 2
+        except tk.TclError:
+            center_x = 0
+            center_y = 0
+
+        if sys.platform == "win32":
+            try:
+                class Point(ctypes.Structure):
+                    _fields_ = [
+                        ("x", ctypes.c_long),
+                        ("y", ctypes.c_long),
+                    ]
+
+                class Rect(ctypes.Structure):
+                    _fields_ = [
+                        ("left", ctypes.c_long),
+                        ("top", ctypes.c_long),
+                        ("right", ctypes.c_long),
+                        ("bottom", ctypes.c_long),
+                    ]
+
+                class MonitorInfo(ctypes.Structure):
+                    _fields_ = [
+                        ("cbSize", ctypes.c_ulong),
+                        ("rcMonitor", Rect),
+                        ("rcWork", Rect),
+                        ("dwFlags", ctypes.c_ulong),
+                    ]
+
+                user32 = ctypes.windll.user32
+                monitor_from_point = user32.MonitorFromPoint
+                monitor_from_point.argtypes = [Point, ctypes.c_ulong]
+                monitor_from_point.restype = ctypes.c_void_p
+                get_monitor_info = user32.GetMonitorInfoW
+                get_monitor_info.argtypes = [
+                    ctypes.c_void_p,
+                    ctypes.POINTER(MonitorInfo),
+                ]
+                get_monitor_info.restype = ctypes.c_int
+                monitor = monitor_from_point(
+                    Point(center_x, center_y),
+                    2,
+                )
+                info = MonitorInfo()
+                info.cbSize = ctypes.sizeof(MonitorInfo)
+                if monitor and get_monitor_info(
+                    monitor,
+                    ctypes.byref(info),
+                ):
+                    return (
+                        int(info.rcWork.left),
+                        int(info.rcWork.top),
+                        int(info.rcWork.right),
+                        int(info.rcWork.bottom),
+                    )
+            except (AttributeError, OSError, ValueError):
+                pass
+
+        try:
+            return (
+                0,
+                0,
+                int(widget.winfo_screenwidth()),
+                int(widget.winfo_screenheight()),
+            )
+        except tk.TclError:
+            return (0, 0, 1920, 1080)
 
     @staticmethod
     def _center_listbox_display_values(
@@ -41460,19 +43524,21 @@ class TrackerApp:
             visible_rows * line_height
             + 4
         )
-        screen_width = (
-            combo.winfo_screenwidth()
-        )
-        screen_height = (
-            combo.winfo_screenheight()
+        (
+            work_left,
+            work_top,
+            work_right,
+            work_bottom,
+        ) = self._monitor_work_area_for_widget(combo)
+        popup_width = min(
+            popup_width,
+            max(160, work_right - work_left - 16),
         )
         popup_x = max(
-            0,
+            work_left + 8,
             min(
                 combo.winfo_rootx(),
-                screen_width
-                - popup_width
-                - 8,
+                work_right - popup_width - 8,
             ),
         )
         below_y = (
@@ -41484,18 +43550,28 @@ class TrackerApp:
         if (
             below_y
             + popup_height
-            > screen_height - 8
+            > work_bottom - 8
         ):
             popup_y = max(
-                8,
+                work_top + 8,
                 combo.winfo_rooty()
                 - popup_height
                 - 2,
             )
 
+        x_geometry = (
+            f"+{popup_x}"
+            if popup_x >= 0
+            else str(popup_x)
+        )
+        y_geometry = (
+            f"+{popup_y}"
+            if popup_y >= 0
+            else str(popup_y)
+        )
         popup.geometry(
             f"{popup_width}x{popup_height}"
-            f"+{popup_x}+{popup_y}"
+            f"{x_geometry}{y_geometry}"
         )
         popup.deiconify()
         popup.lift()
@@ -41743,7 +43819,7 @@ class TrackerApp:
 
         self.main_hack_selector_selected_label = ""
         self.main_hack_selector_var.set(
-            "Search or select a hack…"
+            self._main_hack_selector_prompt_text()
         )
         self.main_hack_selector_combo.configure(
             values=self.main_hack_selector_labels,
@@ -41838,11 +43914,9 @@ class TrackerApp:
         selected_text = (
             self.main_hack_selector_var.get().strip()
         )
-        if selected_text in {
-            "",
-            "Search or select a hack…",
-            "Hack catalog is loading…",
-        }:
+        if not selected_text or self._is_main_hack_selector_prompt(
+            selected_text
+        ):
             return None
 
         selected = (
@@ -41947,17 +44021,103 @@ class TrackerApp:
         self._launch_catalog_game(game)
         return "break" if event is not None else None
 
+    def _catalog_game_has_downloaded_rom(
+        self,
+        game: dict[str, Any],
+        platform: str | None = None,
+    ) -> bool:
+        """Return whether a catalog game has a known launchable ROM."""
+        selected_platform = (
+            platform
+            or self.platform_var.get().strip()
+            or "FXPAK Pro"
+        )
+
+        if selected_platform in PLATFORM_LOCAL_EMULATORS:
+            all_mappings = self.config.get(
+                "platform_rom_mappings",
+                {},
+            )
+            if isinstance(all_mappings, dict):
+                platform_mappings = all_mappings.get(
+                    selected_platform,
+                    {},
+                )
+                if isinstance(platform_mappings, dict):
+                    mapped_text = str(
+                        platform_mappings.get(
+                            self._catalog_mapping_key(game),
+                            "",
+                        )
+                    ).strip()
+                    if mapped_text and Path(mapped_text).is_file():
+                        return True
+
+            for field_name in ("local_rom_path", "rom_path"):
+                path_text = str(game.get(field_name, "")).strip()
+                if path_text and Path(path_text).is_file():
+                    return True
+            return False
+
+        # FXPAK paths are remote POSIX-style paths. A local Windows filename
+        # is not considered launchable unless it has also been copied/mapped
+        # to the card.
+        direct_path = str(game.get("rom_path", "")).strip()
+        if direct_path.startswith("/"):
+            return True
+
+        mapping_keys = {
+            str(game.get("mapping_key", "")).casefold().strip(),
+            self._catalog_mapping_key(game).casefold(),
+        }
+        smwc_id = str(game.get("smwc_id", "")).strip()
+        if smwc_id:
+            mapping_keys.add(("smwc:" + smwc_id).casefold())
+        title = str(game.get("title", "")).strip()
+        if title:
+            mapping_keys.add(("title:" + title).casefold())
+        mapping_keys.discard("")
+
+        configured_mappings = self.config.get(
+            "fxpak_rom_mappings",
+            {},
+        )
+        known_mappings = (
+            configured_mappings
+            if isinstance(configured_mappings, dict)
+            else {}
+        )
+        runtime_mappings = getattr(self, "fxpak_path_map", {})
+        if not isinstance(runtime_mappings, dict):
+            runtime_mappings = {}
+        for mappings in (known_mappings, runtime_mappings):
+            normalized = {
+                str(key).casefold().strip(): str(value).strip()
+                for key, value in mappings.items()
+                if str(value).strip()
+            }
+            if any(
+                normalized.get(mapping_key, "").startswith("/")
+                for mapping_key in mapping_keys
+            ):
+                return True
+        return False
+
     def _play_random_main_hack(self) -> None:
         candidates = [
             game
             for game in self.hack_catalog
             if str(game.get("title", "")).strip()
+            and self._catalog_game_has_downloaded_rom(game)
         ]
 
         if not candidates:
             messagebox.showinfo(
                 "Random Hack",
-                "The hack catalog is still loading.",
+                (
+                    "No downloaded hacks are available for the selected "
+                    "platform. Download a hack or map an existing ROM first."
+                ),
                 parent=self.root,
             )
             return
@@ -43602,12 +45762,15 @@ class TrackerApp:
                 type_value,
                 "All",
             )
+            and self._catalog_game_has_downloaded_rom(game)
         ]
 
         if not candidates:
             messagebox.showinfo(
                 "Random Game",
-                "No games match the selected random filters.",
+                (
+                    "No downloaded games match the selected random filters."
+                ),
                 parent=self.game_library_dialog or self.root,
             )
             return
@@ -43918,6 +46081,13 @@ class TrackerApp:
             )
         self.status_var.set(message)
         self._remember_last_launched_hack(game)
+
+        # Force the worker to treat every successful app launch as a fresh
+        # ROM session. Some platforms switch games without an observable
+        # blank interval, and replaying the same title otherwise leaves the
+        # previous stopped timer state attached to the new run.
+        if self.worker:
+            self.worker.notify_catalog_launch()
 
         selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
         if rom_path and selected_platform == "FXPAK Pro":
@@ -46041,8 +48211,17 @@ class TrackerApp:
             "Tracker worker: " + ("Running" if self._tracker_is_running() else "Stopped"),
             "",
             "CONFIGURATION STATUS",
-            "Connection service: " + self._configured_path_status(
-                self.config.get("platform_interface_path", ""), "file"
+            "Preferred connection service: " + str(
+                self.config.get(
+                    "connection_service_preference",
+                    "Automatic",
+                )
+            ),
+            "SNI: " + self._configured_path_status(
+                self.config.get("sni_path", ""), "file"
+            ),
+            "QUsb2Snes: " + self._configured_path_status(
+                self.config.get("qusb2snes_path", ""), "file"
             ),
             "RetroArch: " + self._configured_path_status(
                 self.config.get("retroarch_executable_path", ""), "file"
@@ -46209,18 +48388,27 @@ class TrackerApp:
             else "Choose or create the OBS text output folder in Settings.",
         ))
 
-        interface_text = str(
-            self.config.get("platform_interface_path", "")
-            or self.config.get("qusb2snes_path", "")
-        ).strip()
-        interface_ready = bool(interface_text and Path(interface_text).is_file())
+        ready_services = [
+            name
+            for name, path_text in connection_service_candidates(self.config)
+            if Path(path_text).is_file()
+        ]
+        interface_ready = bool(ready_services)
         bridge_online = self._test_tcp_port("127.0.0.1", 23074)
         if interface_ready and bridge_online:
             interface_state = "Ready"
-            interface_detail = "SNI or QUsb2Snes is installed and responding."
+            interface_detail = (
+                "Configured service(s): "
+                + ", ".join(ready_services)
+                + ". A bridge is responding."
+            )
         elif interface_ready:
             interface_state = "Needs Attention"
-            interface_detail = "The service is installed but is not responding on port 23074."
+            interface_detail = (
+                "Configured service(s): "
+                + ", ".join(ready_services)
+                + ". Neither is currently responding on port 23074."
+            )
         else:
             interface_state = "Missing" if platform_name == "FXPAK Pro" else "Needs Attention"
             interface_detail = (
@@ -46228,22 +48416,55 @@ class TrackerApp:
                 if platform_name == "FXPAK Pro"
                 else "Optional for RetroArch users. Install it only if you also use FXPAK Pro."
             )
-        results.append((interface_state, "FXPAK connection service", interface_detail))
+        results.append((
+            interface_state,
+            "FXPAK connection services",
+            interface_detail,
+        ))
 
         retroarch_text = str(self.config.get("retroarch_executable_path", "")).strip()
         core_text = str(self.config.get("retroarch_core_path", "")).strip()
         retroarch_ready = bool(retroarch_text and Path(retroarch_text).is_file())
         core_ready = bool(core_text and Path(core_text).is_file())
-        network_ready = self._retroarch_status(timeout=0.35) is not None
-        if retroarch_ready and core_ready and network_ready:
+        network_ready = self._retroarch_status(timeout=0.80) is not None
+        live_tracking_ready = bool(
+            platform_name == "RetroArch"
+            and getattr(self, "connection_is_connected", False)
+        )
+        if network_ready:
             retro_state = "Ready"
-            retro_detail = "RetroArch, the SNES core, and Network Commands are responding."
+            retro_detail = (
+                "RetroArch Network Commands are responding."
+                + (
+                    " The executable and SNES core are also configured."
+                    if retroarch_ready and core_ready
+                    else " The running installation was detected directly."
+                )
+            )
+        elif live_tracking_ready:
+            retro_state = "Ready"
+            retro_detail = (
+                "RetroArch live tracking is connected through the configured "
+                "SNI/QUsb2Snes service."
+            )
+        elif platform_name != "RetroArch":
+            retro_state = "Ready"
+            retro_detail = (
+                "RetroArch is optional and is not required while FXPAK Pro "
+                "is selected."
+            )
         elif retroarch_ready and core_ready:
             retro_state = "Needs Attention"
-            retro_detail = "Files are configured. Start RetroArch and enable Network Commands for live tracking."
+            retro_detail = (
+                "Files are configured. Start RetroArch and enable Network "
+                "Commands, or connect it through SNI/QUsb2Snes."
+            )
         else:
-            retro_state = "Missing" if platform_name == "RetroArch" else "Needs Attention"
-            retro_detail = "RetroArch is optional for FXPAK users; configure its executable and SNES core to use it."
+            retro_state = "Missing"
+            retro_detail = (
+                "Configure the RetroArch executable and SNES core, then "
+                "enable Network Commands or live tracking through SNI/QUsb2Snes."
+            )
         results.append((retro_state, "RetroArch", retro_detail))
 
         try:
@@ -46700,8 +48921,22 @@ class TrackerApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _launch_update_package(self, updater_path: Path) -> None:
+        updater_environment = os.environ.copy()
+        # A PyInstaller one-file app records its private extraction folder in
+        # _PYI_* variables.  The updater inherits those variables and can pass
+        # them to the newly installed app after this process has removed that
+        # folder, which produces a harmless "Failed to load Python DLL" dialog
+        # even though the update succeeded.  Treat the updater and its final
+        # app launch as an independent process tree.
+        for variable_name in tuple(updater_environment):
+            if variable_name.startswith("_PYI_"):
+                updater_environment.pop(variable_name, None)
+        updater_environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
         try:
-            subprocess.Popen([str(updater_path), "/SP-"])
+            subprocess.Popen(
+                [str(updater_path), "/SP-"],
+                env=updater_environment,
+            )
         except OSError as error:
             messagebox.showerror("Could Not Start Updater", str(error), parent=self.root)
             return
@@ -47148,6 +49383,10 @@ class TrackerApp:
             "to SMW Central's staff and moderators, and to the creators, testers, "
             "players, tool developers, and the entire SMW community for creating and "
             "supporting these remarkable hacks.\n\n"
+            "Testers\n"
+            "Jole_12 — thank you for testing SMW Stream Tracker, sharing detailed "
+            "feedback, and helping make this release more reliable and polished. "
+            "Your contributions are sincerely appreciated.\n\n"
             "Looking ahead\n"
             "Future SMW Stream Tracker releases may explore additional hardware "
             "setups, flash-cartridge workflows, and emulator integrations beyond "
@@ -48340,7 +50579,9 @@ class TrackerApp:
                     available = event.get("available")
                     if available is None:
                         freshness_text = (
-                            "New-hack count unavailable"
+                            self._translate_ui_text(
+                                "New-hack count unavailable"
+                            )
                         )
                     else:
                         available_count = max(
@@ -48348,13 +50589,16 @@ class TrackerApp:
                             int(available),
                         )
                         freshness_text = (
-                            f"{available_count:,} new "
+                            f"{available_count:,} "
                             + (
-                                "hack"
+                                self._translate_ui_text("new hack")
                                 if available_count == 1
-                                else "hacks"
+                                else self._translate_ui_text("new hacks")
                             )
-                            + " since last refresh"
+                            + " "
+                            + self._translate_ui_text(
+                                "since last refresh"
+                            )
                         )
                     self.catalog_new_hacks_var.set(
                         freshness_text
@@ -48415,9 +50659,13 @@ class TrackerApp:
                         self._populate_game_library()
 
                 elif event_type == "connection":
+                    self.connection_is_connected = bool(
+                        event.get("connected")
+                    )
                     if event.get("connected"):
                         self.connection_var.set(
-                            "Connected — "
+                            self._translate_ui_text("Connected")
+                            + " — "
                             + str(event.get("device", ""))
                         )
                         self.connection_dot.configure(
@@ -48427,7 +50675,9 @@ class TrackerApp:
                             fg=THEME["green_dark"]
                         )
                     else:
-                        self.connection_var.set("Disconnected")
+                        self.connection_var.set(
+                            self._translate_ui_text("Disconnected")
+                        )
                         self.connection_dot.configure(
                             fg=THEME["bad"]
                         )
@@ -48435,7 +50685,8 @@ class TrackerApp:
                             fg=THEME["bad"]
                         )
                         self.status_var.set(
-                            "Reconnecting: "
+                            self._translate_ui_text("Reconnecting:")
+                            + " "
                             + str(event.get("error", ""))
                         )
                     self._set_tracking_icon(
@@ -48453,10 +50704,13 @@ class TrackerApp:
                         str(event.get("title", "No game detected"))
                     )
                     self.author_var.set(
-                        "By: " + event_author
+                        self._translate_ui_text("By:")
+                        + " "
+                        + event_author
                     )
                     self.exits_var.set(
-                        "Exits: "
+                        self._translate_ui_text("Exits:")
+                        + " "
                         + str(event.get("completed", 0))
                         + " / "
                         + str(event.get("total", "Unknown"))
@@ -48475,11 +50729,13 @@ class TrackerApp:
                     )
                     rating_value = event.get("rating")
                     self.difficulty_var.set(
-                        "Difficulty: "
+                        self._translate_ui_text("Difficulty:")
+                        + " "
                         + difficulty_text
                     )
                     self.smwc_rating_var.set(
-                        "SMWCentral Rating: "
+                        self._translate_ui_text("SMWCentral Rating:")
+                        + " "
                         + (
                             f"{float(rating_value):.2f}"
                             .rstrip("0")
@@ -48489,7 +50745,7 @@ class TrackerApp:
                                 None,
                                 "",
                             )
-                            else "Unrated"
+                            else self._translate_ui_text("Unrated")
                         )
                     )
                     self.current_hack_record = {
@@ -48510,7 +50766,8 @@ class TrackerApp:
 
                 elif event_type == "exits":
                     self.exits_var.set(
-                        "Exits: "
+                        self._translate_ui_text("Exits:")
+                        + " "
                         + str(event.get("completed", 0))
                         + " / "
                         + str(event.get("total", "Unknown"))
@@ -48556,23 +50813,29 @@ class TrackerApp:
 
                     self.game_toggle_button.configure(
                         text=(
-                            "■  Stop Game Timer"
+                            "■  "
+                            + self._translate_ui_text("Stop Game Timer")
                             if game_running
-                            else "▶  Start Game Timer"
+                            else "▶  "
+                            + self._translate_ui_text("Start Game Timer")
                         )
                     )
                     self.level_toggle_button.configure(
                         text=(
-                            "■  Stop Level Timer"
+                            "■  "
+                            + self._translate_ui_text("Stop Level Timer")
                             if level_running
-                            else "▶  Start Level Timer"
+                            else "▶  "
+                            + self._translate_ui_text("Start Level Timer")
                         )
                     )
                     self.both_toggle_button.configure(
                         text=(
-                            "■  Stop Timers"
+                            "■  "
+                            + self._translate_ui_text("Stop Timers")
                             if game_running or level_running
-                            else "▶  Start Timers"
+                            else "▶  "
+                            + self._translate_ui_text("Start Timers")
                         )
                     )
 
@@ -48836,6 +51099,7 @@ class TrackerApp:
                     )
 
                 elif event_type == "stopped":
+                    self.connection_is_connected = False
                     requested_refresh = (
                         self.restart_after_stop
                     )

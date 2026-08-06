@@ -197,6 +197,72 @@ class LevelTimerOverworldTests(unittest.TestCase):
         self.assertEqual(worker.death_count, 1)
         self.assertIn(("level", "starttimer"), worker.commands)
 
+    def test_reconnecting_to_started_slot_rearms_level_and_deaths(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.config),
+            queue.Queue(),
+        )
+        worker.current_rom_key = "resumedhack"
+        worker.previous_mode = None
+        worker.commands = []
+        worker.send_livesplit_command = (
+            lambda timer, command: worker.commands.append(
+                (timer, command)
+            )
+        )
+
+        def select_existing_slot(slot):
+            worker.active_save_slot = slot
+            worker.current_time_key = f"resumedhack::slot{slot}"
+            worker.death_count = 6
+
+        worker.select_save_slot = select_existing_slot
+        worker.get_saved_game_time_for_slot = lambda _slot: 125.0
+
+        worker.update_timers_from_state(
+            self.make_state(
+                self.tracker.LEVEL_MODE,
+                translevel=4,
+                player_state=0x00,
+                player_lives=5,
+            ),
+            delta=0.25,
+            now=40.0,
+        )
+
+        self.assertTrue(worker.level_auto_tracking_armed)
+        self.assertEqual(worker.level_id, 4)
+        self.assertFalse(worker.level_waiting_for_start)
+        self.assertIn(("level", "starttimer"), worker.commands)
+
+        worker.update_timers_from_state(
+            self.make_state(
+                self.tracker.LEVEL_MODE,
+                translevel=4,
+                player_state=0x09,
+                player_lives=4,
+            ),
+            delta=0.25,
+            now=40.25,
+        )
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 7)
+
+    def test_castle_destruction_does_not_finish_game_timer(self):
+        worker = self.make_worker()
+        worker.game_elapsed = 20.0
+
+        worker.update_timers_from_state(
+            self.make_state(0x1A),
+            delta=0.5,
+            now=300.0,
+        )
+
+        self.assertFalse(worker.game_finished)
+        self.assertFalse(worker.timers_paused)
+        self.assertEqual(worker.game_elapsed, 20.5)
+        self.assertNotIn(("game", "pause"), worker.commands)
+
     def test_death_overworld_uses_grace_then_resumes_same_level(self):
         worker = self.make_worker()
 

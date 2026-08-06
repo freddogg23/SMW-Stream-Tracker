@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - COMPLETE SETUP GUIDE
-Version 1.0.2
+Version 1.0.3
 
 LANGUAGES
 English: README.en.txt
@@ -38,7 +38,7 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 
 2. INSTALL THE PROGRAM
 
-1. Start SMWStreamTracker_Setup_1.0.2.exe.
+1. Start SMWStreamTracker_Setup_1.0.3.exe.
 2. Select a language on the first screen.
 3. Read the optional-software and ROM notice.
 4. Choose FXPAK Pro or RetroArch as the initial platform.
@@ -48,6 +48,8 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 7. Finish Setup and open this guide.
 
 Existing tracker settings are preserved during installation and updates.
+Change the interface language at any time from File > Language. The main
+interface updates immediately without leaving labels from the old language.
 
 3. CHOOSE OPTIONAL SOFTWARE
 
@@ -59,6 +61,12 @@ Pro and SD2SNES users who already use it.
 
 RetroArch is optional. Skip it if RetroArch is already installed or if you use
 only FXPAK Pro. When selected, Setup also downloads the bsnes-mercury Performance Libretro core.
+
+If you skip a tool during Setup, open Downloads > Connection & Emulator Setup
+later. The app can find an existing SNI, QUsb2Snes, or RetroArch installation,
+or install it in your user profile. RetroArch setup also installs the
+recommended core, enables Network Commands on port 55355, and saves both file
+locations in the tracker settings.
 
 4. SET UP FXPAK PRO
 
@@ -133,7 +141,9 @@ but permanent bulk copying usually requires an SD-card reader.
 10. PLAY AND TRACK A HACK
 
 * Type in Search or select a hack, choose a result, and press Play.
-* Play Random Hack chooses from the available library.
+* Play Random Hack chooses only from hacks that are already downloaded and
+  launchable on the currently selected platform. Catalog-only entries are
+  never selected.
 * Add to My Tracker creates a tracked entry.
 * Complete Hack records completion data.
 * Clicking away closes the search list. The placeholder remains until a hack

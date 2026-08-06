@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUIA COMPLETO DE CONFIGURAÇÃO
-Versão 1.0.2
+Versão 1.0.3
 
 IDIOMAS
 English: README.en.txt
@@ -38,7 +38,7 @@ O SMW Stream Tracker não inclui nem baixa uma ROM-base comercial.
 
 2. INSTALAR O PROGRAMA
 
-1. Execute SMWStreamTracker_Setup_1.0.2.exe.
+1. Execute SMWStreamTracker_Setup_1.0.3.exe.
 2. Escolha um idioma na primeira tela.
 3. Leia o aviso sobre software opcional e ROMs.
 4. Escolha FXPAK Pro ou RetroArch como plataforma inicial.
@@ -48,6 +48,8 @@ O SMW Stream Tracker não inclui nem baixa uma ROM-base comercial.
 7. Conclua a instalação e abra este guia.
 
 As configurações existentes são preservadas em instalações e atualizações.
+Você pode alterar o idioma a qualquer momento em Arquivo > Idioma. A interface
+principal é reconstruída imediatamente, sem manter textos do idioma anterior.
 
 3. ESCOLHER SOFTWARE OPCIONAL
 
@@ -56,6 +58,13 @@ opcional, avançada e legada, principalmente para usuários de FXPAK Pro e
 SD2SNES. O RetroArch é opcional: ignore-o se já estiver instalado ou se você
 usar apenas o FXPAK Pro. Quando selecionado, o instalador também baixa o núcleo
 bsnes-mercury Performance do Libretro.
+
+Se você ignorar uma ferramenta durante a instalação, abra depois Downloads >
+Configuração de conexão e emulador. O aplicativo pode localizar uma instalação
+existente do SNI, QUsb2Snes ou RetroArch, ou instalá-la no seu perfil de
+usuário. Ao configurar o RetroArch, ele também instala o núcleo recomendado,
+ativa os Comandos de Rede na porta 55355 e salva os dois caminhos nas
+configurações do tracker.
 
 4. CONFIGURAR O FXPAK PRO
 
@@ -124,7 +133,9 @@ permanente em massa geralmente é necessário um leitor de cartões.
 10. JOGAR E ACOMPANHAR UM HACK
 
 Digite em Pesquisar ou selecionar um hack, escolha um resultado e clique em
-Jogar. Jogar hack aleatório escolhe da biblioteca. Adicionar ao Meu Tracker cria
+Jogar. Jogar hack aleatório escolhe somente hacks já baixados que podem ser
+abertos na plataforma selecionada; itens que existem apenas no catálogo nunca
+são escolhidos. Adicionar ao Meu Tracker cria
 uma entrada e Concluir hack registra a conclusão. Clicar fora fecha a lista.
 
 11. CRONÔMETROS, MEU TRACKER E ESTATÍSTICAS

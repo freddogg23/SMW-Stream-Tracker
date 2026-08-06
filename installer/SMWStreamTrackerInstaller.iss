@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.3"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -826,14 +826,47 @@ begin
     Result := 'FXPAK Pro';
 end;
 
-function SelectedInterfacePath: String;
+function SelectedAppLanguage: String;
+begin
+  if ActiveLanguage = 'australian' then
+    Result := 'au'
+  else if ActiveLanguage = 'spanish' then
+    Result := 'es'
+  else if ActiveLanguage = 'french' then
+    Result := 'fr'
+  else if ActiveLanguage = 'german' then
+    Result := 'de'
+  else if ActiveLanguage = 'brazilianportuguese' then
+    Result := 'pt-BR'
+  else
+    Result := 'en';
+end;
+
+function SelectedSNIPath: String;
 begin
   if DependencyPage.Values[0] then
     Result := ExpandConstant('{app}\Tools\SNI\sni.exe')
-  else if DependencyPage.Values[1] then
-    Result := ExpandConstant('{app}\Tools\QUsb2Snes\QUsb2Snes.exe')
+  else if CompareText(ExtractFileName(ExistingInterfacePage.Values[0]), 'sni.exe') = 0 then
+    Result := ExistingInterfacePage.Values[0]
   else
-    Result := ExistingInterfacePage.Values[0];
+    Result := '';
+end;
+
+function SelectedQUsb2SnesPath: String;
+begin
+  if DependencyPage.Values[1] then
+    Result := ExpandConstant('{app}\Tools\QUsb2Snes\QUsb2Snes.exe')
+  else if CompareText(ExtractFileName(ExistingInterfacePage.Values[0]), 'QUsb2Snes.exe') = 0 then
+    Result := ExistingInterfacePage.Values[0]
+  else
+    Result := '';
+end;
+
+function SelectedInterfacePath: String;
+begin
+  Result := SelectedSNIPath;
+  if Result = '' then
+    Result := SelectedQUsb2SnesPath;
 end;
 
 function SelectedRetroArchCorePath: String;
@@ -848,6 +881,8 @@ procedure WriteInitialConfiguration;
 var
   ConfigText: String;
   InterfacePath: String;
+  SNIPath: String;
+  QUsb2SnesPath: String;
 begin
   if FileExists(ConfigFilePath) then
   begin
@@ -859,10 +894,15 @@ begin
     ForceDirectories(FolderPage.Values[0]);
   if Trim(FolderPage.Values[1]) <> '' then
     ForceDirectories(FolderPage.Values[1]);
+  SNIPath := SelectedSNIPath;
+  QUsb2SnesPath := SelectedQUsb2SnesPath;
   InterfacePath := SelectedInterfacePath;
 
   ConfigText := '{'#13#10 +
-    '  "qusb2snes_path": "' + JsonEscape(InterfacePath) + '",'#13#10 +
+    '  "app_language": "' + SelectedAppLanguage + '",'#13#10 +
+    '  "sni_path": "' + JsonEscape(SNIPath) + '",'#13#10 +
+    '  "qusb2snes_path": "' + JsonEscape(QUsb2SnesPath) + '",'#13#10 +
+    '  "connection_service_preference": "Automatic",'#13#10 +
     '  "platform_interface_path": "' + JsonEscape(InterfacePath) + '",'#13#10 +
     '  "platform_websocket_url": "ws://localhost:23074",'#13#10 +
     '  "fxpak_websocket_url": "ws://localhost:23074",'#13#10 +

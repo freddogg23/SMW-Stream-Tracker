@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUÍA COMPLETA DE CONFIGURACIÓN
-Versión 1.0.2
+Versión 1.0.3
 
 IDIOMAS
 English: README.en.txt
@@ -38,7 +38,7 @@ SMW Stream Tracker no incluye ni descarga una ROM base comercial.
 
 2. INSTALAR EL PROGRAMA
 
-1. Ejecuta SMWStreamTracker_Setup_1.0.2.exe.
+1. Ejecuta SMWStreamTracker_Setup_1.0.3.exe.
 2. Elige un idioma en la primera pantalla.
 3. Lee el aviso sobre software opcional y ROMs.
 4. Elige FXPAK Pro o RetroArch como plataforma inicial.
@@ -48,6 +48,9 @@ SMW Stream Tracker no incluye ni descarga una ROM base comercial.
 7. Termina la instalación y abre esta guía.
 
 Los ajustes existentes del tracker se conservan al instalar o actualizar.
+Puedes cambiar el idioma de la interfaz en cualquier momento desde Archivo >
+Idioma. La pantalla principal se actualiza de inmediato sin conservar textos
+del idioma anterior.
 
 3. ELEGIR SOFTWARE OPCIONAL
 
@@ -56,6 +59,12 @@ tracker. QUsb2Snes es un puente opcional, avanzado y heredado, principalmente
 para usuarios de FXPAK Pro y SD2SNES. RetroArch es opcional: omítelo si ya está
 instalado o si solo usarás FXPAK Pro. Al seleccionarlo, el asistente también
 descarga el núcleo bsnes-mercury Performance de Libretro.
+
+Si omites una herramienta durante la instalación, abre más tarde Descargas >
+Configuración de conexión y emulador. La aplicación puede localizar una
+instalación existente de SNI, QUsb2Snes o RetroArch, o instalarla en tu perfil
+de usuario. Al configurar RetroArch, también instala el núcleo recomendado,
+activa Comandos de red en el puerto 55355 y guarda ambas rutas en el tracker.
 
 4. CONFIGURAR FXPAK PRO
 
@@ -125,7 +134,9 @@ permanentes suele hacer falta un lector de tarjetas.
 10. JUGAR Y SEGUIR UN HACK
 
 Escribe en Buscar o seleccionar un hack, elige un resultado y pulsa Jugar.
-Jugar hack aleatorio elige de la biblioteca. Añadir a Mi Tracker crea una
+Jugar hack aleatorio elige únicamente hacks ya descargados que se pueden abrir
+en la plataforma seleccionada; nunca elige entradas que solo estén en el
+catálogo. Añadir a Mi Tracker crea una
 entrada y Completar hack registra la finalización. Al hacer clic fuera se cierra
 la lista; el texto de búsqueda permanece hasta elegir un hack.
 

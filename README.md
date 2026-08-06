@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.0.2**
+**Version 1.0.3**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports two playable platforms:
 
@@ -14,10 +14,10 @@ The app does **not** include, download, or upload a commercial Super Mario World
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.2 dashboard with replay controls, level and total death counters, platform status, and timers">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.3 dashboard with replay controls, level and total death counters, platform status, and timers">
 </p>
 
-The v1.0.2 dashboard keeps recent hacks ready to replay and shows separate level and save-file death counters with matching OBS text output and manual overrides.
+The v1.0.3 dashboard keeps recent hacks ready to replay and shows separate level and save-file death counters with matching OBS text output and manual overrides.
 
 <table>
   <tr>
@@ -116,6 +116,10 @@ The setup wizard installs all six text guides in its `Documentation` folder and 
 
 For a first installation, always use the complete installer. Use the smaller updater only when SMW Stream Tracker is already installed.
 
+The installer language becomes the app language. You can change it at any time
+from **File → Language**; the main interface is rebuilt immediately so old
+labels from the previous language do not remain on screen.
+
 ## 3. Choose optional software
 
 The installer lets you select any combination of these tools.
@@ -142,6 +146,13 @@ Select RetroArch when:
 You may skip it when it is already installed or when you only use FXPAK Pro. The installer can also add the bsnes-mercury Performance core when RetroArch is selected.
 
 Official website: <https://www.retroarch.com/>
+
+If you skip any of these tools in the installer, open **Downloads →
+Connection & Emulator Setup** later. The app can locate an existing SNI,
+QUsb2Snes, or RetroArch installation, or install it under the current Windows
+user profile. RetroArch setup also installs the recommended SNES core, enables
+Network Commands on port `55355`, and records the executable and core paths in
+the app settings.
 
 ## 4. Complete the first-run health check
 
@@ -281,7 +292,9 @@ The app uploads completed ROMs without overwriting an existing same-named card f
 2. Begin typing a title or creator to filter the list.
 3. Select a result.
 4. Select **Play**.
-5. To choose automatically, select **Play Random Hack**.
+5. To choose automatically, select **Play Random Hack**. Random selection uses
+   only ROMs that are already downloaded and launchable on the selected
+   platform; catalog-only entries are excluded.
 6. Select **Add to My Tracker** to track the current hack.
 7. Select **Complete Hack** after finishing it.
 

@@ -1,12 +1,15 @@
-Release 1.0.2
+Release 1.0.3
 
-* Adds separate Level Deaths and Total Deaths counters with OBS files and per-ROM, per-save-slot persistence.
-* Adds Level Deaths and Total Deaths to the main override area, using the same Apply Override button.
-* Adds a five-item Replay Recent Hack selector that remembers recent games across sessions.
-* Adds an editable Total Deaths column to My Tracker and marks older completions with a yellow asterisk when no historical death count exists.
-* Prevents opening intro cutscenes from starting the level timer or counting deaths.
-* Keeps older-hack level timing through death-to-overworld transitions and resets only after a confirmed clear or different level.
-* Improves first-death and missed-death detection while avoiding duplicate counts.
-* Expands OBS text settings and multilingual setup documentation for both death counters.
-* Includes regression coverage for recent replay history, death persistence, timer transitions, overrides, and tracker exports.
+* Adds a File > Language menu and rebuilds the interface immediately when the language changes.
+* Translates the Search or select a hack prompt and keeps its result list attached when the app moves between monitors.
+* Keeps the full banner composition readable when the app is not maximized.
+* Separates SNI and QUsb2Snes setup so either service can be configured and used independently.
+* Adds in-app SNI, QUsb2Snes, and RetroArch installation and discovery, including recommended RetroArch core setup.
+* Improves Setup & Health Check so a working RetroArch connection is reported as ready.
+* Limits Play Random Hack to downloaded, launchable games and reliably starts the next game timer.
+* Keeps resumed save-slot deaths and game time working, and no longer treats castle destruction as game completion.
+* Removes the duplicate About & Updates command from File; it remains available from Help.
+* Removes the local database path from the Statistics header for safer screenshots and streams.
+* Credits tester Jole_12 and thanks them for their testing, feedback, and contributions.
+* Includes refreshed privacy-safe feature screenshots and expanded regression coverage.
 * Distributes unsigned installers with SHA-256 verification and rollback-capable in-app updates.

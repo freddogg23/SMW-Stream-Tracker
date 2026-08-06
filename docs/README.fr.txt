@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUIDE COMPLET DE CONFIGURATION
-Version 1.0.2
+Version 1.0.3
 
 LANGUES
 English : README.en.txt
@@ -38,7 +38,7 @@ SMW Stream Tracker n'inclut et ne télécharge aucune ROM commerciale de base.
 
 2. INSTALLER LE PROGRAMME
 
-1. Lancez SMWStreamTracker_Setup_1.0.2.exe.
+1. Lancez SMWStreamTracker_Setup_1.0.3.exe.
 2. Choisissez une langue sur le premier écran.
 3. Lisez l'avis sur les logiciels facultatifs et les ROMs.
 4. Choisissez FXPAK Pro ou RetroArch comme plateforme initiale.
@@ -48,6 +48,9 @@ SMW Stream Tracker n'inclut et ne télécharge aucune ROM commerciale de base.
 7. Terminez l'installation et ouvrez ce guide.
 
 Les réglages existants sont conservés pendant l'installation et les mises à jour.
+Vous pouvez changer la langue à tout moment dans Fichier > Langue. L’interface
+principale se reconstruit immédiatement sans conserver de texte de l’ancienne
+langue.
 
 3. CHOISIR LES LOGICIELS FACULTATIFS
 
@@ -56,6 +59,13 @@ passerelle facultative, avancée et ancienne, surtout destinée aux utilisateurs
 de FXPAK Pro et SD2SNES. RetroArch est facultatif : ignorez-le s'il est déjà
 installé ou si vous utilisez uniquement FXPAK Pro. Si vous le sélectionnez,
 l'assistant télécharge également le cœur bsnes-mercury Performance Libretro.
+
+Si vous ignorez un outil pendant l'installation, ouvrez plus tard
+Téléchargements > Configuration de la connexion et de l’émulateur. L’application
+peut retrouver une installation existante de SNI, QUsb2Snes ou RetroArch, ou
+l’installer dans votre profil utilisateur. Pour RetroArch, elle installe aussi
+le cœur recommandé, active les commandes réseau sur le port 55355 et mémorise
+les deux chemins dans les paramètres du tracker.
 
 4. CONFIGURER FXPAK PRO
 
@@ -125,7 +135,9 @@ lecteur de cartes reste normalement nécessaire pour une copie permanente.
 10. JOUER ET SUIVRE UN HACK
 
 Saisissez du texte dans Rechercher ou sélectionner un hack, choisissez un
-résultat et cliquez sur Jouer. Le jeu aléatoire choisit dans la bibliothèque.
+résultat et cliquez sur Jouer. Le jeu aléatoire choisit uniquement parmi les
+hacks déjà téléchargés et utilisables avec la plateforme sélectionnée ; les
+entrées présentes uniquement dans le catalogue sont exclues.
 Ajouter à Mon Tracker crée une entrée et Terminer le hack enregistre la fin.
 Un clic à l'extérieur ferme la liste.
 

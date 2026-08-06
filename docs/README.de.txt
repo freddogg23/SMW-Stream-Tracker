@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - VOLLSTÄNDIGE EINRICHTUNGSANLEITUNG
-Version 1.0.2
+Version 1.0.3
 
 SPRACHEN
 English: README.en.txt
@@ -38,7 +38,7 @@ SMW Stream Tracker enthält und lädt kein kommerzielles Basis-ROM herunter.
 
 2. PROGRAMM INSTALLIEREN
 
-1. Starten Sie SMWStreamTracker_Setup_1.0.2.exe.
+1. Starten Sie SMWStreamTracker_Setup_1.0.3.exe.
 2. Wählen Sie auf dem ersten Bildschirm eine Sprache.
 3. Lesen Sie den Hinweis zu optionaler Software und ROMs.
 4. Wählen Sie FXPAK Pro oder RetroArch als erste Plattform.
@@ -48,6 +48,9 @@ SMW Stream Tracker enthält und lädt kein kommerzielles Basis-ROM herunter.
 7. Beenden Sie die Installation und öffnen Sie diese Anleitung.
 
 Vorhandene Tracker-Einstellungen bleiben bei Installation und Updates erhalten.
+Die Sprache kann jederzeit über Datei > Sprache geändert werden. Die
+Hauptoberfläche wird sofort neu aufgebaut, ohne Beschriftungen der vorherigen
+Sprache beizubehalten.
 
 3. OPTIONALE SOFTWARE AUSWÄHLEN
 
@@ -56,6 +59,13 @@ optionale ältere/fortgeschrittene Brücke, hauptsächlich für FXPAK-Pro- und
 SD2SNES-Benutzer. RetroArch ist optional. Überspringen Sie es, wenn es bereits
 installiert ist oder Sie nur FXPAK Pro verwenden. Bei Auswahl lädt Setup auch
 den bsnes-mercury Performance-Libretro-Core herunter.
+
+Wenn Sie ein Werkzeug bei der Installation überspringen, öffnen Sie später
+Downloads > Verbindungs- und Emulator-Einrichtung. Die App kann eine vorhandene
+SNI-, QUsb2Snes- oder RetroArch-Installation finden oder sie in Ihrem
+Benutzerprofil installieren. Bei RetroArch installiert sie außerdem den
+empfohlenen Core, aktiviert Netzwerkbefehle auf Port 55355 und speichert beide
+Dateipfade in den Tracker-Einstellungen.
 
 4. FXPAK PRO EINRICHTEN
 
@@ -126,7 +136,9 @@ für dauerhaftes Massenkopieren wird meist ein Kartenleser benötigt.
 10. EINEN HACK SPIELEN UND VERFOLGEN
 
 Geben Sie Text in Hack suchen oder auswählen ein, wählen Sie ein Ergebnis und
-klicken Sie auf Spielen. Zufälliger Hack wählt aus der Bibliothek. Zu Mein
+klicken Sie auf Spielen. Zufälliger Hack wählt nur bereits heruntergeladene
+Hacks aus, die sich auf der gewählten Plattform starten lassen. Reine
+Katalogeinträge werden nie ausgewählt. Zu Mein
 Tracker hinzufügen erstellt einen Eintrag und Hack abschließen speichert den
 Abschluss. Ein Klick außerhalb schließt die Liste.
 

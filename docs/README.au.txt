@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.0.2
+Version 1.0.3
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -45,7 +45,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.0.2.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.0.3.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro or RetroArch as your first cab off the rank.
@@ -56,6 +56,8 @@ right thing, mate.
 
 Existing tracker settings are preserved during installations and updates, so
 Setup won't barge in and stomp all over your current configuration.
+To swap the lingo later, use File > Language. The main screen rebuilds on the
+spot instead of leaving a dog's breakfast of labels from two languages.
 
 3. PICK THE OPTIONAL BITS AND BOBS
 
@@ -69,6 +71,12 @@ It is also handy for older or more advanced setups.
 RetroArch is optional. Leave it unticked if you already have it or if you're
 an FXPAK Pro-only operator. If selected, Setup also grabs the bsnes-mercury
 Performance Libretro core so you aren't left mucking about hunting for it.
+
+If you skip one during Setup, open Downloads > Connection & Emulator Setup
+later. The app can sniff out SNI, QUsb2Snes, or RetroArch if it is already on
+the computer, or install it under your user profile. RetroArch setup also
+grabs the recommended core, switches on Network Commands at port 55355, and
+remembers both file locations. No scavenger hunt required.
 
 4. SET UP FXPAK PRO
 
@@ -172,7 +180,9 @@ once, and Bob's your uncle.
 10. PICK A HACK AND HAVE A CRACK
 
 * Type in Search or select a hack, choose a result, and press Play.
-* Play Random Hack rolls the dice and picks something from the available library.
+* Play Random Hack rolls the dice only among downloaded hacks that can launch
+  on the selected platform. It will not pick a catalogue-only entry and send
+  you on a wild goose chase.
 * Add to My Tracker creates a tracked entry.
 * Complete Hack records your completion data. On ya.
 * Clicking elsewhere closes the search list. The placeholder hangs about until

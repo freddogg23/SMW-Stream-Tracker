@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.3"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -117,6 +117,22 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; \
   Flags: postinstall nowait skipifsilent
 
 [Code]
+function SetEnvironmentVariable(
+  lpName: String;
+  lpValue: String
+): Boolean;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
+function InitializeSetup(): Boolean;
+begin
+  { The updater can be started by the PyInstaller one-file app and inherit
+    its temporary _MEI extraction folder.  Force the newly installed app to
+    start as an independent process so it never looks for the old python DLL
+    after that temporary folder has been removed. }
+  SetEnvironmentVariable('PYINSTALLER_RESET_ENVIRONMENT', '1');
+  Result := True;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   CurrentExe: String;
