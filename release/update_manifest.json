@@ -1,17 +1,18 @@
 {
   "schema": 1,
-  "version": "1.0.5",
+  "version": "1.0.6",
   "release_date": "2026-08-07",
   "notes": [
-    "Fixes the Tcl/Tk startup failure that could prevent the app from opening after an update.",
-    "Packages a verified window-system runtime beside the installed application as a stable fallback.",
-    "Tests a real hidden app window before an update is accepted or the updated app is launched.",
-    "Automatically restores the previous working executable when the updated app fails its startup check.",
-    "Stops release packaging when the finished executable cannot pass the same startup check.",
-    "Removes a development-only local path from the packaged Tcl startup files."
+    "Shows Help and About update indicators only when a newer published release is available.",
+    "Adds filtered random play for downloaded and patched ROMs with Confirm and Cancel controls.",
+    "Detects playable catalog games from direct paths, platform mappings, FXPAK mappings, and the configured ROM library.",
+    "Makes playable catalog titles yellow and launchable from the catalog.",
+    "Adds navigation between Overview and My Tracker and moves spreadsheet tools into My Tracker.",
+    "Improves full-screen window scaling, filter alignment, and translations.",
+    "Fixes the Tk update-badge startup crash."
   ],
-  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.5/SMWStreamTracker_Update_1.0.5.exe",
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.6/SMWStreamTracker_Update_1.0.6.exe",
   "verification": "sha256",
-  "sha256": "ceb82b8cddba1d521ab56effe466927d78cb3f2afb76ef7c64016c6c011f2f88",
-  "size": 61800308
+  "sha256": "cbb8c824eaffc1e4d1eea422579f8b085e79d50e3b48571e8f385c68c4da1d19",
+  "size": 62083802
 }

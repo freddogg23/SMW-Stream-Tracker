@@ -17,12 +17,12 @@ VSVersionInfo(
         [
           StringStruct(u'CompanyName', u'FredDOGG23'),
           StringStruct(u'FileDescription', u'SMW Stream Tracker'),
-          StringStruct(u'FileVersion', u'1.0.5'),
+          StringStruct(u'FileVersion', u'1.0.6'),
           StringStruct(u'InternalName', u'SMWStreamTracker'),
           StringStruct(u'LegalCopyright', u'Copyright (c) 2026 FredDOGG23'),
           StringStruct(u'OriginalFilename', u'SMWStreamTracker.exe'),
           StringStruct(u'ProductName', u'SMW Stream Tracker'),
-          StringStruct(u'ProductVersion', u'1.0.5')
+          StringStruct(u'ProductVersion', u'1.0.6')
         ]
       )
     ]),

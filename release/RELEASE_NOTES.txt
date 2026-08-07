@@ -1,8 +1,9 @@
-Release 1.0.5
+Release 1.0.6
 
-* Fixes the Tcl/Tk startup failure that could prevent the app from opening after an update.
-* Packages a verified window-system runtime beside the installed application as a stable fallback.
-* Tests a real hidden app window before an update is accepted or the updated app is launched.
-* Automatically restores the previous working executable when the updated app fails its startup check.
-* Stops release packaging when the finished executable cannot pass the same startup check.
-* Removes a development-only local path from the packaged Tcl startup files.
+* Shows Help and About update indicators only when a newer published release is available.
+* Adds filtered random play for downloaded and patched ROMs with Confirm and Cancel controls.
+* Detects playable catalog games from direct paths, platform mappings, FXPAK mappings, and the configured ROM library.
+* Makes playable catalog titles yellow and launchable from the catalog.
+* Adds navigation between Overview and My Tracker and moves spreadsheet tools into My Tracker.
+* Improves full-screen window scaling, filter alignment, and translations.
+* Fixes the Tk update-badge startup crash.

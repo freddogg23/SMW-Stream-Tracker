@@ -65,7 +65,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 APP_BUILD_DATE = "2026-08-07"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
@@ -15562,6 +15562,7 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Play Random Game": "Jugar juego aleatorio",
         "Diagnostics": "Diagnósticos", "Setup & Health Check": "Configuración y diagnóstico",
         "Update Available": "Actualización disponible",
+        "Check for Updates": "Buscar actualizaciones",
         "Read Me / Setup Guide": "Guía de instalación y uso",
         "Feedback & Suggestions": "Comentarios y sugerencias",
         "About & Updates": "Acerca de y actualizaciones",
@@ -15656,6 +15657,7 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Play Random Game": "Jouer à un jeu aléatoire",
         "Diagnostics": "Diagnostics", "Setup & Health Check": "Configuration et diagnostic",
         "Update Available": "Mise à jour disponible",
+        "Check for Updates": "Rechercher des mises à jour",
         "Read Me / Setup Guide": "Guide d’installation et d’utilisation",
         "Feedback & Suggestions": "Commentaires et suggestions",
         "About & Updates": "À propos et mises à jour",
@@ -15750,6 +15752,7 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Play Random Game": "Zufälliges Spiel starten",
         "Diagnostics": "Diagnose", "Setup & Health Check": "Einrichtung und Systemprüfung",
         "Update Available": "Update verfügbar",
+        "Check for Updates": "Nach Updates suchen",
         "Read Me / Setup Guide": "Einrichtungs- und Bedienungsanleitung",
         "Feedback & Suggestions": "Feedback und Vorschläge",
         "About & Updates": "Info und Updates",
@@ -15844,6 +15847,7 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Play Random Game": "Jogar jogo aleatório",
         "Diagnostics": "Diagnóstico", "Setup & Health Check": "Configuração e diagnóstico",
         "Update Available": "Atualização disponível",
+        "Check for Updates": "Verificar atualizações",
         "Read Me / Setup Guide": "Guia de instalação e uso",
         "Feedback & Suggestions": "Comentários e sugestões",
         "About & Updates": "Sobre e atualizações",
@@ -15906,6 +15910,95 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
 }
 for _language_code, _extra_translations in _UI_TRANSLATION_EXTRAS.items():
     UI_TRANSLATIONS[_language_code].update(_extra_translations)
+
+_TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "es": {
+        "Open My Tracker": "Abrir Mi Tracker",
+        "Overview": "Resumen",
+        "Spreadsheet Tools": "Herramientas de hojas de cálculo",
+        "Import Spreadsheet...": "Importar hoja de cálculo...",
+        "Import Spreadsheet": "Importar hoja de cálculo",
+        "Export My Tracker...": "Exportar Mi Tracker...",
+        "Google Sheets Settings...": "Configuración de Google Sheets...",
+        "Google Sheets Settings": "Configuración de Google Sheets",
+        "Tracker spreadsheet tools": "Herramientas de hojas de cálculo del tracker",
+        "Random Hack Filters": "Filtros de hack aleatorio",
+        "Confirm": "Confirmar",
+        "PLAY A RANDOM DOWNLOADED HACK": "JUGAR UN HACK DESCARGADO AL AZAR",
+        "Choose filters for a downloaded and patched hack. Only ROMs ready on the selected platform are included.": "Elige filtros para un hack descargado y parcheado. Solo se incluyen ROM listas en la plataforma seleccionada.",
+        "SMW Central rating": "Puntuación de SMW Central",
+        "No downloaded and patched hacks match these filters.": "Ningún hack descargado y parcheado coincide con estos filtros.",
+        "Playable - double-click title": "Jugable: haz doble clic en el título",
+        "Not downloaded": "No descargado",
+        "Update {version} is available in Help.": "La actualización {version} está disponible en Ayuda.",
+        "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "Se muestran {count} hacks moderados del catálogo. Los títulos amarillos están descargados y listos para jugar; haz doble clic para iniciarlos. Haz clic en cualquier encabezado para ordenar o elige Abrir página / Descargar parche.",
+    },
+    "fr": {
+        "Open My Tracker": "Ouvrir Mon Tracker",
+        "Overview": "Vue d’ensemble",
+        "Spreadsheet Tools": "Outils de feuille de calcul",
+        "Import Spreadsheet...": "Importer une feuille de calcul...",
+        "Import Spreadsheet": "Importer une feuille de calcul",
+        "Export My Tracker...": "Exporter Mon Tracker...",
+        "Google Sheets Settings...": "Paramètres Google Sheets...",
+        "Google Sheets Settings": "Paramètres Google Sheets",
+        "Tracker spreadsheet tools": "Outils de feuille de calcul du tracker",
+        "Random Hack Filters": "Filtres du hack aléatoire",
+        "Confirm": "Confirmer",
+        "PLAY A RANDOM DOWNLOADED HACK": "JOUER À UN HACK TÉLÉCHARGÉ AU HASARD",
+        "Choose filters for a downloaded and patched hack. Only ROMs ready on the selected platform are included.": "Choisissez les filtres d’un hack téléchargé et patché. Seules les ROM prêtes sur la plateforme sélectionnée sont incluses.",
+        "SMW Central rating": "Note SMW Central",
+        "No downloaded and patched hacks match these filters.": "Aucun hack téléchargé et patché ne correspond à ces filtres.",
+        "Playable - double-click title": "Jouable : double-cliquez sur le titre",
+        "Not downloaded": "Non téléchargé",
+        "Update {version} is available in Help.": "La mise à jour {version} est disponible dans Aide.",
+        "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "Affichage de {count} hacks modérés du catalogue. Les titres jaunes sont téléchargés et prêts à jouer ; double-cliquez pour les lancer. Cliquez sur un en-tête pour trier ou choisissez Ouvrir la page / Télécharger le patch.",
+    },
+    "de": {
+        "Open My Tracker": "Meinen Tracker öffnen",
+        "Overview": "Übersicht",
+        "Spreadsheet Tools": "Tabellenwerkzeuge",
+        "Import Spreadsheet...": "Tabelle importieren...",
+        "Import Spreadsheet": "Tabelle importieren",
+        "Export My Tracker...": "Meinen Tracker exportieren...",
+        "Google Sheets Settings...": "Google-Sheets-Einstellungen...",
+        "Google Sheets Settings": "Google-Sheets-Einstellungen",
+        "Tracker spreadsheet tools": "Tabellenwerkzeuge des Trackers",
+        "Random Hack Filters": "Filter für zufälligen Hack",
+        "Confirm": "Bestätigen",
+        "PLAY A RANDOM DOWNLOADED HACK": "ZUFÄLLIGEN HERUNTERGELADENEN HACK SPIELEN",
+        "Choose filters for a downloaded and patched hack. Only ROMs ready on the selected platform are included.": "Wähle Filter für einen heruntergeladenen und gepatchten Hack. Es werden nur auf der ausgewählten Plattform spielbereite ROMs einbezogen.",
+        "SMW Central rating": "SMW-Central-Bewertung",
+        "No downloaded and patched hacks match these filters.": "Keine heruntergeladenen und gepatchten Hacks entsprechen diesen Filtern.",
+        "Playable - double-click title": "Spielbereit: Titel doppelklicken",
+        "Not downloaded": "Nicht heruntergeladen",
+        "Update {version} is available in Help.": "Update {version} ist unter Hilfe verfügbar.",
+        "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "{count} moderierte Katalog-Hacks werden angezeigt. Gelbe Titel sind heruntergeladen und spielbereit; zum Starten doppelklicken. Zum Sortieren eine Spaltenüberschrift anklicken oder Seite öffnen / Patch herunterladen wählen.",
+    },
+    "pt-BR": {
+        "Open My Tracker": "Abrir Meu Tracker",
+        "Overview": "Visão geral",
+        "Spreadsheet Tools": "Ferramentas de planilha",
+        "Import Spreadsheet...": "Importar planilha...",
+        "Import Spreadsheet": "Importar planilha",
+        "Export My Tracker...": "Exportar Meu Tracker...",
+        "Google Sheets Settings...": "Configurações do Google Sheets...",
+        "Google Sheets Settings": "Configurações do Google Sheets",
+        "Tracker spreadsheet tools": "Ferramentas de planilha do tracker",
+        "Random Hack Filters": "Filtros de hack aleatório",
+        "Confirm": "Confirmar",
+        "PLAY A RANDOM DOWNLOADED HACK": "JOGAR UM HACK BAIXADO ALEATÓRIO",
+        "Choose filters for a downloaded and patched hack. Only ROMs ready on the selected platform are included.": "Escolha filtros para um hack baixado e corrigido. Apenas ROMs prontas na plataforma selecionada são incluídas.",
+        "SMW Central rating": "Avaliação do SMW Central",
+        "No downloaded and patched hacks match these filters.": "Nenhum hack baixado e corrigido corresponde a esses filtros.",
+        "Playable - double-click title": "Jogável: clique duas vezes no título",
+        "Not downloaded": "Não baixado",
+        "Update {version} is available in Help.": "A atualização {version} está disponível em Ajuda.",
+        "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "Exibindo {count} hacks moderados do catálogo. Títulos amarelos estão baixados e prontos para jogar; clique duas vezes para iniciar. Clique em qualquer cabeçalho para ordenar ou escolha Abrir página / Baixar patch.",
+    },
+}
+for _language_code, _translations in _TRACKER_WORKFLOW_TRANSLATIONS.items():
+    UI_TRANSLATIONS[_language_code].update(_translations)
 
 
 DEFAULT_CONFIG = {
@@ -19706,8 +19799,8 @@ finally {
 
         if not catalog:
             raise RuntimeError(
-                "The tracker database is empty. Open Stats > "
-                "Import Existing Spreadsheet to import the catalog "
+                "The tracker database is empty. Open My Tracker > "
+                "Import Spreadsheet to import the catalog "
                 "and your tracker history."
             )
 
@@ -21560,6 +21653,8 @@ class TrackerApp:
         self.main_ui_scale = 1.0
         self.responsive_ui_after_id: str | None = None
         self.responsive_ui_rebuilding = False
+        self._dialog_scale_windows: set[str] = set()
+        self._dialog_scale_original: float | None = None
         try:
             # Begin at the compact desktop scale. The main page is rebuilt at
             # a larger native scale when the window grows to 1440p or 4K.
@@ -21814,7 +21909,18 @@ class TrackerApp:
         self.diagnostics_dialog: tk.Toplevel | None = None
         self.health_check_dialog: tk.Toplevel | None = None
         self.about_dialog: tk.Toplevel | None = None
+        self.about_update_button: OutlinedButton | None = None
+        self.about_update_flash_after_id: str | None = None
+        self.about_update_flash_on = False
+        self.about_updates_menu_index: int | None = None
+        self.about_update_dot_image: tk.PhotoImage | None = None
         self.update_dialog: tk.Toplevel | None = None
+        self.random_hack_dialog: tk.Toplevel | None = None
+        # Update indicators are driven only by a successful release check.
+        # Preview builds must never seed a synthetic update in production.
+        self.update_available_version = ""
+        self.update_available_manifest: dict[str, Any] = {}
+        self.help_update_badge: tk.Label | None = None
         self.readme_dialog: tk.Toplevel | None = None
         self.feedback_dialog: tk.Toplevel | None = None
         self.feedback_webview_process: subprocess.Popen | None = None
@@ -21909,11 +22015,12 @@ class TrackerApp:
         self.root.after(400, self.start_tracker)
         self.root.after(700, self._create_daily_recovery_backup)
         self.root.after(1100, self._offer_first_run_health_check)
-        if bool(self.config.get("check_for_updates_at_startup", False)):
-            self.root.after(
-                2500,
-                lambda: self.check_for_updates(silent=True),
-            )
+        # Always perform one quiet release check so the Help-tab badge can
+        # advertise an available update without interrupting the user.
+        self.root.after(
+            2500,
+            lambda: self.check_for_updates(silent=True),
+        )
         self.root.after(
             450,
             self._apply_responsive_ui_scale,
@@ -22114,6 +22221,7 @@ class TrackerApp:
         min_width: int | None = None,
         min_height: int | None = None,
     ) -> tuple[int, int]:
+        self._activate_full_size_dialog_ui(dialog)
         screen_width = max(800, dialog.winfo_screenwidth())
         screen_height = max(600, dialog.winfo_screenheight())
         edge_margin = self._ui_px(48)
@@ -22148,6 +22256,48 @@ class TrackerApp:
                 min(target_height, self._ui_px(min_height)),
             )
         return target_width, target_height
+
+    def _activate_full_size_dialog_ui(self, dialog: tk.Toplevel) -> None:
+        """Keep a maximized child readable when the main window is compact."""
+        try:
+            window_key = str(dialog)
+            if window_key in self._dialog_scale_windows:
+                return
+            if not self._dialog_scale_windows and self.main_ui_scale < 1.0:
+                self._dialog_scale_original = self.main_ui_scale
+                self.main_ui_scale = 1.0
+                self.root.tk.call("tk", "scaling", 4 / 3)
+            self._dialog_scale_windows.add(window_key)
+            dialog.bind(
+                "<Destroy>",
+                lambda event, tracked=dialog: (
+                    self._release_full_size_dialog_ui(tracked)
+                    if event.widget is tracked
+                    else None
+                ),
+                add="+",
+            )
+        except tk.TclError:
+            pass
+
+    def _release_full_size_dialog_ui(self, dialog: tk.Toplevel) -> None:
+        self._dialog_scale_windows.discard(str(dialog))
+        if self._dialog_scale_windows:
+            return
+        previous_scale = self._dialog_scale_original
+        self._dialog_scale_original = None
+        if previous_scale is None:
+            return
+        self.main_ui_scale = previous_scale
+        try:
+            self.root.tk.call(
+                "tk",
+                "scaling",
+                (4 / 3) * previous_scale,
+            )
+        except tk.TclError:
+            pass
+        self.root.after(60, self._queue_responsive_ui_scale)
 
     def _fit_dialog_height_to_contents(
         self,
@@ -23911,49 +24061,6 @@ class TrackerApp:
         stats_menu.add_separator()
         add_mario_command(
             stats_menu,
-            "Import Existing Spreadsheet…",
-            protected_menu_action(
-                "stats_files",
-                "Stats file tools",
-                "Import Existing Spreadsheet",
-                self.import_existing_spreadsheet,
-            ),
-            "sheet",
-        )
-        add_mario_command(
-            stats_menu,
-            "Export My Tracker…",
-            protected_menu_action(
-                "stats_files",
-                "Stats file tools",
-                "Export My Tracker",
-                self.export_my_tracker,
-            ),
-            "block",
-        )
-        stats_menu.add_separator()
-        add_mario_command(
-            stats_menu,
-            "Google Sheets Sync…",
-            protected_menu_action(
-                "stats_files",
-                "Stats file tools",
-                "Google Sheets Sync",
-                self.open_google_sheets_sync,
-            ),
-            "peach",
-        )
-        add_mario_command(
-            stats_menu,
-            "Sync Google Sheets Now",
-            lambda: self._start_google_sheets_sync(
-                show_dialog=True
-            ),
-            "flower",
-        )
-        stats_menu.add_separator()
-        add_mario_command(
-            stats_menu,
             "Back Up Database…",
             protected_menu_action(
                 "stats_files",
@@ -24130,17 +24237,6 @@ class TrackerApp:
         settings_menu.add_cascade(
             label="OBS Settings",
             menu=obs_menu,
-        )
-        add_mario_command(
-            settings_menu,
-            "Import / Refresh from Spreadsheet…",
-            protected_menu_action(
-                "settings_files",
-                "Settings and file tools",
-                "Import / Refresh from Spreadsheet",
-                self._reload_selected_spreadsheet,
-            ),
-            "sheet",
         )
         settings_menu.add_separator()
         add_mario_command(
@@ -24389,6 +24485,56 @@ class TrackerApp:
             self.open_about_dialog,
             "mario_head",
         )
+        self.help_menu = help_menu
+        self.about_updates_menu_index = help_menu.index("end")
+        dot_size = self._ui_px(12)
+        dot_image = tk.PhotoImage(
+            master=self.root,
+            width=dot_size,
+            height=dot_size,
+        )
+        dot_center = (dot_size - 1) / 2
+        dot_radius = max(2.0, dot_center - 0.5)
+        for dot_y in range(dot_size):
+            for dot_x in range(dot_size):
+                if (
+                    (dot_x - dot_center) ** 2
+                    + (dot_y - dot_center) ** 2
+                    <= dot_radius ** 2
+                ):
+                    dot_image.put(THEME["red"], (dot_x, dot_y))
+        self.about_update_dot_image = dot_image
+        badge_size = self._ui_px(18)
+        self.help_update_badge = tk.Canvas(
+            self.help_menu_button,
+            bg=self.help_menu_button.cget("bg"),
+            width=badge_size,
+            height=badge_size,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+        )
+        self.help_update_badge.create_oval(
+            1,
+            1,
+            badge_size - 1,
+            badge_size - 1,
+            fill=THEME["red"],
+            outline="white",
+            width=1,
+        )
+        self.help_update_badge.create_text(
+            badge_size / 2,
+            badge_size / 2,
+            text="1",
+            fill="white",
+            font=("Segoe UI", 8, "bold"),
+        )
+        self.help_update_badge.bind(
+            "<Button-1>",
+            lambda _event: self.help_menu_button._post_menu(),
+        )
+        self._refresh_help_update_badge()
 
         self.stats_menu = stats_menu
         self.settings_menu = settings_menu
@@ -24399,6 +24545,100 @@ class TrackerApp:
         self.fxpak_downloads_menu = fxpak_downloads_menu
         self.appearance_menu = None
         self.help_menu = help_menu
+
+    def _refresh_help_update_badge(self) -> None:
+        badge = getattr(self, "help_update_badge", None)
+        if badge is None or not badge.winfo_exists():
+            return
+        update_available = bool(
+            str(getattr(self, "update_available_version", "")).strip()
+        )
+        if update_available:
+            badge.place(
+                relx=1.0,
+                x=-self._ui_px(2),
+                y=self._ui_px(1),
+                anchor="ne",
+            )
+            # Canvas.lift() is an alias for tag_raise() and therefore expects
+            # a canvas item argument. Raise the badge's Tk window directly so
+            # the update indicator cannot crash application startup.
+            badge.tk.call("raise", badge._w)
+        else:
+            badge.place_forget()
+
+        help_menu = getattr(self, "help_menu", None)
+        about_index = getattr(self, "about_updates_menu_index", None)
+        if help_menu is not None and about_index is not None:
+            try:
+                help_menu.entryconfigure(
+                    about_index,
+                    image=(
+                        self.about_update_dot_image
+                        if update_available
+                        else ""
+                    ),
+                    compound="left",
+                )
+            except tk.TclError:
+                pass
+
+        self._refresh_about_update_button()
+
+    def _refresh_about_update_button(self) -> None:
+        dialog = getattr(self, "about_dialog", None)
+        button = getattr(self, "about_update_button", None)
+        if dialog is None or button is None:
+            return
+        try:
+            if not dialog.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        previous_after_id = getattr(
+            self,
+            "about_update_flash_after_id",
+            None,
+        )
+        if previous_after_id is not None:
+            try:
+                dialog.after_cancel(previous_after_id)
+            except tk.TclError:
+                pass
+            self.about_update_flash_after_id = None
+
+        update_available = bool(
+            str(getattr(self, "update_available_version", "")).strip()
+        )
+        if not update_available:
+            self.about_update_flash_on = False
+            button.configure(
+                text=self._translate_ui_text("Check for Updates"),
+                bg=THEME["green"],
+                activebackground=THEME["green_dark"],
+            )
+            return
+
+        self.about_update_flash_on = not bool(
+            getattr(self, "about_update_flash_on", False)
+        )
+        if self.about_update_flash_on:
+            button.configure(
+                text=self._translate_ui_text("Update Available"),
+                bg=THEME["red"],
+                activebackground="#B92824",
+            )
+        else:
+            button.configure(
+                text=self._translate_ui_text("Check for Updates"),
+                bg=THEME["green"],
+                activebackground=THEME["green_dark"],
+            )
+        self.about_update_flash_after_id = dialog.after(
+            700,
+            self._refresh_about_update_button,
+        )
 
     def _find_optional_software_executable(
         self,
@@ -31864,6 +32104,24 @@ class TrackerApp:
                 pass
         return "break"
 
+    def _open_tracker_from_overview(self) -> None:
+        source = self.stats_overview_dialog
+        if source is not None and source.winfo_exists():
+            source.withdraw()
+        self.open_my_tracker()
+        if source is not None and source.winfo_exists():
+            source.destroy()
+        self.stats_overview_dialog = None
+
+    def _open_overview_from_tracker(self) -> None:
+        source = self.tracker_list_dialog
+        if source is not None and source.winfo_exists():
+            source.withdraw()
+        self.open_stats_overview()
+        if source is not None and source.winfo_exists():
+            source.destroy()
+        self.tracker_list_dialog = None
+
     def open_stats_overview(self) -> None:
         if (
             self.stats_overview_dialog is not None
@@ -32442,6 +32700,17 @@ class TrackerApp:
             dialog,
             THEME["blue"],
         )
+
+        self._make_action_button(
+            title_bar,
+            "Open My Tracker",
+            self._open_tracker_from_overview,
+            THEME["green"],
+            active_bg=THEME["green_dark"],
+            width=16,
+            font_size=10,
+            pad_y=4,
+        ).pack(side="left")
 
         # Title text removed from the blue header bar.
 
@@ -33478,6 +33747,7 @@ class TrackerApp:
         dialog = tk.Toplevel(self.root)
         self.tracker_list_dialog = dialog
         dialog.title("My SMW Tracker")
+        self._activate_full_size_dialog_ui(dialog)
 
         screen_width = max(
             980,
@@ -33547,6 +33817,17 @@ class TrackerApp:
             dialog,
             THEME["red"],
         )
+
+        self._make_action_button(
+            title_bar,
+            "Overview",
+            self._open_overview_from_tracker,
+            THEME["blue"],
+            active_bg=THEME["navy"],
+            width=12,
+            font_size=10,
+            pad_y=4,
+        ).pack(side="right", padx=(0, 10))
 
         def draw_title_gradient(event=None) -> None:
             width = max(
@@ -34153,6 +34434,45 @@ class TrackerApp:
         )
         legacy_note_label.pack(side="left")
 
+        tracker_spreadsheet_actions = (
+            (
+                "Import Spreadsheet...",
+                lambda: self._run_with_streamer_privacy_warning(
+                    "stats_files",
+                    "Tracker spreadsheet tools",
+                    "Import Spreadsheet",
+                    self.import_existing_spreadsheet,
+                ),
+                THEME["blue"],
+            ),
+            (
+                "Export My Tracker...",
+                lambda: self._run_with_streamer_privacy_warning(
+                    "stats_files",
+                    "Tracker spreadsheet tools",
+                    "Export My Tracker",
+                    self.export_my_tracker,
+                ),
+                THEME["green"],
+            ),
+            (
+                "Google Sheets Settings...",
+                lambda: self._run_with_streamer_privacy_warning(
+                    "stats_files",
+                    "Tracker spreadsheet tools",
+                    "Google Sheets Settings",
+                    self.open_google_sheets_sync,
+                ),
+                THEME["purple"],
+            ),
+            (
+                "Sync Google Sheets Now",
+                lambda: self._start_google_sheets_sync(
+                    show_dialog=True
+                ),
+                THEME["orange"],
+            ),
+        )
         button_bar = tk.Frame(
             dialog,
             bg=palette["window"],
@@ -34198,6 +34518,23 @@ class TrackerApp:
             width=18,
             pad_y=5,
         ).pack(side="left", padx=(8, 0))
+        # Keep the spreadsheet actions in the same footer row, directly after
+        # Remove from Tracker. A large shared character width is intentional:
+        # OutlinedButton otherwise expands longer captions independently.
+        spreadsheet_button_width = 31
+        for action_text, action_command, action_color in (
+            tracker_spreadsheet_actions
+        ):
+            self._make_action_button(
+                button_bar,
+                text=action_text,
+                command=action_command,
+                bg=action_color,
+                active_bg=action_color,
+                width=spreadsheet_button_width,
+                font_size=9,
+                pad_y=5,
+            ).pack(side="left", padx=(8, 0))
         self._make_action_button(
             button_bar,
             text="Close",
@@ -34226,6 +34563,7 @@ class TrackerApp:
             {
                 "filters": filters,
                 "search_entry": search_entry,
+                "spreadsheet_bar": button_bar,
                 "button_bar": button_bar,
                 "button_hint_label": button_hint_label,
                 "legacy_note_frame": legacy_note_frame,
@@ -34281,6 +34619,7 @@ class TrackerApp:
             for widget_key, background in (
                 ("filters", palette["panel"]),
                 ("tree_frame", palette["panel"]),
+                ("spreadsheet_bar", palette["window"]),
                 ("button_bar", palette["window"]),
                 ("legacy_note_frame", palette["window"]),
             ):
@@ -39017,7 +39356,7 @@ class TrackerApp:
                     "Google Sheets Sync",
                     (
                         "Google Sheets sync is not configured. "
-                        "Open Stats → Google Sheets Sync first."
+                        "Open My Tracker → Google Sheets Settings first."
                     ),
                     parent=self.root,
                 )
@@ -39920,6 +40259,7 @@ class TrackerApp:
             "added_sort_desc": None,
             "games_by_iid": {},
             "difficulty_overlay": None,
+            "title_overlay": None,
             "difficulty_overlay_after_id": None,
             "settings_save_after_id": None,
             "catalog_view_only": catalog_view_only,
@@ -40276,6 +40616,12 @@ class TrackerApp:
             padx=14,
             pady=(0, 8),
         )
+        for filter_column in range(6):
+            filter_panel.columnconfigure(
+                filter_column,
+                weight=1,
+                uniform="downloader_filters",
+            )
 
         filter_specs = (
             (
@@ -40791,6 +41137,11 @@ class TrackerApp:
         tree.bind(
             "<ButtonRelease-1>",
             self._open_downloader_catalog_link,
+            add="+",
+        )
+        tree.bind(
+            "<Double-1>",
+            self._launch_downloader_catalog_game_event,
             add="+",
         )
 
@@ -41477,8 +41828,16 @@ class TrackerApp:
             filtered.append(display_game)
 
             if catalog_view_only:
-                exists = False
-                status = "Moderated catalog entry"
+                exists = self._catalog_game_has_downloaded_rom(
+                    display_game
+                )
+                status = (
+                    self._translate_ui_text(
+                        "Playable - double-click title"
+                    )
+                    if exists
+                    else self._translate_ui_text("Not downloaded")
+                )
                 found_path = ""
             elif library_root is not None:
                 exists, status, found_path = (
@@ -41513,6 +41872,9 @@ class TrackerApp:
             display_game[
                 "download_existing"
             ] = exists
+            display_game[
+                "download_playable"
+            ] = bool(exists)
             display_game[
                 "download_status"
             ] = status
@@ -41673,10 +42035,12 @@ class TrackerApp:
             )
 
         if catalog_view_only:
-            status_message = (
-                f"Showing {len(filtered):,} moderated catalog hack(s). "
-                "Click any column heading to sort. Select Open Page or "
-                "Download Patch to open that SMW Central link."
+            status_message = self._format_ui_text(
+                "Showing {count} moderated catalog hack(s). Yellow titles "
+                "are downloaded and ready to play; double-click one to "
+                "launch it. Click any column heading to sort, or select "
+                "Open Page / Download Patch.",
+                count=f"{len(filtered):,}",
             )
         elif not selected_folder:
             status_message = (
@@ -41773,6 +42137,14 @@ class TrackerApp:
             if overlay is not None:
                 try:
                     overlay.place_forget()
+                except tk.TclError:
+                    pass
+            title_overlay = self.downloader_widgets.get(
+                "title_overlay"
+            )
+            if title_overlay is not None:
+                try:
+                    title_overlay.place_forget()
                 except tk.TclError:
                     pass
             return
@@ -41891,6 +42263,216 @@ class TrackerApp:
             overlay.tk.call("raise", overlay._w)
         except tk.TclError:
             return
+
+        self._render_downloader_title_overlay(
+            tree,
+            visible_iids,
+            palette,
+        )
+
+    def _render_downloader_title_overlay(
+        self,
+        tree: ttk.Treeview,
+        visible_iids: list[str],
+        palette: dict[str, str],
+    ) -> None:
+        overlay = self.downloader_widgets.get("title_overlay")
+        if not bool(
+            self.downloader_widgets.get("catalog_view_only", False)
+        ):
+            if overlay is not None:
+                try:
+                    overlay.place_forget()
+                except tk.TclError:
+                    pass
+            return
+
+        title_boxes: dict[str, tuple[int, int, int, int]] = {}
+        for iid in visible_iids:
+            try:
+                box = tree.bbox(iid, "#0")
+            except tk.TclError:
+                box = ()
+            if box:
+                title_boxes[iid] = box
+        if not title_boxes:
+            if overlay is not None:
+                try:
+                    overlay.place_forget()
+                except tk.TclError:
+                    pass
+            return
+
+        reference_box = next(iter(title_boxes.values()))
+        column_x = reference_box[0]
+        column_width = reference_box[2]
+        origin_y = min(box[1] for box in title_boxes.values())
+        overlay_height = max(1, tree.winfo_height() - origin_y)
+        if overlay is None:
+            overlay = tk.Canvas(
+                tree,
+                bd=0,
+                highlightthickness=0,
+                takefocus=False,
+                cursor="hand2",
+            )
+            overlay.bind(
+                "<Button-1>",
+                self._select_downloader_title_overlay_event,
+            )
+            overlay.bind(
+                "<Double-1>",
+                self._launch_downloader_catalog_game_event,
+            )
+            overlay.bind(
+                "<Button-3>",
+                lambda event: self._show_table_appearance_menu(
+                    event,
+                    tree,
+                    "complete_catalog",
+                ),
+            )
+            for wheel_event in (
+                "<MouseWheel>",
+                "<Button-4>",
+                "<Button-5>",
+            ):
+                overlay.bind(
+                    wheel_event,
+                    self._scroll_downloader_overlay,
+                )
+            self.downloader_widgets["title_overlay"] = overlay
+
+        self.downloader_widgets[
+            "title_overlay_origin_y"
+        ] = origin_y
+        overlay.configure(
+            width=column_width,
+            height=overlay_height,
+            bg=palette["tree"],
+        )
+        overlay.place(
+            x=column_x,
+            y=origin_y,
+            width=column_width,
+            height=overlay_height,
+        )
+        overlay.delete("all")
+        games_by_iid = self.downloader_widgets.get(
+            "games_by_iid", {}
+        )
+        selected = set(tree.selection())
+        all_rows = list(tree.get_children(""))
+        row_positions = {
+            iid: index for index, iid in enumerate(all_rows)
+        }
+        for iid, box in title_boxes.items():
+            game = games_by_iid.get(iid)
+            if game is None:
+                continue
+            row_y = box[1] - origin_y
+            row_height = box[3]
+            row_index = row_positions.get(iid, 0)
+            background = (
+                palette["selected"]
+                if iid in selected
+                else (
+                    palette["tree"]
+                    if row_index % 2 == 0
+                    else palette["panel_alt"]
+                )
+            )
+            playable = bool(game.get("download_playable", False))
+            text_color = (
+                THEME["yellow"]
+                if playable
+                else (
+                    "white" if iid in selected else palette["text"]
+                )
+            )
+            overlay.create_rectangle(
+                0,
+                row_y,
+                column_width,
+                row_y + row_height,
+                fill=background,
+                outline=palette["border"],
+                width=1,
+            )
+            create_outlined_canvas_text(
+                overlay,
+                column_width / 2,
+                row_y + row_height / 2,
+                text=str(game.get("title", "Unknown")),
+                fill=text_color,
+                font=(
+                    "Segoe UI",
+                    9,
+                    "bold" if playable else "normal",
+                ),
+                anchor="center",
+            )
+        try:
+            overlay.tk.call("raise", overlay._w)
+        except tk.TclError:
+            pass
+
+    def _downloader_title_overlay_iid(self, event) -> str:
+        tree = self.downloader_widgets.get("tree")
+        if tree is None:
+            return ""
+        origin_y = int(
+            self.downloader_widgets.get(
+                "title_overlay_origin_y", 0
+            )
+            or 0
+        )
+        try:
+            return str(tree.identify_row(event.y + origin_y))
+        except tk.TclError:
+            return ""
+
+    def _select_downloader_title_overlay_event(self, event) -> str:
+        tree = self.downloader_widgets.get("tree")
+        iid = self._downloader_title_overlay_iid(event)
+        if tree is not None and iid:
+            tree.selection_set(iid)
+            tree.focus(iid)
+            self._schedule_downloader_difficulty_overlays()
+        return "break"
+
+    def _launch_downloader_catalog_game_event(self, event=None):
+        if not bool(
+            self.downloader_widgets.get("catalog_view_only", False)
+        ):
+            return None
+        tree = self.downloader_widgets.get("tree")
+        if tree is None:
+            return None
+        title_overlay = self.downloader_widgets.get("title_overlay")
+        if event is not None and event.widget is title_overlay:
+            iid = self._downloader_title_overlay_iid(event)
+        elif event is not None:
+            try:
+                if tree.identify_column(event.x) != "#0":
+                    return None
+                iid = str(tree.identify_row(event.y))
+            except tk.TclError:
+                return None
+        else:
+            selection = tree.selection()
+            iid = str(selection[0]) if selection else ""
+        game = self.downloader_widgets.get(
+            "games_by_iid", {}
+        ).get(iid)
+        if game is None or not bool(
+            game.get("download_playable", False)
+        ):
+            return "break"
+        tree.selection_set(iid)
+        tree.focus(iid)
+        self._launch_catalog_game(game)
+        return "break"
 
     def _downloader_overlay_iid(self, event) -> str:
         tree = self.downloader_widgets.get("tree")
@@ -44318,6 +44900,14 @@ class TrackerApp:
             or "FXPAK Pro"
         )
 
+        # A completed ROM is downloaded regardless of which platform is
+        # currently selected. Check direct local catalog paths first, then the
+        # selected platform's saved mapping.
+        for field_name in ("local_rom_path", "rom_path"):
+            path_text = str(game.get(field_name, "")).strip()
+            if path_text and Path(path_text).is_file():
+                return True
+
         if selected_platform in PLATFORM_LOCAL_EMULATORS:
             all_mappings = self.config.get(
                 "platform_rom_mappings",
@@ -44338,11 +44928,7 @@ class TrackerApp:
                     if mapped_text and Path(mapped_text).is_file():
                         return True
 
-            for field_name in ("local_rom_path", "rom_path"):
-                path_text = str(game.get(field_name, "")).strip()
-                if path_text and Path(path_text).is_file():
-                    return True
-            return False
+            return self._catalog_game_exists_in_local_library(game)
 
         # FXPAK paths are remote POSIX-style paths. A local Windows filename
         # is not considered launchable unless it has also been copied/mapped
@@ -44386,9 +44972,121 @@ class TrackerApp:
                 for mapping_key in mapping_keys
             ):
                 return True
-        return False
+        return self._catalog_game_exists_in_local_library(game)
+
+    def _catalog_game_exists_in_local_library(
+        self,
+        game: dict[str, Any],
+    ) -> bool:
+        """Recognize completed ROMs anywhere under the configured library."""
+        library_text = str(
+            self.config.get("platform_rom_library_folder", "")
+            or self.config.get("rom_builder_library_folder", "")
+        ).strip()
+        if not library_text:
+            return False
+
+        try:
+            library_root = rom_builder_detect_library_root(
+                Path(library_text)
+            )
+        except OSError:
+            return False
+        if not library_root.is_dir():
+            return False
+
+        now = time.monotonic()
+        cache = getattr(self, "_catalog_local_rom_inventory_cache", None)
+        cache_matches = (
+            isinstance(cache, dict)
+            and cache.get("root") == str(library_root)
+            and now - float(cache.get("created", 0.0)) < 10.0
+        )
+        if not cache_matches:
+            try:
+                cache = {
+                    "root": str(library_root),
+                    "created": now,
+                    "by_name": rom_builder_scan_existing_roms(library_root),
+                    "by_id": rom_builder_load_existing_index(library_root),
+                }
+            except OSError:
+                return False
+            self._catalog_local_rom_inventory_cache = cache
+
+        probe_game = dict(game)
+        # A remote FXPAK path is handled separately above; do not let the
+        # general library helper mistake it for a local file.
+        probe_game["rom_path"] = ""
+        exists, _status, _found_path = rom_builder_existing_game(
+            probe_game,
+            library_root,
+            cache["by_name"],
+            cache["by_id"],
+        )
+        return bool(exists)
+
+    def _random_main_hack_candidates(
+        self,
+        rating_value: str,
+        difficulty_value: str,
+        type_value: str,
+    ) -> list[dict[str, Any]]:
+        return [
+            game
+            for game in self.hack_catalog
+            if str(game.get("title", "")).strip()
+            and self._game_matches_library_filters(
+                game,
+                "",
+                rating_value,
+                difficulty_value,
+                type_value,
+                "All",
+            )
+            and self._catalog_game_has_downloaded_rom(game)
+        ]
+
+    def _launch_filtered_random_main_hack(
+        self,
+        rating_var: tk.StringVar,
+        difficulty_var: tk.StringVar,
+        type_var: tk.StringVar,
+        dialog: tk.Toplevel,
+    ) -> None:
+        candidates = self._random_main_hack_candidates(
+            rating_var.get(),
+            difficulty_var.get(),
+            type_var.get(),
+        )
+        if not candidates:
+            messagebox.showinfo(
+                self._translate_ui_text("Random Hack"),
+                self._translate_ui_text(
+                    "No downloaded and patched hacks match these filters."
+                ),
+                parent=dialog,
+            )
+            return
+        game = random.choice(candidates)
+        selected_label = self._selector_label_for_game(game)
+        self.main_hack_selector_var.set(selected_label)
+        self.main_hack_selector_selected_label = selected_label
+        self._align_main_hack_selector_text(selected_label)
+        dialog.destroy()
+        self.random_hack_dialog = None
+        self._launch_catalog_game(game)
 
     def _play_random_main_hack(self) -> None:
+        if (
+            self.random_hack_dialog is not None
+            and self.random_hack_dialog.winfo_exists()
+        ):
+            self.random_hack_dialog.deiconify()
+            self.random_hack_dialog.lift()
+            self.random_hack_dialog.focus_force()
+            return
+
         candidates = [
             game
             for game in self.hack_catalog
@@ -44407,14 +45105,127 @@ class TrackerApp:
             )
             return
 
-        game = random.choice(candidates)
-        selected_label = self._selector_label_for_game(game)
-        self.main_hack_selector_var.set(selected_label)
-        self.main_hack_selector_selected_label = selected_label
-        self._align_main_hack_selector_text(
-            selected_label,
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.random_hack_dialog = dialog
+        dialog.title("Random Hack Filters")
+        dialog.configure(bg=palette["window"])
+        self._size_dialog_for_ui(dialog, 620, 410, 540, 350)
+        dialog.resizable(True, True)
+        self._add_dialog_window_controls(
+            dialog,
+            dialog,
+            palette["window"],
         )
-        self._launch_catalog_game(game)
+        tk.Label(
+            dialog,
+            text="PLAY A RANDOM DOWNLOADED HACK",
+            font=("Segoe UI", 17, "bold"),
+            fg="white",
+            bg=THEME["orange"],
+            padx=18,
+            pady=12,
+        ).pack(fill="x")
+        tk.Label(
+            dialog,
+            text=(
+                "Choose filters for a downloaded and patched hack. "
+                "Only ROMs ready on the selected platform are included."
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["window"],
+            wraplength=self._ui_px(540),
+            justify="center",
+            pady=12,
+        ).pack(fill="x", padx=18)
+
+        filter_frame = tk.Frame(dialog, bg=palette["panel"], padx=14, pady=14)
+        filter_frame.pack(fill="both", expand=True, padx=18, pady=(0, 12))
+        for column in range(3):
+            filter_frame.columnconfigure(
+                column,
+                weight=1,
+                uniform="random_filters",
+            )
+        difficulty_var = tk.StringVar(value="Any")
+        type_var = tk.StringVar(value="Any")
+        rating_var = tk.StringVar(value="Any")
+        filter_controls = (
+            (
+                "Difficulty",
+                difficulty_var,
+                ("Any", *self._difficulty_values()),
+            ),
+            (
+                "Type",
+                type_var,
+                ("Any", *self._type_tokens()),
+            ),
+            (
+                "SMW Central rating",
+                rating_var,
+                ("Any", "1+", "2+", "3+", "4+", "4.5+", "5"),
+            ),
+        )
+        for column, (label_text, variable, values) in enumerate(
+            filter_controls
+        ):
+            tk.Label(
+                filter_frame,
+                text=label_text,
+                font=("Segoe UI", 10, "bold"),
+                fg=palette["text"],
+                bg=palette["panel"],
+                anchor="center",
+            ).grid(row=0, column=column, sticky="ew", padx=6, pady=(0, 5))
+            combo = ttk.Combobox(
+                filter_frame,
+                textvariable=variable,
+                values=values,
+                state="readonly",
+                justify="center",
+                style="Mario.TCombobox",
+            )
+            combo.grid(row=1, column=column, sticky="ew", padx=6)
+
+        actions = tk.Frame(dialog, bg=palette["window"])
+        actions.pack(fill="x", padx=18, pady=(0, 16))
+        self._make_action_button(
+            actions,
+            "Confirm",
+            lambda: self._launch_filtered_random_main_hack(
+                rating_var,
+                difficulty_var,
+                type_var,
+                dialog,
+            ),
+            THEME["green"],
+            active_bg=THEME["green_dark"],
+            width=12,
+            font_size=11,
+            pad_y=7,
+        ).pack(side="right")
+        self._make_action_button(
+            actions,
+            "Cancel",
+            lambda: (
+                setattr(self, "random_hack_dialog", None),
+                dialog.destroy(),
+            ),
+            THEME["muted"],
+            active_bg="#384D65",
+            width=12,
+            font_size=11,
+            pad_y=7,
+        ).pack(side="right", padx=(0, 10))
+
+        def close_random_dialog() -> None:
+            self.random_hack_dialog = None
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", close_random_dialog)
+        dialog.after_idle(lambda: self._localize_widget_tree(dialog))
 
     def open_game_library(self, event=None) -> None:
         platform_name = self.platform_var.get().strip() or "FXPAK Pro"
@@ -49064,6 +49875,9 @@ class TrackerApp:
         silent: bool,
     ) -> None:
         if not available:
+            self.update_available_version = ""
+            self.update_available_manifest = {}
+            self._refresh_help_update_badge()
             self.status_var.set("SMW Stream Tracker is up to date.")
             if not silent:
                 messagebox.showinfo(
@@ -49071,6 +49885,20 @@ class TrackerApp:
                     f"You have the latest version ({APP_VERSION}).",
                     parent=self.root,
                 )
+            return
+
+        self.update_available_version = str(
+            manifest.get("version", "")
+        ).strip()
+        self.update_available_manifest = dict(manifest)
+        self._refresh_help_update_badge()
+        if silent:
+            self.status_var.set(
+                self._format_ui_text(
+                    "Update {version} is available in Help.",
+                    version=self.update_available_version,
+                )
+            )
             return
 
         if self.update_dialog is not None:
@@ -49708,13 +50536,14 @@ class TrackerApp:
         ).pack(fill="both", expand=True, padx=12, pady=12)
         actions = tk.Frame(dialog, bg=palette["window"])
         actions.pack(fill="x", padx=12, pady=(0, 12))
-        self._make_action_button(
+        self.about_update_button = self._make_action_button(
             actions,
             "Check for Updates",
             self.check_for_updates,
             THEME["green"],
             THEME["green_dark"],
-        ).pack(side="left", padx=(0, 8))
+        )
+        self.about_update_button.pack(side="left", padx=(0, 8))
         self._make_action_button(
             actions,
             "Website",
@@ -49757,9 +50586,19 @@ class TrackerApp:
         ).pack(side="left")
         def close_about() -> None:
             try:
+                if self.about_update_flash_after_id is not None:
+                    try:
+                        dialog.after_cancel(
+                            self.about_update_flash_after_id
+                        )
+                    except tk.TclError:
+                        pass
                 dialog.destroy()
             finally:
                 self.about_dialog = None
+                self.about_update_button = None
+                self.about_update_flash_after_id = None
+                self.about_update_flash_on = False
 
         self._make_action_button(
             actions,
@@ -49775,6 +50614,7 @@ class TrackerApp:
             dark=(self.appearance_var.get() == "dark"),
         )
         self._fit_dialog_height_to_contents(dialog, padding=8)
+        self._refresh_about_update_button()
 
     def open_obs_settings_dialog(self) -> None:
         if self.obs_settings_dialog is not None:
