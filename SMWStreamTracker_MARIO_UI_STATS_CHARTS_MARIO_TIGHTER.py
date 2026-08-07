@@ -65,8 +65,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.4"
-APP_BUILD_DATE = "2026-08-06"
+APP_VERSION = "1.0.5"
+APP_BUILD_DATE = "2026-08-07"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
 FEEDBACK_FORM_URL = (
@@ -76,6 +76,7 @@ FEEDBACK_FORM_URL = (
 )
 FEEDBACK_WEBVIEW_ARGUMENT = "--embedded-feedback-form"
 FEEDBACK_APPEARANCE_ARGUMENT_PREFIX = "--feedback-appearance="
+STARTUP_CHECK_ARGUMENT = "--startup-check"
 DEFAULT_UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/freddogg23/"
     "SMW-Stream-Tracker/main/release/update_manifest.json"
@@ -107,6 +108,128 @@ RETROARCH_CORE_DOWNLOAD_URL = (
     "https://buildbot.libretro.com/nightly/windows/x86_64/latest/"
     "bsnes_mercury_performance_libretro.dll.zip"
 )
+
+
+def _configure_installed_tcl_tk_runtime() -> bool:
+    """Prefer the installer-provided Tcl/Tk scripts when they are available.
+
+    PyInstaller's one-file bundle also carries these files, but Windows security
+    software can occasionally interrupt their temporary extraction.  Keeping a
+    verified copy beside the installed app gives Tk a stable fallback that does
+    not depend on the per-launch ``_MEI`` directory.
+    """
+    if getattr(sys, "frozen", False):
+        app_directory = Path(sys.executable).resolve().parent
+    else:
+        app_directory = Path(__file__).resolve().parent
+
+    runtime_directory = app_directory / "runtime"
+    tcl_directory = runtime_directory / "tcl"
+    tk_directory = runtime_directory / "tk"
+    if not (tcl_directory / "init.tcl").is_file():
+        return False
+    if not (tk_directory / "tk.tcl").is_file():
+        return False
+
+    os.environ["TCL_LIBRARY"] = str(tcl_directory)
+    os.environ["TK_LIBRARY"] = str(tk_directory)
+    return True
+
+
+def _show_native_startup_error(message: str) -> None:
+    """Show a Windows error without requiring a working Tk installation."""
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            message,
+            APP_NAME,
+            0x00000010,
+        )
+    except Exception:
+        pass
+
+
+def _start_previous_version_rollback(startup_error: BaseException) -> bool:
+    """Start the verified rollback helper after an installed update fails."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return False
+
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if not local_app_data:
+        return False
+
+    rollback_directory = Path(local_app_data) / "SMWStreamTracker" / "Rollback"
+    backup_executable = rollback_directory / "SMWStreamTracker_previous.exe"
+    backup_hash_file = rollback_directory / "SMWStreamTracker_previous.sha256"
+    current_executable = Path(sys.executable).resolve()
+    rollback_script = current_executable.parent / "rollback_update.ps1"
+    if not all(
+        path.is_file()
+        for path in (backup_executable, backup_hash_file, rollback_script)
+    ):
+        return False
+
+    expected_hash = backup_hash_file.read_text(
+        encoding="utf-8-sig",
+        errors="replace",
+    ).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+        return False
+    actual_hash = hashlib.sha256(backup_executable.read_bytes()).hexdigest()
+    if actual_hash != expected_hash:
+        return False
+
+    append_error_log(
+        "Updated app failed its Tk startup check; restoring previous version",
+        f"{type(startup_error).__name__}: {startup_error}",
+    )
+    powershell_executable = shutil.which("powershell.exe")
+    if not powershell_executable:
+        return False
+    subprocess.Popen(
+        [
+            powershell_executable,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(rollback_script),
+            "-CurrentExe",
+            str(current_executable),
+            "-BackupExe",
+            str(backup_executable),
+            "-ProcessId",
+            str(os.getpid()),
+            "-ExpectedSha256",
+            expected_hash,
+        ],
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        close_fds=True,
+    )
+    return True
+
+
+def _run_tk_startup_check() -> int:
+    """Return success only after a real Tcl/Tk window can be created."""
+    _configure_installed_tcl_tk_runtime()
+    probe_root = None
+    try:
+        probe_root = tk.Tk()
+        probe_root.withdraw()
+        probe_root.update_idletasks()
+        return 0
+    except Exception as error:
+        append_error_log(
+            "Tcl/Tk startup check failed",
+            f"{type(error).__name__}: {error}",
+        )
+        return 21
+    finally:
+        if probe_root is not None:
+            try:
+                probe_root.destroy()
+            except Exception:
+                pass
 
 
 def bundled_resource_path(*parts: str) -> Path:
@@ -51486,6 +51609,11 @@ def _run_feedback_webview(appearance: str) -> int:
 
 
 def main() -> None:
+    _configure_installed_tcl_tk_runtime()
+
+    if STARTUP_CHECK_ARGUMENT in sys.argv[1:]:
+        raise SystemExit(_run_tk_startup_check())
+
     if FEEDBACK_WEBVIEW_ARGUMENT in sys.argv[1:]:
         raise SystemExit(
             _run_feedback_webview(
@@ -51516,7 +51644,26 @@ def main() -> None:
         )
 
     sys.excepthook = global_exception_handler
-    root = tk.Tk()
+    try:
+        root = tk.Tk()
+    except tk.TclError as error:
+        if _start_previous_version_rollback(error):
+            _show_native_startup_error(
+                "The update could not start its window system.\n\n"
+                "SMW Stream Tracker is restoring the previous working version "
+                "now. The app will reopen automatically."
+            )
+        else:
+            append_error_log(
+                "Tcl/Tk startup failed and no verified rollback was available",
+                f"{type(error).__name__}: {error}",
+            )
+            _show_native_startup_error(
+                "SMW Stream Tracker could not start its window system.\n\n"
+                "Please run the complete installer again. Your tracker data and "
+                "settings are stored separately and will be kept."
+            )
+        raise SystemExit(21) from error
     TrackerApp(root)
     root.mainloop()
 

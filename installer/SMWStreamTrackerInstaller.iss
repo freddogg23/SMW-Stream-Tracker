@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.0.4"
+#define AppVersion "1.0.5"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -449,6 +449,10 @@ brazilianportuguese.ConfigWriteError=Não foi possível criar o arquivo de confi
 
 [Files]
 Source: "{#AppExeSource}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
+; Keep Tcl/Tk scripts outside the one-file temporary extraction directory as a
+; stable fallback for systems whose security software interrupts _MEI startup.
+Source: "..\dist\runtime\tcl\*"; DestDir: "{app}\runtime\tcl"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\runtime\tk\*"; DestDir: "{app}\runtime\tk"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\README.en.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme; Languages: english
 Source: "..\docs\README.au.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme; Languages: australian

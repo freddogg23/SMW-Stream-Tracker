@@ -7,7 +7,7 @@ webview_datas, webview_binaries, webview_hiddenimports = collect_all('webview')
 
 
 a = Analysis(
-    ['SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py'],
+    ['SMWStreamTrackerLauncher.py'],
     pathex=[],
     binaries=webview_binaries,
     datas=[
@@ -25,9 +25,9 @@ a = Analysis(
         ('installer\\THIRD_PARTY_NOTICE.txt', 'installer'),
     ] + webview_datas,
     hiddenimports=webview_hiddenimports,
-    hookspath=['build_helpers\\pyinstaller_hooks'],
+    hookspath=[],
     hooksconfig={},
-    runtime_hooks=['build_helpers\\pyinstaller_hooks\\rthook-tkinter.py'],
+    runtime_hooks=[],
     excludes=[],
     noarchive=False,
     optimize=0,

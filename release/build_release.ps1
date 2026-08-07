@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.4',
+    [string]$Version = '1.0.5',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -14,11 +14,116 @@ $sourceZip = Join-Path $dist "SMWStreamTracker_Desktop_${Version}_Source.zip"
 $checksumsPath = Join-Path $dist "SHA256SUMS_$Version.txt"
 $manifestPath = Join-Path $PSScriptRoot 'update_manifest.json'
 $releaseNotesPath = Join-Path $PSScriptRoot 'RELEASE_NOTES.txt'
+$runtimeRoot = Join-Path $dist 'runtime'
 
 function Confirm-UnsignedArtifact([string]$Path) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($signature.Status -ne 'NotSigned') {
         throw "Expected an unsigned artifact, but $Path has signature status $($signature.Status)."
+    }
+}
+
+function Confirm-AppStartup([string]$Path) {
+    $probeRoot = Join-Path $env:TEMP ("SMWStreamTracker-StartupProbe-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $probeRoot | Out-Null
+    $previousLocalAppData = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = $probeRoot
+        $process = Start-Process -FilePath $Path -ArgumentList '--startup-check' -Wait -PassThru
+        if ($process.ExitCode -ne 0) {
+            throw "The packaged app failed its Tcl/Tk startup check with exit code $($process.ExitCode)."
+        }
+    }
+    finally {
+        $env:LOCALAPPDATA = $previousLocalAppData
+        if (Test-Path -LiteralPath $probeRoot) {
+            Remove-Item -LiteralPath $probeRoot -Recurse -Force
+        }
+    }
+}
+
+function Test-BuildPython([string]$PythonPath) {
+    if (-not $PythonPath -or -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
+        return $false
+    }
+    & $PythonPath -c "import tkinter as tk; root=tk.Tk(); root.withdraw(); root.update_idletasks(); root.destroy()" 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
+function Resolve-BuildPython {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($env:SMW_BUILD_PYTHON) {
+        $candidates.Add($env:SMW_BUILD_PYTHON)
+    }
+
+    # Prefer a normal python.org installation. The Windows embeddable/portable
+    # distribution does not include a supported Tcl/Tk installation and can
+    # produce an app that builds successfully but fails before its first window.
+    $localPythonRoot = Join-Path $env:LOCALAPPDATA 'Programs\Python'
+    if (Test-Path -LiteralPath $localPythonRoot) {
+        Get-ChildItem -LiteralPath $localPythonRoot -Directory -Filter 'Python*' |
+            Sort-Object Name -Descending |
+            ForEach-Object {
+                $candidates.Add((Join-Path $_.FullName 'python.exe'))
+            }
+    }
+    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($pythonCommand) {
+        $candidates.Add($pythonCommand.Source)
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-BuildPython $candidate) {
+            return $candidate
+        }
+    }
+    throw 'No Python installation with a working Tcl/Tk runtime was found. Install standard Python from python.org or set SMW_BUILD_PYTHON to its full path.'
+}
+
+function Stage-TclTkRuntime([string]$PythonPath) {
+    $pythonRoot = (& $PythonPath -c "import sys; print(sys.base_prefix)").Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $pythonRoot) {
+        throw 'Could not determine the selected Python runtime folder.'
+    }
+    $pythonTclRoot = Join-Path $pythonRoot 'tcl'
+    $tclScriptRoot = Get-ChildItem -LiteralPath $pythonTclRoot -Directory |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'init.tcl') } |
+        Select-Object -First 1
+    $tkScriptRoot = Get-ChildItem -LiteralPath $pythonTclRoot -Directory |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'tk.tcl') } |
+        Select-Object -First 1
+    if (-not $tclScriptRoot -or -not $tkScriptRoot) {
+        throw "Could not locate Tcl/Tk script libraries below $pythonTclRoot."
+    }
+
+    if (Test-Path -LiteralPath $runtimeRoot) {
+        Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
+    }
+    $runtimeTcl = Join-Path $runtimeRoot 'tcl'
+    $runtimeTk = Join-Path $runtimeRoot 'tk'
+    New-Item -ItemType Directory -Force -Path $runtimeTcl, $runtimeTk | Out-Null
+    Copy-Item -Path (Join-Path $tclScriptRoot.FullName '*') -Destination $runtimeTcl -Recurse -Force
+    Copy-Item -Path (Join-Path $tkScriptRoot.FullName '*') -Destination $runtimeTk -Recurse -Force
+
+    $stagedInitTcl = Join-Path $runtimeTcl 'init.tcl'
+    $stagedTkTcl = Join-Path $runtimeTk 'tk.tcl'
+    if (-not (Test-Path -LiteralPath $stagedInitTcl) -or
+        -not (Test-Path -LiteralPath $stagedTkTcl)) {
+        throw 'The permanent Tcl/Tk runtime fallback was not staged correctly.'
+    }
+
+    # Remove any old local-only Tcl diagnostic block before packaging.
+    $initTclText = [System.IO.File]::ReadAllText($stagedInitTcl)
+    $diagnosticPattern = '(?m)^[ \t]*set __smw_tcl_log.*\r?\n^[ \t]*puts \$__smw_tcl_log.*\r?\n^[ \t]*close \$__smw_tcl_log.*\r?\n^[ \t]*unset __smw_tcl_log[ \t]*\r?\n'
+    $initTclText = [System.Text.RegularExpressions.Regex]::Replace(
+        $initTclText,
+        $diagnosticPattern,
+        ''
+    )
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($stagedInitTcl, $initTclText, $utf8WithoutBom)
+    if ($initTclText -match '__smw_tcl_log|tcl-init-log|C:/Users/|C:\\Users\\') {
+        throw 'The staged Tcl startup file contains a local diagnostic or user-specific Windows path.'
     }
 }
 
@@ -37,16 +142,8 @@ foreach ($scriptName in @('SMWStreamTrackerInstaller.iss', 'SMWStreamTrackerUpda
 }
 
 if (-not $SkipAppBuild) {
-    if ($env:SMW_BUILD_PYTHON -and (Test-Path -LiteralPath $env:SMW_BUILD_PYTHON)) {
-        $pythonPath = $env:SMW_BUILD_PYTHON
-    }
-    else {
-        $python = Get-Command python.exe -ErrorAction SilentlyContinue
-        if (-not $python) {
-            throw 'python.exe was not found. Install Python or set SMW_BUILD_PYTHON to its full path.'
-        }
-        $pythonPath = $python.Source
-    }
+    $pythonPath = Resolve-BuildPython
+    Stage-TclTkRuntime $pythonPath
     & $pythonPath -c "from PIL import Image; print('Pillow ' + Image.__version__ + ' from ' + Image.__file__)"
     if ($LASTEXITCODE -ne 0) {
         throw 'The selected Python environment cannot load Pillow. Install a Pillow build that matches this Python version before packaging.'
@@ -58,10 +155,16 @@ if (-not $SkipAppBuild) {
     & $pythonPath -m PyInstaller --noconfirm --clean (Join-Path $projectRoot 'SMWStreamTracker.spec')
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
 }
+
+if (-not $pythonPath) {
+    $pythonPath = Resolve-BuildPython
+    Stage-TclTkRuntime $pythonPath
+}
 if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
     throw "App executable was not found: $appExe"
 }
 
+Confirm-AppStartup $appExe
 Confirm-UnsignedArtifact $appExe
 
 $isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
@@ -127,6 +230,7 @@ $sourceItems = @(
     'LICENSE.txt',
     'README.md',
     'SMWStreamTracker.spec',
+    'SMWStreamTrackerLauncher.py',
     'SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py',
     'app_assets',
     'banner_background_assets',

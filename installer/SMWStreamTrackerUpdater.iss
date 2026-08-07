@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.0.4"
+#define AppVersion "1.0.5"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -56,12 +56,14 @@ english.NotInstalled2=Use the complete installer for the first installation, the
 english.RollbackFolderError=Setup could not create the rollback folder. The update was stopped safely.
 english.RollbackCopyError=Setup could not preserve the current app for rollback. The update was stopped safely.
 english.RollbackHashError=Setup could not verify the saved rollback copy. The update was stopped safely.
+english.StartupCheckFailed=The updated app could not start its window system. Setup restored the previous working version automatically.
 australian.LaunchApp=Fire up SMW Stream Tracker
 australian.NotInstalled1=SMW Stream Tracker is not installed where we expected, mate.
 australian.NotInstalled2=Use the complete installer for the first go, then use this updater next time. Too easy.
 australian.RollbackFolderError=Could not make the rollback folder. The update pulled up safely.
 australian.RollbackCopyError=Could not keep the current app for rollback. The update pulled up safely.
 australian.RollbackHashError=Could not verify the saved rollback copy. The update pulled up safely.
+australian.StartupCheckFailed=The updated app could not start its window system. Setup put the previous working version back automatically.
 spanish.LaunchApp=Iniciar SMW Stream Tracker
 spanish.NotInstalled1=SMW Stream Tracker no está instalado en la ubicación esperada.
 spanish.NotInstalled2=Usa el instalador completo para la primera instalación y después este actualizador.
@@ -89,6 +91,9 @@ brazilianportuguese.RollbackHashError=O instalador não conseguiu verificar a c�
 
 [Files]
 Source: "{#AppExeSource}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion restartreplace
+; Permanent Tcl/Tk fallback used when one-file temporary extraction is blocked.
+Source: "..\dist\runtime\tcl\*"; DestDir: "{app}\runtime\tcl"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\runtime\tk\*"; DestDir: "{app}\runtime\tk"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Install the SNI-compatible RetroArch core when RetroArch support is used. The app
 ; automatically selects it only when RetroArch and SNI are the active pair.
 Source: "https://buildbot.libretro.com/nightly/windows/x86_64/latest/bsnes_mercury_performance_libretro.dll.zip"; \
@@ -114,9 +119,12 @@ Source: "THIRD_PARTY_NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; \
-  Flags: postinstall nowait skipifsilent
+  Flags: postinstall nowait skipifsilent; Check: UpdatedAppPassedStartupCheck
 
 [Code]
+var
+  UpdatedAppStartupCheckPassed: Boolean;
+
 function SetEnvironmentVariable(
   lpName: String;
   lpValue: String
@@ -130,7 +138,13 @@ begin
     start as an independent process so it never looks for the old python DLL
     after that temporary folder has been removed. }
   SetEnvironmentVariable('PYINSTALLER_RESET_ENVIRONMENT', '1');
+  UpdatedAppStartupCheckPassed := False;
   Result := True;
+end;
+
+function UpdatedAppPassedStartupCheck(): Boolean;
+begin
+  Result := UpdatedAppStartupCheckPassed;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -162,5 +176,36 @@ begin
          (not SaveStringToFile(PreviousHash, Lowercase(CurrentHash) + #13#10, False)) then
         Result := ExpandConstant('{cm:RollbackHashError}');
     end;
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  AppExecutable: String;
+  PreviousExecutable: String;
+  ResultCode: Integer;
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+
+  AppExecutable := ExpandConstant('{app}\{#AppExeName}');
+  PreviousExecutable := ExpandConstant(
+    '{localappdata}\SMWStreamTracker\Rollback\SMWStreamTracker_previous.exe'
+  );
+  ResultCode := -1;
+  UpdatedAppStartupCheckPassed := Exec(
+    AppExecutable,
+    '--startup-check',
+    ExpandConstant('{app}'),
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) and (ResultCode = 0);
+
+  if not UpdatedAppStartupCheckPassed then
+  begin
+    if FileExists(PreviousExecutable) then
+      CopyFile(PreviousExecutable, AppExecutable, False);
+    MsgBox(ExpandConstant('{cm:StartupCheckFailed}'), mbError, MB_OK);
   end;
 end;

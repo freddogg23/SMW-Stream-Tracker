@@ -1,17 +1,17 @@
 {
     "schema":  1,
-    "version":  "1.0.4",
-    "release_date":  "2026-08-06",
+    "version":  "1.0.5",
+    "release_date":  "2026-08-07",
     "notes":  [
-                  "Prevents Mario A/B/C save-slot life synchronization from adding a false total death.",
-                  "Counts the first real death after quitting, reopening, or switching save files.",
-                  "Restores death tracking immediately when returning directly to a previously started level.",
-                  "Improves translated privacy warnings, connection messages, and file-tool labels.",
-                  "Expands regression coverage for death tracking, downloaded-only random play, service health, and streamer privacy.",
-                  "Preserves the existing privacy-safe screenshots without replacing them in this maintenance release."
+                  "Fixes the Tcl/Tk startup failure that could prevent the app from opening after an update.",
+                  "Packages a verified window-system runtime beside the installed application as a stable fallback.",
+                  "Tests a real hidden app window before an update is accepted or the updated app is launched.",
+                  "Automatically restores the previous working executable when the updated app fails its startup check.",
+                  "Stops release packaging when the finished executable cannot pass the same startup check.",
+                  "Removes a development-only local path from the packaged Tcl startup files."
               ],
-    "updater_url":  "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.4/SMWStreamTracker_Update_1.0.4.exe",
+    "updater_url":  "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.5/SMWStreamTracker_Update_1.0.5.exe",
     "verification":  "sha256",
-    "sha256":  "e6f7210836669b45c63371afe3e8076b8505bafbb254da3cd4f18c7182abf065",
-    "size":  61574983
+    "sha256":  "606be519fba854b9419f724bfb78a4efb14d469c793619ed65823f47c1ce2c23",
+    "size":  62070622
 }
