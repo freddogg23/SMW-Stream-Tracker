@@ -1,0 +1,12 @@
+AVIS DE LICENCE DE SMW STREAM TRACKER
+=====================================
+
+Copyright (c) 2026 FredDOGG23. Tous droits réservés.
+
+Cet avis concerne uniquement l’application SMW Stream Tracker. Les outils,
+bibliothèques, noms et illustrations de tiers restent soumis aux licences et
+propriétaires correspondants. Consultez THIRD_PARTY_NOTICE.fr.txt pour les
+remerciements et les liens des projets.
+
+Aucune ROM de base commerciale n’est incluse ou concédée sous licence avec ce
+logiciel.

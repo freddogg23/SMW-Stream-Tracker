@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.6',
+    [string]$Version = '1.0.7',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -27,11 +27,16 @@ function Confirm-AppStartup([string]$Path) {
     $probeRoot = Join-Path $env:TEMP ("SMWStreamTracker-StartupProbe-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $probeRoot | Out-Null
     $previousLocalAppData = $env:LOCALAPPDATA
+    $process = $null
     try {
         $env:LOCALAPPDATA = $probeRoot
-        $process = Start-Process -FilePath $Path -ArgumentList '--startup-check' -Wait -PassThru
+        $process = Start-Process -FilePath $Path -ArgumentList '--startup-check' -PassThru
+        if (-not $process.WaitForExit(30000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw 'The packaged app startup check did not finish within 30 seconds. A hidden crash dialog or stuck startup thread may be blocking it.'
+        }
         if ($process.ExitCode -ne 0) {
-            throw "The packaged app failed its Tcl/Tk startup check with exit code $($process.ExitCode)."
+            throw "The packaged app failed its complete UI startup check with exit code $($process.ExitCode)."
         }
     }
     finally {

@@ -1,4 +1,5 @@
 import ast
+from datetime import date
 import importlib.util
 import inspect
 from pathlib import Path
@@ -262,6 +263,67 @@ class RandomDownloadedOnlyTests(unittest.TestCase):
             [game["title"] for game in candidates],
             ["Expert Downloaded"],
         )
+
+    def test_main_random_upload_window_uses_smw_central_added_date(self):
+        app = self.make_app("FXPAK Pro")
+        app.hack_catalog = [
+            {
+                "title": "Recent Downloaded",
+                "smwc_id": "30",
+                "added_date": "2026-06-01",
+            },
+            {
+                "title": "Old Downloaded",
+                "smwc_id": "31",
+                "added_date": "2026-05-07",
+            },
+            {
+                "title": "Recent Catalog Only",
+                "smwc_id": "32",
+                "added_date": "2026-08-01",
+            },
+            {
+                "title": "Downloaded Without Date",
+                "smwc_id": "33",
+                "added_date": "",
+            },
+        ]
+        app.config["fxpak_rom_mappings"] = {
+            "smwc:30": "/All_Hacks/R/Recent Downloaded.sfc",
+            "smwc:31": "/All_Hacks/O/Old Downloaded.sfc",
+            "smwc:33": "/All_Hacks/D/Downloaded Without Date.sfc",
+        }
+
+        candidates = app._random_main_hack_candidates(
+            "Any",
+            "Any",
+            "Any",
+            3,
+            reference_date=date(2026, 8, 8),
+        )
+
+        self.assertEqual(
+            [game["title"] for game in candidates],
+            ["Recent Downloaded"],
+        )
+
+    def test_calendar_month_cutoff_clamps_to_last_day_of_month(self):
+        self.assertEqual(
+            self.tracker.calendar_month_cutoff(date(2026, 3, 31), 1),
+            date(2026, 2, 28),
+        )
+
+    def test_random_upload_age_options_are_localized_through_13_years(self):
+        app = self.make_app("FXPAK Pro")
+        app.app_language = "de"
+
+        options = app._random_upload_age_options()
+
+        self.assertEqual(options[0], ("Beliebiges Upload-Datum", None))
+        self.assertEqual(options[1], ("Letzter Monat", 1))
+        self.assertEqual(options[2], ("Letzte 3 Monate", 3))
+        self.assertEqual(options[-1], ("Letzte 13 Jahre", 156))
+        self.assertEqual(len(options), 17)
 
     def test_action_button_calls_only_use_supported_arguments(self):
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))

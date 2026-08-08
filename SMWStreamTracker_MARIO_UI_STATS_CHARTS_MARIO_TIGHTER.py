@@ -1,5 +1,6 @@
 import json
 import ctypes
+from ctypes import wintypes
 import base64
 import binascii
 import csv
@@ -35,6 +36,20 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
+_ORIGINAL_MESSAGEBOX_FUNCTIONS = {
+    name: getattr(messagebox, name)
+    for name in (
+        "showinfo",
+        "showwarning",
+        "showerror",
+        "askquestion",
+        "askokcancel",
+        "askyesno",
+        "askyesnocancel",
+        "askretrycancel",
+    )
+}
+
 import websocket
 import zipfile
 from openpyxl import Workbook, load_workbook
@@ -65,17 +80,47 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.6"
-APP_BUILD_DATE = "2026-08-07"
+APP_VERSION = "1.0.7"
+APP_BUILD_DATE = "2026-08-08"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
-FEEDBACK_FORM_URL = (
-    "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?"
-    "id=DQSIkWdsW0yxEjajBLZtrQAAAAAAAAAAAAO__rWBd8BU"
-    "MTg0MzVHNzVDODFRQVlOVERKTzFNQzAyRy4u"
-)
+FEEDBACK_FORM_URLS = {
+    "en": (
+        "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?"
+        "id=DQSIkWdsW0yxEjajBLZtrQAAAAAAAAAAAAO__rWBd8BU"
+        "MTg0MzVHNzVDODFRQVlOVERKTzFNQzAyRy4u"
+    ),
+    "au": (
+        "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?"
+        "id=DQSIkWdsW0yxEjajBLZtrQAAAAAAAAAAAAO__rWBd8BU"
+        "NzFZRVdYMFlLUzYzVFo5UEgxRjQ0WjBYQS4u"
+    ),
+    "es": (
+        "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?"
+        "id=DQSIkWdsW0yxEjajBLZtrQAAAAAAAAAAAAO__rWBd8BU"
+        "Mk4zVkFYQktHTjdIODVKNlJIM0M4RkFQMC4u"
+    ),
+    "fr": (
+        "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?"
+        "id=DQSIkWdsW0yxEjajBLZtrQAAAAAAAAAAAAO__rWBd8BU"
+        "RUhGUEpRMFRHS0hDVE1LWklWWkIzOFNXVi4u"
+    ),
+    "de": (
+        "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?"
+        "id=DQSIkWdsW0yxEjajBLZtrQAAAAAAAAAAAAO__rWBd8BU"
+        "NVBUWEFDWU80VTRLQlRBQ1hCRkxLQlM4WC4u"
+    ),
+    "pt-BR": (
+        "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?"
+        "id=DQSIkWdsW0yxEjajBLZtrQAAAAAAAAAAAAO__rWBd8BU"
+        "M1A0MkpER083RVc1RElFUEwyRUtVNlJOWC4u"
+    ),
+}
+# Kept as a compatibility alias for older tests and integrations.
+FEEDBACK_FORM_URL = FEEDBACK_FORM_URLS["en"]
 FEEDBACK_WEBVIEW_ARGUMENT = "--embedded-feedback-form"
 FEEDBACK_APPEARANCE_ARGUMENT_PREFIX = "--feedback-appearance="
+FEEDBACK_LANGUAGE_ARGUMENT_PREFIX = "--feedback-language="
 STARTUP_CHECK_ARGUMENT = "--startup-check"
 DEFAULT_UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/freddogg23/"
@@ -210,12 +255,20 @@ def _start_previous_version_rollback(startup_error: BaseException) -> bool:
 
 
 def _run_tk_startup_check() -> int:
-    """Return success only after a real Tcl/Tk window can be created."""
+    """Return success only after the complete main interface is constructed.
+
+    A bare ``tk.Tk()`` probe confirms Tcl/Tk was bundled, but it cannot catch
+    missing widget attributes, invalid layout options, or menu construction
+    errors. Updates and release builds use this same check, so constructing
+    ``TrackerApp`` here prevents a package that crashes during ``_build_ui``
+    from replacing a working installation.
+    """
     _configure_installed_tcl_tk_runtime()
     probe_root = None
     try:
         probe_root = tk.Tk()
         probe_root.withdraw()
+        TrackerApp(probe_root, startup_check=True)
         probe_root.update_idletasks()
         return 0
     except Exception as error:
@@ -3270,6 +3323,7 @@ class OutlinedButton(tk.Canvas):
         pady: int = 6,
         min_width: int = 88,
         min_height: int = 36,
+        fixed_pixel_width: int | None = None,
         corner_radius: int = 10,
         image=None,
         compound: str = "left",
@@ -3297,6 +3351,11 @@ class OutlinedButton(tk.Canvas):
         self._character_width = int(width)
         self._minimum_width = max(18, int(min_width))
         self._minimum_height = max(18, int(min_height))
+        self._fixed_pixel_width = (
+            max(self._minimum_width, int(fixed_pixel_width))
+            if fixed_pixel_width is not None
+            else None
+        )
         self._corner_radius = max(4, int(corner_radius))
         self._image = image
         self._compound = str(compound)
@@ -3321,6 +3380,8 @@ class OutlinedButton(tk.Canvas):
             + (self._padx * 2)
             + 16,
         )
+        if self._fixed_pixel_width is not None:
+            pixel_width = self._fixed_pixel_width
         pixel_height = max(
             self._minimum_height,
             line_height + (self._pady * 2) + 8,
@@ -3861,6 +3922,125 @@ class RoundedMenuButton(OutlinedButton):
         return super().cget(option)
 
 
+class InAppPage(tk.Frame):
+    """Frame-backed replacement for a Toplevel page inside the main app.
+
+    The existing page builders were written for ``tk.Toplevel``.  This
+    adapter deliberately supports the small window API surface they use so
+    the same tables and forms can render in the main window without opening
+    another native window.
+    """
+
+    def __init__(
+        self,
+        parent,
+        app,
+        page_key: str,
+        title: str,
+        **kwargs,
+    ) -> None:
+        super().__init__(parent, **kwargs)
+        self._app = app
+        self.page_key = str(page_key)
+        self._page_title = str(title)
+        self._protocols: dict[str, object] = {}
+        self._closing_requested = False
+        self._internal_destroy = False
+
+    def title(self, value: str | None = None) -> str:
+        if value is not None:
+            self._page_title = str(value)
+        return self._page_title
+
+    def geometry(self, _value: str | None = None) -> str:
+        return (
+            f"{max(1, self.winfo_width())}x{max(1, self.winfo_height())}"
+            f"+{self.winfo_x()}+{self.winfo_y()}"
+        )
+
+    def minsize(self, _width: int | None = None, _height: int | None = None):
+        return None
+
+    def maxsize(self, _width: int | None = None, _height: int | None = None):
+        return None
+
+    def resizable(self, _width: bool | None = None, _height: bool | None = None):
+        return (True, True)
+
+    def transient(self, _master=None):
+        return None
+
+    def grab_set(self):
+        return None
+
+    def grab_release(self):
+        return None
+
+    def iconphoto(self, *_args, **_kwargs):
+        return None
+
+    def attributes(self, *_args):
+        return None
+
+    wm_attributes = attributes
+
+    def overrideredirect(self, *_args):
+        return None
+
+    def protocol(self, name: str, command=None):
+        if command is not None:
+            self._protocols[str(name)] = command
+        return self._protocols.get(str(name))
+
+    wm_protocol = protocol
+
+    def state(self, _value: str | None = None) -> str:
+        return "zoomed"
+
+    wm_state = state
+
+    def withdraw(self) -> None:
+        try:
+            self.pack_forget()
+        except tk.TclError:
+            pass
+
+    def deiconify(self) -> None:
+        if not self.winfo_manager():
+            self.pack(fill="both", expand=True)
+
+    def request_close(self) -> None:
+        if self._internal_destroy or not self.winfo_exists():
+            return
+        if self._closing_requested:
+            self._app._close_in_app_page(self)
+            return
+        self._closing_requested = True
+        handler = self._protocols.get("WM_DELETE_WINDOW")
+        try:
+            if callable(handler):
+                handler()
+            if self.winfo_exists():
+                self._app._close_in_app_page(self)
+        finally:
+            self._closing_requested = False
+
+    def destroy(self) -> None:
+        if self._internal_destroy:
+            super().destroy()
+            return
+        self._app._close_in_app_page(self)
+
+    def _destroy_from_app(self) -> None:
+        if not self.winfo_exists():
+            return
+        self._internal_destroy = True
+        try:
+            super().destroy()
+        finally:
+            self._internal_destroy = False
+
+
 class OutlinedLabel(tk.Canvas):
     """Canvas-backed label that gives light text a one-pixel black edge."""
 
@@ -3987,8 +4167,12 @@ class OutlinedLabel(tk.Canvas):
             self._line_count,
             1,
         )
+        requested_width = max(
+            4,
+            measured_width + self._padx * 2 + 4,
+        )
         return (
-            max(4, measured_width + self._padx * 2 + 4),
+            requested_width,
             max(
                 4,
                 self._font.metrics("linespace")
@@ -10351,6 +10535,31 @@ def rom_builder_parse_date(
         return None
 
 
+def calendar_month_cutoff(
+    reference_date: date,
+    months: int,
+) -> date:
+    """Return the same calendar day ``months`` earlier when possible."""
+    month_count = (
+        reference_date.year * 12
+        + reference_date.month
+        - 1
+        - max(0, int(months))
+    )
+    cutoff_year, cutoff_month_index = divmod(month_count, 12)
+    cutoff_month = cutoff_month_index + 1
+    if cutoff_month == 12:
+        following_month = date(cutoff_year + 1, 1, 1)
+    else:
+        following_month = date(cutoff_year, cutoff_month + 1, 1)
+    final_day = (following_month - timedelta(days=1)).day
+    return date(
+        cutoff_year,
+        cutoff_month,
+        min(reference_date.day, final_day),
+    )
+
+
 def rom_builder_read_u24_be(
     data: bytes,
     offset: int,
@@ -11489,6 +11698,26 @@ def installed_document_path(filename: str) -> Path:
     if external.is_file():
         return external
     return bundled_resource_path("installer", filename)
+
+
+def localized_installed_document_path(
+    filename: str,
+    language: object,
+) -> Path:
+    """Return a localized bundled notice, falling back to its base file."""
+    language_code = str(language or "en").strip()
+    source_name = Path(filename)
+    if language_code not in {"", "en"}:
+        localized_name = (
+            source_name.stem
+            + "."
+            + language_code
+            + source_name.suffix
+        )
+        localized_path = installed_document_path(localized_name)
+        if localized_path.is_file():
+            return localized_path
+    return installed_document_path(filename)
 
 
 def append_error_log(context: str, error_text: str) -> None:
@@ -15200,6 +15429,9 @@ def blend_hex_colors(
 CONFIG_FILE = Path.home() / "SMWStreamTrackerConfig.json"
 TIMER_SAVE_FILE = Path.home() / "SMWStreamTrackerTimes.json"
 DEATH_SAVE_FILE = Path.home() / "SMWStreamTrackerDeaths.json"
+LEVEL_PROGRESS_SAVE_FILE = (
+    Path.home() / "SMWStreamTrackerLevelProgress.json"
+)
 
 # These are first-run defaults only. load_config() replaces each value with
 # the user's saved value when one exists, so an app update never resets a
@@ -15249,11 +15481,30 @@ APP_LANGUAGE_LABELS = {
     "pt-BR": "Português (Brasil)",
 }
 
+README_LANGUAGE_FILENAMES = {
+    "en": "README.en.txt",
+    "au": "README.au.txt",
+    "es": "README.es.txt",
+    "fr": "README.fr.txt",
+    "de": "README.de.txt",
+    "pt-BR": "README.pt-BR.txt",
+}
+
+FEEDBACK_LANGUAGE_LOCALES = {
+    "en": "en-US",
+    "au": "en-AU",
+    "es": "es-ES",
+    "fr": "fr-FR",
+    "de": "de-DE",
+    "pt-BR": "pt-BR",
+}
+
 # Exact, reviewed interface wording is used instead of machine translation.
 # Dynamic values (hack titles, file paths, authors and catalog data) are never
 # translated or modified.
 UI_TRANSLATIONS: dict[str, dict[str, str]] = {
     "es": {
+        "Home": "Inicio",
         "File": "Archivo", "Stats": "Estadísticas",
         "Settings": "Configuración", "Downloads": "Descargas",
         "Help": "Ayuda", "Select Platform": "Seleccionar plataforma",
@@ -15265,6 +15516,8 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Replay Recent Hack": "Volver a jugar un hack reciente",
         "Add to My Tracker": "Añadir a Mi Tracker",
         "Complete Hack": "Completar hack", "Current Hack": "Hack actual",
+        "Live Session": "Sesión en vivo",
+        "Game Controls": "Controles del juego",
         "Timers": "Temporizadores", "Game Time": "Tiempo de juego",
         "Level Time": "Tiempo de nivel", "Level Deaths": "Muertes del nivel",
         "Total Deaths": "Muertes totales", "Reset": "Reiniciar",
@@ -15321,6 +15574,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Download All Matching Hacks": "Descargar todos los hacks coincidentes",
     },
     "fr": {
+        "Home": "Accueil",
         "File": "Fichier", "Stats": "Statistiques",
         "Settings": "Paramètres", "Downloads": "Téléchargements",
         "Help": "Aide", "Select Platform": "Choisir la plateforme",
@@ -15332,6 +15586,8 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Replay Recent Hack": "Rejouer à un hack récent",
         "Add to My Tracker": "Ajouter à Mon Tracker",
         "Complete Hack": "Terminer le hack", "Current Hack": "Hack actuel",
+        "Live Session": "Session en direct",
+        "Game Controls": "Commandes du jeu",
         "Timers": "Chronomètres", "Game Time": "Temps de jeu",
         "Level Time": "Temps du niveau", "Level Deaths": "Morts du niveau",
         "Total Deaths": "Morts totales", "Reset": "Réinitialiser",
@@ -15388,6 +15644,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Download All Matching Hacks": "Télécharger tous les hacks correspondants",
     },
     "de": {
+        "Home": "Startseite",
         "File": "Datei", "Stats": "Statistiken",
         "Settings": "Einstellungen", "Downloads": "Downloads",
         "Help": "Hilfe", "Select Platform": "Plattform auswählen",
@@ -15399,6 +15656,8 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Replay Recent Hack": "Kürzlich gespielten Hack erneut spielen",
         "Add to My Tracker": "Zu Mein Tracker hinzufügen",
         "Complete Hack": "Hack abschließen", "Current Hack": "Aktueller Hack",
+        "Live Session": "Live-Sitzung",
+        "Game Controls": "Spielsteuerung",
         "Timers": "Timer", "Game Time": "Spielzeit",
         "Level Time": "Levelzeit", "Level Deaths": "Level-Tode",
         "Total Deaths": "Tode insgesamt", "Reset": "Zurücksetzen",
@@ -15455,6 +15714,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Download All Matching Hacks": "Alle passenden Hacks herunterladen",
     },
     "pt-BR": {
+        "Home": "Início",
         "File": "Arquivo", "Stats": "Estatísticas",
         "Settings": "Configurações", "Downloads": "Downloads",
         "Help": "Ajuda", "Select Platform": "Selecionar plataforma",
@@ -15466,6 +15726,8 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Replay Recent Hack": "Jogar novamente um hack recente",
         "Add to My Tracker": "Adicionar ao Meu Tracker",
         "Complete Hack": "Concluir hack", "Current Hack": "Hack atual",
+        "Live Session": "Sessão ao vivo",
+        "Game Controls": "Controles do jogo",
         "Timers": "Cronômetros", "Game Time": "Tempo de jogo",
         "Level Time": "Tempo da fase", "Level Deaths": "Mortes na fase",
         "Total Deaths": "Mortes totais", "Reset": "Redefinir",
@@ -15571,9 +15833,10 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "No game detected": "No se detectó ningún juego",
         "Streamer Privacy Warning": "Aviso de privacidad para streamers",
         "Don't show streamer privacy warnings anywhere in the app": "No mostrar avisos de privacidad para streamers en toda la aplicación",
-        "Continue": "Continuar", "Overworld timer grace:": "Margen del temporizador en el mapa:",
+        "Continue": "Continuar", "Timer grace:": "Margen del temporizador:",
         "seconds": "segundos", "Game LiveSplit port:": "Puerto LiveSplit del juego:",
         "Level LiveSplit port:": "Puerto LiveSplit del nivel:",
+        "Timers keep running for this many seconds whenever gameplay is interrupted anywhere in a hack, then pause until gameplay resumes.": "Los temporizadores siguen funcionando durante estos segundos cuando el juego se interrumpe en cualquier parte del hack y luego se pausan hasta que continúa el juego.",
         "Choose another difficulty color": "Elegir otro color de dificultad",
         "Reset all difficulty colors": "Restablecer todos los colores de dificultad",
         "Edit Rate gradient data bar...": "Editar barra de gradiente de progreso...",
@@ -15666,9 +15929,10 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "No game detected": "Aucun jeu détecté",
         "Streamer Privacy Warning": "Avertissement de confidentialité pour les streamers",
         "Don't show streamer privacy warnings anywhere in the app": "Ne plus afficher les avertissements de confidentialité dans l’application",
-        "Continue": "Continuer", "Overworld timer grace:": "Délai du chronomètre sur la carte :",
+        "Continue": "Continuer", "Timer grace:": "Délai des chronomètres :",
         "seconds": "secondes", "Game LiveSplit port:": "Port LiveSplit du jeu :",
         "Level LiveSplit port:": "Port LiveSplit du niveau :",
+        "Timers keep running for this many seconds whenever gameplay is interrupted anywhere in a hack, then pause until gameplay resumes.": "Les chronomètres continuent pendant ce nombre de secondes lorsque le jeu est interrompu n’importe où dans un hack, puis se mettent en pause jusqu’à la reprise.",
         "Choose another difficulty color": "Choisir une autre couleur de difficulté",
         "Reset all difficulty colors": "Réinitialiser toutes les couleurs de difficulté",
         "Edit Rate gradient data bar...": "Modifier la barre de progression en dégradé...",
@@ -15761,9 +16025,10 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "No game detected": "Kein Spiel erkannt",
         "Streamer Privacy Warning": "Datenschutzhinweis für Streamer",
         "Don't show streamer privacy warnings anywhere in the app": "Datenschutzhinweise für Streamer in der gesamten App nicht mehr anzeigen",
-        "Continue": "Weiter", "Overworld timer grace:": "Kulanzzeit des Timers auf der Karte:",
+        "Continue": "Weiter", "Timer grace:": "Timer-Kulanzzeit:",
         "seconds": "Sekunden", "Game LiveSplit port:": "LiveSplit-Port für das Spiel:",
         "Level LiveSplit port:": "LiveSplit-Port für das Level:",
+        "Timers keep running for this many seconds whenever gameplay is interrupted anywhere in a hack, then pause until gameplay resumes.": "Die Timer laufen bei einer Unterbrechung an beliebiger Stelle im Hack noch so viele Sekunden weiter und pausieren dann, bis das Spiel fortgesetzt wird.",
         "Choose another difficulty color": "Andere Schwierigkeitsfarbe auswählen",
         "Reset all difficulty colors": "Alle Schwierigkeitsfarben zurücksetzen",
         "Edit Rate gradient data bar...": "Fortschrittsbalken mit Verlauf bearbeiten...",
@@ -15856,9 +16121,10 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "No game detected": "Nenhum jogo detectado",
         "Streamer Privacy Warning": "Aviso de privacidade para streamers",
         "Don't show streamer privacy warnings anywhere in the app": "Não mostrar avisos de privacidade para streamers em todo o aplicativo",
-        "Continue": "Continuar", "Overworld timer grace:": "Tolerância do cronômetro no mapa:",
+        "Continue": "Continuar", "Timer grace:": "Tolerância dos cronômetros:",
         "seconds": "segundos", "Game LiveSplit port:": "Porta LiveSplit do jogo:",
         "Level LiveSplit port:": "Porta LiveSplit da fase:",
+        "Timers keep running for this many seconds whenever gameplay is interrupted anywhere in a hack, then pause until gameplay resumes.": "Os cronômetros continuam por estes segundos quando o jogo é interrompido em qualquer parte do hack e depois pausam até o jogo continuar.",
         "Choose another difficulty color": "Escolher outra cor de dificuldade",
         "Reset all difficulty colors": "Redefinir todas as cores de dificuldade",
         "Edit Rate gradient data bar...": "Editar barra de progresso em gradiente...",
@@ -15913,6 +16179,16 @@ for _language_code, _extra_translations in _UI_TRANSLATION_EXTRAS.items():
 
 _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
     "es": {
+        "Home": "Inicio",
+        "FXPAK Pro…": "FXPAK Pro…",
+        "FXPAK Pro Home...": "Inicio de FXPAK Pro...",
+        "FXPAK Pro Home…": "Inicio de FXPAK Pro…",
+        "FXPAK Pro Game Library...": "Biblioteca de juegos de FXPAK Pro...",
+        "FXPAK Pro Game Library…": "Biblioteca de juegos de FXPAK Pro…",
+        "SMW Central Catalog...": "Catálogo de SMW Central...",
+        "SMW Central Catalog…": "Catálogo de SMW Central…",
+        "Refresh Catalog View": "Actualizar catálogo",
+        "Refresh Connection": "Actualizar conexión",
         "Open My Tracker": "Abrir Mi Tracker",
         "Overview": "Resumen",
         "Spreadsheet Tools": "Herramientas de hojas de cálculo",
@@ -15934,6 +16210,16 @@ _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "Se muestran {count} hacks moderados del catálogo. Los títulos amarillos están descargados y listos para jugar; haz doble clic para iniciarlos. Haz clic en cualquier encabezado para ordenar o elige Abrir página / Descargar parche.",
     },
     "fr": {
+        "Home": "Accueil",
+        "FXPAK Pro…": "FXPAK Pro…",
+        "FXPAK Pro Home...": "Accueil FXPAK Pro...",
+        "FXPAK Pro Home…": "Accueil FXPAK Pro…",
+        "FXPAK Pro Game Library...": "Bibliothèque de jeux FXPAK Pro...",
+        "FXPAK Pro Game Library…": "Bibliothèque de jeux FXPAK Pro…",
+        "SMW Central Catalog...": "Catalogue SMW Central...",
+        "SMW Central Catalog…": "Catalogue SMW Central…",
+        "Refresh Catalog View": "Actualiser le catalogue",
+        "Refresh Connection": "Actualiser la connexion",
         "Open My Tracker": "Ouvrir Mon Tracker",
         "Overview": "Vue d’ensemble",
         "Spreadsheet Tools": "Outils de feuille de calcul",
@@ -15955,6 +16241,16 @@ _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "Affichage de {count} hacks modérés du catalogue. Les titres jaunes sont téléchargés et prêts à jouer ; double-cliquez pour les lancer. Cliquez sur un en-tête pour trier ou choisissez Ouvrir la page / Télécharger le patch.",
     },
     "de": {
+        "Home": "Startseite",
+        "FXPAK Pro…": "FXPAK Pro…",
+        "FXPAK Pro Home...": "FXPAK-Pro-Startseite...",
+        "FXPAK Pro Home…": "FXPAK-Pro-Startseite…",
+        "FXPAK Pro Game Library...": "FXPAK-Pro-Spielebibliothek...",
+        "FXPAK Pro Game Library…": "FXPAK-Pro-Spielebibliothek…",
+        "SMW Central Catalog...": "SMW-Central-Katalog...",
+        "SMW Central Catalog…": "SMW-Central-Katalog…",
+        "Refresh Catalog View": "Katalog aktualisieren",
+        "Refresh Connection": "Verbindung aktualisieren",
         "Open My Tracker": "Meinen Tracker öffnen",
         "Overview": "Übersicht",
         "Spreadsheet Tools": "Tabellenwerkzeuge",
@@ -15976,6 +16272,16 @@ _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "{count} moderierte Katalog-Hacks werden angezeigt. Gelbe Titel sind heruntergeladen und spielbereit; zum Starten doppelklicken. Zum Sortieren eine Spaltenüberschrift anklicken oder Seite öffnen / Patch herunterladen wählen.",
     },
     "pt-BR": {
+        "Home": "Início",
+        "FXPAK Pro…": "FXPAK Pro…",
+        "FXPAK Pro Home...": "Início do FXPAK Pro...",
+        "FXPAK Pro Home…": "Início do FXPAK Pro…",
+        "FXPAK Pro Game Library...": "Biblioteca de jogos do FXPAK Pro...",
+        "FXPAK Pro Game Library…": "Biblioteca de jogos do FXPAK Pro…",
+        "SMW Central Catalog...": "Catálogo do SMW Central...",
+        "SMW Central Catalog…": "Catálogo do SMW Central…",
+        "Refresh Catalog View": "Atualizar catálogo",
+        "Refresh Connection": "Atualizar conexão",
         "Open My Tracker": "Abrir Meu Tracker",
         "Overview": "Visão geral",
         "Spreadsheet Tools": "Ferramentas de planilha",
@@ -16000,6 +16306,340 @@ _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
 for _language_code, _translations in _TRACKER_WORKFLOW_TRANSLATIONS.items():
     UI_TRANSLATIONS[_language_code].update(_translations)
 
+# Text shared by the browser-style pages, setup tools, and system dialogs.
+# Keeping these rows together guarantees that every supported non-English
+# language receives the same interface coverage when new pages are added.
+_LOCALIZATION_COMPLETION_ROWS = (
+    # English, Spanish, French, German, Portuguese (Brazil)
+    ("Back", "Atrás", "Retour", "Zurück", "Voltar"),
+    ("Website", "Sitio web", "Site web", "Webseite", "Site"),
+    ("Privacy", "Privacidad", "Confidentialité", "Datenschutz", "Privacidade"),
+    ("App License", "Licencia de la aplicación", "Licence de l’application", "App-Lizenz", "Licença do aplicativo"),
+    ("Third-Party", "Terceros", "Logiciels tiers", "Drittanbieter", "Terceiros"),
+    ("Visit SMW Central", "Visitar SMW Central", "Visiter SMW Central", "SMW Central besuchen", "Visitar SMW Central"),
+    ("FXPAK Pro Game Library", "Biblioteca de juegos de FXPAK Pro", "Bibliothèque de jeux FXPAK Pro", "FXPAK-Pro-Spielebibliothek", "Biblioteca de jogos do FXPAK Pro"),
+    ("RetroArch Game Library", "Biblioteca de juegos de RetroArch", "Bibliothèque de jeux RetroArch", "RetroArch-Spielebibliothek", "Biblioteca de jogos do RetroArch"),
+    ("SMWC Rating", "Puntuación SMWC", "Note SMWC", "SMWC-Bewertung", "Avaliação SMWC"),
+    ("Sort By", "Ordenar por", "Trier par", "Sortieren nach", "Ordenar por"),
+    ("Title (A-Z)", "Título (A-Z)", "Titre (A-Z)", "Titel (A-Z)", "Título (A-Z)"),
+    ("Top", "Inicio", "Début", "Anfang", "Início"),
+    ("All matching games remain visible; the selection only moves the list.", "Todos los juegos coincidentes siguen visibles; la selección solo desplaza la lista.", "Tous les jeux correspondants restent visibles ; la sélection déplace seulement la liste.", "Alle passenden Spiele bleiben sichtbar; die Auswahl verschiebt nur die Liste.", "Todos os jogos correspondentes continuam visíveis; a seleção apenas move a lista."),
+    ("Select a game to view its details.", "Selecciona un juego para ver sus detalles.", "Sélectionnez un jeu pour afficher ses détails.", "Wähle ein Spiel aus, um Details anzuzeigen.", "Selecione um jogo para ver os detalhes."),
+    ("The random button applies its own Rating, Difficulty, and Type filters, then launches the selected ROM.", "El botón aleatorio aplica sus propios filtros de puntuación, dificultad y tipo y luego inicia la ROM seleccionada.", "Le bouton aléatoire applique ses propres filtres de note, difficulté et type, puis lance la ROM sélectionnée.", "Die Zufallstaste verwendet eigene Filter für Bewertung, Schwierigkeit und Typ und startet dann die ausgewählte ROM.", "O botão aleatório aplica seus próprios filtros de avaliação, dificuldade e tipo e inicia a ROM selecionada."),
+    ("Uploaded to SMW Central", "Subido a SMW Central", "Ajouté sur SMW Central", "Auf SMW Central hochgeladen", "Enviado ao SMW Central"),
+    ("Any upload date", "Cualquier fecha de subida", "Toute date d'ajout", "Beliebiges Upload-Datum", "Qualquer data de envio"),
+    ("Last month", "Último mes", "Dernier mois", "Letzter Monat", "Último mês"),
+    ("Last {months} months", "Últimos {months} meses", "Derniers {months} mois", "Letzte {months} Monate", "Últimos {months} meses"),
+    ("Last year", "Último año", "Dernière année", "Letztes Jahr", "Último ano"),
+    ("Last {years} years", "Últimos {years} años", "Dernières {years} années", "Letzte {years} Jahre", "Últimos {years} anos"),
+    ("Import workbook", "Importar libro", "Importer un classeur", "Arbeitsmappe importieren", "Importar pasta de trabalho"),
+    ("OBS text folder", "Carpeta de textos OBS", "Dossier des textes OBS", "OBS-Textordner", "Pasta de textos do OBS"),
+    ("Local ROM library", "Biblioteca local de ROM", "Bibliothèque ROM locale", "Lokale ROM-Bibliothek", "Biblioteca local de ROMs"),
+    ("RetroArch core", "Núcleo de RetroArch", "Cœur RetroArch", "RetroArch-Core", "Núcleo do RetroArch"),
+    ("FXPAK Pro and RetroArch use SNI or QUsb2Snes for live memory tracking. RetroArch also needs Network Commands enabled. The workbook remains optional after import.", "FXPAK Pro y RetroArch usan SNI o QUsb2Snes para el seguimiento de memoria en vivo. RetroArch también necesita los comandos de red activados. El libro sigue siendo opcional después de importarlo.", "FXPAK Pro et RetroArch utilisent SNI ou QUsb2Snes pour le suivi mémoire en direct. RetroArch nécessite aussi les commandes réseau. Le classeur reste facultatif après l’importation.", "FXPAK Pro und RetroArch verwenden SNI oder QUsb2Snes für die Live-Speicherverfolgung. Für RetroArch müssen außerdem Netzwerkbefehle aktiviert sein. Die Arbeitsmappe bleibt nach dem Import optional.", "FXPAK Pro e RetroArch usam SNI ou QUsb2Snes para rastreamento de memória ao vivo. O RetroArch também precisa dos Comandos de Rede ativados. A pasta de trabalho continua opcional após a importação."),
+    ("Author file format:", "Formato del archivo de autor:", "Format du fichier d’auteur :", "Format der Autor-Datei:", "Formato do arquivo de autor:"),
+    ("Exits file format:", "Formato del archivo de salidas:", "Format du fichier des sorties :", "Format der Ausgänge-Datei:", "Formato do arquivo de saídas:"),
+    ("Level deaths file format:", "Formato de muertes del nivel:", "Format des morts du niveau :", "Format der Level-Tode-Datei:", "Formato de mortes da fase:"),
+    ("Total deaths file format:", "Formato de muertes totales:", "Format des morts totales :", "Format der Gesamt-Tode-Datei:", "Formato de mortes totais:"),
+    ("Required and optional parts are shown separately. An optional tool that is not installed will not prevent SMW Stream Tracker from running.", "Los componentes obligatorios y opcionales se muestran por separado. Una herramienta opcional no instalada no impedirá que SMW Stream Tracker funcione.", "Les éléments obligatoires et facultatifs sont affichés séparément. Un outil facultatif non installé n’empêchera pas SMW Stream Tracker de fonctionner.", "Erforderliche und optionale Komponenten werden getrennt angezeigt. Ein nicht installiertes optionales Werkzeug verhindert den Start von SMW Stream Tracker nicht.", "Os componentes obrigatórios e opcionais são mostrados separadamente. Uma ferramenta opcional não instalada não impedirá o SMW Stream Tracker de funcionar."),
+    ("Tracker database", "Base de datos del tracker", "Base de données du tracker", "Tracker-Datenbank", "Banco de dados do tracker"),
+    ("Catalog and tracker data are available.", "Los datos del catálogo y del tracker están disponibles.", "Les données du catalogue et du tracker sont disponibles.", "Katalog- und Tracker-Daten sind verfügbar.", "Os dados do catálogo e do tracker estão disponíveis."),
+    ("Patched ROM library", "Biblioteca de ROM parcheadas", "Bibliothèque de ROM patchées", "Bibliothek gepatchter ROMs", "Biblioteca de ROMs corrigidas"),
+    ("Folder is configured.", "La carpeta está configurada.", "Le dossier est configuré.", "Der Ordner ist eingerichtet.", "A pasta está configurada."),
+    ("OBS / stream text output", "Salida de texto de OBS / transmisión", "Sortie texte OBS / diffusion", "OBS-/Stream-Textausgabe", "Saída de texto do OBS / transmissão"),
+    ("Output folder is ready.", "La carpeta de salida está lista.", "Le dossier de sortie est prêt.", "Der Ausgabeordner ist bereit.", "A pasta de saída está pronta."),
+    ("FXPAK connection services", "Servicios de conexión FXPAK", "Services de connexion FXPAK", "FXPAK-Verbindungsdienste", "Serviços de conexão FXPAK"),
+    ("RetroArch Network Commands are responding. The executable and SNES core are also configured.", "Los comandos de red de RetroArch responden. El ejecutable y el núcleo SNES también están configurados.", "Les commandes réseau RetroArch répondent. L’exécutable et le cœur SNES sont également configurés.", "Die RetroArch-Netzwerkbefehle antworten. Programmdatei und SNES-Core sind ebenfalls eingerichtet.", "Os Comandos de Rede do RetroArch estão respondendo. O executável e o núcleo SNES também estão configurados."),
+    ("LiveSplit timer servers", "Servidores de temporizador LiveSplit", "Serveurs de chronométrage LiveSplit", "LiveSplit-Timer-Server", "Servidores de cronômetro LiveSplit"),
+    ("Recovery backups", "Copias de recuperación", "Sauvegardes de récupération", "Wiederherstellungssicherungen", "Backups de recuperação"),
+    ("Automatic rotating backups are available.", "Hay copias automáticas rotativas disponibles.", "Des sauvegardes automatiques rotatives sont disponibles.", "Automatisch wechselnde Sicherungen sind verfügbar.", "Backups automáticos rotativos estão disponíveis."),
+    ("Recheck", "Volver a comprobar", "Revérifier", "Erneut prüfen", "Verificar novamente"),
+    ("Test Platform", "Probar plataforma", "Tester la plateforme", "Plattform testen", "Testar plataforma"),
+    ("Copy Diagnostics", "Copiar diagnóstico", "Copier le diagnostic", "Diagnose kopieren", "Copiar diagnóstico"),
+    ("Open Log Folder", "Abrir carpeta de registros", "Ouvrir le dossier des journaux", "Protokollordner öffnen", "Abrir pasta de logs"),
+    ("This safe report hides usernames, ROM names, and full personal paths. Error logs remain only on this computer unless you copy them.", "Este informe seguro oculta nombres de usuario, ROM y rutas personales completas. Los registros de errores permanecen en este equipo salvo que los copies.", "Ce rapport sécurisé masque les noms d’utilisateur, de ROM et les chemins personnels complets. Les journaux d’erreurs restent sur cet ordinateur sauf si vous les copiez.", "Dieser sichere Bericht blendet Benutzernamen, ROM-Namen und vollständige persönliche Pfade aus. Fehlerprotokolle bleiben auf diesem Computer, sofern du sie nicht kopierst.", "Este relatório seguro oculta nomes de usuário, ROMs e caminhos pessoais completos. Os logs de erro permanecem neste computador, a menos que você os copie."),
+    ("Progress", "Progreso", "Progression", "Fortschritt", "Progresso"),
+    ("Ratings", "Puntuaciones", "Notes", "Bewertungen", "Avaliações"),
+    ("Playtime", "Tiempo jugado", "Temps de jeu", "Spielzeit", "Tempo de jogo"),
+    ("Recent Activity", "Actividad reciente", "Activité récente", "Letzte Aktivitäten", "Atividade recente"),
+    ("Tracker Status Breakdown", "Desglose del estado del tracker", "Répartition de l’état du tracker", "Aufschlüsselung des Tracker-Status", "Detalhamento do status do tracker"),
+    ("Difficulty Progress Graph", "Gráfico de progreso por dificultad", "Graphique de progression par difficulté", "Fortschrittsdiagramm nach Schwierigkeit", "Gráfico de progresso por dificuldade"),
+    ("Progress by Difficulty", "Progreso por dificultad", "Progression par difficulté", "Fortschritt nach Schwierigkeit", "Progresso por dificuldade"),
+    ("Hack #", "Hack n.º", "Hack n°", "Hack-Nr.", "Hack nº"),
+    ("Total Deaths", "Muertes totales", "Morts totales", "Tode insgesamt", "Mortes totais"),
+    ("% Complete", "% completado", "% terminé", "% abgeschlossen", "% concluído"),
+    ("My Rating", "Mi puntuación", "Ma note", "Meine Bewertung", "Minha avaliação"),
+    ("Started", "Iniciado", "Commencé", "Begonnen", "Iniciado"),
+    ("SMW Central Rating", "Puntuación de SMW Central", "Note SMW Central", "SMW-Central-Bewertung", "Avaliação do SMW Central"),
+    ("Download Missing SMW Hacks", "Descargar hacks faltantes de SMW", "Télécharger les hacks SMW manquants", "Fehlende SMW-Hacks herunterladen", "Baixar hacks ausentes do SMW"),
+    ("Minimum rating", "Puntuación mínima", "Note minimale", "Mindestbewertung", "Avaliação mínima"),
+    ("Maximum rating", "Puntuación máxima", "Note maximale", "Höchstbewertung", "Avaliação máxima"),
+    ("SMW Central Page", "Página de SMW Central", "Page SMW Central", "SMW-Central-Seite", "Página do SMW Central"),
+    ("Download Patch", "Descargar parche", "Télécharger le patch", "Patch herunterladen", "Baixar patch"),
+    ("Catalog Status", "Estado del catálogo", "État du catalogue", "Katalogstatus", "Status do catálogo"),
+    ("Refresh Moderated Hacks from SMW Central", "Actualizar hacks moderados desde SMW Central", "Actualiser les hacks modérés depuis SMW Central", "Moderierte Hacks von SMW Central aktualisieren", "Atualizar hacks moderados do SMW Central"),
+    ("File Name", "Nombre del archivo", "Nom du fichier", "Dateiname", "Nome do arquivo"),
+    ("Format", "Formato", "Format", "Format", "Formato"),
+    ("SD Card Path", "Ruta de la tarjeta SD", "Chemin de la carte SD", "SD-Kartenpfad", "Caminho do cartão SD"),
+    ("SD card unavailable", "Tarjeta SD no disponible", "Carte SD indisponible", "SD-Karte nicht verfügbar", "Cartão SD indisponível"),
+    ("Could not access the FXPAK Pro SD card.", "No se pudo acceder a la tarjeta SD de FXPAK Pro.", "Impossible d’accéder à la carte SD FXPAK Pro.", "Auf die FXPAK-Pro-SD-Karte konnte nicht zugegriffen werden.", "Não foi possível acessar o cartão SD do FXPAK Pro."),
+    ("FXPAK Pro SD Card Could Not Be Opened", "No se pudo abrir la tarjeta SD del FXPAK Pro", "Impossible d’ouvrir la carte SD du FXPAK Pro", "FXPAK-Pro-SD-Karte konnte nicht geöffnet werden", "Não foi possível abrir o cartão SD do FXPAK Pro"),
+    ("Make sure the console and FXPAK Pro are powered on, a USB data cable is connected, and QUsb2Snes or SNI shows the FXPAK Pro.", "Asegúrate de que la consola y el FXPAK Pro estén encendidos, que haya un cable USB de datos conectado y que QUsb2Snes o SNI muestre el FXPAK Pro.", "Vérifiez que la console et le FXPAK Pro sont allumés, qu’un câble USB de données est connecté et que QUsb2Snes ou SNI affiche le FXPAK Pro.", "Stelle sicher, dass die Konsole und der FXPAK Pro eingeschaltet sind, ein USB-Datenkabel angeschlossen ist und QUsb2Snes oder SNI den FXPAK Pro anzeigt.", "Verifique se o console e o FXPAK Pro estão ligados, se um cabo USB de dados está conectado e se o QUsb2Snes ou SNI mostra o FXPAK Pro."),
+    ("QUsb2Snes did not report a compatible SNES device.", "QUsb2Snes no detectó ningún dispositivo SNES compatible.", "QUsb2Snes n’a détecté aucun appareil SNES compatible.", "QUsb2Snes hat kein kompatibles SNES-Gerät erkannt.", "O QUsb2Snes não detectou um dispositivo SNES compatível."),
+    ("READ ME / SETUP GUIDE", "GUÍA DE INSTALACIÓN Y USO", "GUIDE D’INSTALLATION ET D’UTILISATION", "EINRICHTUNGS- UND BEDIENUNGSANLEITUNG", "GUIA DE INSTALAÇÃO E USO"),
+    ("ABOUT & UPDATES", "ACERCA DE Y ACTUALIZACIONES", "À PROPOS ET MISES À JOUR", "INFO UND UPDATES", "SOBRE E ATUALIZAÇÕES"),
+    ("No Update Available", "No hay actualizaciones", "Aucune mise à jour disponible", "Kein Update verfügbar", "Nenhuma atualização disponível"),
+    ("You have the latest version ({version}).", "Tienes la versión más reciente ({version}).", "Vous avez la dernière version ({version}).", "Du hast die neueste Version ({version}).", "Você tem a versão mais recente ({version})."),
+    ("No Previous Version", "No hay una versión anterior", "Aucune version précédente", "Keine vorherige Version", "Nenhuma versão anterior"),
+    ("No previous installed app version is available to restore yet.", "Todavía no hay una versión instalada anterior disponible para restaurar.", "Aucune ancienne version installée n’est encore disponible pour la restauration.", "Es ist noch keine vorherige installierte App-Version zum Wiederherstellen verfügbar.", "Ainda não há uma versão anterior instalada disponível para restauração."),
+    ("Platform Test Passed", "Prueba de plataforma superada", "Test de plateforme réussi", "Plattformtest bestanden", "Teste de plataforma aprovado"),
+    ("Platform Test Failed", "Error en la prueba de plataforma", "Échec du test de plateforme", "Plattformtest fehlgeschlagen", "Falha no teste de plataforma"),
+    ("Detected ROM:", "ROM detectada:", "ROM détectée :", "Erkannte ROM:", "ROM detectada:"),
+    ("Game launching: ready", "Inicio de juegos: listo", "Lancement du jeu : prêt", "Spielstart: bereit", "Inicialização do jogo: pronta"),
+    ("Found", "Encontrado", "Trouvé", "Gefunden", "Encontrado"),
+    ("Ready", "Listo", "Prêt", "Bereit", "Pronto"),
+    ("The app found {name} here:", "La aplicación encontró {name} aquí:", "L’application a trouvé {name} ici :", "Die App hat {name} hier gefunden:", "O aplicativo encontrou {name} aqui:"),
+    ("Use and configure this installation automatically?", "¿Usar y configurar esta instalación automáticamente?", "Utiliser et configurer cette installation automatiquement ?", "Diese Installation automatisch verwenden und einrichten?", "Usar e configurar esta instalação automaticamente?"),
+    ("Choose No to download a fresh copy instead.", "Elige No para descargar una copia nueva.", "Choisissez Non pour télécharger une nouvelle copie.", "Wähle Nein, um stattdessen eine neue Kopie herunterzuladen.", "Escolha Não para baixar uma nova cópia."),
+    ("Settings now point to:", "La configuración ahora apunta a:", "Les paramètres pointent maintenant vers :", "Die Einstellungen verweisen jetzt auf:", "As configurações agora apontam para:"),
+    ("RetroArch is configured and its locations were saved in Settings.", "RetroArch está configurado y sus ubicaciones se guardaron en Configuración.", "RetroArch est configuré et ses emplacements ont été enregistrés dans les paramètres.", "RetroArch ist eingerichtet und seine Speicherorte wurden in den Einstellungen gespeichert.", "O RetroArch está configurado e seus locais foram salvos nas Configurações."),
+    ("Executable:", "Ejecutable:", "Exécutable :", "Programmdatei:", "Executável:"),
+    ("Recommended core:", "Núcleo recomendado:", "Cœur recommandé :", "Empfohlener Core:", "Núcleo recomendado:"),
+    ("{platform} is connected through {device}.", "{platform} está conectado mediante {device}.", "{platform} est connecté via {device}.", "{platform} ist über {device} verbunden.", "{platform} está conectado por {device}."),
+    ("The connection is ready; no running ROM was detected.", "La conexión está lista; no se detectó ninguna ROM en ejecución.", "La connexion est prête ; aucune ROM en cours d’exécution n’a été détectée.", "Die Verbindung ist bereit; es wurde keine laufende ROM erkannt.", "A conexão está pronta; nenhuma ROM em execução foi detectada."),
+    ("Live tracking is connected, but game launching still needs the missing path(s) in Settings.", "El seguimiento en vivo está conectado, pero faltan rutas en Configuración para iniciar juegos.", "Le suivi en direct est connecté, mais des chemins manquent encore dans les paramètres pour lancer les jeux.", "Die Live-Verfolgung ist verbunden, aber zum Spielstart fehlen noch Pfade in den Einstellungen.", "O rastreamento ao vivo está conectado, mas ainda faltam caminhos nas Configurações para iniciar jogos."),
+    ("{platform} could not connect.", "{platform} no pudo conectarse.", "{platform} n’a pas pu se connecter.", "{platform} konnte keine Verbindung herstellen.", "{platform} não conseguiu se conectar."),
+    ("Read Me", "Léame", "Lisez-moi", "Liesmich", "Leia-me"),
+    ("The selected-language Read Me could not be opened.", "No se pudo abrir el archivo Léame del idioma seleccionado.", "Le guide de la langue sélectionnée n’a pas pu être ouvert.", "Die Anleitung in der ausgewählten Sprache konnte nicht geöffnet werden.", "Não foi possível abrir o guia no idioma selecionado."),
+    ("Optional", "Opcional", "Facultatif", "Optional", "Opcional"),
+    ("OBS TEXT SETTINGS", "CONFIGURACIÓN DE TEXTO OBS", "PARAMÈTRES DES TEXTES OBS", "OBS-TEXTEINSTELLUNGEN", "CONFIGURAÇÕES DE TEXTO DO OBS"),
+    ("SETUP & HEALTH CHECK", "CONFIGURACIÓN Y COMPROBACIÓN DEL SISTEMA", "CONFIGURATION ET VÉRIFICATION DU SYSTÈME", "EINRICHTUNG UND SYSTEMPRÜFUNG", "CONFIGURAÇÃO E VERIFICAÇÃO DO SISTEMA"),
+    ("DIAGNOSTICS", "DIAGNÓSTICO", "DIAGNOSTIC", "DIAGNOSE", "DIAGNÓSTICO"),
+    ("Tracker Statistics", "Estadísticas del tracker", "Statistiques du tracker", "Tracker-Statistiken", "Estatísticas do tracker"),
+    ("Tracker Status", "Estado del tracker", "État du tracker", "Tracker-Status", "Status do tracker"),
+    ("Catalog Version", "Versión del catálogo", "Version du catalogue", "Katalogversion", "Versão do catálogo"),
+    ("Catalog Last Refresh", "Última actualización del catálogo", "Dernière actualisation du catalogue", "Letzte Katalogaktualisierung", "Última atualização do catálogo"),
+    ("TRACKED", "SEGUIDOS", "SUIVIS", "VERFOLGT", "ACOMPANHADOS"),
+    ("MY TRACKER", "MI TRACKER", "MON TRACKER", "MEIN TRACKER", "MEU TRACKER"),
+    ("•  MARIO WORLD PROGRESS", "•  PROGRESO DE MARIO WORLD", "•  PROGRESSION MARIO WORLD", "•  MARIO-WORLD-FORTSCHRITT", "•  PROGRESSO DE MARIO WORLD"),
+    ("Played before the death-counter update; a historical death total is not available.", "Jugado antes de la actualización del contador de muertes; no hay un total histórico disponible.", "Joué avant la mise à jour du compteur de morts ; aucun total historique n’est disponible.", "Vor dem Update des Todeszählers gespielt; eine historische Gesamtzahl ist nicht verfügbar.", "Jogado antes da atualização do contador de mortes; não há total histórico disponível."),
+    ("Right-click a cell to edit data bars and colors", "Haz clic derecho en una celda para editar barras de datos y colores", "Faites un clic droit sur une cellule pour modifier les barres et les couleurs", "Mit der rechten Maustaste auf eine Zelle klicken, um Datenbalken und Farben zu bearbeiten", "Clique com o botão direito em uma célula para editar barras e cores"),
+    ("Right-click Difficulty or Rate for cell colors; right-click any table to customize its rows", "Haz clic derecho en Dificultad o Tasa para los colores; haz clic derecho en cualquier tabla para personalizar sus filas", "Clic droit sur Difficulté ou Taux pour les couleurs ; clic droit sur un tableau pour personnaliser ses lignes", "Rechtsklick auf Schwierigkeit oder Rate für Zellfarben; Rechtsklick auf eine Tabelle zum Anpassen der Zeilen", "Clique com o botão direito em Dificuldade ou Taxa para cores; clique em qualquer tabela para personalizar as linhas"),
+    ("Loading moderated catalog…", "Cargando catálogo moderado…", "Chargement du catalogue modéré…", "Moderierter Katalog wird geladen…", "Carregando catálogo moderado…"),
+    ("Scanning game library…", "Analizando biblioteca de juegos…", "Analyse de la bibliothèque de jeux…", "Spielebibliothek wird durchsucht…", "Verificando biblioteca de jogos…"),
+    ("Showing every moderated hack in the local SMW Central catalog.", "Mostrando todos los hacks moderados del catálogo local de SMW Central.", "Affichage de tous les hacks modérés du catalogue SMW Central local.", "Alle moderierten Hacks im lokalen SMW-Central-Katalog werden angezeigt.", "Mostrando todos os hacks moderados do catálogo local do SMW Central."),
+    ("Choose filters, then download only missing moderated hacks.", "Elige filtros y descarga solo los hacks moderados que faltan.", "Choisissez des filtres, puis téléchargez uniquement les hacks modérés manquants.", "Filter auswählen und nur fehlende moderierte Hacks herunterladen.", "Escolha os filtros e baixe apenas os hacks moderados ausentes."),
+    ("Date format: YYYY-MM-DD. Leave either date blank for no boundary.", "Formato de fecha: AAAA-MM-DD. Deja una fecha vacía para no limitarla.", "Format de date : AAAA-MM-JJ. Laissez une date vide pour ne pas définir de limite.", "Datumsformat: JJJJ-MM-TT. Ein leeres Datumsfeld setzt keine Grenze.", "Formato da data: AAAA-MM-DD. Deixe uma data vazia para não definir limite."),
+    ("Browse every moderated hack currently stored in the SMW Central catalog. Use the filters to narrow the list. Search by title or creator, and click any column heading to sort it.", "Explora todos los hacks moderados del catálogo de SMW Central. Usa los filtros, busca por título o creador y haz clic en un encabezado para ordenar.", "Parcourez tous les hacks modérés du catalogue SMW Central. Utilisez les filtres, recherchez par titre ou créateur et cliquez sur un en-tête pour trier.", "Alle moderierten Hacks im SMW-Central-Katalog durchsuchen. Filter verwenden, nach Titel oder Ersteller suchen und zum Sortieren auf eine Spaltenüberschrift klicken.", "Explore todos os hacks moderados do catálogo do SMW Central. Use os filtros, pesquise por título ou criador e clique em um cabeçalho para ordenar."),
+    ("SMWC Added", "Añadido a SMWC", "Ajouté à SMWC", "Bei SMWC hinzugefügt", "Adicionado ao SMWC"),
+    ("Date Added (Newest)", "Fecha añadida (más reciente)", "Date d’ajout (plus récente)", "Hinzugefügt (neueste)", "Data adicionada (mais recente)"),
+    ("Date Added (Oldest)", "Fecha añadida (más antigua)", "Date d’ajout (plus ancienne)", "Hinzugefügt (älteste)", "Data adicionada (mais antiga)"),
+    ("Hack Title", "Título del hack", "Titre du hack", "Hack-Titel", "Título do hack"),
+    ("Folder", "Carpeta", "Dossier", "Ordner", "Pasta"),
+    ("Connect to view SD-card hacks", "Conecta para ver los hacks de la tarjeta SD", "Connectez-vous pour afficher les hacks de la carte SD", "Verbinden, um Hacks auf der SD-Karte anzuzeigen", "Conecte para ver os hacks do cartão SD"),
+    ("This manager shows ROM files on the SD card inside the FXPAK Pro. Removing a selected file is permanent on the card, but it does not delete the local ROM or tracker progress.", "Este administrador muestra las ROM de la tarjeta SD del FXPAK Pro. Eliminar un archivo es permanente en la tarjeta, pero no borra la ROM local ni el progreso.", "Ce gestionnaire affiche les ROM de la carte SD du FXPAK Pro. La suppression est définitive sur la carte, mais ne supprime ni la ROM locale ni la progression.", "Dieser Manager zeigt ROM-Dateien auf der SD-Karte im FXPAK Pro. Das Entfernen ist auf der Karte dauerhaft, löscht aber weder die lokale ROM noch den Fortschritt.", "Este gerenciador mostra as ROMs do cartão SD no FXPAK Pro. A remoção é permanente no cartão, mas não exclui a ROM local nem o progresso."),
+    ("Missing", "Falta", "Manquant", "Fehlt", "Ausente"),
+    ("Needs Attention", "Requiere atención", "Attention requise", "Aufmerksamkeit erforderlich", "Requer atenção"),
+    ("Finish Setup", "Finalizar configuración", "Terminer la configuration", "Einrichtung abschließen", "Concluir configuração"),
+    ("OBS text folder:", "Carpeta de textos OBS:", "Dossier des textes OBS :", "OBS-Textordner:", "Pasta de textos do OBS:"),
+    ("Open OBS Text Folder", "Abrir carpeta de textos OBS", "Ouvrir le dossier des textes OBS", "OBS-Textordner öffnen", "Abrir pasta de textos do OBS"),
+    ("Installed version:", "Versión instalada:", "Version installée :", "Installierte Version:", "Versão instalada:"),
+    ("New version:", "Nueva versión:", "Nouvelle version :", "Neue Version:", "Nova versão:"),
+    ("Release date:", "Fecha de publicación:", "Date de publication :", "Veröffentlichungsdatum:", "Data de lançamento:"),
+    ("Download size:", "Tamaño de descarga:", "Taille du téléchargement :", "Downloadgröße:", "Tamanho do download:"),
+    ("Release notes:", "Notas de la versión:", "Notes de version :", "Versionshinweise:", "Notas da versão:"),
+    ("Download & Install", "Descargar e instalar", "Télécharger et installer", "Herunterladen und installieren", "Baixar e instalar"),
+    ("Later", "Más tarde", "Plus tard", "Später", "Mais tarde"),
+    ("⚙  SETTINGS", "⚙  CONFIGURACIÓN", "⚙  PARAMÈTRES", "⚙  EINSTELLUNGEN", "⚙  CONFIGURAÇÕES"),
+    ("★  SMW Central Catalog", "★  Catálogo de SMW Central", "★  Catalogue SMW Central", "★  SMW-Central-Katalog", "★  Catálogo do SMW Central"),
+    ("⬇  Download Missing SMW Hacks", "⬇  Descargar hacks faltantes de SMW", "⬇  Télécharger les hacks SMW manquants", "⬇  Fehlende SMW-Hacks herunterladen", "⬇  Baixar hacks ausentes do SMW"),
+    ("▣  FXPAK PRO GAME LIBRARY", "▣  BIBLIOTECA DE JUEGOS FXPAK PRO", "▣  BIBLIOTHÈQUE DE JEUX FXPAK PRO", "▣  FXPAK-PRO-SPIELEBIBLIOTHEK", "▣  BIBLIOTECA DE JOGOS FXPAK PRO"),
+    ("▶  Launch Selected", "▶  Iniciar selección", "▶  Lancer la sélection", "▶  Auswahl starten", "▶  Iniciar selecionado"),
+    ("🎲  RANDOM GAME", "🎲  JUEGO ALEATORIO", "🎲  JEU ALÉATOIRE", "🎲  ZUFÄLLIGES SPIEL", "🎲  JOGO ALEATÓRIO"),
+    ("🎲  Play Random Game", "🎲  Jugar juego aleatorio", "🎲  Jouer à un jeu aléatoire", "🎲  Zufälliges Spiel starten", "🎲  Jogar jogo aleatório"),
+    ("Use {author}. Examples:  By: {author}   or   {author}", "Usa {author}. Ejemplos:  Por: {author}   o   {author}", "Utilisez {author}. Exemples :  Par : {author}   ou   {author}", "{author} verwenden. Beispiele:  Von: {author}   oder   {author}", "Use {author}. Exemplos:  Por: {author}   ou   {author}"),
+    ("Use {completed} and optionally {total}. Examples:  Exits: {completed} / {total}   or   {completed} / {total}", "Usa {completed} y opcionalmente {total}. Ejemplos:  Salidas: {completed} / {total}   o   {completed} / {total}", "Utilisez {completed} et éventuellement {total}. Exemples :  Sorties : {completed} / {total}   ou   {completed} / {total}", "{completed} und optional {total} verwenden. Beispiele:  Ausgänge: {completed} / {total}   oder   {completed} / {total}", "Use {completed} e opcionalmente {total}. Exemplos:  Saídas: {completed} / {total}   ou   {completed} / {total}"),
+    ("Use {deaths}. Examples:  Level Deaths: {deaths}   or   {deaths}", "Usa {deaths}. Ejemplos:  Muertes del nivel: {deaths}   o   {deaths}", "Utilisez {deaths}. Exemples :  Morts du niveau : {deaths}   ou   {deaths}", "{deaths} verwenden. Beispiele:  Level-Tode: {deaths}   oder   {deaths}", "Use {deaths}. Exemplos:  Mortes da fase: {deaths}   ou   {deaths}"),
+    ("Use {total_deaths}. Examples:  Total Deaths: {total_deaths}   or   {total_deaths}", "Usa {total_deaths}. Ejemplos:  Muertes totales: {total_deaths}   o   {total_deaths}", "Utilisez {total_deaths}. Exemples :  Morts totales : {total_deaths}   ou   {total_deaths}", "{total_deaths} verwenden. Beispiele:  Tode insgesamt: {total_deaths}   oder   {total_deaths}", "Use {total_deaths}. Exemplos:  Mortes totais: {total_deaths}   ou   {total_deaths}"),
+)
+for (
+    _english_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _LOCALIZATION_COMPLETION_ROWS:
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
+# Full page-level coverage for the browser-style windows.  These strings are
+# deliberately kept in one shared table so a newly translated page cannot
+# silently leave its explanatory text, validation messages, or status cards
+# in English while only translating the title bar.
+_WINDOW_LOCALIZATION_ROWS = (
+    # English, Spanish, French, German, Portuguese (Brazil)
+    ("SMW Stream Tracker Settings", "Configuración de SMW Stream Tracker", "Paramètres de SMW Stream Tracker", "SMW-Stream-Tracker-Einstellungen", "Configurações do SMW Stream Tracker"),
+    ("Settings saved.", "Configuración guardada.", "Paramètres enregistrés.", "Einstellungen gespeichert.", "Configurações salvas."),
+    ("Settings were saved successfully.", "La configuración se guardó correctamente.", "Les paramètres ont été enregistrés.", "Die Einstellungen wurden erfolgreich gespeichert.", "As configurações foram salvas com sucesso."),
+    ("Select SNI.exe", "Seleccionar SNI.exe", "Sélectionner SNI.exe", "SNI.exe auswählen", "Selecionar SNI.exe"),
+    ("Select QUsb2Snes.exe", "Seleccionar QUsb2Snes.exe", "Sélectionner QUsb2Snes.exe", "QUsb2Snes.exe auswählen", "Selecionar QUsb2Snes.exe"),
+    ("Select optional workbook to import", "Seleccionar libro opcional para importar", "Sélectionner le classeur facultatif à importer", "Optionale Arbeitsmappe zum Importieren auswählen", "Selecionar pasta de trabalho opcional para importar"),
+    ("Select OBS text-file folder", "Seleccionar carpeta de archivos de texto de OBS", "Sélectionner le dossier des fichiers texte OBS", "Ordner für OBS-Textdateien auswählen", "Selecionar pasta de arquivos de texto do OBS"),
+    ("Select local patched-ROM library", "Seleccionar biblioteca local de ROM parcheadas", "Sélectionner la bibliothèque locale de ROM patchées", "Lokale Bibliothek gepatchter ROMs auswählen", "Selecionar biblioteca local de ROMs corrigidas"),
+    ("Select RetroArch SNES core", "Seleccionar núcleo SNES de RetroArch", "Sélectionner le cœur SNES RetroArch", "RetroArch-SNES-Core auswählen", "Selecionar núcleo SNES do RetroArch"),
+    ("Select retroarch.exe", "Seleccionar retroarch.exe", "Sélectionner retroarch.exe", "retroarch.exe auswählen", "Selecionar retroarch.exe"),
+    ("The spreadsheet must be an .xlsx or .xlsm file.", "La hoja debe ser un archivo .xlsx o .xlsm.", "La feuille doit être un fichier .xlsx ou .xlsm.", "Die Tabelle muss eine .xlsx- oder .xlsm-Datei sein.", "A planilha deve ser um arquivo .xlsx ou .xlsm."),
+    ("Idle seconds must be 0 or greater. LiveSplit ports must be different numbers between 1 and 65535.", "Los segundos de espera deben ser 0 o más. Los puertos de LiveSplit deben ser números distintos entre 1 y 65535.", "Le délai doit être supérieur ou égal à 0. Les ports LiveSplit doivent être différents et compris entre 1 et 65535.", "Die Wartezeit muss mindestens 0 betragen. Die LiveSplit-Ports müssen unterschiedliche Zahlen zwischen 1 und 65535 sein.", "Os segundos de espera devem ser 0 ou mais. As portas do LiveSplit devem ser números diferentes entre 1 e 65535."),
+    ("SMW Stream Tracker Statistics", "Estadísticas de SMW Stream Tracker", "Statistiques de SMW Stream Tracker", "SMW-Stream-Tracker-Statistiken", "Estatísticas do SMW Stream Tracker"),
+    ("In Progress", "En curso", "En cours", "In Bearbeitung", "Em andamento"),
+    ("Planned", "Planificado", "Prévu", "Geplant", "Planejado"),
+    ("My SMW Tracker", "Mi tracker de SMW", "Mon tracker SMW", "Mein SMW-Tracker", "Meu tracker de SMW"),
+    ("Only hacks that have been moderated and included in the SMW Central catalog are downloaded. This tool downloads their patch ZIPs and applies them to your own clean Super Mario World ROM. It never downloads a base ROM. Existing mapped or local games are always skipped.", "Solo se descargan hacks moderados incluidos en el catálogo de SMW Central. Esta herramienta descarga sus parches ZIP y los aplica a tu propia ROM limpia de Super Mario World. Nunca descarga una ROM base. Los juegos locales o ya asignados siempre se omiten.", "Seuls les hacks modérés du catalogue SMW Central sont téléchargés. Cet outil télécharge leurs patchs ZIP et les applique à votre propre ROM Super Mario World propre. Il ne télécharge jamais de ROM de base. Les jeux locaux ou déjà associés sont ignorés.", "Es werden nur moderierte Hacks aus dem SMW-Central-Katalog heruntergeladen. Das Werkzeug lädt deren Patch-ZIPs herunter und wendet sie auf deine eigene saubere Super-Mario-World-ROM an. Eine Basis-ROM wird niemals heruntergeladen. Bereits zugeordnete oder lokale Spiele werden übersprungen.", "Somente hacks moderados do catálogo do SMW Central são baixados. Esta ferramenta baixa os patches ZIP e os aplica à sua própria ROM limpa de Super Mario World. Ela nunca baixa uma ROM base. Jogos locais ou já mapeados são ignorados."),
+    ("Select the All_Hacks folder on the mounted SD card. The local library copy is always kept.", "Selecciona la carpeta All_Hacks de la tarjeta SD montada. La copia de la biblioteca local siempre se conserva.", "Sélectionnez le dossier All_Hacks de la carte SD montée. La copie de la bibliothèque locale est toujours conservée.", "Wähle den Ordner All_Hacks auf der eingebundenen SD-Karte. Die lokale Bibliothekskopie bleibt immer erhalten.", "Selecione a pasta All_Hacks no cartão SD montado. A cópia da biblioteca local é sempre mantida."),
+    ("Leave the SD card in the FXPAK Pro. Connect its USB data cable and keep QUsb2Snes running; this is the folder on the card, not a Windows folder.", "Deja la tarjeta SD en el FXPAK Pro. Conecta el cable USB de datos y mantén QUsb2Snes abierto; esta es la carpeta de la tarjeta, no una carpeta de Windows.", "Laissez la carte SD dans le FXPAK Pro. Branchez le câble USB et laissez QUsb2Snes fonctionner ; il s’agit du dossier de la carte, pas d’un dossier Windows.", "Lass die SD-Karte im FXPAK Pro. Schließe das USB-Datenkabel an und lasse QUsb2Snes laufen; gemeint ist der Ordner auf der Karte, nicht ein Windows-Ordner.", "Deixe o cartão SD no FXPAK Pro. Conecte o cabo USB de dados e mantenha o QUsb2Snes em execução; esta é a pasta no cartão, não uma pasta do Windows."),
+    ("The tracker database catalog is still loading. Wait for the Tracker Database status to show Loaded, then open this window again.", "El catálogo todavía se está cargando. Espera a que el estado de la base de datos indique Cargado y vuelve a abrir esta ventana.", "Le catalogue est encore en cours de chargement. Attendez que la base de données indique Chargé, puis rouvrez cette fenêtre.", "Der Katalog wird noch geladen. Warte, bis der Datenbankstatus Geladen anzeigt, und öffne dieses Fenster erneut.", "O catálogo ainda está carregando. Aguarde o status do banco de dados mostrar Carregado e abra esta janela novamente."),
+    ("Finish or cancel the current download before switching to the catalog viewer.", "Finaliza o cancela la descarga actual antes de cambiar al catálogo.", "Terminez ou annulez le téléchargement en cours avant d’ouvrir le catalogue.", "Beende oder brich den aktuellen Download ab, bevor du zum Katalog wechselst.", "Conclua ou cancele o download atual antes de abrir o catálogo."),
+    ("Download in Progress", "Descarga en curso", "Téléchargement en cours", "Download läuft", "Download em andamento"),
+    ("Hack Downloader", "Descargador de hacks", "Téléchargeur de hacks", "Hack-Downloader", "Baixador de hacks"),
+    ("Game Library", "Biblioteca de juegos", "Bibliothèque de jeux", "Spielebibliothek", "Biblioteca de jogos"),
+    ("The tracker database game list is still loading. Wait for the Tracker Database status to show Loaded, then click the platform icon again.", "La lista de juegos todavía se está cargando. Espera a que la base de datos indique Cargado y vuelve a pulsar el icono de la plataforma.", "La liste des jeux est encore en cours de chargement. Attendez que la base de données indique Chargé, puis cliquez de nouveau sur l’icône de la plateforme.", "Die Spieleliste wird noch geladen. Warte, bis der Datenbankstatus Geladen anzeigt, und klicke erneut auf das Plattformsymbol.", "A lista de jogos ainda está carregando. Aguarde o banco de dados mostrar Carregado e clique novamente no ícone da plataforma."),
+    ("Ready to launch a game on", "Listo para iniciar un juego en", "Prêt à lancer un jeu sur", "Bereit zum Starten eines Spiels auf", "Pronto para iniciar um jogo em"),
+    ("Power on the console and FXPAK Pro, connect its USB data cable, and keep QUsb2Snes or SNI running.", "Enciende la consola y el FXPAK Pro, conecta el cable USB de datos y mantén QUsb2Snes o SNI abierto.", "Allumez la console et le FXPAK Pro, branchez le câble USB et laissez QUsb2Snes ou SNI fonctionner.", "Schalte Konsole und FXPAK Pro ein, schließe das USB-Datenkabel an und lasse QUsb2Snes oder SNI laufen.", "Ligue o console e o FXPAK Pro, conecte o cabo USB de dados e mantenha o QUsb2Snes ou SNI em execução."),
+    ("SMW Stream Tracker Diagnostics", "Diagnóstico de SMW Stream Tracker", "Diagnostic de SMW Stream Tracker", "SMW-Stream-Tracker-Diagnose", "Diagnóstico do SMW Stream Tracker"),
+    ("First-Run Setup Check", "Comprobación de configuración inicial", "Vérification de la première configuration", "Prüfung der Ersteinrichtung", "Verificação da configuração inicial"),
+    ("The local database has not been created yet.", "La base de datos local aún no se ha creado.", "La base de données locale n’a pas encore été créée.", "Die lokale Datenbank wurde noch nicht erstellt.", "O banco de dados local ainda não foi criado."),
+    ("Choose the folder where patched ROMs are stored in Settings.", "Elige en Configuración la carpeta donde se guardan las ROM parcheadas.", "Choisissez dans les paramètres le dossier contenant les ROM patchées.", "Wähle in den Einstellungen den Ordner mit den gepatchten ROMs.", "Escolha nas Configurações a pasta onde as ROMs corrigidas são armazenadas."),
+    ("Choose or create the OBS text output folder in Settings.", "Elige o crea en Configuración la carpeta de salida de texto de OBS.", "Choisissez ou créez dans les paramètres le dossier de sortie des textes OBS.", "Wähle oder erstelle in den Einstellungen den OBS-Textausgabeordner.", "Escolha ou crie nas Configurações a pasta de saída de textos do OBS."),
+    ("Configured service(s):", "Servicios configurados:", "Services configurés :", "Eingerichtete Dienste:", "Serviços configurados:"),
+    ("A bridge is responding.", "Un puente está respondiendo.", "Un pont répond.", "Eine Bridge antwortet.", "Uma ponte está respondendo."),
+    ("Neither is currently responding on port 23074.", "Ninguno responde actualmente en el puerto 23074.", "Aucun ne répond actuellement sur le port 23074.", "Keiner antwortet derzeit auf Port 23074.", "Nenhum está respondendo atualmente na porta 23074."),
+    ("Install SNI (recommended) or QUsb2Snes, then select it in Settings.", "Instala SNI (recomendado) o QUsb2Snes y selecciónalo en Configuración.", "Installez SNI (recommandé) ou QUsb2Snes, puis sélectionnez-le dans les paramètres.", "Installiere SNI (empfohlen) oder QUsb2Snes und wähle es in den Einstellungen aus.", "Instale o SNI (recomendado) ou QUsb2Snes e selecione-o nas Configurações."),
+    ("Optional for RetroArch users. Install it only if you also use FXPAK Pro.", "Opcional para usuarios de RetroArch. Instálalo solo si también usas FXPAK Pro.", "Facultatif pour RetroArch. Installez-le uniquement si vous utilisez aussi FXPAK Pro.", "Für RetroArch-Benutzer optional. Nur installieren, wenn du auch FXPAK Pro verwendest.", "Opcional para usuários do RetroArch. Instale somente se também usar o FXPAK Pro."),
+    ("RetroArch Network Commands are responding.", "Los comandos de red de RetroArch responden.", "Les commandes réseau RetroArch répondent.", "Die RetroArch-Netzwerkbefehle antworten.", "Os Comandos de Rede do RetroArch estão respondendo."),
+    ("The executable and SNES core are also configured.", "El ejecutable y el núcleo SNES también están configurados.", "L’exécutable et le cœur SNES sont également configurés.", "Programmdatei und SNES-Core sind ebenfalls eingerichtet.", "O executável e o núcleo SNES também estão configurados."),
+    ("The running installation was detected directly.", "La instalación en ejecución se detectó directamente.", "L’installation en cours a été détectée directement.", "Die laufende Installation wurde direkt erkannt.", "A instalação em execução foi detectada diretamente."),
+    ("RetroArch live tracking is connected through the configured SNI/QUsb2Snes service.", "El seguimiento en vivo de RetroArch está conectado mediante el servicio SNI/QUsb2Snes configurado.", "Le suivi en direct de RetroArch est connecté via le service SNI/QUsb2Snes configuré.", "Die RetroArch-Live-Verfolgung ist über den eingerichteten SNI/QUsb2Snes-Dienst verbunden.", "O rastreamento ao vivo do RetroArch está conectado pelo serviço SNI/QUsb2Snes configurado."),
+    ("RetroArch is optional and is not required while FXPAK Pro is selected.", "RetroArch es opcional y no es necesario mientras FXPAK Pro esté seleccionado.", "RetroArch est facultatif et n’est pas requis lorsque FXPAK Pro est sélectionné.", "RetroArch ist optional und bei ausgewähltem FXPAK Pro nicht erforderlich.", "O RetroArch é opcional e não é necessário enquanto o FXPAK Pro estiver selecionado."),
+    ("Files are configured. Start RetroArch and enable Network Commands, or connect it through SNI/QUsb2Snes.", "Los archivos están configurados. Inicia RetroArch y activa los comandos de red, o conéctalo mediante SNI/QUsb2Snes.", "Les fichiers sont configurés. Lancez RetroArch et activez les commandes réseau, ou connectez-le via SNI/QUsb2Snes.", "Die Dateien sind eingerichtet. Starte RetroArch und aktiviere Netzwerkbefehle oder verbinde es über SNI/QUsb2Snes.", "Os arquivos estão configurados. Inicie o RetroArch e ative os Comandos de Rede ou conecte-o pelo SNI/QUsb2Snes."),
+    ("Configure the RetroArch executable and SNES core, then enable Network Commands or live tracking through SNI/QUsb2Snes.", "Configura el ejecutable y el núcleo SNES de RetroArch y activa los comandos de red o el seguimiento mediante SNI/QUsb2Snes.", "Configurez l’exécutable et le cœur SNES RetroArch, puis activez les commandes réseau ou le suivi via SNI/QUsb2Snes.", "Richte die RetroArch-Programmdatei und den SNES-Core ein und aktiviere Netzwerkbefehle oder Live-Verfolgung über SNI/QUsb2Snes.", "Configure o executável e o núcleo SNES do RetroArch e ative os Comandos de Rede ou o rastreamento pelo SNI/QUsb2Snes."),
+    ("LiveSplit is running on the game and level timer ports", "LiveSplit se está ejecutando en los puertos de los temporizadores de juego y nivel", "LiveSplit fonctionne sur les ports des chronomètres du jeu et du niveau", "LiveSplit läuft auf den Ports für Spiel- und Leveltimer", "O LiveSplit está em execução nas portas dos cronômetros de jogo e fase"),
+    ("LiveSplit is not running (it is optional) on the configured timer ports", "LiveSplit no se está ejecutando (es opcional) en los puertos configurados", "LiveSplit ne fonctionne pas (il est facultatif) sur les ports configurés", "LiveSplit läuft nicht (es ist optional) auf den eingerichteten Timer-Ports", "O LiveSplit não está em execução (é opcional) nas portas configuradas"),
+    ("LiveSplit commands are disabled; built-in timers and OBS text files continue to work normally.", "Los comandos de LiveSplit están desactivados; los temporizadores integrados y los textos de OBS siguen funcionando normalmente.", "Les commandes LiveSplit sont désactivées ; les chronomètres intégrés et les textes OBS continuent de fonctionner normalement.", "LiveSplit-Befehle sind deaktiviert; integrierte Timer und OBS-Textdateien funktionieren weiterhin normal.", "Os comandos do LiveSplit estão desativados; os cronômetros integrados e os textos do OBS continuam funcionando normalmente."),
+    ("The LiveSplit timer ports are invalid. LiveSplit commands are disabled until the ports are corrected in Settings.", "Los puertos de LiveSplit no son válidos. Sus comandos están desactivados hasta corregirlos en Configuración.", "Les ports LiveSplit ne sont pas valides. Les commandes sont désactivées jusqu’à leur correction dans les paramètres.", "Die LiveSplit-Timer-Ports sind ungültig. LiveSplit-Befehle bleiben deaktiviert, bis die Ports in den Einstellungen korrigiert wurden.", "As portas do LiveSplit são inválidas. Os comandos ficam desativados até que as portas sejam corrigidas nas Configurações."),
+    ("Choose the folder where OBS text files should be saved.", "Elige la carpeta donde se guardarán los archivos de texto de OBS.", "Choisissez le dossier d’enregistrement des fichiers texte OBS.", "Wähle den Ordner, in dem die OBS-Textdateien gespeichert werden sollen.", "Escolha a pasta onde os arquivos de texto do OBS serão salvos."),
+    ("Choose an OBS text folder first.", "Primero elige una carpeta de textos de OBS.", "Choisissez d’abord un dossier de textes OBS.", "Wähle zuerst einen OBS-Textordner.", "Escolha primeiro uma pasta de textos do OBS."),
+    ("OBS text settings saved", "Configuración de textos de OBS guardada", "Paramètres des textes OBS enregistrés", "OBS-Texteinstellungen gespeichert", "Configurações de textos do OBS salvas"),
+    ("Could not open the OBS text folder:", "No se pudo abrir la carpeta de textos de OBS:", "Impossible d’ouvrir le dossier des textes OBS :", "Der OBS-Textordner konnte nicht geöffnet werden:", "Não foi possível abrir a pasta de textos do OBS:"),
+    ("Could not save the OBS text files:", "No se pudieron guardar los archivos de texto de OBS:", "Impossible d’enregistrer les fichiers texte OBS :", "Die OBS-Textdateien konnten nicht gespeichert werden:", "Não foi possível salvar os arquivos de texto do OBS:"),
+    ("Invalid author format", "Formato de autor no válido", "Format d’auteur non valide", "Ungültiges Autorformat", "Formato de autor inválido"),
+    ("Invalid exits format", "Formato de salidas no válido", "Format de sorties non valide", "Ungültiges Ausgängeformat", "Formato de saídas inválido"),
+    ("Invalid deaths format", "Formato de muertes no válido", "Format des morts non valide", "Ungültiges Todesformat", "Formato de mortes inválido"),
+    ("Invalid total deaths format", "Formato de muertes totales no válido", "Format des morts totales non valide", "Ungültiges Gesamt-Todesformat", "Formato de mortes totais inválido"),
+    ("Sample Creator", "Creador de ejemplo", "Créateur d’exemple", "Beispielersteller", "Criador de exemplo"),
+    ("Browse...", "Examinar...", "Parcourir...", "Durchsuchen...", "Procurar..."),
+    ("SMW STREAM TRACKER DIAGNOSTICS", "DIAGNÓSTICO DE SMW STREAM TRACKER", "DIAGNOSTIC DE SMW STREAM TRACKER", "SMW-STREAM-TRACKER-DIAGNOSE", "DIAGNÓSTICO DO SMW STREAM TRACKER"),
+    ("Generated:", "Generado:", "Généré :", "Erstellt:", "Gerado:"),
+    ("App version:", "Versión de la aplicación:", "Version de l’application :", "App-Version:", "Versão do aplicativo:"),
+    ("Build date:", "Fecha de compilación:", "Date de compilation :", "Build-Datum:", "Data da compilação:"),
+    ("Build type:", "Tipo de compilación:", "Type de compilation :", "Build-Typ:", "Tipo de compilação:"),
+    ("Installed application", "Aplicación instalada", "Application installée", "Installierte Anwendung", "Aplicativo instalado"),
+    ("Development source", "Código de desarrollo", "Source de développement", "Entwicklungsquelle", "Código de desenvolvimento"),
+    ("Theme:", "Tema:", "Thème :", "Design:", "Tema:"),
+    ("Selected platform:", "Plataforma seleccionada:", "Plateforme sélectionnée :", "Ausgewählte Plattform:", "Plataforma selecionada:"),
+    ("Connection status:", "Estado de la conexión:", "État de la connexion :", "Verbindungsstatus:", "Status da conexão:"),
+    ("Tracker worker:", "Proceso del tracker:", "Service du tracker :", "Tracker-Dienst:", "Processo do tracker:"),
+    ("Running", "En ejecución", "En cours", "Läuft", "Em execução"),
+    ("Stopped", "Detenido", "Arrêté", "Angehalten", "Parado"),
+    ("CONFIGURATION STATUS", "ESTADO DE LA CONFIGURACIÓN", "ÉTAT DE LA CONFIGURATION", "KONFIGURATIONSSTATUS", "STATUS DA CONFIGURAÇÃO"),
+    ("Preferred connection service:", "Servicio de conexión preferido:", "Service de connexion préféré :", "Bevorzugter Verbindungsdienst:", "Serviço de conexão preferido:"),
+    ("RetroArch SNES core:", "Núcleo SNES de RetroArch:", "Cœur SNES RetroArch :", "RetroArch-SNES-Core:", "Núcleo SNES do RetroArch:"),
+    ("ROM library:", "Biblioteca de ROM:", "Bibliothèque ROM :", "ROM-Bibliothek:", "Biblioteca de ROMs:"),
+    ("OBS output:", "Salida de OBS:", "Sortie OBS :", "OBS-Ausgabe:", "Saída do OBS:"),
+    ("Tracker database:", "Base de datos del tracker:", "Base de données du tracker :", "Tracker-Datenbank:", "Banco de dados do tracker:"),
+    ("Automatic backups:", "Copias automáticas:", "Sauvegardes automatiques :", "Automatische Sicherungen:", "Backups automáticos:"),
+    ("RECENT LOCAL ERRORS (REDACTED)", "ERRORES LOCALES RECIENTES (OCULTOS)", "ERREURS LOCALES RÉCENTES (MASQUÉES)", "LETZTE LOKALE FEHLER (BEREINIGT)", "ERROS LOCAIS RECENTES (OCULTOS)"),
+    ("Not configured", "No configurado", "Non configuré", "Nicht eingerichtet", "Não configurado"),
+    ("Configured and found", "Configurado y encontrado", "Configuré et trouvé", "Eingerichtet und gefunden", "Configurado e encontrado"),
+    ("Configured but missing", "Configurado pero no encontrado", "Configuré mais introuvable", "Eingerichtet, aber nicht gefunden", "Configurado, mas ausente"),
+    ("No recent errors were found.", "No se encontraron errores recientes.", "Aucune erreur récente n’a été trouvée.", "Es wurden keine aktuellen Fehler gefunden.", "Nenhum erro recente foi encontrado."),
+    ("Privacy: this report does not include ROM titles, usernames, or full personal paths.", "Privacidad: este informe no incluye títulos de ROM, nombres de usuario ni rutas personales completas.", "Confidentialité : ce rapport ne contient ni titres de ROM, ni noms d’utilisateur, ni chemins personnels complets.", "Datenschutz: Dieser Bericht enthält keine ROM-Titel, Benutzernamen oder vollständigen persönlichen Pfade.", "Privacidade: este relatório não inclui títulos de ROMs, nomes de usuário nem caminhos pessoais completos."),
+    ("Redacted diagnostics copied to the clipboard.", "Diagnóstico oculto copiado al portapapeles.", "Diagnostic masqué copié dans le presse-papiers.", "Bereinigte Diagnose in die Zwischenablage kopiert.", "Diagnóstico oculto copiado para a área de transferência."),
+    ("SETTINGS", "CONFIGURACIÓN", "PARAMÈTRES", "EINSTELLUNGEN", "CONFIGURAÇÕES"),
+    ("Preferred service", "Servicio preferido", "Service préféré", "Bevorzugter Dienst", "Serviço preferido"),
+    ("Timer grace:", "Tolerancia del temporizador:", "Délai des chronomètres :", "Timer-Nachlauf:", "Tolerância do cronômetro:"),
+    ("seconds", "segundos", "secondes", "Sekunden", "segundos"),
+    ("Timers keep running for this many seconds whenever gameplay is interrupted anywhere in a hack, then pause until gameplay resumes.", "Los temporizadores continúan durante estos segundos cuando el juego se interrumpe en cualquier parte del hack y luego se pausan hasta que el juego continúe.", "Les chronomètres continuent pendant ce nombre de secondes lorsque le jeu est interrompu, puis se mettent en pause jusqu’à la reprise.", "Die Timer laufen bei einer Spielunterbrechung noch so viele Sekunden weiter und pausieren dann, bis das Spiel fortgesetzt wird.", "Os cronômetros continuam por estes segundos quando o jogo é interrompido e depois pausam até que a partida continue."),
+    ("Game LiveSplit port:", "Puerto de LiveSplit del juego:", "Port LiveSplit du jeu :", "LiveSplit-Port für Spielzeit:", "Porta do LiveSplit do jogo:"),
+    ("Level LiveSplit port:", "Puerto de LiveSplit del nivel:", "Port LiveSplit du niveau :", "LiveSplit-Port für Levelzeit:", "Porta do LiveSplit da fase:"),
+    ("Exit completion by difficulty", "Salidas completadas por dificultad", "Sorties terminées par difficulté", "Abgeschlossene Ausgänge nach Schwierigkeit", "Saídas concluídas por dificuldade"),
+    ("No tracker data yet", "Aún no hay datos del tracker", "Aucune donnée de suivi pour le moment", "Noch keine Tracker-Daten", "Ainda não há dados do tracker"),
+    ("No difficulty data yet", "Aún no hay datos de dificultad", "Aucune donnée de difficulté pour le moment", "Noch keine Schwierigkeitsdaten", "Ainda não há dados de dificuldade"),
+    ("Filter by letter:", "Filtrar por letra:", "Filtrer par lettre :", "Nach Buchstaben filtern:", "Filtrar por letra:"),
+    ("Unmoderated Hacks", "Hacks no moderados", "Hacks non modérés", "Nicht moderierte Hacks", "Hacks não moderados"),
+    ("Hack", "Hack", "Hack", "Hack", "Hack"),
+    ("Date", "Fecha", "Date", "Datum", "Data"),
+    ("Search title or creator", "Buscar título o creador", "Rechercher un titre ou un créateur", "Titel oder Ersteller suchen", "Pesquisar título ou criador"),
+    ("Reset Filters", "Restablecer filtros", "Réinitialiser les filtres", "Filter zurücksetzen", "Redefinir filtros"),
+    ("Edit Selected", "Editar selección", "Modifier la sélection", "Auswahl bearbeiten", "Editar selecionado"),
+    ("Open SMWCentral", "Abrir SMW Central", "Ouvrir SMW Central", "SMW Central öffnen", "Abrir SMW Central"),
+    ("Launch Game", "Iniciar juego", "Lancer le jeu", "Spiel starten", "Iniciar jogo"),
+    ("Remove from Tracker", "Quitar del tracker", "Retirer du tracker", "Aus Tracker entfernen", "Remover do tracker"),
+    ("Cancel Download", "Cancelar descarga", "Annuler le téléchargement", "Download abbrechen", "Cancelar download"),
+    ("Clean SMW base ROM:", "ROM base limpia de SMW:", "ROM SMW de base propre :", "Saubere SMW-Basis-ROM:", "ROM base limpa de SMW:"),
+    ("ROM game-library folder:", "Carpeta de la biblioteca de ROM:", "Dossier de la bibliothèque de ROM :", "Ordner der ROM-Spielebibliothek:", "Pasta da biblioteca de ROMs:"),
+    ("Copy new ROMs to a mounted SD folder:", "Copiar ROM nuevas a una carpeta SD montada:", "Copier les nouvelles ROM dans un dossier SD monté :", "Neue ROMs in einen eingebundenen SD-Ordner kopieren:", "Copiar novas ROMs para uma pasta SD montada:"),
+    ("Upload new ROMs through FXPAK Pro USB:", "Subir ROM nuevas por USB al FXPAK Pro:", "Envoyer les nouvelles ROM par USB vers le FXPAK Pro :", "Neue ROMs über FXPAK-Pro-USB hochladen:", "Enviar novas ROMs por USB para o FXPAK Pro:"),
+    ("Test USB", "Probar USB", "Tester l’USB", "USB testen", "Testar USB"),
+    ("Added from", "Añadido desde", "Ajouté à partir du", "Hinzugefügt ab", "Adicionado a partir de"),
+    ("Added through", "Añadido hasta", "Ajouté jusqu’au", "Hinzugefügt bis", "Adicionado até"),
+    ("Add Unmoderated Hack", "Añadir hack no moderado", "Ajouter un hack non modéré", "Nicht moderierten Hack hinzufügen", "Adicionar hack não moderado"),
+    ("Expand All", "Expandir todo", "Tout développer", "Alle erweitern", "Expandir tudo"),
+    ("Jump to alphabetical segment:", "Ir al segmento alfabético:", "Aller à la section alphabétique :", "Zum alphabetischen Abschnitt springen:", "Ir para a seção alfabética:"),
+    ("FXPAK Pro SD Card", "Tarjeta SD del FXPAK Pro", "Carte SD du FXPAK Pro", "FXPAK-Pro-SD-Karte", "Cartão SD do FXPAK Pro"),
+    ("Refresh SD Card", "Actualizar tarjeta SD", "Actualiser la carte SD", "SD-Karte aktualisieren", "Atualizar cartão SD"),
+    ("Remove Selected Hack(s)", "Eliminar hack(s) seleccionado(s)", "Supprimer les hacks sélectionnés", "Ausgewählte Hacks entfernen", "Remover hacks selecionados"),
+    ("SD folder:", "Carpeta SD:", "Dossier SD :", "SD-Ordner:", "Pasta SD:"),
+    ("Search:", "Buscar:", "Rechercher :", "Suche:", "Pesquisar:"),
+    ("Read Me / Setup Guide - SMW Stream Tracker", "Guía de instalación - SMW Stream Tracker", "Guide d’installation - SMW Stream Tracker", "Einrichtungsanleitung - SMW Stream Tracker", "Guia de configuração - SMW Stream Tracker"),
+    ("About & Updates - SMW Stream Tracker", "Acerca de y actualizaciones - SMW Stream Tracker", "À propos et mises à jour - SMW Stream Tracker", "Info und Updates - SMW Stream Tracker", "Sobre e atualizações - SMW Stream Tracker"),
+    ("OBS Text Settings", "Configuración de textos de OBS", "Paramètres des textes OBS", "OBS-Texteinstellungen", "Configurações de textos do OBS"),
+    ("Preview", "Vista previa", "Aperçu", "Vorschau", "Visualização"),
+    ("Overview", "Resumen", "Vue d’ensemble", "Übersicht", "Visão geral"),
+    ("My Tracker", "Mi tracker", "Mon tracker", "Mein Tracker", "Meu tracker"),
+    ("Status", "Estado", "Statut", "Status", "Status"),
+    ("Tracked", "Seguidos", "Suivis", "Verfolgt", "Acompanhados"),
+    ("Completed", "Completados", "Terminés", "Abgeschlossen", "Concluídos"),
+    ("Exits", "Salidas", "Sorties", "Ausgänge", "Saídas"),
+    ("Rate", "Progreso", "Progression", "Fortschritt", "Progresso"),
+    ("hacks", "hacks", "hacks", "Hacks", "hacks"),
+    ("Refresh", "Actualizar", "Actualiser", "Aktualisieren", "Atualizar"),
+    ("Close", "Cerrar", "Fermer", "Schließen", "Fechar"),
+    ("All", "Todos", "Tous", "Alle", "Todos"),
+    ("Newcomer", "Principiante", "Débutant", "Einsteiger", "Iniciante"),
+    ("Casual", "Casual", "Facile", "Locker", "Casual"),
+    ("Intermediate", "Intermedio", "Intermédiaire", "Mittel", "Intermediário"),
+    ("Advanced", "Avanzado", "Avancé", "Fortgeschritten", "Avançado"),
+    ("Expert", "Experto", "Expert", "Experte", "Especialista"),
+    ("Master", "Maestro", "Maître", "Meister", "Mestre"),
+    ("Grandmaster", "Gran maestro", "Grand maître", "Großmeister", "Grão-mestre"),
+    ("Unranked", "Sin clasificar", "Non classé", "Ohne Rang", "Sem classificação"),
+    ("Catalog {version}  •  Refreshed {date}", "Catálogo {version}  •  Actualizado {date}", "Catalogue {version}  •  Actualisé {date}", "Katalog {version}  •  Aktualisiert {date}", "Catálogo {version}  •  Atualizado {date}"),
+)
+for (
+    _english_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _WINDOW_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
 
 DEFAULT_CONFIG = {
     "app_language": "en",
@@ -16017,6 +16657,10 @@ DEFAULT_CONFIG = {
     "obs_exits_text_format": "Exits: {completed} / {total}",
     "obs_deaths_text_format": "Level Deaths: {deaths}",
     "obs_total_deaths_text_format": "Total Deaths: {total_deaths}",
+    # timer_grace_seconds supersedes the original overworld-only setting.
+    # Keep overworld_idle_seconds as a compatibility mirror for existing
+    # installations and older updater builds.
+    "timer_grace_seconds": 30,
     "overworld_idle_seconds": 30,
     "livesplit_host": "127.0.0.1",
     "game_livesplit_port": 16834,
@@ -16105,15 +16749,38 @@ DOWNLOAD_URL_COLUMN_NAME = "Direct Download URL"
 GAME_MODE_ADDRESS = "F50100"       # $7E0100
 SAVE_SLOT_ADDRESS = "F5010A"       # $7E010A; 0=A, 1=B, 2=C
 PLAYER_STATE_ADDRESS = "F50071"    # $7E0071; 09 = death animation
+SPRITE_LOCK_ADDRESS = "F5009D"      # $7E009D; gameplay/sprites are frozen
 PLAYER_LIVES_ADDRESS = "F50DBE"    # $7E0DBE; current player's lives
 PAUSE_FLAG_ADDRESS = "F513D4"      # $7E13D4
 TRANSLEVEL_ADDRESS = "F513BF"      # $7E13BF
 EXIT_COUNTER_ADDRESS = "F51F2E"    # $7E1F2E
+LEVEL_FLAGS_BASE_ADDRESS = 0xF51EA2  # $7E1EA2; bit 7 = level beaten
 LEVEL_END_TIMER_ADDRESS = "F51493" # $7E1493; goal tape/orb end sequence
+SECRET_GOAL_FLAG_ADDRESS = "F5141C" # $7E141C; nonzero = secret route
 JOYPAD_HELD_ADDRESS = "F50015"      # $7E0015; Start = bit 0x10
+JOYPAD_PRESSED_ADDRESS = "F50016"   # $7E0016; newly pressed B/Y/Start
 JOYPAD_AXLR_ADDRESS = "F50017"      # $7E0017; L = bit 0x20
+JOYPAD_AXLR_PRESSED_ADDRESS = "F50018"  # $7E0018; newly pressed A/X/L/R
+# Read four small WRAM windows that contain every live value the tracker uses.
+# This keeps Mario's $7E:0071 death byte authoritative without restoring the
+# old burst of ten one-byte requests, and avoids transferring a full 8 KiB on
+# every RetroArch polling cycle.
+LIVE_STATE_BASE_ADDRESS = "F50000"
+LIVE_STATE_SIZE = 0x2000
+LIVE_STATE_WINDOWS = (
+    ("F50000", 0x0110),  # controls, player state, mode and save slot
+    ("F50D80", 0x0060),  # player lives
+    ("F51380", 0x0120),  # translevel, pause and goal timer
+    ("F51EA2", 0x0060),  # per-translevel beaten/exit flags
+    ("F51F00", 0x0040),  # exit counter
+)
 
 PLAYER_SELECT_MODE = 0x0A
+# SMW enters one of these loading modes immediately after Mario A/B/C is
+# confirmed and before the overworld becomes visible. RetroArch can advance
+# through mode $0A between two 100 ms memory samples, so the loading modes are
+# also authoritative evidence that a save file was selected.
+POST_FILE_SELECT_LOADING_MODES = {0x0B, 0x0C, 0x0D}
 TITLE_SCREEN_MODES = {
     0x00, 0x01, 0x02, 0x03, 0x04,
     0x05, 0x06, 0x07, 0x08, 0x09,
@@ -16201,6 +16868,90 @@ def format_timer(seconds: float, milliseconds: bool = False) -> str:
     return f"00:{secs:02d}"
 
 
+def timer_grace_seconds(config: dict[str, Any]) -> int:
+    """Return the interruption grace, including legacy-config support."""
+    raw_value = config.get(
+        "timer_grace_seconds",
+        config.get("overworld_idle_seconds", 30),
+    )
+    try:
+        return max(0, int(raw_value))
+    except (TypeError, ValueError):
+        return 30
+
+
+def windows_foreground_executable_name() -> str | None:
+    """Return the foreground Windows process name without extra packages.
+
+    ``None`` means that Windows did not provide a reliable answer.  Callers
+    deliberately treat that as "unknown" instead of "not focused" so a
+    transient Win32 lookup failure can never pause somebody's timers.
+    """
+    if os.name != "nt":
+        return None
+
+    process_handle = None
+    try:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetWindowThreadProcessId.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        kernel32.OpenProcess.argtypes = [
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_ulong,
+        ]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_wchar_p,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        foreground_window = user32.GetForegroundWindow()
+        if not foreground_window:
+            return None
+
+        process_id = ctypes.c_ulong(0)
+        user32.GetWindowThreadProcessId(
+            foreground_window,
+            ctypes.byref(process_id),
+        )
+        if not process_id.value:
+            return None
+
+        process_handle = kernel32.OpenProcess(
+            0x1000,  # PROCESS_QUERY_LIMITED_INFORMATION
+            False,
+            process_id.value,
+        )
+        if not process_handle:
+            return None
+
+        executable_path = ctypes.create_unicode_buffer(32768)
+        path_length = ctypes.c_ulong(len(executable_path))
+        if not kernel32.QueryFullProcessImageNameW(
+            process_handle,
+            0,
+            executable_path,
+            ctypes.byref(path_length),
+        ):
+            return None
+        return Path(executable_path.value).name.casefold()
+    except (AttributeError, OSError, ValueError):
+        return None
+    finally:
+        if process_handle:
+            try:
+                ctypes.windll.kernel32.CloseHandle(process_handle)
+            except (AttributeError, OSError):
+                pass
+
+
 def render_obs_text_template(
     template: object,
     default_template: str,
@@ -16282,6 +17033,19 @@ def load_config() -> dict[str, Any]:
 
         except (OSError, json.JSONDecodeError):
             pass
+
+    # Migrate the original overworld-only grace setting without changing a
+    # user's saved value. Newer builds use the same grace anywhere gameplay
+    # is temporarily interrupted inside a hack.
+    if "timer_grace_seconds" not in saved:
+        config["timer_grace_seconds"] = config.get(
+            "overworld_idle_seconds",
+            30,
+        )
+    config["overworld_idle_seconds"] = config.get(
+        "timer_grace_seconds",
+        30,
+    )
 
     # Existing installations can retain the manifest address from the former
     # repository in their saved configuration. GitHub correctly returns 404
@@ -16510,6 +17274,40 @@ def save_config(config: dict[str, Any]) -> None:
     )
 
 
+def is_transient_connection_error(error: object) -> bool:
+    """Return True for bridge/socket errors that the tracker can reconnect from."""
+    message = str(error or "").strip().casefold()
+    if not message:
+        return False
+    transient_phrases = (
+        "connection to remote host was lost",
+        "connection was forcibly closed",
+        "connection reset by peer",
+        "connection aborted",
+        "broken pipe",
+        "websocket connection is closed",
+        "socket is already closed",
+        "timed out",
+        "winerror 10053",
+        "winerror 10054",
+    )
+    return any(phrase in message for phrase in transient_phrases)
+
+
+def connection_loss_needs_user_attention(
+    error: object,
+    last_successful_sample_at: float,
+    now: float,
+    grace_seconds: float = 15.0,
+) -> bool:
+    """Hide brief recoverable bridge drops while live samples are recent."""
+    if not is_transient_connection_error(error):
+        return True
+    if last_successful_sample_at <= 0:
+        return True
+    return now - last_successful_sample_at >= max(0.0, grace_seconds)
+
+
 def connection_service_candidates(
     config: dict[str, Any],
 ) -> list[tuple[str, str]]:
@@ -16553,6 +17351,31 @@ def preferred_connection_service_path(config: dict[str, Any]) -> str:
     return candidates[0][1] if candidates else ""
 
 
+def livesplit_endpoint(
+    config: dict[str, Any],
+    timer: str,
+) -> tuple[str, int]:
+    timer_name = "game" if timer == "game" else "level"
+    port_key = f"{timer_name}_livesplit_port"
+    default_port = 16834 if timer_name == "game" else 16835
+    host = str(config.get("livesplit_host", "127.0.0.1")).strip()
+    return host or "127.0.0.1", int(config.get(port_key, default_port))
+
+
+def livesplit_server_is_running(
+    config: dict[str, Any],
+    timer: str,
+    timeout: float = 0.18,
+) -> bool:
+    """Check a LiveSplit server without sending it timer information."""
+    try:
+        endpoint = livesplit_endpoint(config, timer)
+        with socket.create_connection(endpoint, timeout=timeout):
+            return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 class TrackerWorker:
     def __init__(
         self,
@@ -16579,13 +17402,27 @@ class TrackerWorker:
         self.previous_exit_count: int | None = None
         self.displayed_exit_count: int | None = None
         self.provisional_goal_exit = False
+        self.provisional_goal_base_exit_count: int | None = None
+        self.pending_goal_route: tuple[str, int, str] | None = None
+        self.authoritative_exit_count: int | None = None
         self.previous_rom_path: str | None = None
         self.timers_paused = False
         self.game_manual_paused = False
         self.level_manual_paused = False
         self.pause_combo_was_pressed = False
         self.level_livesplit_running = False
+        # A missing optional LiveSplit server should never receive repeated
+        # command attempts. Availability probes open and close a connection
+        # without sending timer data, then cache the result briefly.
+        self.livesplit_health_cache: dict[
+            str,
+            tuple[str, int, bool, float],
+        ] = {}
         self.level_waiting_for_start = True
+        # Selecting Mario A/B/C starts the visible level timer immediately.
+        # Until the first translevel is readable, elapsed time is held here
+        # and then attached to that level's persistent timer.
+        self.level_prestart_tracking = False
         # Opening story/intro levels use the same game mode as normal levels.
         # Automatic level timing is armed only after the ROM reaches its
         # overworld once, keeping cutscenes and scripted deaths out of both
@@ -16595,18 +17432,38 @@ class TrackerWorker:
         self.level_overworld_entered_at: float | None = None
         self.level_livesplit_overworld_paused = False
         self.game_livesplit_overworld_paused = False
+        self.retroarch_focus_paused = False
+        self.retroarch_runloop_paused = False
+        self.retroarch_status_checked_at = float("-inf")
         self.current_rom_key: str | None = None
         self.current_time_key: str | None = None
         self.active_save_slot: int | None = None
+        self.pending_save_slot: int | None = None
+        # True from the Mario A/B/C confirmation input until SMW leaves the
+        # file-select mode.  The fade can remain in mode $0A for several
+        # samples, so this keeps both elapsed clocks moving immediately rather
+        # than displaying a started-but-frozen 00:00 during that transition.
+        self.file_selection_confirmed = False
+        # Remain in the file-start sequence until SMW reaches actual playable
+        # gameplay. Many hacks reuse title/cutscene modes after Mario A/B/C is
+        # selected; those modes must not reset or pause the two clocks.
+        self.startup_sequence_active = False
         self.parked_time_key: str | None = None
         self.slot_blank_states: dict[int, bool] = {}
         # death_count is the saved total for the active ROM + Mario slot.
-        # level_death_count is intentionally session-only and resets when a
-        # genuinely different level starts, never on an ordinary retry.
+        # Level time and level_death_count are saved separately for each
+        # ROM + Mario slot + translevel so revisiting a level restores both.
         self.death_count = 0
         self.level_death_count = 0
         self.previous_player_state: int | None = None
         self.previous_player_lives: int | None = None
+        # Keep the last clean lives value observed inside a playable level.
+        # Traditional hacks can leave the level through an intermediate game
+        # mode after a death, so the rolling previous sample may already hold
+        # the reduced lives value by the time the overworld is readable.  This
+        # level-scoped baseline lets that later overworld sample still confirm
+        # the death without inferring deaths from a bare level transition.
+        self.last_level_player_lives: int | None = None
         # $0DBE (current player lives) can lag behind $010A (save slot)
         # briefly while switching between Mario A/B/C. During that handoff,
         # learn the new slot's stable lives value before using a decrease as
@@ -16616,6 +17473,26 @@ class TrackerWorker:
         self.slot_lives_baseline_samples = 0
         self.death_detection_latched = False
         self.death_alive_samples = 0
+        # A normal death can expose $71 = $09 and the $0DBE lives decrement
+        # in different USB samples. Remember whether the current latched event
+        # has already consumed the lives signal so the latch can rearm as soon
+        # as the death cycle is complete instead of waiting for three perfect
+        # gameplay samples (which loses rapid or unusual hack deaths).
+        self.death_latch_saw_lives_drop = False
+        # Some retry systems reload the current level/checkpoint without
+        # showing a retry prompt, decrementing the vanilla lives byte, or
+        # leaving $71 = $09 visible long enough for a USB sample.  Preserve
+        # an uncleared attempt while SMW passes through its level-loading,
+        # overworld, or title modes.  Returning to the same translevel (or to
+        # the title screen) confirms one failed attempt.  record_death() uses
+        # the same latch as the ordinary death/lives signals, so whichever
+        # signal arrives first wins and the event is never counted twice.
+        self.death_retry_transition_pending = False
+        self.death_retry_origin_level: int | None = None
+        # File selection/loading can expose a stale $71 = 09 or a lives-byte
+        # handoff. Require one normal playable sample before accepting either
+        # as a real death for the newly selected slot.
+        self.death_startup_guard_active = False
         self.last_time_save = 0.0
         self.game_time_parked_at_title = False
         self.run_reached_gameplay = False
@@ -16640,6 +17517,7 @@ class TrackerWorker:
         self.last_progress_exit_count: int | None = None
         self.last_connection_error = ""
         self.last_connection_error_logged_at = 0.0
+        self.last_successful_connection_sample_at = 0.0
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -16732,7 +17610,7 @@ class TrackerWorker:
     def send_event(self, event_type: str, **data: object) -> None:
         self.event_queue.put({"type": event_type, **data})
 
-    def log(self, message: str) -> None:
+    def log(self, message: str, show_status: bool = True) -> None:
         output_folder = Path(str(self.config["output_folder"]))
         log_file = output_folder / "SMWTracker.log"
 
@@ -16746,7 +17624,8 @@ class TrackerWorker:
         except OSError:
             pass
 
-        self.send_event("log", message=message)
+        if show_status:
+            self.send_event("log", message=message)
 
     def load_saved_times(self) -> dict[str, float]:
         if not TIMER_SAVE_FILE.exists():
@@ -16797,6 +17676,63 @@ class TrackerWorker:
         except OSError as error:
             self.log(f"Could not save death counter: {error}")
 
+    def load_saved_level_progress(
+        self,
+    ) -> dict[str, dict[str, object]]:
+        if not LEVEL_PROGRESS_SAVE_FILE.exists():
+            return {}
+
+        try:
+            data = json.loads(
+                LEVEL_PROGRESS_SAVE_FILE.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+
+        progress: dict[str, dict[str, object]] = {}
+        for raw_key, raw_value in data.items():
+            if not isinstance(raw_value, dict):
+                continue
+            try:
+                elapsed = max(
+                    0.0,
+                    float(raw_value.get("elapsed", 0.0)),
+                )
+                deaths = max(
+                    0,
+                    int(raw_value.get("deaths", 0)),
+                )
+            except (TypeError, ValueError):
+                continue
+            goal_routes = raw_value.get("goal_routes", [])
+            if not isinstance(goal_routes, list):
+                goal_routes = []
+            progress[str(raw_key)] = {
+                "elapsed": elapsed,
+                "deaths": deaths,
+                "goal_routes": [
+                    route
+                    for route in goal_routes
+                    if route in {"normal", "secret"}
+                ],
+            }
+        return progress
+
+    def write_saved_level_progress(
+        self,
+        progress: dict[str, dict[str, object]],
+    ) -> None:
+        try:
+            LEVEL_PROGRESS_SAVE_FILE.write_text(
+                json.dumps(progress, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as error:
+            self.log(f"Could not save level progress: {error}")
+
     def slot_name(self, slot: int | None) -> str:
         return {
             0: "Mario A",
@@ -16820,6 +17756,77 @@ class TrackerWorker:
     ) -> str:
         return f"{rom_key}::slot{slot}"
 
+    def make_level_save_key(self, translevel: int) -> str | None:
+        if not self.current_time_key:
+            return None
+        return f"{self.current_time_key}::level{int(translevel) & 0xFF:02X}"
+
+    def get_saved_level_progress(
+        self,
+        translevel: int,
+    ) -> tuple[float, int]:
+        key = self.make_level_save_key(translevel)
+        if not key:
+            return 0.0, 0
+        saved = self.load_saved_level_progress().get(key, {})
+        return (
+            max(0.0, float(saved.get("elapsed", 0.0))),
+            max(0, int(saved.get("deaths", 0))),
+        )
+
+    def save_current_level_progress(self) -> bool:
+        if not self.current_time_key or self.level_id is None:
+            return False
+        key = self.make_level_save_key(self.level_id)
+        if not key:
+            return False
+        progress = self.load_saved_level_progress()
+        saved = dict(progress.get(key, {}))
+        saved["elapsed"] = max(0.0, float(self.level_elapsed))
+        saved["deaths"] = max(0, int(self.level_death_count))
+        saved.setdefault("goal_routes", [])
+        progress[key] = saved
+        self.write_saved_level_progress(progress)
+        return True
+
+    def goal_route_was_confirmed(
+        self,
+        translevel: int,
+        route: str,
+    ) -> bool:
+        key = self.make_level_save_key(translevel)
+        if not key:
+            return False
+        saved = self.load_saved_level_progress().get(key, {})
+        routes = saved.get("goal_routes", [])
+        return isinstance(routes, list) and route in routes
+
+    def mark_goal_route_confirmed(
+        self,
+        translevel: int,
+        route: str,
+    ) -> None:
+        key = self.make_level_save_key(translevel)
+        if not key:
+            return
+        progress = self.load_saved_level_progress()
+        saved = dict(progress.get(key, {}))
+        routes = saved.get("goal_routes", [])
+        if not isinstance(routes, list):
+            routes = []
+        routes = [
+            saved_route
+            for saved_route in routes
+            if saved_route in {"normal", "secret"}
+        ]
+        if route not in routes:
+            routes.append(route)
+        saved["goal_routes"] = routes
+        saved.setdefault("elapsed", max(0.0, float(self.level_elapsed)))
+        saved.setdefault("deaths", max(0, int(self.level_death_count)))
+        progress[key] = saved
+        self.write_saved_level_progress(progress)
+
     def select_save_slot(self, slot: int) -> None:
         if not self.current_rom_key:
             return
@@ -16833,6 +17840,8 @@ class TrackerWorker:
             self.active_save_slot is not None
             and self.active_save_slot != slot
         )
+        if switching_slots:
+            self.save_current_level_progress()
         self.active_save_slot = slot
         self.current_time_key = self.make_time_save_key(
             self.current_rom_key,
@@ -16842,15 +17851,39 @@ class TrackerWorker:
             self.current_time_key,
             0,
         )
-        self.level_death_count = 0
+        if self.level_id is not None:
+            (
+                self.level_elapsed,
+                self.level_death_count,
+            ) = self.get_saved_level_progress(self.level_id)
+            self.load_level_time_into_livesplit()
+            if (
+                self.level_finished
+                or self.timers_paused
+                or self.level_manual_paused
+                or self.level_livesplit_overworld_paused
+            ):
+                self.send_livesplit_command("level", "pause")
+                self.level_livesplit_running = False
+        else:
+            self.level_death_count = 0
         self.previous_player_state = None
         self.previous_player_lives = None
+        self.last_level_player_lives = None
         self.slot_lives_baseline_pending = switching_slots
         self.slot_lives_baseline_value = None
         self.slot_lives_baseline_samples = 0
         self.death_detection_latched = False
         self.death_alive_samples = 0
+        self.death_latch_saw_lives_drop = False
+        self.death_retry_transition_pending = False
+        self.death_retry_origin_level = None
+        # File selection/loading can expose a stale $71 = 09 or a lives-byte
+        # handoff. Require one normal playable sample before accepting either
+        # as a real death for the newly selected slot.
+        self.death_startup_guard_active = False
         self.update_death_file()
+        self.update_timer_files()
 
     def save_current_game_time(self) -> None:
         if not self.current_time_key:
@@ -16923,7 +17956,9 @@ class TrackerWorker:
             return False
 
         self.level_death_count = 0
+        self.save_current_level_progress()
         self.update_death_file()
+        self.update_timer_files()
         return True
 
     def format_livesplit_time(self, seconds: float) -> str:
@@ -16984,27 +18019,21 @@ class TrackerWorker:
         timer: str,
         command: str,
     ) -> bool:
-        host = str(self.config.get("livesplit_host", "127.0.0.1"))
-        port_key = (
-            "game_livesplit_port"
-            if timer == "game"
-            else "level_livesplit_port"
-        )
+        if not self._livesplit_server_available(timer):
+            return False
 
         try:
-            port = int(self.config.get(
-                port_key,
-                16834 if timer == "game" else 16835,
-            ))
+            host, port = livesplit_endpoint(self.config, timer)
 
             with socket.create_connection(
                 (host, port),
-                timeout=1.0,
+                timeout=0.35,
             ) as connection:
                 connection.sendall(
                     f"{command}\r\n".encode("ascii")
                 )
 
+            self._cache_livesplit_availability(timer, True)
             self.send_event(
                 "livesplit",
                 timer=timer,
@@ -17014,6 +18043,7 @@ class TrackerWorker:
             return True
 
         except (OSError, ValueError) as error:
+            self._cache_livesplit_availability(timer, False)
             self.send_event(
                 "livesplit",
                 timer=timer,
@@ -17026,6 +18056,57 @@ class TrackerWorker:
                 f"{timer} LiveSplit: {error}"
             )
             return False
+
+    def _cache_livesplit_availability(
+        self,
+        timer: str,
+        available: bool,
+    ) -> None:
+        try:
+            host, port = livesplit_endpoint(self.config, timer)
+        except (TypeError, ValueError):
+            return
+        self.livesplit_health_cache[timer] = (
+            host,
+            port,
+            bool(available),
+            time.monotonic(),
+        )
+
+    def _livesplit_server_available(
+        self,
+        timer: str,
+        force: bool = False,
+    ) -> bool:
+        try:
+            host, port = livesplit_endpoint(self.config, timer)
+        except (TypeError, ValueError):
+            return False
+
+        now = time.monotonic()
+        cached = self.livesplit_health_cache.get(timer)
+        if cached is not None:
+            cached_host, cached_port, available, checked_at = cached
+            cache_seconds = 10.0 if available else 2.0
+            if (
+                not force
+                and cached_host == host
+                and cached_port == port
+                and now - checked_at < cache_seconds
+            ):
+                return available
+
+        available = livesplit_server_is_running(
+            self.config,
+            timer,
+        )
+        self.livesplit_health_cache[timer] = (
+            host,
+            port,
+            available,
+            now,
+        )
+        return available
 
     def reset_both_livesplits(self) -> None:
         self.send_livesplit_command("game", "reset")
@@ -17125,13 +18206,15 @@ class TrackerWorker:
             and not self.timers_paused
             and not self.game_manual_paused
             and not self.game_livesplit_overworld_paused
+            and not self.retroarch_focus_paused
         )
         level_running = (
-            self.level_id is not None
+            (self.level_id is not None or self.level_prestart_tracking)
             and not self.level_finished
             and not self.timers_paused
             and not self.level_manual_paused
             and self.level_livesplit_running
+            and not self.retroarch_focus_paused
         )
 
         self.send_event(
@@ -17168,25 +18251,41 @@ class TrackerWorker:
         self.previous_exit_count = None
         self.previous_player_state = None
         self.previous_player_lives = None
+        self.last_level_player_lives = None
         self.slot_lives_baseline_pending = False
         self.slot_lives_baseline_value = None
         self.slot_lives_baseline_samples = 0
         self.death_detection_latched = False
         self.death_alive_samples = 0
+        self.death_latch_saw_lives_drop = False
+        self.death_retry_transition_pending = False
+        self.death_retry_origin_level = None
+        self.death_startup_guard_active = False
         self.displayed_exit_count = None
         self.provisional_goal_exit = False
+        self.provisional_goal_base_exit_count = None
+        self.pending_goal_route = None
+        self.authoritative_exit_count = None
         self.timers_paused = False
         self.pause_combo_was_pressed = False
         self.level_livesplit_running = False
         self.level_waiting_for_start = True
+        self.level_prestart_tracking = False
         self.level_auto_tracking_armed = False
+        self.file_selection_confirmed = False
+        self.startup_sequence_active = False
         self.intro_level_notice_logged = False
         self.level_overworld_entered_at = None
         self.level_livesplit_overworld_paused = False
         self.game_livesplit_overworld_paused = False
+        self.retroarch_focus_paused = False
+        self.retroarch_runloop_paused = False
+        self.retroarch_status_checked_at = float("-inf")
         self.game_time_parked_at_title = False
         self.run_reached_gameplay = False
         self.parked_time_key = None
+        self.pending_save_slot = None
+        self.file_selection_confirmed = False
         self.last_progress_exit_count = None
         self.current_mode = None
         self.current_translevel = None
@@ -17264,7 +18363,7 @@ class TrackerWorker:
 
             latest_completed = max(
                 completed,
-                int(self.displayed_exit_count or 0),
+                int(self.authoritative_exit_count or 0),
             )
 
             try:
@@ -17350,6 +18449,7 @@ class TrackerWorker:
                 # pass through the normal new-ROM initialization path. This
                 # also handles replaying the same ROM intentionally.
                 if self.current_time_key:
+                    self.save_current_level_progress()
                     self.save_current_game_time()
                     self.save_current_death_count()
                 self.previous_rom_path = None
@@ -17935,8 +19035,9 @@ class TrackerWorker:
                 )
 
             elif command == "reset_level":
-                self.level_id = None
                 self.level_elapsed = 0.0
+                self.save_current_level_progress()
+                self.level_id = None
                 self.level_finished = False
                 self.level_manual_paused = False
                 self.level_livesplit_running = False
@@ -18145,6 +19246,14 @@ class TrackerWorker:
                     )
 
                 if level_deaths is not None:
+                    if (
+                        self.level_id is None
+                        and self.current_mode == LEVEL_MODE
+                    ):
+                        self.level_id = int(
+                            self.current_translevel
+                            or 0
+                        )
                     self.level_death_count = level_deaths
                     changed_messages.append(
                         f"Level Deaths {self.level_death_count}"
@@ -18162,6 +19271,12 @@ class TrackerWorker:
                     or total_deaths is not None
                 ):
                     self.update_death_file()
+
+                if (
+                    level_seconds is not None
+                    or level_deaths is not None
+                ):
+                    self.save_current_level_progress()
 
                 self.update_timer_files()
 
@@ -20371,20 +21486,26 @@ finally {
         self,
         ws: websocket.WebSocket,
     ) -> str:
+        platform = str(
+            self.config.get("selected_platform", "FXPAK Pro")
+        ).strip()
+
+        # RetroArch's local UDP status responds much faster than waiting for
+        # the connection bridge's Info fallback and ROM-header probes. Use it
+        # first so Current Hack can update as soon as content starts.
+        if platform == "RetroArch":
+            retroarch_name = self.get_retroarch_game_name(
+                timeout=0.18,
+            )
+            if retroarch_name:
+                return retroarch_name
+
         self.send_request(ws, "Info")
         response = json.loads(ws.recv())
         info = response.get("Results", [])
         rom_path = self.find_rom_path_in_info(info)
         if rom_path:
             return rom_path
-
-        platform = str(
-            self.config.get("selected_platform", "FXPAK Pro")
-        ).strip()
-        if platform == "RetroArch":
-            retroarch_name = self.get_retroarch_game_name()
-            if retroarch_name:
-                return retroarch_name
 
         hinted_path = ""
         last_roms = self.config.get("platform_last_roms", {})
@@ -20447,8 +21568,11 @@ finally {
 
         return payload.decode("utf-8", errors="ignore").strip()
 
-    def get_retroarch_game_name(self) -> str:
-        status = self.get_retroarch_network_status()
+    def get_retroarch_game_name(
+        self,
+        timeout: float = 0.18,
+    ) -> str:
+        status = self.get_retroarch_network_status(timeout=timeout)
         if "CONTENTLESS" in status.upper():
             return ""
         match = re.search(
@@ -20578,6 +21702,15 @@ finally {
         saved_deaths[key] = 0
         self.write_saved_deaths(saved_deaths)
 
+        saved_level_progress = self.load_saved_level_progress()
+        level_key_prefix = key + "::level"
+        saved_level_progress = {
+            progress_key: value
+            for progress_key, value in saved_level_progress.items()
+            if not progress_key.startswith(level_key_prefix)
+        }
+        self.write_saved_level_progress(saved_level_progress)
+
         # If this is the currently active slot, reset the visible and
         # LiveSplit game timers and death counter immediately as well.
         if self.active_save_slot == slot:
@@ -20587,7 +21720,12 @@ finally {
             self.current_time_key = key
             self.death_count = 0
             self.level_death_count = 0
+            self.level_id = None
+            self.level_elapsed = 0.0
+            self.level_finished = False
+            self.level_waiting_for_start = True
             self.send_livesplit_command("game", "reset")
+            self.send_livesplit_command("level", "reset")
             self.update_death_file()
             self.update_timer_files()
 
@@ -20629,31 +21767,47 @@ finally {
         self,
         ws: websocket.WebSocket,
     ) -> dict[str, int]:
+        snapshots = [
+            (
+                int(address, 16),
+                self.read_memory(ws, address, size),
+            )
+            for address, size in LIVE_STATE_WINDOWS
+        ]
+
+        def byte_at(address: str) -> int:
+            numeric_address = int(address, 16)
+            for window_start, snapshot in snapshots:
+                offset = numeric_address - window_start
+                if 0 <= offset < len(snapshot):
+                    return snapshot[offset]
+            raise RuntimeError(
+                f"Live-state address {address} is outside the "
+                "configured WRAM windows."
+            )
+
+        translevel = byte_at(TRANSLEVEL_ADDRESS)
+        level_flags_address = (
+            LEVEL_FLAGS_BASE_ADDRESS + translevel
+        )
+
         return {
-            "mode": self.read_byte(ws, GAME_MODE_ADDRESS),
-            "save_slot": self.read_byte(ws, SAVE_SLOT_ADDRESS),
-            "player_state": self.read_byte(
-                ws,
-                PLAYER_STATE_ADDRESS,
-            ),
-            "player_lives": self.read_byte(
-                ws,
-                PLAYER_LIVES_ADDRESS,
-            ),
-            "paused": self.read_byte(ws, PAUSE_FLAG_ADDRESS),
-            "translevel": self.read_byte(
-                ws,
-                TRANSLEVEL_ADDRESS,
-            ),
-            "exits": self.read_byte(ws, EXIT_COUNTER_ADDRESS),
-            "level_end_timer": self.read_byte(
-                ws,
-                LEVEL_END_TIMER_ADDRESS,
-            ),
-            "joypad": self.read_byte(ws, JOYPAD_HELD_ADDRESS),
-            "joypad_axlr": self.read_byte(
-                ws,
-                JOYPAD_AXLR_ADDRESS,
+            "mode": byte_at(GAME_MODE_ADDRESS),
+            "save_slot": byte_at(SAVE_SLOT_ADDRESS),
+            "player_state": byte_at(PLAYER_STATE_ADDRESS),
+            "sprite_lock": byte_at(SPRITE_LOCK_ADDRESS),
+            "player_lives": byte_at(PLAYER_LIVES_ADDRESS),
+            "paused": byte_at(PAUSE_FLAG_ADDRESS),
+            "translevel": translevel,
+            "level_flags": byte_at(f"{level_flags_address:06X}"),
+            "exits": byte_at(EXIT_COUNTER_ADDRESS),
+            "level_end_timer": byte_at(LEVEL_END_TIMER_ADDRESS),
+            "secret_goal_flag": byte_at(SECRET_GOAL_FLAG_ADDRESS),
+            "joypad": byte_at(JOYPAD_HELD_ADDRESS),
+            "joypad_pressed": byte_at(JOYPAD_PRESSED_ADDRESS),
+            "joypad_axlr": byte_at(JOYPAD_AXLR_ADDRESS),
+            "joypad_axlr_pressed": byte_at(
+                JOYPAD_AXLR_PRESSED_ADDRESS
             ),
         }
 
@@ -20665,6 +21819,7 @@ finally {
     ) -> bool:
         previous_player_state = self.previous_player_state
         previous_player_lives = self.previous_player_lives
+        previous_level_player_lives = self.last_level_player_lives
         self.previous_player_state = player_state
         if player_lives is not None:
             self.previous_player_lives = player_lives
@@ -20695,19 +21850,40 @@ finally {
             player_state == 0x09
             and previous_player_state != 0x09
         )
-        lives_decreased = (
-            not suppress_lives_decrease
-            and
-            player_lives is not None
-            and previous_player_lives is not None
-            and player_lives != previous_player_lives
-            and (
-                player_lives < previous_player_lives
-                or (
-                    previous_player_lives == 0x00
-                    and player_lives == 0xFF
+        def lives_value_decreased(
+            previous_value: int | None,
+            current_value: int | None,
+        ) -> bool:
+            return bool(
+                current_value is not None
+                and previous_value is not None
+                and current_value != previous_value
+                and (
+                    current_value < previous_value
+                    or (
+                        previous_value == 0x00
+                        and current_value == 0xFF
+                    )
                 )
             )
+
+        immediate_lives_decreased = (
+            not suppress_lives_decrease
+            and lives_value_decreased(
+                previous_player_lives,
+                player_lives,
+            )
+        )
+        level_baseline_lives_decreased = (
+            not suppress_lives_decrease
+            and lives_value_decreased(
+                previous_level_player_lives,
+                player_lives,
+            )
+        )
+        lives_decreased = (
+            immediate_lives_decreased
+            or level_baseline_lives_decreased
         )
         death_context = (
             mode in {0x0F, 0x10, 0x11, 0x12, 0x13, LEVEL_MODE}
@@ -20718,23 +21894,70 @@ finally {
             )
         )
 
+        # Refresh the persistent baseline only from clean playable-level
+        # samples.  If a lives drop is first seen during an unrecognized
+        # transition mode, retain the old level value until a recognized
+        # death/overworld sample can consume it.  This is the common no-retry
+        # path used by older hacks.
+        if (
+            player_lives is not None
+            and mode == LEVEL_MODE
+            and player_state != 0x09
+            and not lives_decreased
+        ):
+            self.last_level_player_lives = player_lives
+
+        if self.death_startup_guard_active:
+            # File selection can briefly retain a stale $71 = $09 from the
+            # previous run. Suppress only that ambiguous first observation,
+            # rather than suppressing every sample until exact mode $14. A
+            # clean post-title sample arms the detector, while a real edge
+            # observed during level gameplay or an actual lives decrement is
+            # trusted immediately. This keeps false-start protection without
+            # dropping the first genuine death in a custom transition mode.
+            trusted_death_signal = lives_decreased or (
+                entered_death_state
+                and self.previous_mode == LEVEL_MODE
+            )
+            clean_post_title_sample = (
+                mode not in TITLE_SCREEN_MODES
+                and player_state != 0x09
+            )
+            if trusted_death_signal:
+                self.death_startup_guard_active = False
+            elif clean_post_title_sample:
+                self.death_startup_guard_active = False
+                self.log(
+                    "Death counter armed from a clean post-selection "
+                    "memory sample.",
+                    show_status=False,
+                )
+                return False
+            else:
+                return False
+
         # A normal SMW death sets $71 to 09 and decrements $0DBE. Depending
         # on the hack and the timing of the memory samples, either signal can
-        # arrive first or one can be skipped entirely. Keep the event latched
-        # until several normal gameplay samples have been observed so the two
-        # signals can never count the same death twice.
+        # arrive first or one can be skipped entirely. Consume both as one
+        # event, then rearm on the first signal-free recovery sample. Waiting
+        # for three exact mode-$14 samples caused deaths after fast retries and
+        # in hacks with custom transition modes to be silently missed.
         if self.death_detection_latched:
-            if (
-                mode == LEVEL_MODE
-                and player_state != 0x09
-                and not lives_decreased
-            ):
-                self.death_alive_samples += 1
-                if self.death_alive_samples >= 3:
-                    self.death_detection_latched = False
-                    self.death_alive_samples = 0
-            else:
+            if lives_decreased:
+                self.death_latch_saw_lives_drop = True
                 self.death_alive_samples = 0
+                if player_lives is not None:
+                    self.last_level_player_lives = player_lives
+                return False
+
+            signal_free_recovery = (
+                player_state != 0x09
+                or self.death_latch_saw_lives_drop
+            )
+            if signal_free_recovery:
+                self.death_detection_latched = False
+                self.death_alive_samples = 0
+                self.death_latch_saw_lives_drop = False
             return False
 
         if (
@@ -20751,23 +21974,38 @@ finally {
             if entered_death_state
             else "the lives counter"
         )
-        return self.record_death(source)
+        recorded = self.record_death(
+            source,
+            lives_signal=lives_decreased,
+        )
+        if recorded and player_lives is not None:
+            self.last_level_player_lives = player_lives
+        return recorded
 
-    def record_death(self, source: str) -> bool:
+    def record_death(
+        self,
+        source: str,
+        *,
+        lives_signal: bool = False,
+    ) -> bool:
         """Record one death and latch all alternate detection signals."""
         if (
             not self.current_time_key
             or self.death_detection_latched
-            or self.level_id is None
-            or self.level_waiting_for_start
+            or (
+                self.level_id is None
+                and not self.level_prestart_tracking
+            )
         ):
             return False
 
         self.death_detection_latched = True
         self.death_alive_samples = 0
+        self.death_latch_saw_lives_drop = lives_signal
         self.level_death_count += 1
         self.death_count += 1
         self.save_current_death_count()
+        self.save_current_level_progress()
         self.update_death_file()
         self.log(
             f"Level death {self.level_death_count}; total death "
@@ -20776,28 +22014,191 @@ finally {
         )
         return True
 
+    def update_death_counter_from_retry_transition(
+        self,
+        *,
+        mode: int,
+        translevel: int,
+        exits: int,
+        level_end_timer: int,
+    ) -> bool:
+        """Count retry/reload deaths that expose no reliable death byte.
+
+        Retry patches are not consistent: one can show a prompt, another can
+        reload a checkpoint immediately, and an older hack can return to the
+        overworld or title.  They do share an observable attempt boundary:
+        an active, uncleared level leaves mode $14 and later reloads that same
+        translevel (or abandons the attempt at the title screen).
+
+        A bare transition to the overworld remains pending rather than being
+        counted immediately.  This avoids treating normal navigation as a
+        death; the event is confirmed only if the same level is entered again.
+        """
+        previous_mode = self.previous_mode
+        active_level = (
+            self.current_time_key is not None
+            and self.level_id is not None
+            and not self.level_waiting_for_start
+        )
+        exit_increased = (
+            self.previous_exit_count is not None
+            and exits > self.previous_exit_count
+        )
+        level_was_cleared = bool(
+            self.level_finished
+            or level_end_timer != 0
+            or exit_increased
+        )
+
+        if level_was_cleared:
+            self.death_retry_transition_pending = False
+            self.death_retry_origin_level = None
+            return False
+
+        if (
+            active_level
+            and previous_mode == LEVEL_MODE
+            and mode != LEVEL_MODE
+        ):
+            if mode in TITLE_SCREEN_MODES:
+                # A direct level -> file-select transition is also used when
+                # the player deliberately changes Mario A/B/C.  Do not turn
+                # that normal action into a death.  Death-to-title flows that
+                # pass through a retry/loading mode remain detectable because
+                # their pending attempt was established on the earlier sample.
+                self.death_retry_transition_pending = False
+                self.death_retry_origin_level = None
+            else:
+                self.death_retry_transition_pending = True
+                self.death_retry_origin_level = self.level_id
+
+        if not self.death_retry_transition_pending:
+            return False
+
+        # The normal $71/lives detector may have consumed the death during
+        # the same transition.  Discard this fallback instead of allowing it
+        # to become a second death when gameplay returns.
+        if self.death_detection_latched:
+            self.death_retry_transition_pending = False
+            self.death_retry_origin_level = None
+            return False
+
+        if mode in TITLE_SCREEN_MODES:
+            recorded = self.record_death(
+                "an uncleared level returning to the title screen"
+            )
+            self.death_retry_transition_pending = False
+            self.death_retry_origin_level = None
+            return recorded
+
+        if mode != LEVEL_MODE:
+            return False
+
+        origin_level = self.death_retry_origin_level
+        self.death_retry_transition_pending = False
+        self.death_retry_origin_level = None
+        if origin_level is None or translevel != origin_level:
+            return False
+
+        return self.record_death(
+            "an uncleared retry/reload of the same level"
+        )
+
     def start_fresh_level_tracking(self, translevel: int) -> None:
-        """Activate a newly selected playable level before sampling deaths."""
+        """Activate a playable level and restore its saved progress."""
+        prestart_elapsed = (
+            self.level_elapsed
+            if self.level_prestart_tracking
+            else 0.0
+        )
+        prestart_deaths = (
+            self.level_death_count
+            if self.level_prestart_tracking
+            else 0
+        )
         self.level_id = translevel
-        self.level_elapsed = 0.0
-        self.level_death_count = 0
+        self.last_level_player_lives = None
+        (
+            self.level_elapsed,
+            self.level_death_count,
+        ) = self.get_saved_level_progress(translevel)
+        self.level_elapsed += prestart_elapsed
+        self.level_death_count += prestart_deaths
+        self.level_prestart_tracking = False
         self.level_finished = False
         self.level_manual_paused = False
         self.timers_paused = False
         self.level_overworld_entered_at = None
         self.level_livesplit_overworld_paused = False
 
-        # Reset first so LiveSplit is guaranteed to be stopped at zero.
-        self.send_livesplit_command("level", "reset")
-        self.send_livesplit_command("level", "starttimer")
+        self.load_level_time_into_livesplit()
         self.level_livesplit_running = True
         self.level_waiting_for_start = False
         self.update_death_file()
+        self.update_timer_files()
 
-        self.log(
-            f"Level timer started for level "
-            f"{translevel:02X}."
-        )
+        if self.level_elapsed > 0 or self.level_death_count > 0:
+            self.log(
+                f"Restored level {translevel:02X} at "
+                f"{format_timer(self.level_elapsed, False)} with "
+                f"{self.level_death_count} level deaths."
+            )
+        else:
+            self.log(
+                f"Level timer started for level "
+                f"{translevel:02X}."
+            )
+
+    def retroarch_has_focus(self) -> bool | None:
+        """Report whether RetroArch owns the foreground window.
+
+        This is intentionally a worker method so the focus source can be
+        replaced in tests and so non-RetroArch platforms are never affected.
+        """
+        if str(
+            self.config.get("selected_platform", "FXPAK Pro")
+        ).strip() != "RetroArch":
+            return None
+
+        foreground_name = windows_foreground_executable_name()
+        if not foreground_name:
+            return None
+
+        configured_name = Path(
+            str(
+                self.config.get("retroarch_executable_path", "")
+            ).strip()
+        ).name.casefold()
+        accepted_names = {"retroarch.exe", "retroarch"}
+        if configured_name:
+            accepted_names.add(configured_name)
+        return foreground_name in accepted_names
+
+    def retroarch_runloop_is_paused(self, now: float) -> bool:
+        """Return RetroArch's own paused state without flooding UDP.
+
+        A RetroArch pause freezes SNES WRAM, so SMW's in-memory pause byte
+        remains unchanged.  GET_STATUS is therefore the authoritative signal
+        for emulator-level pauses.  Keep the last confirmed state if one
+        short status request is missed, and refresh it several times during a
+        typical timer-grace interval.
+        """
+        if str(
+            self.config.get("selected_platform", "FXPAK Pro")
+        ).strip() != "RetroArch":
+            self.retroarch_runloop_paused = False
+            return False
+
+        if now - self.retroarch_status_checked_at < 0.25:
+            return self.retroarch_runloop_paused
+
+        self.retroarch_status_checked_at = now
+        status = self.get_retroarch_network_status(timeout=0.08).upper()
+        if re.search(r"\bGET_STATUS\s+PAUSED\b", status):
+            self.retroarch_runloop_paused = True
+        elif re.search(r"\bGET_STATUS\s+PLAYING\b", status):
+            self.retroarch_runloop_paused = False
+        return self.retroarch_runloop_paused
 
     def update_timers_from_state(
         self,
@@ -20808,8 +22209,67 @@ finally {
         mode = state["mode"]
         save_slot = state["save_slot"]
         translevel = state["translevel"]
+        retroarch_runloop_paused = self.retroarch_runloop_is_paused(now)
+        raw_gameplay_active = (
+            mode == LEVEL_MODE
+            and int(state.get("paused", 0)) == 0
+            and int(state.get("sprite_lock", 0)) == 0
+            and not retroarch_runloop_paused
+        )
+        retroarch_focus = self.retroarch_has_focus()
+        focus_blocked = retroarch_focus is False
+        gameplay_active = raw_gameplay_active and not focus_blocked
         self.current_mode = mode
         self.current_translevel = translevel
+
+        if focus_blocked and not self.retroarch_focus_paused:
+            self.retroarch_focus_paused = True
+            if self.game_started and not self.game_finished:
+                self.pause_both_livesplits()
+                self.level_livesplit_running = False
+                self.log(
+                    "Both timers paused because RetroArch lost focus."
+                )
+        elif (
+            retroarch_focus is True
+            and self.retroarch_focus_paused
+        ):
+            self.retroarch_focus_paused = False
+            if (
+                self.game_started
+                and not self.game_finished
+                and not self.timers_paused
+                and not self.game_manual_paused
+                and not self.game_livesplit_overworld_paused
+                and mode not in TITLE_SCREEN_MODES
+            ):
+                self.send_livesplit_command("game", "resume")
+            if (
+                (self.level_id is not None or self.level_prestart_tracking)
+                and not self.level_finished
+                and not self.timers_paused
+                and not self.level_manual_paused
+                and not self.level_livesplit_overworld_paused
+                and mode not in TITLE_SCREEN_MODES
+            ):
+                self.send_livesplit_command("level", "resume")
+                self.level_livesplit_running = True
+            self.log(
+                "RetroArch regained focus; eligible timers resumed."
+            )
+
+        # Remember the slot shown on the last Mario A/B/C selection sample.
+        # Some cores briefly replace $010A with a transition value while the
+        # screen changes from file select to loading. Carrying the confirmed
+        # slot across that gap lets both timers start on the very first loading
+        # sample rather than waiting for the overworld or level.
+        if mode == PLAYER_SELECT_MODE and save_slot in {0, 1, 2}:
+            self.pending_save_slot = save_slot
+        selected_slot = (
+            save_slot
+            if save_slot in {0, 1, 2}
+            else self.pending_save_slot
+        )
 
         if mode == OVERWORLD_MODE and not self.level_auto_tracking_armed:
             self.level_auto_tracking_armed = True
@@ -20826,11 +22286,23 @@ finally {
         if (
             self.current_rom_key
             and mode in {OVERWORLD_MODE, LEVEL_MODE}
-            and save_slot in {0, 1, 2}
-            and self.active_save_slot != save_slot
+            and selected_slot in {0, 1, 2}
+            and self.active_save_slot != selected_slot
         ):
+            slot_was_unassigned = self.active_save_slot is None
+            unassigned_elapsed = (
+                self.game_elapsed
+                if slot_was_unassigned and self.game_started
+                else 0.0
+            )
             previous_key = self.current_time_key
-            self.select_save_slot(save_slot)
+            self.select_save_slot(selected_slot)
+            if slot_was_unassigned and self.game_started:
+                # The timer may have started from a post-selection loading
+                # mode before RetroArch exposed the A/B/C byte. Guard only
+                # this delayed slot handoff; ordinary slot restores retain
+                # their established first-death behavior.
+                self.death_startup_guard_active = True
 
             # If a different valid slot is detected during a running session,
             # save the old slot first, then restore the newly selected slot.
@@ -20844,11 +22316,12 @@ finally {
                 self.save_current_game_time()
                 self.current_time_key = old_key
 
-            if not self.game_started:
+            if not self.game_started or slot_was_unassigned:
                 self.game_elapsed = self.load_saved_times().get(
                     self.current_time_key or "",
                     0.0,
-                )
+                ) + unassigned_elapsed
+                self.load_game_time_into_livesplit()
 
             self.log(
                 "Active save slot detected: "
@@ -20860,16 +22333,57 @@ finally {
         start_pressed = (state["joypad"] & 0x10) != 0
         l_pressed = (state["joypad_axlr"] & 0x20) != 0
         pause_combo_pressed = start_pressed and l_pressed
+        # Mario A/B/C can be confirmed with any face button or Start. Keep the
+        # chosen slot armed here, but do not start either timer until SMW
+        # actually leaves its title/file-select modes. This is the exact
+        # on-screen boundary requested by the user and also avoids counting
+        # time while the title screen is still visible.
+        file_select_confirm_pressed = (
+            mode == PLAYER_SELECT_MODE
+            and selected_slot in {0, 1, 2}
+            and (
+                (state["joypad"] & 0xD0) != 0  # B, Y, or Start
+                or (state.get("joypad_pressed", 0) & 0xD0) != 0
+                or (state["joypad_axlr"] & 0xC0) != 0  # A or X
+                or (
+                    state.get("joypad_axlr_pressed", 0) & 0xC0
+                ) != 0
+            )
+        )
+        if file_select_confirm_pressed:
+            self.file_selection_confirmed = True
+            self.startup_sequence_active = True
+        selection_transition_active = (
+            self.startup_sequence_active
+            or (
+                self.file_selection_confirmed
+                and mode == PLAYER_SELECT_MODE
+            )
+        )
 
         if self.displayed_exit_count is None:
             self.displayed_exit_count = exits
+        self.authoritative_exit_count = exits
 
+        # A goal-tape/orb update is displayed immediately while SMW is still
+        # running its end sequence.  Keep that value provisional until the
+        # real exit byte confirms it.  A replayed exit is rolled back without
+        # ever being written into tracker progress.
         if self.provisional_goal_exit:
-            # Once SMW's real exit counter catches up to the provisional
-            # goal increment, stop treating it as provisional.
-            if exits >= self.displayed_exit_count:
+            provisional_base = int(
+                self.provisional_goal_base_exit_count or 0
+            )
+            if exits > provisional_base:
                 self.displayed_exit_count = exits
                 self.provisional_goal_exit = False
+                self.provisional_goal_base_exit_count = None
+            elif level_end_timer == 0 or mode != LEVEL_MODE:
+                self.displayed_exit_count = exits
+                self.provisional_goal_exit = False
+                self.provisional_goal_base_exit_count = None
+                self.pending_goal_route = None
+            else:
+                self.displayed_exit_count = provisional_base + 1
         elif exits != self.displayed_exit_count:
             self.displayed_exit_count = exits
 
@@ -20916,7 +22430,13 @@ finally {
         # save the latest game time for this ROM, then reset the visible
         # and LiveSplit timers to zero. The saved time remains associated
         # with the same ROM and is restored when play begins again.
-        if mode in {OVERWORLD_MODE, LEVEL_MODE}:
+        if gameplay_active:
+            self.run_reached_gameplay = True
+            self.startup_sequence_active = False
+        elif (
+            mode in {OVERWORLD_MODE, LEVEL_MODE}
+            and not self.startup_sequence_active
+        ):
             self.run_reached_gameplay = True
 
         entered_title_screen = (
@@ -20924,14 +22444,27 @@ finally {
             and self.previous_mode not in TITLE_SCREEN_MODES
         )
 
+        # Run this before the title-screen reset detaches current_time_key and
+        # level_id.  It supplies a platform-neutral fallback for retry prompts,
+        # automatic checkpoint reloads, death-to-overworld hacks, and returns
+        # to title that do not expose a lives drop in the sampled memory.
+        self.update_death_counter_from_retry_transition(
+            mode=mode,
+            translevel=translevel,
+            exits=exits,
+            level_end_timer=level_end_timer,
+        )
+
         if (
             entered_title_screen
             and self.game_started
             and self.run_reached_gameplay
             and self.current_rom_key
+            and not self.startup_sequence_active
         ):
             # Save before changing game_elapsed. This is the resume point
             # that will be restored when the same ROM starts again.
+            self.save_current_level_progress()
             self.save_current_game_time()
             saved_text = format_timer(
                 self.game_elapsed,
@@ -20961,11 +22494,13 @@ finally {
             self.level_elapsed = 0.0
             self.level_finished = False
             self.level_waiting_for_start = True
+            self.level_prestart_tracking = False
             self.level_livesplit_running = False
             self.level_auto_tracking_armed = False
             self.intro_level_notice_logged = False
             self.level_overworld_entered_at = None
             self.level_livesplit_overworld_paused = False
+            self.death_startup_guard_active = False
 
             self.send_livesplit_command("game", "reset")
             self.send_livesplit_command("level", "reset")
@@ -20976,24 +22511,35 @@ finally {
                 f"and reset the visible timer to 00:00."
             )
 
-        # Start after the player-select screen. If the tracker was opened
-        # after play already began, it starts on the first gameplay/overworld
-        # state it observes.
-        left_player_select = (
-            self.previous_mode == PLAYER_SELECT_MODE
-            and mode != PLAYER_SELECT_MODE
+        # Start on the first memory sample outside every title/file-select
+        # mode. Some hacks move through a custom title/cutscene mode after the
+        # Mario A/B/C menu, so checking only mode $0A starts too early.
+        left_title_screen = (
+            self.previous_mode in TITLE_SCREEN_MODES
+            and mode not in TITLE_SCREEN_MODES
         )
         already_in_game = (
             self.previous_mode is None
             and mode in {OVERWORLD_MODE, LEVEL_MODE}
         )
+        valid_slot_after_player_select = (
+            self.current_rom_key is not None
+            and selected_slot in {0, 1, 2}
+            and mode not in TITLE_SCREEN_MODES
+        )
+        post_file_select_loading = (
+            mode in POST_FILE_SELECT_LOADING_MODES
+        )
 
         if not self.game_started and (
-            left_player_select or already_in_game
+            left_title_screen
+            or already_in_game
+            or valid_slot_after_player_select
+            or post_file_select_loading
         ):
-            if self.current_rom_key and save_slot in {0, 1, 2}:
+            if self.current_rom_key and selected_slot in {0, 1, 2}:
                 self.game_elapsed = (
-                    self.get_saved_game_time_for_slot(save_slot)
+                    self.get_saved_game_time_for_slot(selected_slot)
                 )
 
                 restored_key = self.current_time_key
@@ -21016,13 +22562,30 @@ finally {
                 )
 
             self.game_started = True
+            self.pending_save_slot = None
             self.game_finished = False
             self.game_manual_paused = False
-            self.run_reached_gameplay = True
+            self.run_reached_gameplay = gameplay_active
+            self.startup_sequence_active = not gameplay_active
+            # Leaving the title/file-select group is the single automatic
+            # start signal for both timers. Start the level clock during the
+            # loading/cutscene transition too; once SMW exposes a translevel,
+            # that pending time is attached to the persistent level record.
+            self.level_auto_tracking_armed = True
+            self.level_elapsed = 0.0
+            self.level_prestart_tracking = True
+            self.level_finished = False
+            self.level_manual_paused = False
+            self.level_livesplit_running = True
+            self.level_waiting_for_start = True
+            self.death_startup_guard_active = True
+            self.intro_level_notice_logged = False
             self.overworld_entered_at = (
                 now if mode == OVERWORLD_MODE else None
             )
             self.load_game_time_into_livesplit()
+            self.load_level_time_into_livesplit()
+            self.update_timer_files()
             self.log(
                 "Restored "
                 + self.slot_name(self.active_save_slot)
@@ -21037,6 +22600,15 @@ finally {
                     else "."
                 )
             )
+            if left_title_screen:
+                self.log(
+                    "The game left the title/file-select screen; game and "
+                    "level timers started together."
+                )
+            self.log(
+                "Level timer started with the selected Mario file; death "
+                "counting will arm after normal gameplay is visible."
+            )
 
             # When the tracker reconnects to a ROM/slot that was already in
             # progress, or the player leaves file select directly into a
@@ -21047,7 +22619,7 @@ finally {
             # immediately. New runs at 00:00 still wait for the first
             # overworld exactly as before.
             if (
-                (already_in_game or left_player_select)
+                (already_in_game or left_title_screen)
                 and mode == LEVEL_MODE
                 and (
                     self.game_elapsed > 0
@@ -21072,7 +22644,7 @@ finally {
         ):
             self.start_fresh_level_tracking(translevel)
 
-        death_detected_this_sample = self.update_death_counter_from_state(
+        self.update_death_counter_from_state(
             state["player_state"],
             mode,
             state.get("player_lives"),
@@ -21089,45 +22661,20 @@ finally {
             self.level_livesplit_running = False
             self.level_overworld_entered_at = None
             self.level_livesplit_overworld_paused = False
+            self.death_startup_guard_active = False
             self.save_current_game_time()
+            self.save_current_level_progress()
             self.log(
                 f"Both timers stopped at ending mode {mode:02X}."
             )
 
-        # Game timer: keep running through levels, deaths and normal
-        # gameplay. On the overworld, run only for the configured number
-        # of seconds, then pause the Game LiveSplit until gameplay resumes.
+        # Game timer: LEVEL_MODE is active gameplay. Anywhere else inside the
+        # running hack (overworld, retry/loading transition, cutscene, menu)
+        # receives the same configurable grace before the timer pauses. This
+        # avoids losing short transitions without letting an unattended menu
+        # run forever.
         if self.game_started and not self.game_finished:
-            if mode == OVERWORLD_MODE:
-                if self.overworld_entered_at is None:
-                    self.overworld_entered_at = now
-                    self.game_livesplit_overworld_paused = False
-
-                idle_limit = max(
-                    0,
-                    int(self.config["overworld_idle_seconds"]),
-                )
-                overworld_age = now - self.overworld_entered_at
-
-                if (
-                    not self.timers_paused
-                    and not self.game_manual_paused
-                    and overworld_age < idle_limit
-                ):
-                    self.game_elapsed += delta
-
-                if (
-                    overworld_age >= idle_limit
-                    and not self.game_livesplit_overworld_paused
-                ):
-                    self.send_livesplit_command("game", "pause")
-                    self.game_livesplit_overworld_paused = True
-                    self.log(
-                        f"Game timer paused after {idle_limit} "
-                        f"seconds on the overworld."
-                    )
-
-            elif mode not in {PLAYER_SELECT_MODE, 0x00, 0x01, 0x02}:
+            if gameplay_active:
                 self.overworld_entered_at = None
 
                 if self.game_livesplit_overworld_paused:
@@ -21137,13 +22684,47 @@ finally {
                     ):
                         self.send_livesplit_command("game", "resume")
                     self.game_livesplit_overworld_paused = False
-                    self.log("Game timer resumed after leaving overworld.")
+                    self.log(
+                        "Game timer resumed when active gameplay returned."
+                    )
 
                 if (
                     not self.timers_paused
                     and not self.game_manual_paused
                 ):
                     self.game_elapsed += delta
+
+            elif (
+                (
+                    mode not in TITLE_SCREEN_MODES
+                    or selection_transition_active
+                )
+                and not focus_blocked
+            ):
+                if self.overworld_entered_at is None:
+                    self.overworld_entered_at = now
+                    self.game_livesplit_overworld_paused = False
+
+                idle_limit = timer_grace_seconds(self.config)
+                interruption_age = now - self.overworld_entered_at
+
+                if (
+                    not self.timers_paused
+                    and not self.game_manual_paused
+                    and interruption_age < idle_limit
+                ):
+                    self.game_elapsed += delta
+
+                if (
+                    interruption_age >= idle_limit
+                    and not self.game_livesplit_overworld_paused
+                ):
+                    self.send_livesplit_command("game", "pause")
+                    self.game_livesplit_overworld_paused = True
+                    self.log(
+                        f"Game timer paused after {idle_limit} "
+                        "seconds outside active gameplay."
+                    )
 
         # Pause immediately when SMW starts its standard goal sequence.
         # This catches goal tape and goal orb/sphere endings through $7E1493.
@@ -21153,22 +22734,58 @@ finally {
             and not self.level_finished
         ):
             self.level_finished = True
-
-            if not self.provisional_goal_exit:
-                self.displayed_exit_count = max(
-                    exits,
-                    self.displayed_exit_count or 0,
-                ) + 1
+            goal_route = (
+                "secret"
+                if int(state.get("secret_goal_flag", 0)) != 0
+                else "normal"
+            )
+            authoritative_increment = (
+                self.previous_exit_count is not None
+                and exits > self.previous_exit_count
+            )
+            level_was_already_beaten = (
+                int(state.get("level_flags", 0)) & 0x80
+            ) != 0
+            if authoritative_increment:
+                self.displayed_exit_count = exits
+                self.provisional_goal_exit = False
+                self.provisional_goal_base_exit_count = None
+                self.mark_goal_route_confirmed(
+                    self.level_id,
+                    goal_route,
+                )
+                self.pending_goal_route = None
+            elif (
+                not level_was_already_beaten
+                and not self.goal_route_was_confirmed(
+                    self.level_id,
+                    goal_route,
+                )
+            ):
+                self.displayed_exit_count = exits + 1
                 self.provisional_goal_exit = True
+                self.provisional_goal_base_exit_count = exits
+                self.pending_goal_route = (
+                    self.current_time_key or "",
+                    self.level_id,
+                    goal_route,
+                )
+            else:
+                self.displayed_exit_count = exits
+                self.provisional_goal_exit = False
+                self.provisional_goal_base_exit_count = None
+                self.pending_goal_route = None
 
             if self.level_livesplit_running:
                 self.send_livesplit_command("level", "pause")
                 self.level_livesplit_running = False
 
+            self.save_current_level_progress()
+
             self.log(
                 f"Level {self.level_id:02X} goal detected at "
                 f"{format_timer(self.level_elapsed, False)}; "
-                f"displayed exits advanced to "
+                f"displayed exits are now "
                 f"{self.displayed_exit_count}."
             )
 
@@ -21177,19 +22794,31 @@ finally {
             self.previous_exit_count is not None
             and exits > self.previous_exit_count
             and self.level_id is not None
-            and not self.level_finished
         ):
-            self.level_finished = True
+            if not self.level_finished:
+                self.level_finished = True
 
-            if not self.provisional_goal_exit:
-                self.displayed_exit_count = exits
-            elif exits >= (self.displayed_exit_count or 0):
-                self.displayed_exit_count = exits
-                self.provisional_goal_exit = False
+            pending_route = self.pending_goal_route
+            if (
+                pending_route is not None
+                and pending_route[0] == (self.current_time_key or "")
+                and pending_route[1] == self.level_id
+            ):
+                self.mark_goal_route_confirmed(
+                    self.level_id,
+                    pending_route[2],
+                )
+            self.pending_goal_route = None
+
+            self.displayed_exit_count = exits
+            self.provisional_goal_exit = False
+            self.provisional_goal_base_exit_count = None
 
             if self.level_livesplit_running:
                 self.send_livesplit_command("level", "pause")
                 self.level_livesplit_running = False
+
+            self.save_current_level_progress()
 
             self.log(
                 f"Level {self.level_id:02X} completed at "
@@ -21207,6 +22836,7 @@ finally {
             and self.level_id is not None
         ):
             if self.level_finished:
+                self.save_current_level_progress()
                 self.send_livesplit_command("level", "reset")
                 self.level_manual_paused = False
                 self.level_waiting_for_start = True
@@ -21219,21 +22849,10 @@ finally {
                     "Completed level timer reset on return to overworld."
                 )
             else:
-                # Some older or heavily patched hacks return directly to the
-                # overworld without leaving $71 at 09 long enough for a USB
-                # memory sample, and some infinite-lives patches also leave
-                # $0DBE unchanged. An uncleared return from an active level is
-                # therefore the final fallback signal. The shared death latch
-                # prevents this from double-counting a death already caught by
-                # the animation or lives counter.
-                if (
-                    not death_detected_this_sample
-                    and not self.death_detection_latched
-                    and not self.level_waiting_for_start
-                ):
-                    self.record_death(
-                        "the uncleared level-to-overworld fallback"
-                    )
+                # Do not infer a death solely from returning to the overworld.
+                # Exits, start-select shortcuts, and custom transitions can do
+                # that too. Deaths come from Mario's $7E:0071 death state, with
+                # the lives byte retained only as a missed-sample fallback.
                 self.level_overworld_entered_at = now
                 self.level_livesplit_overworld_paused = False
                 self.log(
@@ -21242,23 +22861,22 @@ finally {
                 )
 
         if (
-            mode == OVERWORLD_MODE
-            and self.level_id is not None
+            not gameplay_active
+            and mode not in TITLE_SCREEN_MODES
+            and not focus_blocked
+            and (self.level_id is not None or self.level_prestart_tracking)
             and not self.level_finished
         ):
             if self.level_overworld_entered_at is None:
                 self.level_overworld_entered_at = now
                 self.level_livesplit_overworld_paused = False
 
-            level_idle_limit = max(
-                0,
-                int(self.config["overworld_idle_seconds"]),
-            )
-            level_overworld_age = (
+            level_idle_limit = timer_grace_seconds(self.config)
+            level_interruption_age = (
                 now - self.level_overworld_entered_at
             )
             if (
-                level_overworld_age >= level_idle_limit
+                level_interruption_age >= level_idle_limit
                 and not self.level_livesplit_overworld_paused
             ):
                 if self.level_livesplit_running:
@@ -21267,15 +22885,18 @@ finally {
                 self.level_livesplit_overworld_paused = True
                 self.log(
                     f"Level timer paused after {level_idle_limit} "
-                    "seconds on the overworld."
+                    "seconds outside active gameplay."
                 )
 
         # When gameplay resumes after a death-to-overworld transition, keep
         # the same timer for the same translevel. Selecting another level is
         # the other legitimate reset point requested by the user.
         if (
-            mode == LEVEL_MODE
-            and self.previous_mode != LEVEL_MODE
+            gameplay_active
+            and (
+                self.previous_mode != LEVEL_MODE
+                or self.level_livesplit_overworld_paused
+            )
             and self.level_id is not None
             and not self.level_waiting_for_start
             and not self.level_finished
@@ -21297,6 +22918,7 @@ finally {
                 )
             else:
                 previous_level_id = self.level_id
+                self.save_current_level_progress()
                 self.send_livesplit_command("level", "reset")
                 self.level_id = None
                 self.level_elapsed = 0.0
@@ -21321,6 +22943,7 @@ finally {
             and translevel != self.level_id
         ):
             previous_level_id = self.level_id
+            self.save_current_level_progress()
             self.send_livesplit_command("level", "reset")
             self.level_livesplit_running = False
             self.level_id = None
@@ -21362,38 +22985,42 @@ finally {
         # Keep counting through death animations, retry prompts, and the
         # configured overworld grace period. A completed level is stopped by
         # the goal/exit logic above and reset only after reaching overworld.
-        level_within_overworld_grace = (
-            mode == OVERWORLD_MODE
-            and self.level_overworld_entered_at is not None
-            and not self.level_livesplit_overworld_paused
-            and (
-                now - self.level_overworld_entered_at
-                < max(
-                    0,
-                    int(self.config["overworld_idle_seconds"]),
+        level_within_timer_grace = (
+            selection_transition_active
+            or (
+                not gameplay_active
+                and mode not in TITLE_SCREEN_MODES
+                and not focus_blocked
+                and self.level_overworld_entered_at is not None
+                and not self.level_livesplit_overworld_paused
+                and (
+                    now - self.level_overworld_entered_at
+                    < timer_grace_seconds(self.config)
                 )
             )
         )
         level_should_run = (
-            self.level_id is not None
+            (self.level_id is not None or self.level_prestart_tracking)
             and not self.level_finished
             and not self.timers_paused
             and not self.level_manual_paused
+            # The startup transition can remain asserted in modified hacks
+            # after the shared grace deadline. Once the interruption logic
+            # pauses the level timer, that stale transition flag must not
+            # keep level_elapsed advancing while game_elapsed is stopped.
+            and not self.level_livesplit_overworld_paused
+            and not focus_blocked
             and (
-                level_within_overworld_grace
-                or mode not in {
-                    PLAYER_SELECT_MODE,
-                    OVERWORLD_MODE,
-                    0x00,
-                    0x01,
-                    0x02,
-                    *ENDING_MODES,
-                }
+                gameplay_active
+                or level_within_timer_grace
             )
         )
 
         if level_should_run:
             self.level_elapsed += delta
+
+        if mode != PLAYER_SELECT_MODE:
+            self.file_selection_confirmed = False
 
         self.previous_mode = mode
         self.previous_exit_count = exits
@@ -21429,6 +23056,7 @@ finally {
 
                 if rom_path != self.previous_rom_path:
                     if self.previous_rom_path:
+                        self.save_current_level_progress()
                         self.save_current_game_time()
                         self.save_current_death_count()
                         self.log(
@@ -21489,6 +23117,7 @@ finally {
 
                 if rom_path:
                     state = self.read_game_state(ws)
+                    self.last_successful_connection_sample_at = now
                     self.update_timers_from_state(
                         state,
                         delta,
@@ -21516,17 +23145,14 @@ finally {
                         total=displayed_total,
                     )
 
+                    confirmed_exits = int(state["exits"])
                     if self.last_progress_exit_count is None:
-                        self.last_progress_exit_count = int(
-                            completed_exits
-                        )
+                        self.last_progress_exit_count = confirmed_exits
                     elif (
-                        int(completed_exits)
+                        confirmed_exits
                         > self.last_progress_exit_count
                     ):
-                        self.last_progress_exit_count = int(
-                            completed_exits
-                        )
+                        self.last_progress_exit_count = confirmed_exits
 
                         try:
                             progress_total = int(
@@ -21537,7 +23163,7 @@ finally {
 
                         if progress_total > 0:
                             self.queue_completed_exit_sync(
-                                completed=int(completed_exits),
+                                completed=confirmed_exits,
                                 total=progress_total,
                             )
 
@@ -21559,12 +23185,18 @@ finally {
 
                     last_timer_write = now
 
+                if not rom_path:
+                    # A successful Info response is still a healthy bridge
+                    # sample even when RetroArch currently has no game open.
+                    self.last_successful_connection_sample_at = now
+
                 if (
                     rom_path
                     and self.current_time_key
                     and now - self.last_time_save >= 1.0
                 ):
                     self.save_current_game_time()
+                    self.save_current_level_progress()
                     self.last_time_save = now
 
                 self.stop_event.wait(
@@ -21572,6 +23204,7 @@ finally {
                 )
 
         finally:
+            self.save_current_level_progress()
             self.save_current_game_time()
             self.save_current_death_count()
 
@@ -21627,17 +23260,29 @@ finally {
                     break
 
                 error_text = str(error)
-                self.send_event(
-                    "connection",
-                    connected=False,
-                    error=error_text,
+                transient_error = is_transient_connection_error(
+                    error_text
                 )
                 now = time.monotonic()
+                if connection_loss_needs_user_attention(
+                    error_text,
+                    self.last_successful_connection_sample_at,
+                    now,
+                ):
+                    self.send_event(
+                        "connection",
+                        connected=False,
+                        error=error_text,
+                        transient=transient_error,
+                    )
                 if (
                     error_text != self.last_connection_error
                     or now - self.last_connection_error_logged_at >= 60.0
                 ):
-                    self.log(f"Connection error: {error_text}")
+                    self.log(
+                        f"Connection error: {error_text}",
+                        show_status=not transient_error,
+                    )
                     self.last_connection_error = error_text
                     self.last_connection_error_logged_at = now
                 self.stop_event.wait(
@@ -21648,8 +23293,13 @@ finally {
 
 
 class TrackerApp:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        startup_check: bool = False,
+    ) -> None:
         self.root = root
+        self.startup_check = bool(startup_check)
         self.main_ui_scale = 1.0
         self.responsive_ui_after_id: str | None = None
         self.responsive_ui_rebuilding = False
@@ -21667,10 +23317,11 @@ class TrackerApp:
         # 768p displays. The responsive layout scales the controls while the
         # banner keeps its intended visual height.
         self.root.minsize(900, 640)
-        try:
-            self.root.state("zoomed")
-        except tk.TclError:
-            pass
+        if not self.startup_check:
+            try:
+                self.root.state("zoomed")
+            except tk.TclError:
+                pass
 
         self.config = load_config()
         saved_language = str(
@@ -21681,6 +23332,7 @@ class TrackerApp:
             self.config["app_language"] = saved_language
         self.app_language = saved_language
         self.language_var = tk.StringVar(value=saved_language)
+        self._install_localized_messageboxes()
         try:
             ensure_obs_text_files(self.config)
         except OSError:
@@ -21925,6 +23577,10 @@ class TrackerApp:
         self.feedback_dialog: tk.Toplevel | None = None
         self.feedback_webview_process: subprocess.Popen | None = None
         self.obs_settings_dialog: tk.Toplevel | None = None
+        self.in_app_page_shell: tk.Frame | None = None
+        self.active_in_app_page: InAppPage | None = None
+        self.in_app_page_title_var = tk.StringVar(value="")
+        self.in_app_original_scale: float | None = None
 
         self.sni_path_var = tk.StringVar(
             value=str(self.config.get("sni_path", ""))
@@ -21948,7 +23604,7 @@ class TrackerApp:
         )
         self.idle_seconds_var = tk.StringVar(
             value=str(
-                self.config.get("overworld_idle_seconds", 30)
+                timer_grace_seconds(self.config)
             )
         )
         self.game_time_override_var = tk.StringVar(
@@ -21974,7 +23630,8 @@ class TrackerApp:
         self.root.after_idle(
             lambda: self._localize_widget_tree(self.root)
         )
-        self._configure_tray()
+        if not self.startup_check:
+            self._configure_tray()
         self.root.report_callback_exception = (
             self._report_tk_callback_exception
         )
@@ -22006,32 +23663,33 @@ class TrackerApp:
             add="+",
         )
 
-        self.root.protocol(
-            "WM_DELETE_WINDOW",
-            self.hide_to_tray,
-        )
+        if not self.startup_check:
+            self.root.protocol(
+                "WM_DELETE_WINDOW",
+                self.hide_to_tray,
+            )
 
-        self.root.after(200, self.process_events)
-        self.root.after(400, self.start_tracker)
-        self.root.after(700, self._create_daily_recovery_backup)
-        self.root.after(1100, self._offer_first_run_health_check)
-        # Always perform one quiet release check so the Help-tab badge can
-        # advertise an available update without interrupting the user.
-        self.root.after(
-            2500,
-            lambda: self.check_for_updates(silent=True),
-        )
-        self.root.after(
-            450,
-            self._apply_responsive_ui_scale,
-        )
-        self.root.after(
-            1800,
-            self._check_catalog_freshness_async,
-        )
-        self.root.after_idle(
-            self._maximize_main_window,
-        )
+            self.root.after(200, self.process_events)
+            self.root.after(400, self.start_tracker)
+            self.root.after(700, self._create_daily_recovery_backup)
+            self.root.after(1100, self._offer_first_run_health_check)
+            # Always perform one quiet release check so the Help-tab badge can
+            # advertise an available update without interrupting the user.
+            self.root.after(
+                2500,
+                lambda: self.check_for_updates(silent=True),
+            )
+            self.root.after(
+                450,
+                self._apply_responsive_ui_scale,
+            )
+            self.root.after(
+                1800,
+                self._check_catalog_freshness_async,
+            )
+            self.root.after_idle(
+                self._maximize_main_window,
+            )
 
     def _maximize_main_window(self) -> None:
         try:
@@ -22060,10 +23718,26 @@ class TrackerApp:
         # source. This also handles labels with icons or dynamic suffixes,
         # allowing an open window to switch languages immediately.
         canonical_text = source_text
+        # A previous localization pass may have translated a short phrase
+        # before a longer sentence was processed (for example changing only
+        # "seconds" to "Sekunden"). Normalize such mixed text back to a
+        # complete English key so the whole sentence can be translated.
+        active_translations = UI_TRANSLATIONS.get(language, {})
+        for english, translated in sorted(
+            active_translations.items(),
+            key=lambda item: len(item[1]),
+            reverse=True,
+        ):
+            if not translated or translated == english:
+                continue
+            candidate = canonical_text.replace(translated, english)
+            if candidate in active_translations:
+                canonical_text = candidate
+                break
         plain_source = re.sub(
             r"^[^0-9A-Za-zÀ-ÿ]+",
             "",
-            source_text,
+            canonical_text,
         ).strip()
         english_phrases = tuple(
             UI_TRANSLATIONS.get("es", {}).keys()
@@ -22145,6 +23819,46 @@ class TrackerApp:
             **localized_values
         )
 
+    def _translate_dialog_text(self, text: object) -> str:
+        """Translate message-box text without modifying paths or ROM names."""
+        source_text = str(text)
+        language = getattr(self, "app_language", "en")
+        if language in {"en", "au"}:
+            return source_text
+        translations = UI_TRANSLATIONS.get(language, {})
+        if source_text in translations:
+            return translations[source_text]
+        localized = source_text
+        # Dialogs frequently contain a translated sentence followed by a
+        # technical value or local path.  Limit embedded replacements to
+        # meaningful phrases so short keys such as "All" and "Open" cannot
+        # alter a file name.
+        for english, translated in sorted(
+            translations.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            if len(english) >= 6:
+                localized = localized.replace(english, translated)
+        return localized
+
+    def _install_localized_messageboxes(self) -> None:
+        """Make every app message box follow the active app language."""
+        for name, original in _ORIGINAL_MESSAGEBOX_FUNCTIONS.items():
+            def localized_messagebox(
+                title=None,
+                message=None,
+                _original=original,
+                **options,
+            ):
+                return _original(
+                    self._translate_dialog_text(title or ""),
+                    self._translate_dialog_text(message or ""),
+                    **options,
+                )
+
+            setattr(messagebox, name, localized_messagebox)
+
     def _localize_mapped_toplevel(self, event=None) -> None:
         widget = getattr(event, "widget", None)
         if widget is None:
@@ -22221,6 +23935,11 @@ class TrackerApp:
         min_width: int | None = None,
         min_height: int | None = None,
     ) -> tuple[int, int]:
+        if isinstance(dialog, InAppPage):
+            return (
+                max(self.root.winfo_width(), self._ui_px(min_width or width)),
+                max(self.root.winfo_height(), self._ui_px(min_height or height)),
+            )
         self._activate_full_size_dialog_ui(dialog)
         screen_width = max(800, dialog.winfo_screenwidth())
         screen_height = max(600, dialog.winfo_screenheight())
@@ -22257,8 +23976,60 @@ class TrackerApp:
             )
         return target_width, target_height
 
+    def _create_centered_page_panel(
+        self,
+        parent,
+        *,
+        outer_bg: str,
+        panel_bg: str,
+        border: str,
+        max_width: int,
+        padx: int = 18,
+        pady: int = 16,
+        outer_pad: int = 10,
+    ) -> tk.Frame:
+        """Create a bounded form panel that stays centered on wide screens."""
+        host = tk.Frame(parent, bg=outer_bg, bd=0, highlightthickness=0)
+        host.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(outer_pad),
+            pady=(0, self._ui_px(outer_pad)),
+        )
+        panel = tk.Frame(
+            host,
+            bg=panel_bg,
+            highlightbackground=border,
+            highlightthickness=1,
+            padx=self._ui_px(padx),
+            pady=self._ui_px(pady),
+        )
+        panel.place(
+            relx=0.5,
+            y=0,
+            relheight=1.0,
+            anchor="n",
+        )
+
+        def fit_panel(event=None) -> None:
+            try:
+                available = max(
+                    self._ui_px(360),
+                    int(host.winfo_width()),
+                )
+                target = min(available, self._ui_px(max_width))
+                panel.place_configure(width=target)
+            except tk.TclError:
+                pass
+
+        host.bind("<Configure>", fit_panel, add="+")
+        host.after_idle(fit_panel)
+        return panel
+
     def _activate_full_size_dialog_ui(self, dialog: tk.Toplevel) -> None:
         """Keep a maximized child readable when the main window is compact."""
+        if isinstance(dialog, InAppPage):
+            return
         try:
             window_key = str(dialog)
             if window_key in self._dialog_scale_windows:
@@ -22281,6 +24052,8 @@ class TrackerApp:
             pass
 
     def _release_full_size_dialog_ui(self, dialog: tk.Toplevel) -> None:
+        if isinstance(dialog, InAppPage):
+            return
         self._dialog_scale_windows.discard(str(dialog))
         if self._dialog_scale_windows:
             return
@@ -22305,6 +24078,8 @@ class TrackerApp:
         padding: int = 24,
     ) -> None:
         """Grow a dialog enough to keep its bottom action row visible."""
+        if isinstance(dialog, InAppPage):
+            return
         try:
             if not dialog.winfo_exists():
                 return
@@ -22429,6 +24204,13 @@ class TrackerApp:
         if self.responsive_ui_rebuilding:
             return
 
+        active_page = getattr(self, "active_in_app_page", None)
+        try:
+            if active_page is not None and active_page.winfo_exists():
+                return
+        except tk.TclError:
+            pass
+
         target_scale = self._target_main_ui_scale()
         if abs(target_scale - self.main_ui_scale) < 0.04:
             return
@@ -22479,14 +24261,37 @@ class TrackerApp:
 
     def _relocalize_main_text_variables(self) -> None:
         """Convert persistent live labels to the newly selected language."""
+        # These four values contain live data after a localized prefix.  Split
+        # at the first colon and rebuild the prefix explicitly; relying on a
+        # generic phrase replacement can leave a German/French prefix behind
+        # when switching the running app back to English.
+        for variable_name, english_prefix in (
+            ("author_var", "By:"),
+            ("exits_var", "Exits:"),
+            ("difficulty_var", "Difficulty:"),
+            ("smwc_rating_var", "SMWCentral Rating:"),
+        ):
+            variable = getattr(self, variable_name, None)
+            if variable is None:
+                continue
+            try:
+                current_text = str(variable.get())
+                suffix = (
+                    current_text.split(":", 1)[1].strip()
+                    if ":" in current_text
+                    else current_text.strip()
+                )
+                variable.set(
+                    self._translate_ui_text(english_prefix)
+                    + (" " + suffix if suffix else "")
+                )
+            except (tk.TclError, AttributeError):
+                continue
+
         for variable_name in (
             "connection_var",
             "catalog_last_refresh_var",
             "catalog_new_hacks_var",
-            "author_var",
-            "exits_var",
-            "difficulty_var",
-            "smwc_rating_var",
         ):
             variable = getattr(self, variable_name, None)
             if variable is None:
@@ -22529,6 +24334,13 @@ class TrackerApp:
         # then apply the selected translation. Translating already-translated
         # labels in place caused mixed languages and could leave German text
         # behind when returning to English.
+        active_page = getattr(self, "active_in_app_page", None)
+        if active_page is not None:
+            try:
+                if active_page.winfo_exists():
+                    active_page.request_close()
+            except tk.TclError:
+                pass
         captured = self._capture_main_ui_state()
         for options in captured.values():
             options.pop("text", None)
@@ -22549,6 +24361,211 @@ class TrackerApp:
 
     def _on_app_language_selected(self) -> None:
         self._set_app_language(self.language_var.get())
+
+    def _set_in_app_page_title(self, title: str) -> None:
+        self.in_app_page_title_var.set(
+            self._translate_ui_text(str(title))
+        )
+
+    def _open_in_app_page(
+        self,
+        page_key: str,
+        title: str,
+    ) -> InAppPage:
+        """Replace the dashboard with one browser-style application page."""
+        active_page = getattr(self, "active_in_app_page", None)
+        if active_page is not None:
+            try:
+                if active_page.winfo_exists():
+                    active_page.request_close()
+            except tk.TclError:
+                pass
+
+        shell = getattr(self, "in_app_page_shell", None)
+        if shell is not None:
+            try:
+                if shell.winfo_exists():
+                    shell.destroy()
+            except tk.TclError:
+                pass
+
+        main_shell = getattr(self, "main_shell", None)
+        if main_shell is not None:
+            try:
+                if main_shell.winfo_exists():
+                    main_shell.pack_forget()
+            except tk.TclError:
+                pass
+
+        if self.main_ui_scale < 1.0:
+            self.in_app_original_scale = self.main_ui_scale
+            self.main_ui_scale = 1.0
+            try:
+                self.root.tk.call("tk", "scaling", 4 / 3)
+            except tk.TclError:
+                pass
+
+        palette = self._library_palette()
+        shell = tk.Frame(
+            self.root,
+            bg=palette["window"],
+            bd=0,
+            highlightthickness=0,
+        )
+        self.in_app_page_shell = shell
+        shell.pack(fill="both", expand=True)
+
+        navigation = tk.Frame(
+            shell,
+            bg=THEME["navy"],
+            padx=self._ui_px(12),
+            pady=self._ui_px(7),
+            highlightbackground=THEME["blue"],
+            highlightthickness=1,
+        )
+        navigation.pack(fill="x")
+        navigation.columnconfigure(0, weight=0)
+        navigation.columnconfigure(1, weight=1)
+        navigation.columnconfigure(2, weight=0)
+
+        page = InAppPage(
+            shell,
+            self,
+            page_key,
+            title,
+            bg=palette["window"],
+            bd=0,
+            highlightthickness=0,
+        )
+        self.active_in_app_page = page
+
+        home_button = self._make_action_button(
+            navigation,
+            text=self._translate_ui_text("Home"),
+            command=page.request_close,
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=11,
+            pad_y=5,
+        )
+        home_button.grid(row=0, column=0, sticky="w")
+
+        self._set_in_app_page_title(title)
+        OutlinedLabel(
+            navigation,
+            textvariable=self.in_app_page_title_var,
+            font=("Segoe UI", 14, "bold"),
+            fg="white",
+            bg=THEME["navy"],
+            anchor="center",
+            justify="center",
+            pady=2,
+        ).grid(row=0, column=1, sticky="ew", padx=12)
+
+        # Keep the title mathematically centered by reserving the same width
+        # on the right as the Home button occupies on the left.
+        spacer = tk.Frame(
+            navigation,
+            bg=THEME["navy"],
+            width=max(self._ui_px(90), home_button.winfo_reqwidth()),
+        )
+        spacer.grid(row=0, column=2, sticky="e")
+        spacer.grid_propagate(False)
+
+        page.pack(fill="both", expand=True)
+        self._apply_widget_appearance(
+            shell,
+            dark=self.appearance_var.get() == "dark",
+        )
+
+        # Embedded pages are assembled by their caller after this shared
+        # shell is returned.  Translate on the next idle cycle so headings,
+        # buttons, table columns, and explanatory labels created by the page
+        # builder are all present before localization runs.  Toplevel windows
+        # receive a similar post-build pass from the global <Map> binding;
+        # InAppPage frames do not generate that event.
+        def localize_completed_page() -> None:
+            try:
+                if (
+                    page.winfo_exists()
+                    and page is getattr(self, "active_in_app_page", None)
+                ):
+                    self._localize_widget_tree(shell)
+                    self._set_in_app_page_title(title)
+            except tk.TclError:
+                pass
+
+        page.after_idle(localize_completed_page)
+        return page
+
+    def _close_in_app_page(self, page: InAppPage | None = None) -> None:
+        active_page = getattr(self, "active_in_app_page", None)
+        # A page can finish delayed cleanup after navigation has already
+        # opened a replacement.  Only the currently visible page is allowed
+        # to tear down the shared browser shell.
+        if page is not None and page is not active_page:
+            try:
+                if page.winfo_exists():
+                    page._destroy_from_app()
+            except tk.TclError:
+                pass
+            return
+        target = page or active_page
+        if target is not None:
+            try:
+                target._destroy_from_app()
+            except tk.TclError:
+                pass
+
+        # Page builders keep references for refreshes and duplicate-open
+        # protection.  Clear every reference that points at the page being
+        # closed so later commands never use a destroyed frame as a parent.
+        for attribute_name in (
+            "stats_overview_dialog",
+            "tracker_list_dialog",
+            "custom_hacks_dialog",
+            "downloader_dialog",
+            "game_library_dialog",
+            "fxpak_sd_dialog",
+            "diagnostics_dialog",
+            "health_check_dialog",
+            "readme_dialog",
+            "feedback_dialog",
+            "obs_settings_dialog",
+        ):
+            if getattr(self, attribute_name, None) is target:
+                setattr(self, attribute_name, None)
+
+        shell = getattr(self, "in_app_page_shell", None)
+        if shell is not None:
+            try:
+                if shell.winfo_exists():
+                    shell.destroy()
+            except tk.TclError:
+                pass
+
+        self.active_in_app_page = None
+        self.in_app_page_shell = None
+        original_scale = self.in_app_original_scale
+        self.in_app_original_scale = None
+        if original_scale is not None:
+            self.main_ui_scale = original_scale
+            try:
+                self.root.tk.call(
+                    "tk",
+                    "scaling",
+                    (4 / 3) * original_scale,
+                )
+            except tk.TclError:
+                pass
+        main_shell = getattr(self, "main_shell", None)
+        if main_shell is not None:
+            try:
+                if main_shell.winfo_exists():
+                    main_shell.pack(fill="both", expand=True)
+            except tk.TclError:
+                pass
+        self.root.after_idle(self._queue_responsive_ui_scale)
 
     def _build_ui(self) -> None:
         self.root.configure(bg=THEME["sky_dark"])
@@ -22720,14 +24737,27 @@ class TrackerApp:
                 self._render_responsive_banner
             )
 
+        # Share any spare vertical room above and below the dashboard. This
+        # keeps the three main sections visually centered on tall/maximized
+        # windows while both spacers collapse away on compact windows.
+        self.dashboard_top_spacer = tk.Frame(
+            self.content_frame,
+            bg="#54BDF2",
+            height=0,
+            bd=0,
+            highlightthickness=0,
+        )
+        self.dashboard_top_spacer.pack(
+            fill="both",
+            expand=True,
+        )
+
         status_body = self._make_card(
             self.content_frame,
-            title="STATUS",
+            title="LIVE SESSION",
             accent=THEME["blue"],
             icon="★",
-            trailing_photo=self.mario_card_photos.get(
-                "yoshi"
-            ),
+            center_title=True,
         )
 
         status_grid = tk.Frame(
@@ -22736,8 +24766,9 @@ class TrackerApp:
         )
         self.status_grid = status_grid
         status_grid.pack(fill="x")
-        status_grid.columnconfigure(0, weight=1)
+        status_grid.columnconfigure(0, weight=0)
         status_grid.columnconfigure(1, weight=1)
+        status_grid.columnconfigure(2, weight=0)
 
         fx_tile = self._make_status_tile(
             status_grid,
@@ -22755,8 +24786,8 @@ class TrackerApp:
             border_color=THEME["blue"],
             pad_x=13,
             pad_y=8,
-            tile_width=460,
-            tile_height=132,
+            tile_width=400,
+            tile_height=150,
         )
         self.fx_status_tile = fx_tile
         try:
@@ -22869,7 +24900,7 @@ class TrackerApp:
 
         sheet_tile = self._make_status_tile(
             status_grid,
-            column=1,
+            column=2,
             icon_text="▦",
             icon_bg="#279444",
             title="MY TRACKER",
@@ -22881,16 +24912,27 @@ class TrackerApp:
             border_color=THEME["green"],
             pad_x=13,
             pad_y=8,
-            tile_width=460,
-            tile_height=132,
+            tile_width=400,
+            tile_height=150,
         )
         self.tracker_status_tile = sheet_tile
+        # Mirror the FXPAK layout so the artwork has a real media column
+        # instead of sitting against (and appearing clipped by) the border.
+        sheet_tile.status_icon_label.place_configure(
+            relx=0.83,
+            rely=0.50,
+            x=0,
+            anchor="center",
+        )
+        sheet_tile.status_title_label.place_configure(
+            relx=0.39,
+        )
         sheet_status_line = tk.Frame(
             sheet_tile,
             bg="#F1FFF0",
         )
         sheet_status_line.place(
-            relx=0.5,
+            relx=0.39,
             rely=0.56,
             anchor="center",
         )
@@ -22923,7 +24965,7 @@ class TrackerApp:
             anchor="center",
         )
         self.catalog_last_refresh_label.place(
-            relx=0.5,
+            relx=0.39,
             rely=0.74,
             anchor="center",
         )
@@ -22936,7 +24978,7 @@ class TrackerApp:
             anchor="center",
         )
         self.catalog_new_hacks_label.place(
-            relx=0.5,
+            relx=0.39,
             rely=0.88,
             anchor="center",
         )
@@ -22955,95 +24997,75 @@ class TrackerApp:
                 self.open_my_tracker,
             )
 
-        self.tracker_open_hint = None
-
-        game_body = self._make_card(
-            self.content_frame,
-            title="CURRENT HACK",
-            accent=THEME["green"],
-            icon="★",
-            trailing_photo=self.mario_card_photos.get(
-                "mario"
-            ),
-            header_action_text="↻  Replay Recent Hack",
-            header_action_command=self.replay_last_hack,
-            header_action_bg=THEME["orange"],
-        )
-        self.replay_last_hack_button = getattr(
-            game_body,
-            "header_action_button",
-            None,
-        )
-        if self.replay_last_hack_button is not None:
-            self.replay_last_hack_button.configure(width=21)
-        replay_header = getattr(
-            game_body,
-            "header_frame",
-            None,
-        )
-        self.replay_recent_hack_combo = None
-        if replay_header is not None:
-            self.replay_recent_hack_combo = ttk.Combobox(
-                replay_header,
-                textvariable=self.replay_recent_hack_var,
-                state="readonly",
-                style="HackPicker.TCombobox",
-                width=27,
-                height=5,
-                font=("Segoe UI", 10),
-                justify="center",
-            )
-            self.replay_recent_hack_combo.pack(
-                side="right",
-                padx=(self._ui_px(6), 0),
-                pady=self._ui_px(3),
-                ipady=self._ui_px(2),
-            )
-        self._update_replay_last_hack_button()
-
         game_layout = tk.Frame(
-            game_body,
+            status_grid,
             bg="#F1FFF0",
+            highlightbackground=THEME["green"],
+            highlightthickness=self._ui_px(2),
+            width=self._ui_px(720),
+            height=self._ui_px(150),
         )
         self.current_hack_layout = game_layout
-        game_layout.pack(fill="x")
-        game_layout.columnconfigure(1, weight=1)
+        game_layout.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+            padx=self._ui_px(10),
+            pady=self._ui_px(4),
+        )
+        game_layout.grid_propagate(False)
+        game_layout.columnconfigure(0, weight=1)
+        game_layout.rowconfigure(0, weight=1)
+
+        identity_row = tk.Frame(game_layout, bg="#F1FFF0")
+        identity_row.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=self._ui_px(10),
+            pady=(self._ui_px(5), self._ui_px(2)),
+        )
+        identity_row.columnconfigure(0, weight=0)
+        identity_row.columnconfigure(1, weight=1)
+        identity_row.rowconfigure(0, weight=1)
 
         question_block = tk.Label(
-            game_layout,
+            identity_row,
             image=self.coin_block_photo,
             bg="#F1FFF0",
             bd=0,
             highlightthickness=0,
+            cursor="hand2",
         )
         question_block.grid(
             row=0,
             column=0,
-            rowspan=4,
-            padx=(0, 12),
-            pady=4,
-        )
-        question_block.configure(
-            cursor="hand2",
+            sticky="e",
+            padx=(0, self._ui_px(12)),
         )
         question_block.bind(
             "<Button-1>",
             self.open_current_hack_page,
         )
 
+        identity_text = tk.Frame(identity_row, bg="#F1FFF0")
+        identity_text.grid(row=0, column=1, sticky="nsew")
+        identity_text.columnconfigure(0, weight=1)
+
         self.current_hack_title_label = tk.Label(
-            game_layout,
+            identity_text,
             textvariable=self.game_var,
-            font=("Segoe UI", 20, "bold underline"),
+            font=("Segoe UI", 18, "bold underline"),
             fg="#145C21",
             bg="#F1FFF0",
-            anchor="w",
-            wraplength=self._ui_px(500),
+            anchor="center",
+            justify="center",
+            wraplength=self._ui_px(470),
             cursor="hand2",
         )
         self.current_hack_title_label.grid(
             row=0,
-            column=1,
+            column=0,
             sticky="ew",
         )
         self.current_hack_title_label.bind(
@@ -23052,55 +25074,36 @@ class TrackerApp:
         )
 
         tk.Label(
-            game_layout,
+            identity_text,
             textvariable=self.author_var,
-            font=("Segoe UI", 11),
+            font=("Segoe UI", 10),
             fg=THEME["muted"],
             bg="#F1FFF0",
-            anchor="w",
+            anchor="center",
+            justify="center",
         ).grid(
             row=1,
-            column=1,
-            sticky="w",
-            pady=(6, 0),
+            column=0,
+            sticky="ew",
+            pady=(self._ui_px(2), 0),
         )
 
-        tk.Label(
-            game_layout,
-            textvariable=self.exits_var,
-            font=("Segoe UI", 11, "bold"),
-            fg="#245D7A",
-            bg="#F1FFF0",
-            anchor="w",
-        ).grid(
-            row=2,
-            column=1,
-            sticky="w",
-            pady=(4, 0),
-        )
-
-        details_frame = tk.Frame(
-            game_layout,
-            bg="#F1FFF0",
-        )
+        details_frame = tk.Frame(identity_text, bg="#F1FFF0")
         details_frame.grid(
-            row=3,
-            column=1,
-            sticky="w",
-            pady=(5, 0),
+            row=2,
+            column=0,
+            pady=(self._ui_px(3), 0),
         )
         self.current_difficulty_label = tk.Label(
             details_frame,
             textvariable=self.difficulty_var,
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 9, "bold"),
             fg="#7F6000",
             bg="#FFF2CC",
-            padx=8,
-            pady=2,
+            padx=self._ui_px(7),
+            pady=self._ui_px(1),
         )
-        self.current_difficulty_label.pack(
-            side="left",
-        )
+        self.current_difficulty_label.pack(side="left")
         if self.difficulty_color_trace_id is not None:
             try:
                 self.difficulty_var.trace_remove(
@@ -23117,100 +25120,110 @@ class TrackerApp:
         tk.Label(
             details_frame,
             textvariable=self.smwc_rating_var,
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 9, "bold"),
             fg="#5F497A",
             bg="#E4DFEC",
-            padx=8,
-            pady=2,
+            padx=self._ui_px(7),
+            pady=self._ui_px(1),
         ).pack(
             side="left",
-            padx=(8, 0),
+            padx=(self._ui_px(7), 0),
         )
 
-        death_panel = tk.Frame(
+        metric_strip = tk.Frame(
             game_layout,
             bg="#F1FFF0",
-            highlightbackground=THEME["red"],
-            highlightthickness=self._ui_px(2),
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
+        )
+        self.current_hack_death_panel = metric_strip
+        metric_strip.grid(
+            row=1,
+            column=0,
+            sticky="ew",
             padx=self._ui_px(10),
-            pady=self._ui_px(7),
+            pady=(0, self._ui_px(7)),
         )
-        self.current_hack_death_panel = death_panel
-        death_panel.place(
-            relx=0.5,
-            rely=0.5,
-            anchor="center",
-        )
-
-        death_contents = tk.Frame(death_panel, bg="#F1FFF0")
-        death_contents.pack(fill="both", expand=True)
-        if self.mario_death_photo is not None:
-            tk.Label(
-                death_contents,
-                image=self.mario_death_photo,
-                bg="#F1FFF0",
-                bd=0,
-                highlightthickness=0,
-            ).pack(
-                side="left",
-                padx=(0, self._ui_px(10)),
+        for metric_column in range(3):
+            metric_strip.columnconfigure(
+                metric_column,
+                weight=1,
+                uniform="live_session_metrics",
             )
 
-        counter_area = tk.Frame(death_contents, bg="#F1FFF0")
-        counter_area.pack(side="left", fill="both", expand=True)
+        exits_metric = tk.Frame(metric_strip, bg="#F1FFF0")
+        exits_metric.grid(row=0, column=0, sticky="nsew")
+        tk.Label(
+            exits_metric,
+            text="EXITS",
+            font=("Segoe UI", 8, "bold"),
+            fg=THEME["blue"],
+            bg="#F1FFF0",
+            anchor="center",
+        ).pack(fill="x", pady=(self._ui_px(2), 0))
+        tk.Label(
+            exits_metric,
+            textvariable=self.exits_var,
+            font=("Segoe UI", 11, "bold"),
+            fg=THEME["text"],
+            bg="#F1FFF0",
+            anchor="center",
+            justify="center",
+        ).pack(fill="x", pady=(0, self._ui_px(3)))
 
-        def make_death_counter(
+        def make_live_death_metric(
+            column: int,
             title: str,
             variable: tk.StringVar,
             reset_text: str,
             reset_command: Callable[[], None],
             accent: str,
         ) -> tuple[tk.Frame, tk.Button]:
-            counter = tk.Frame(
-                counter_area,
+            metric = tk.Frame(
+                metric_strip,
                 bg="#F1FFF0",
+                highlightbackground=THEME["border"],
+                highlightthickness=1,
             )
-            counter.pack(
-                side="left",
-                fill="both",
-                expand=True,
-                padx=self._ui_px(5),
-            )
+            metric.grid(row=0, column=column, sticky="nsew")
             tk.Label(
-                counter,
+                metric,
                 text=title,
-                font=("Segoe UI", 9, "bold"),
+                font=("Segoe UI", 8, "bold"),
                 fg=accent,
                 bg="#F1FFF0",
                 anchor="center",
-            ).pack(fill="x")
+            ).pack(fill="x", pady=(self._ui_px(2), 0))
             OutlinedLabel(
-                counter,
+                metric,
                 textvariable=variable,
-                font=("Segoe UI", 20, "bold"),
+                font=("Segoe UI", 11, "bold"),
                 fg=THEME["text"],
                 bg="#F1FFF0",
                 anchor="center",
                 justify="center",
             ).pack(fill="x")
-
             button = self._make_action_button(
-                counter,
+                metric,
                 text=reset_text,
                 command=reset_command,
                 bg=accent,
                 active_bg=THEME["navy"],
-                width=17,
-                pad_y=3,
-                font_size=8,
+                width=16,
+                pad_y=1,
+                font_size=7,
             )
-            button.pack(fill="x", pady=(self._ui_px(5), 0))
-            return counter, button
+            button.pack(
+                padx=self._ui_px(5),
+                pady=(0, self._ui_px(3)),
+            )
+            return metric, button
 
         (
             self.current_hack_level_death_panel,
             self.reset_deaths_button,
-        ) = make_death_counter(
+        ) = make_live_death_metric(
+            1,
             "LEVEL DEATHS",
             self.death_counter_var,
             "Reset Level Deaths",
@@ -23220,7 +25233,8 @@ class TrackerApp:
         (
             self.current_hack_total_death_panel,
             self.reset_total_deaths_button,
-        ) = make_death_counter(
+        ) = make_live_death_metric(
+            2,
             "TOTAL DEATHS",
             self.total_death_counter_var,
             "Reset Total Deaths",
@@ -23228,39 +25242,67 @@ class TrackerApp:
             THEME["purple"],
         )
 
-        spreadsheet_actions = tk.Frame(
-            game_layout,
-            bg="#F1FFF0",
+        self.tracker_open_hint = None
+
+        game_body = self._make_card(
+            self.content_frame,
+            title="GAME CONTROLS",
+            accent=THEME["orange"],
+            icon="🎮",
+            center_title=True,
         )
-        self.current_hack_actions = spreadsheet_actions
-        spreadsheet_actions.grid(
+
+        controls_layout = tk.Frame(
+            game_body,
+            bg=THEME["panel"],
+        )
+        self.current_hack_actions = controls_layout
+        controls_layout.pack(
+            fill="x",
+            expand=True,
+            pady=self._ui_px(2),
+        )
+        for column in range(3):
+            controls_layout.columnconfigure(
+                column,
+                weight=1,
+                uniform="game_controls",
+            )
+        controls_layout.rowconfigure(0, weight=1)
+        controls_layout.rowconfigure(1, weight=1)
+
+        selection_band = tk.Frame(
+            controls_layout,
+            bg=THEME["panel"],
+        )
+        selection_band.grid(
             row=0,
-            column=2,
-            rowspan=4,
-            padx=(18, 0),
-            sticky="nse",
+            column=0,
+            columnspan=3,
+            sticky="nsew",
+            pady=(0, self._ui_px(6)),
         )
-        spreadsheet_actions.columnconfigure(
+        selection_band.columnconfigure(
             0,
-            weight=3,
-            minsize=self._ui_px(390),
+            weight=1,
+            uniform="game_selection_groups",
         )
-        spreadsheet_actions.columnconfigure(
+        selection_band.columnconfigure(
             1,
-            weight=2,
-            minsize=self._ui_px(245),
+            weight=1,
+            uniform="game_selection_groups",
         )
-        spreadsheet_actions.rowconfigure(0, weight=1)
-        spreadsheet_actions.rowconfigure(1, weight=1)
+        selection_band.rowconfigure(0, weight=1)
 
         selector_row = tk.Frame(
-            spreadsheet_actions,
-            bg="#F1FFF0",
+            selection_band,
+            bg=THEME["panel"],
         )
         selector_row.grid(
             row=0,
             column=0,
             sticky="nsew",
+            padx=(0, self._ui_px(6)),
         )
         selector_row.columnconfigure(0, weight=1)
         selector_row.rowconfigure(0, weight=1)
@@ -23324,69 +25366,111 @@ class TrackerApp:
             command=self._play_selected_main_hack,
             bg=THEME["blue"],
             active_bg=THEME["navy"],
-            width=10,
+            width=12,
             pad_y=7,
-            font_size=12,
+            font_size=11,
         ).grid(
             row=0,
             column=1,
             sticky="nsew",
         )
 
+        recent_row = tk.Frame(
+            selection_band,
+            bg=THEME["panel"],
+        )
+        recent_row.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+            padx=(self._ui_px(6), 0),
+        )
+        recent_row.columnconfigure(0, weight=1)
+        recent_row.rowconfigure(0, weight=1)
+
+        self.replay_recent_hack_combo = ttk.Combobox(
+            recent_row,
+            textvariable=self.replay_recent_hack_var,
+            state="readonly",
+            style="HackPicker.TCombobox",
+            width=27,
+            height=5,
+            font=("Segoe UI", 10),
+            justify="center",
+        )
+        self.replay_recent_hack_combo.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            ipady=self._ui_px(5),
+            padx=(0, self._ui_px(8)),
+        )
+
+        self.replay_last_hack_button = self._make_action_button(
+            recent_row,
+            text="↻  Replay Recent Hack",
+            command=self.replay_last_hack,
+            bg=THEME["orange"],
+            active_bg=THEME["navy"],
+            width=22,
+            pad_y=7,
+            font_size=10,
+        )
+        self.replay_last_hack_button.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+        )
+        self._update_replay_last_hack_button()
+
         self._make_action_button(
-            spreadsheet_actions,
+            controls_layout,
             text="🎲  Play Random Hack",
             command=self._play_random_main_hack,
             bg=THEME["orange"],
             active_bg="#A84808",
-            width=34,
-            pad_y=7,
-            font_size=12,
+            width=24,
+            pad_y=8,
+            font_size=11,
         ).grid(
             row=1,
             column=0,
             sticky="nsew",
-            pady=(self._ui_px(6), 0),
+            padx=(0, self._ui_px(5)),
         )
 
-        self.send_spreadsheet_button = (
-            self._make_action_button(
-                spreadsheet_actions,
-                text="➜  Add to My Tracker",
-                command=self.add_current_hack_to_tracker,
-                bg=THEME["green"],
-                active_bg=THEME["green_dark"],
-                width=23,
-                pad_y=8,
-                font_size=12,
-            )
+        self.send_spreadsheet_button = self._make_action_button(
+            controls_layout,
+            text="➜  Add to My Tracker",
+            command=self.add_current_hack_to_tracker,
+            bg=THEME["green"],
+            active_bg=THEME["green_dark"],
+            width=24,
+            pad_y=8,
+            font_size=11,
         )
         self.send_spreadsheet_button.grid(
-            row=0,
-            column=1,
-            sticky="nsew",
-            padx=(self._ui_px(12), 0),
-            pady=(0, self._ui_px(3)),
-        )
-
-        self.complete_spreadsheet_button = (
-            self._make_action_button(
-                spreadsheet_actions,
-                text="✓  Complete Hack",
-                command=self.complete_in_spreadsheet,
-                bg=THEME["purple"],
-                active_bg="#6037AA",
-                width=23,
-                pad_y=8,
-                font_size=12,
-            )
-        )
-        self.complete_spreadsheet_button.grid(
             row=1,
             column=1,
             sticky="nsew",
-            padx=(self._ui_px(12), 0),
-            pady=(self._ui_px(3), 0),
+            padx=self._ui_px(5),
+        )
+
+        self.complete_spreadsheet_button = self._make_action_button(
+            controls_layout,
+            text="✓  Complete Hack",
+            command=self.complete_in_spreadsheet,
+            bg=THEME["purple"],
+            active_bg="#6037AA",
+            width=24,
+            pad_y=8,
+            font_size=11,
+        )
+        self.complete_spreadsheet_button.grid(
+            row=1,
+            column=2,
+            sticky="nsew",
+            padx=(self._ui_px(5), 0),
         )
 
         self._refresh_main_hack_selector()
@@ -23396,9 +25480,7 @@ class TrackerApp:
             title="TIMERS",
             accent=THEME["blue"],
             icon="◷",
-            trailing_photo=self.mario_card_photos.get(
-                "toad"
-            ),
+            center_title=True,
         )
 
         timer_layout = tk.Frame(
@@ -23590,9 +25672,9 @@ class TrackerApp:
         ).grid(
             row=0,
             column=0,
-            padx=(10, 5),
-            pady=(6, 2),
-            sticky="w",
+            padx=self._ui_px(8),
+            pady=(self._ui_px(6), self._ui_px(2)),
+            sticky="ew",
         )
 
         game_override_entry = tk.Entry(
@@ -23610,11 +25692,11 @@ class TrackerApp:
             justify="center",
         )
         game_override_entry.grid(
-            row=0,
-            column=1,
-            padx=(0, 9),
-            pady=(5, 2),
-            sticky="w",
+            row=1,
+            column=0,
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(4)),
+            sticky="ew",
         )
 
         tk.Label(
@@ -23625,10 +25707,10 @@ class TrackerApp:
             bg="#EDF7FF",
         ).grid(
             row=0,
-            column=2,
-            padx=(0, 5),
-            pady=(6, 2),
-            sticky="w",
+            column=1,
+            padx=self._ui_px(8),
+            pady=(self._ui_px(6), self._ui_px(2)),
+            sticky="ew",
         )
 
         level_override_entry = tk.Entry(
@@ -23646,11 +25728,11 @@ class TrackerApp:
             justify="center",
         )
         level_override_entry.grid(
-            row=0,
-            column=3,
-            padx=(0, 9),
-            pady=(5, 2),
-            sticky="w",
+            row=1,
+            column=1,
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(4)),
+            sticky="ew",
         )
 
         tk.Label(
@@ -23660,11 +25742,11 @@ class TrackerApp:
             fg=THEME["red"],
             bg="#EDF7FF",
         ).grid(
-            row=1,
-            column=0,
-            padx=(10, 5),
-            pady=(2, 2),
-            sticky="w",
+            row=0,
+            column=2,
+            padx=self._ui_px(8),
+            pady=(self._ui_px(6), self._ui_px(2)),
+            sticky="ew",
         )
 
         level_deaths_override_entry = tk.Entry(
@@ -23683,10 +25765,10 @@ class TrackerApp:
         )
         level_deaths_override_entry.grid(
             row=1,
-            column=1,
-            padx=(0, 9),
-            pady=(2, 2),
-            sticky="w",
+            column=2,
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(4)),
+            sticky="ew",
         )
 
         tk.Label(
@@ -23696,11 +25778,11 @@ class TrackerApp:
             fg=THEME["red"],
             bg="#EDF7FF",
         ).grid(
-            row=1,
-            column=2,
-            padx=(0, 5),
-            pady=(2, 2),
-            sticky="w",
+            row=0,
+            column=3,
+            padx=self._ui_px(8),
+            pady=(self._ui_px(6), self._ui_px(2)),
+            sticky="ew",
         )
 
         total_deaths_override_entry = tk.Entry(
@@ -23720,9 +25802,9 @@ class TrackerApp:
         total_deaths_override_entry.grid(
             row=1,
             column=3,
-            padx=(0, 9),
-            pady=(2, 2),
-            sticky="w",
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(4)),
+            sticky="ew",
         )
 
         self._make_action_button(
@@ -23737,9 +25819,9 @@ class TrackerApp:
             row=0,
             column=4,
             rowspan=2,
-            padx=(0, 10),
-            pady=4,
-            sticky="nse",
+            padx=self._ui_px(10),
+            pady=self._ui_px(6),
+            sticky="",
         )
 
         tk.Label(
@@ -23761,10 +25843,13 @@ class TrackerApp:
             sticky="w",
         )
 
-        override_frame.columnconfigure(
-            4,
-            weight=1,
-        )
+        for override_column in range(4):
+            override_frame.columnconfigure(
+                override_column,
+                weight=1,
+                uniform="timer_override_field",
+            )
+        override_frame.columnconfigure(4, weight=0)
 
         # Absorb any extra height above the footer so the sprites, creator
         # credit, and current status stay docked to the bottom when the
@@ -24306,19 +26391,6 @@ class TrackerApp:
             ),
             "peach",
         )
-        add_mario_command(
-            downloads_menu,
-            "Add Unmoderated Hack…",
-            protected_menu_action(
-                "downloads_files",
-                "Downloads",
-                "Add Unmoderated Hack",
-                lambda: self._edit_custom_hack(
-                    new_record=True
-                ),
-            ),
-            "yoshi",
-        )
         downloads_menu.add_separator()
 
         software_menu = tk.Menu(
@@ -24359,22 +26431,9 @@ class TrackerApp:
         )
         downloads_menu.add_separator()
 
-        fxpak_downloads_menu = tk.Menu(
-            downloads_menu,
-            tearoff=False,
-            bg=colors["bg"],
-            fg=colors["fg"],
-            activebackground=THEME["orange"],
-            activeforeground="white",
-            disabledforeground=colors["disabled_fg"],
-            selectcolor=colors["select"],
-            relief="solid",
-            bd=1,
-            font=("Segoe UI", 10, "bold"),
-        )
         add_mario_command(
-            fxpak_downloads_menu,
-            "Manage SD Card Hacks…",
+            downloads_menu,
+            "FXPAK Pro…",
             protected_menu_action(
                 "downloads_files",
                 "Downloads",
@@ -24382,10 +26441,6 @@ class TrackerApp:
                 self.open_fxpak_sd_card_browser,
             ),
             "mario",
-        )
-        downloads_menu.add_cascade(
-            label="FXPAK Pro",
-            menu=fxpak_downloads_menu,
         )
         downloads_menu.add_separator()
 
@@ -24442,12 +26497,11 @@ class TrackerApp:
             "toad",
         )
         self.catalog_info_menu_indexes = (3, 4, 6)
-        catalog_cascade_options = {
-            "label": "SMW Central Catalog",
-            "menu": catalog_menu,
-        }
-        downloads_menu.add_cascade(
-            **catalog_cascade_options
+        add_mario_command(
+            downloads_menu,
+            "SMW Central Catalog…",
+            self.open_smwcentral_catalog_browser,
+            "toad",
         )
         self.catalog_menu = catalog_menu
         self._update_catalog_menu_labels()
@@ -24542,7 +26596,10 @@ class TrackerApp:
         self.obs_menu = obs_menu
         self.downloads_menu = downloads_menu
         self.software_menu = software_menu
-        self.fxpak_downloads_menu = fxpak_downloads_menu
+        # FXPAK Pro now opens its game library directly, so the former
+        # Downloads submenu no longer exists. Keep the optional theme hook
+        # explicitly empty instead of referring to that removed local.
+        self.fxpak_downloads_menu = None
         self.appearance_menu = None
         self.help_menu = help_menu
 
@@ -24947,11 +27004,20 @@ class TrackerApp:
         existing = self._find_optional_software_executable(software)
         if existing is not None:
             use_existing = messagebox.askyesno(
-                f"{name} Found",
+                f"{name} {self._translate_ui_text('Found')}",
                 (
-                    f"The app found {name} here:\n\n{existing}\n\n"
-                    "Use and configure this installation automatically?\n\n"
-                    "Choose No to download a fresh copy instead."
+                    self._format_ui_text(
+                        "The app found {name} here:",
+                        name=name,
+                    )
+                    + f"\n\n{existing}\n\n"
+                    + self._translate_ui_text(
+                        "Use and configure this installation automatically?"
+                    )
+                    + "\n\n"
+                    + self._translate_ui_text(
+                        "Choose No to download a fresh copy instead."
+                    )
                 ),
                 parent=self.root,
             )
@@ -24962,8 +27028,9 @@ class TrackerApp:
                     messagebox.showerror(name, str(error), parent=self.root)
                     return
                 messagebox.showinfo(
-                    f"{name} Ready",
-                    f"Settings now point to:\n\n{existing}",
+                    f"{name} {self._translate_ui_text('Ready')}",
+                    self._translate_ui_text("Settings now point to:")
+                    + f"\n\n{existing}",
                     parent=self.root,
                 )
                 if self._tracker_is_running():
@@ -25166,14 +27233,23 @@ class TrackerApp:
             messagebox.showerror(name, str(error), parent=self.root)
             return
 
-        details = f"Executable:\n{executable}"
+        details = (
+            self._translate_ui_text("Executable:")
+            + f"\n{executable}"
+        )
         if core_path is not None:
-            details += f"\n\nRecommended core:\n{core_path}"
+            details += (
+                "\n\n"
+                + self._translate_ui_text("Recommended core:")
+                + f"\n{core_path}"
+            )
         messagebox.showinfo(
-            f"{name} Ready",
+            f"{name} {self._translate_ui_text('Ready')}",
             (
-                f"{name} is configured and its locations were saved in "
-                f"Settings.\n\n{details}"
+                self._translate_ui_text(
+                    "RetroArch is configured and its locations were saved in Settings."
+                ).replace("RetroArch", name, 1)
+                + f"\n\n{details}"
             ),
             parent=self.root,
         )
@@ -26011,6 +28087,8 @@ class TrackerApp:
         dialog: tk.Toplevel,
         _background: str,
     ) -> None:
+        if isinstance(dialog, InAppPage):
+            return
         # Making the dialog resizable gives its native Windows title bar one
         # clean Minimize / Maximize-Restore / Close set. Do not draw a second
         # set inside the colored app header.
@@ -26955,7 +29033,10 @@ class TrackerApp:
         self.import_existing_spreadsheet()
 
     def _open_settings_dialog(self) -> None:
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "settings",
+            "Settings",
+        )
         dialog.title("SMW Stream Tracker Settings")
         dialog.transient(self.root)
         dialog.resizable(True, True)
@@ -26986,21 +29067,18 @@ class TrackerApp:
             pady=12,
         )
 
-        body = tk.Frame(
+        body = self._create_centered_page_panel(
             dialog,
-            bg="#F9F5FF",
-            highlightbackground=THEME["purple"],
-            highlightthickness=2,
-            padx=18,
-            pady=16,
+            outer_bg=THEME["sky_dark"],
+            panel_bg="#F9F5FF",
+            border=THEME["purple"],
+            max_width=1220,
+            padx=22,
+            pady=18,
+            outer_pad=10,
         )
-        body.pack(
-            fill="both",
-            expand=True,
-            padx=8,
-            pady=(0, 8),
-        )
-        body.columnconfigure(1, weight=1)
+        body.columnconfigure(1, weight=0)
+        body.columnconfigure(2, weight=1)
 
         local_sni = tk.StringVar(
             value=self.sni_path_var.get()
@@ -27008,8 +29086,24 @@ class TrackerApp:
         local_qusb = tk.StringVar(
             value=self.qusb_path_var.get()
         )
+        connection_service_codes = (
+            "Automatic",
+            "SNI",
+            "QUsb2Snes",
+        )
+        connection_service_labels_to_codes = {
+            self._translate_ui_text(code): code
+            for code in connection_service_codes
+        }
+        configured_connection_service = (
+            self.connection_service_var.get().strip()
+        )
+        if configured_connection_service not in connection_service_codes:
+            configured_connection_service = "Automatic"
         local_connection_service = tk.StringVar(
-            value=self.connection_service_var.get()
+            value=self._translate_ui_text(
+                configured_connection_service
+            )
         )
         local_spreadsheet = tk.StringVar(
             value=self.spreadsheet_path_var.get()
@@ -27228,7 +29322,9 @@ class TrackerApp:
         ttk.Combobox(
             body,
             textvariable=local_connection_service,
-            values=("Automatic", "SNI", "QUsb2Snes"),
+            values=tuple(
+                connection_service_labels_to_codes.keys()
+            ),
             state="readonly",
             justify="center",
             width=24,
@@ -27409,7 +29505,7 @@ class TrackerApp:
 
         OutlinedLabel(
             body,
-            text="Overworld timer grace:",
+            text="Timer grace:",
             font=("Segoe UI", 10, "bold"),
             fg=THEME["text"],
             bg="#F9F5FF",
@@ -27453,40 +29549,23 @@ class TrackerApp:
 
         tk.Label(
             body,
-            text="⌘",
-            font=("Segoe UI Symbol", 14),
-            fg=THEME["purple"],
+            text=self._translate_ui_text(
+                "Timers keep running for this many seconds whenever gameplay "
+                "is interrupted anywhere in a hack, then pause until gameplay "
+                "resumes."
+            ),
+            font=("Segoe UI", 9),
+            fg=THEME["muted"],
             bg="#F9F5FF",
-        ).grid(
-            row=12,
-            column=0,
-            padx=(0, 8),
-            pady=7,
-        )
-
-        OutlinedLabel(
-            body,
-            text="Game LiveSplit port:",
-            font=("Segoe UI", 10, "bold"),
-            fg=THEME["text"],
-            bg="#F9F5FF",
+            justify="left",
+            wraplength=900,
         ).grid(
             row=12,
             column=1,
+            columnspan=3,
             sticky="w",
-            pady=7,
-        )
-
-        self._make_compact_entry(
-            body,
-            local_game_port,
-            width=10,
-        ).grid(
-            row=12,
-            column=2,
-            sticky="w",
-            padx=(8, 0),
-            pady=7,
+            padx=(0, 8),
+            pady=(0, 7),
         )
 
         tk.Label(
@@ -27504,7 +29583,7 @@ class TrackerApp:
 
         OutlinedLabel(
             body,
-            text="Level LiveSplit port:",
+            text="Game LiveSplit port:",
             font=("Segoe UI", 10, "bold"),
             fg=THEME["text"],
             bg="#F9F5FF",
@@ -27517,10 +29596,48 @@ class TrackerApp:
 
         self._make_compact_entry(
             body,
-            local_level_port,
+            local_game_port,
             width=10,
         ).grid(
             row=13,
+            column=2,
+            sticky="w",
+            padx=(8, 0),
+            pady=7,
+        )
+
+        tk.Label(
+            body,
+            text="⌘",
+            font=("Segoe UI Symbol", 14),
+            fg=THEME["purple"],
+            bg="#F9F5FF",
+        ).grid(
+            row=14,
+            column=0,
+            padx=(0, 8),
+            pady=7,
+        )
+
+        OutlinedLabel(
+            body,
+            text="Level LiveSplit port:",
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["text"],
+            bg="#F9F5FF",
+        ).grid(
+            row=14,
+            column=1,
+            sticky="w",
+            pady=7,
+        )
+
+        self._make_compact_entry(
+            body,
+            local_level_port,
+            width=10,
+        ).grid(
+            row=14,
             column=2,
             sticky="w",
             padx=(8, 0),
@@ -27540,7 +29657,7 @@ class TrackerApp:
             justify="left",
             wraplength=900,
         ).grid(
-            row=14,
+            row=15,
             column=0,
             columnspan=4,
             sticky="w",
@@ -27551,8 +29668,9 @@ class TrackerApp:
             body,
             bg="#F9F5FF",
         )
+        body.rowconfigure(16, weight=1)
         button_row.grid(
-            row=15,
+            row=17,
             column=0,
             columnspan=4,
             sticky="e",
@@ -27625,7 +29743,10 @@ class TrackerApp:
                 local_qusb.get().strip()
             )
             selected_connection_service = (
-                local_connection_service.get().strip()
+                connection_service_labels_to_codes.get(
+                    local_connection_service.get().strip(),
+                    local_connection_service.get().strip(),
+                )
             )
             if selected_connection_service not in {
                 "Automatic",
@@ -27789,6 +29910,11 @@ class TrackerApp:
             dialog,
             dark=self.appearance_var.get() == "dark",
         )
+        # Settings is an embedded InAppPage rather than a mapped Toplevel,
+        # so it does not receive the automatic popup-window localization
+        # event.  Translate the completed page explicitly every time it is
+        # opened so labels and buttons always match the selected language.
+        self._localize_widget_tree(dialog)
         self.root.wait_window(dialog)
 
     def _load_brand_assets(self) -> None:
@@ -30390,6 +32516,7 @@ class TrackerApp:
         header_action_text: str | None = None,
         header_action_command=None,
         header_action_bg: str | None = None,
+        center_title: bool = False,
     ) -> tk.Frame:
         shadow = tk.Frame(
             parent,
@@ -30445,16 +32572,24 @@ class TrackerApp:
                 pady=self._ui_px(4),
             )
 
-        tk.Label(
+        title_label = tk.Label(
             header,
             text=title,
             font=("Segoe UI", 12, "bold"),
             fg=accent,
             bg=THEME["panel_soft"],
-        ).pack(
-            side="left",
-            pady=self._ui_px(4),
         )
+        if center_title:
+            title_label.place(
+                relx=0.5,
+                rely=0.5,
+                anchor="center",
+            )
+        else:
+            title_label.pack(
+                side="left",
+                pady=self._ui_px(4),
+            )
 
         if trailing_photo is not None:
             tk.Label(
@@ -30467,6 +32602,18 @@ class TrackerApp:
                 side="right",
                 padx=(self._ui_px(6), self._ui_px(10)),
                 pady=self._ui_px(2),
+            )
+        else:
+            tk.Label(
+                header,
+                text=icon,
+                font=("Segoe UI Symbol", 15, "bold"),
+                fg=THEME["yellow"],
+                bg=THEME["panel_soft"],
+            ).pack(
+                side="right",
+                padx=(self._ui_px(6), self._ui_px(12)),
+                pady=self._ui_px(4),
             )
 
         header_action_button = None
@@ -30769,6 +32916,7 @@ class TrackerApp:
         width: int = 18,
         pad_y: int = 6,
         font_size: int = 10,
+        fixed_pixel_width: int | None = None,
     ) -> OutlinedButton:
         return OutlinedButton(
             parent,
@@ -30786,6 +32934,7 @@ class TrackerApp:
             width=width,
             padx=self._ui_px(8),
             pady=self._ui_px(pad_y),
+            fixed_pixel_width=fixed_pixel_width,
         )
 
     def _make_compact_entry(
@@ -30943,7 +33092,7 @@ class TrackerApp:
         except ValueError:
             messagebox.showerror(
                 APP_NAME,
-                "Overworld idle seconds must be 0 or greater.",
+                "Timer grace must be a whole number that is 0 or greater.",
             )
             return False
 
@@ -30981,6 +33130,7 @@ class TrackerApp:
                 "output_folder": (
                     self.output_folder_var.get().strip()
                 ),
+                "timer_grace_seconds": idle_seconds,
                 "overworld_idle_seconds": idle_seconds,
                 "livesplit_host": "127.0.0.1",
                 "game_livesplit_port": game_port,
@@ -31192,19 +33342,21 @@ class TrackerApp:
         except ValueError:
             messagebox.showerror(
                 APP_NAME,
-                "Overworld timer grace must be a whole number "
+                "Timer grace must be a whole number "
                 "that is 0 or greater.",
             )
             return
 
+        self.config["timer_grace_seconds"] = idle_seconds
         self.config["overworld_idle_seconds"] = idle_seconds
         save_config(self.config)
 
         if self.worker:
+            self.worker.config["timer_grace_seconds"] = idle_seconds
             self.worker.config["overworld_idle_seconds"] = idle_seconds
 
         self.status_var.set(
-            f"Overworld timer grace set to {idle_seconds} seconds."
+            f"Timer grace set to {idle_seconds} seconds."
         )
 
     def toggle_pause_timers(self) -> None:
@@ -31553,11 +33705,19 @@ class TrackerApp:
         default_descending: bool = False,
         after_sort=None,
     ) -> None:
-        tree._smw_sort_headings = dict(headings)
+        # Treeview headings are not regular Tk widgets, so the normal
+        # widget-tree localization pass cannot reach them.  Keep the English
+        # source labels for sort semantics, while displaying the labels in
+        # the currently selected application language.
+        tree._smw_sort_source_headings = dict(headings)
+        tree._smw_sort_headings = {
+            column: self._translate_ui_text(label)
+            for column, label in headings.items()
+        }
         tree._smw_sort_column = default_column
         tree._smw_sort_descending = bool(default_descending)
         tree._smw_after_sort = after_sort
-        for column, label in headings.items():
+        for column, label in tree._smw_sort_headings.items():
             tree.heading(
                 column,
                 text=label,
@@ -31623,7 +33783,11 @@ class TrackerApp:
         for iid in tree.get_children(""):
             display_value = self._treeview_display_value(tree, iid, column)
             heading_label = str(
-                getattr(tree, "_smw_sort_headings", {}).get(column, "")
+                getattr(
+                    tree,
+                    "_smw_sort_source_headings",
+                    getattr(tree, "_smw_sort_headings", {}),
+                ).get(column, "")
             ).strip().casefold()
             if heading_label in {
                 "hack",
@@ -32180,9 +34344,13 @@ class TrackerApp:
             else "#BE8500"
         )
         overview = self.stats_db.overview()
-        dialog = tk.Toplevel(self.root)
+        tr = self._translate_ui_text
+        dialog = self._open_in_app_page(
+            "overview",
+            tr("Overview"),
+        )
         self.stats_overview_dialog = dialog
-        dialog.title("SMW Stream Tracker Statistics")
+        dialog.title(tr("SMW Stream Tracker Statistics"))
         self._size_dialog_for_ui(
             dialog,
             1360,
@@ -32213,17 +34381,17 @@ class TrackerApp:
             }
             return [
                 (
-                    "Completed",
+                    tr("Completed"),
                     int(status_lookup.get("Completed", 0)),
                     status_colors["Completed"],
                 ),
                 (
-                    "In Progress",
+                    tr("In Progress"),
                     int(status_lookup.get("In Progress", 0)),
                     status_colors["In Progress"],
                 ),
                 (
-                    "Planned",
+                    tr("Planned"),
                     int(status_lookup.get("Planned", 0)),
                     status_colors["Planned"],
                 ),
@@ -32312,7 +34480,7 @@ class TrackerApp:
                     canvas,
                     width / 2,
                     height / 2,
-                    text="No tracker data yet",
+                    text=tr("No tracker data yet"),
                     fill=palette["muted"],
                     font=("Segoe UI", 14, "bold"),
                 )
@@ -32415,7 +34583,7 @@ class TrackerApp:
                 canvas,
                 center_x,
                 center_y + self._ui_px(19),
-                text="TRACKED",
+                text=tr("TRACKED"),
                 fill=palette["muted"],
                 font=("Segoe UI", 8, "bold"),
             )
@@ -32445,7 +34613,7 @@ class TrackerApp:
                     legend_x + self._ui_px(16),
                     y + self._ui_px(22),
                     anchor="nw",
-                    text=f"{value} hacks  •  {pct:.0%}",
+                    text=f"{value} {tr('hacks')}  •  {pct:.0%}",
                     fill=palette["muted"],
                     font=("Segoe UI", 10),
                 )
@@ -32469,7 +34637,7 @@ class TrackerApp:
                     canvas,
                     width / 2,
                     height / 2,
-                    text="No difficulty data yet",
+                    text=tr("No difficulty data yet"),
                     fill=palette["muted"],
                     font=("Segoe UI", 14, "bold"),
                 )
@@ -32585,7 +34753,7 @@ class TrackerApp:
                 width / 2,
                 header_y,
                 anchor="n",
-                text="Exit completion by difficulty",
+                text=tr("Exit completion by difficulty"),
                 fill=palette["muted"],
                 font=("Segoe UI", 9, "bold"),
             )
@@ -32617,7 +34785,7 @@ class TrackerApp:
                     label_x,
                     center_y,
                     anchor="w",
-                    text=difficulty_name,
+                    text=tr(difficulty_name),
                     fill=palette["text"],
                     font=("Segoe UI", 10, "bold"),
                 )
@@ -32701,17 +34869,6 @@ class TrackerApp:
             THEME["blue"],
         )
 
-        self._make_action_button(
-            title_bar,
-            "Open My Tracker",
-            self._open_tracker_from_overview,
-            THEME["green"],
-            active_bg=THEME["green_dark"],
-            width=16,
-            font_size=10,
-            pad_y=4,
-        ).pack(side="left")
-
         # Title text removed from the blue header bar.
 
         metadata = overview["metadata"]
@@ -32731,11 +34888,10 @@ class TrackerApp:
         )
         OutlinedLabel(
             title_bar,
-            text=(
-                "Catalog "
-                + catalog_version
-                + "  •  Refreshed "
-                + last_refresh_text
+            text=self._format_ui_text(
+                "Catalog {version}  •  Refreshed {date}",
+                version=catalog_version,
+                date=last_refresh_text,
             ),
             font=("Segoe UI", 9, "bold"),
             fg="white",
@@ -32796,7 +34952,7 @@ class TrackerApp:
         )
         OutlinedLabel(
             hero_center,
-            text="Tracker Statistics",
+            text=tr("Tracker Statistics"),
             font=("Segoe UI", 20, "bold"),
             fg="white",
             bg="#16365D",
@@ -32817,7 +34973,7 @@ class TrackerApp:
         ):
             OutlinedLabel(
                 badges_row,
-                text=badge_text,
+                text=tr(badge_text),
                 font=("Segoe UI", 9, "bold"),
                 fg="white",
                 bg=section_header_active,
@@ -32941,6 +35097,7 @@ class TrackerApp:
             accent,
             icon_text,
         ) in enumerate(metric_values):
+            translated_label_text = tr(label_text)
             row_index = 0
             column_index = index
             card = tk.Frame(
@@ -32978,10 +35135,10 @@ class TrackerApp:
             card_body.rowconfigure(1, weight=3)
             tk.Label(
                 card_body,
-                text=label_text,
+                text=translated_label_text,
                 font=(
                     "Segoe UI",
-                    8 if len(label_text) > 13 else 9,
+                    8 if len(translated_label_text) > 13 else 9,
                     "bold",
                 ),
                 fg=palette["muted"],
@@ -33108,7 +35265,7 @@ class TrackerApp:
 
         pie_outer, pie_body = create_section_panel(
             charts_row,
-            "Tracker Status Breakdown",
+            tr("Tracker Status Breakdown"),
             status_colors["In Progress"],
             "🪙",
         )
@@ -33139,7 +35296,7 @@ class TrackerApp:
 
         bar_outer, bar_body = create_section_panel(
             charts_row,
-            "Difficulty Progress Graph",
+            tr("Difficulty Progress Graph"),
             self._effective_difficulty_color(
                 "Advanced",
                 difficulty_colors["Advanced"],
@@ -33173,7 +35330,7 @@ class TrackerApp:
 
         difficulty_outer, difficulty_body = create_section_panel(
             content,
-            "Progress by Difficulty",
+            tr("Progress by Difficulty"),
             status_colors["In Progress"],
             "⭐",
         )
@@ -33206,7 +35363,7 @@ class TrackerApp:
         )
         difficulty_tree.heading(
             "#0",
-            text="Difficulty",
+            text=tr("Difficulty"),
             anchor="center",
         )
 
@@ -33224,7 +35381,7 @@ class TrackerApp:
         ):
             difficulty_tree.heading(
                 column,
-                text=heading,
+                text=tr(heading),
                 anchor="center",
             )
             difficulty_tree.column(
@@ -33332,11 +35489,11 @@ class TrackerApp:
         self._configure_treeview_sorting(
             difficulty_tree,
             {
-                "#0": "Difficulty",
-                "tracked": "Tracked",
-                "completed": "Completed",
-                "exits": "Exits",
-                "rate": "Rate",
+                "#0": tr("Difficulty"),
+                "tracked": tr("Tracked"),
+                "completed": tr("Completed"),
+                "exits": tr("Exits"),
+                "rate": tr("Rate"),
             },
             after_sort=lambda: self._apply_statistics_table_colors(
                 difficulty_tree,
@@ -33377,7 +35534,7 @@ class TrackerApp:
 
         status_outer, status_body = create_section_panel(
             side_panel,
-            "Tracker Status",
+            tr("Tracker Status"),
             THEME["green"],
             "🍄",
         )
@@ -33419,7 +35576,7 @@ class TrackerApp:
 
         recent_outer, recent_body = create_section_panel(
             side_panel,
-            "Recent Activity",
+            tr("Recent Activity"),
             status_colors["Planned"],
             "📋",
         )
@@ -33429,7 +35586,8 @@ class TrackerApp:
             sticky="nsew",
         )
 
-        recent_filter_var = tk.StringVar(value="All")
+        recent_all_label = tr("All")
+        recent_filter_var = tk.StringVar(value=recent_all_label)
         recent_filter_bar = tk.Frame(
             recent_body,
             bg=palette["panel"],
@@ -33438,13 +35596,16 @@ class TrackerApp:
         recent_filter_combo = ttk.Combobox(
             recent_filter_bar,
             textvariable=recent_filter_var,
-            values=self._letter_filter_values(),
+            values=(
+                recent_all_label,
+                *self._letter_filter_values()[1:],
+            ),
             state="readonly",
             width=8,
         )
         OutlinedLabel(
             recent_filter_bar,
-            text="Filter by letter:",
+            text=tr("Filter by letter:"),
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
@@ -33476,17 +35637,17 @@ class TrackerApp:
         )
         recent_tree.heading(
             "#0",
-            text="Hack",
+            text=tr("Hack"),
             anchor="center",
         )
         recent_tree.heading(
             "status",
-            text="Status",
+            text=tr("Status"),
             anchor="center",
         )
         recent_tree.heading(
             "date",
-            text="Date",
+            text=tr("Date"),
             anchor="center",
         )
         recent_tree.column(
@@ -33544,9 +35705,9 @@ class TrackerApp:
         self._configure_treeview_sorting(
             recent_tree,
             {
-                "#0": "Hack",
-                "status": "Status",
-                "date": "Date",
+                "#0": tr("Hack"),
+                "status": tr("Status"),
+                "date": tr("Date"),
             },
             default_column="date",
             default_descending=True,
@@ -33562,7 +35723,7 @@ class TrackerApp:
             rows = [
                 row
                 for row in overview["recent"]
-                if selected_letter == "All"
+                if selected_letter == recent_all_label
                 or self._alphabet_segment(str(row["title"]))
                 == selected_letter
             ]
@@ -33572,7 +35733,7 @@ class TrackerApp:
                     "end",
                     text=str(row["title"]),
                     values=(
-                        str(row["status"]),
+                        tr(str(row["status"])),
                         format_display_date(
                             row["date_completed"] or row["date_started"]
                         ),
@@ -33641,7 +35802,7 @@ class TrackerApp:
 
         self._make_action_button(
             button_bar,
-            text="My Tracker",
+            text=tr("My Tracker"),
             command=self.open_my_tracker,
             bg=THEME["green"],
             active_bg=THEME["green_dark"],
@@ -33650,7 +35811,7 @@ class TrackerApp:
         ).pack(side="left")
         self._make_action_button(
             button_bar,
-            text="Unmoderated Hacks",
+            text=tr("Unmoderated Hacks"),
             command=self.open_custom_hacks,
             bg=THEME["purple"],
             active_bg="#6037AA",
@@ -33659,7 +35820,7 @@ class TrackerApp:
         ).pack(side="left", padx=(8, 0))
         self._make_action_button(
             button_bar,
-            text="Refresh",
+            text=tr("Refresh"),
             command=lambda: (
                 dialog.destroy(),
                 self.open_stats_overview(),
@@ -33671,7 +35832,7 @@ class TrackerApp:
         ).pack(side="left", padx=(8, 0))
         self._make_action_button(
             button_bar,
-            text="Close",
+            text=tr("Close"),
             command=dialog.destroy,
             bg=THEME["muted"],
             active_bg="#384D65",
@@ -33680,7 +35841,7 @@ class TrackerApp:
         ).pack(side="right")
         tk.Label(
             button_bar,
-            text=(
+            text=tr(
                 "Right-click Difficulty or Rate for cell colors; "
                 "right-click any table to customize its rows"
             ),
@@ -33744,7 +35905,10 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "my_tracker",
+            "My Tracker",
+        )
         self.tracker_list_dialog = dialog
         dialog.title("My SMW Tracker")
         self._activate_full_size_dialog_ui(dialog)
@@ -33817,17 +35981,6 @@ class TrackerApp:
             dialog,
             THEME["red"],
         )
-
-        self._make_action_button(
-            title_bar,
-            "Overview",
-            self._open_overview_from_tracker,
-            THEME["blue"],
-            active_bg=THEME["navy"],
-            width=12,
-            font_size=10,
-            pad_y=4,
-        ).pack(side="right", padx=(0, 10))
 
         def draw_title_gradient(event=None) -> None:
             width = max(
@@ -34482,14 +36635,18 @@ class TrackerApp:
             padx=14,
             pady=(0, 12),
         )
+        tracker_action_button_width = self._ui_px(190)
+        tracker_action_font_size = 8
         self._make_action_button(
             button_bar,
             text="Edit Selected",
             command=self._edit_tracker_record,
             bg=THEME["green"],
             active_bg=THEME["green_dark"],
-            width=14,
+            width=18,
             pad_y=5,
+            font_size=tracker_action_font_size,
+            fixed_pixel_width=tracker_action_button_width,
         ).pack(side="left")
         self._make_action_button(
             button_bar,
@@ -34497,8 +36654,10 @@ class TrackerApp:
             command=self._open_selected_tracker_page,
             bg=THEME["blue"],
             active_bg=THEME["navy"],
-            width=16,
+            width=18,
             pad_y=5,
+            font_size=tracker_action_font_size,
+            fixed_pixel_width=tracker_action_button_width,
         ).pack(side="left", padx=(8, 0))
         self._make_action_button(
             button_bar,
@@ -34506,8 +36665,10 @@ class TrackerApp:
             command=self._launch_selected_tracker_game,
             bg=THEME["purple"],
             active_bg="#6037AA",
-            width=13,
+            width=18,
             pad_y=5,
+            font_size=tracker_action_font_size,
+            fixed_pixel_width=tracker_action_button_width,
         ).pack(side="left", padx=(8, 0))
         self._make_action_button(
             button_bar,
@@ -34517,11 +36678,11 @@ class TrackerApp:
             active_bg="#B92824",
             width=18,
             pad_y=5,
+            font_size=tracker_action_font_size,
+            fixed_pixel_width=tracker_action_button_width,
         ).pack(side="left", padx=(8, 0))
-        # Keep the spreadsheet actions in the same footer row, directly after
-        # Remove from Tracker. A large shared character width is intentional:
-        # OutlinedButton otherwise expands longer captions independently.
-        spreadsheet_button_width = 31
+        # Keep every tracker action exactly the same size. A fixed pixel width
+        # prevents longer spreadsheet captions from stretching their buttons.
         for action_text, action_command, action_color in (
             tracker_spreadsheet_actions
         ):
@@ -34531,9 +36692,10 @@ class TrackerApp:
                 command=action_command,
                 bg=action_color,
                 active_bg=action_color,
-                width=spreadsheet_button_width,
-                font_size=9,
+                width=18,
+                font_size=tracker_action_font_size,
                 pad_y=5,
+                fixed_pixel_width=tracker_action_button_width,
             ).pack(side="left", padx=(8, 0))
         self._make_action_button(
             button_bar,
@@ -35933,6 +38095,7 @@ class TrackerApp:
                 if column == "#0":
                     background = self._effective_difficulty_color(text)
                     foreground = self._tracker_contrast_text_color(background)
+                    display_text = self._translate_ui_text(text)
                     canvas.create_rectangle(
                         0,
                         row_y,
@@ -35943,6 +38106,7 @@ class TrackerApp:
                         width=1,
                     )
                 else:
+                    display_text = text
                     foreground = palette["text"]
                     canvas.create_rectangle(
                         0,
@@ -36006,7 +38170,7 @@ class TrackerApp:
                     canvas,
                     column_width / 2,
                     row_y + row_height / 2,
-                    text=text,
+                    text=display_text,
                     fill=foreground,
                     font=("Segoe UI", 9, "bold"),
                     anchor="center",
@@ -37924,7 +40088,10 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "unmoderated_hacks",
+            "Unmoderated Hacks",
+        )
         self.custom_hacks_dialog = dialog
         dialog.title("Unmoderated Hacks")
         self._size_dialog_for_ui(
@@ -38342,8 +40509,9 @@ class TrackerApp:
             record = selected
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(
-            self.custom_hacks_dialog or self.root
+        dialog = self._open_in_app_page(
+            "add_unmoderated_hack" if new_record else "edit_unmoderated_hack",
+            "Add Unmoderated Hack" if new_record else "Edit Unmoderated Hack",
         )
         dialog.title(
             "Add Unmoderated Hack"
@@ -40032,7 +42200,10 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "smwcentral_catalog" if catalog_view_only else "download_missing_hacks",
+            "SMW Central Catalog" if catalog_view_only else "Download Missing Hacks",
+        )
         self.downloader_dialog = dialog
         dialog.title(
             (
@@ -41209,7 +43380,17 @@ class TrackerApp:
             side="left"
         )
 
-        if not catalog_view_only:
+        if catalog_view_only:
+            self._make_action_button(
+                button_panel,
+                text="Refresh Moderated Hacks from SMW Central",
+                command=self.refresh_smwcentral_catalog,
+                bg=THEME["green"],
+                active_bg=THEME["green_dark"],
+                width=34,
+                pad_y=5,
+            ).pack(side="left", padx=(8, 0))
+        else:
             download_button = self._make_action_button(
                 button_panel,
                 text="Download All Matching Hacks",
@@ -41246,6 +43427,16 @@ class TrackerApp:
             self.downloader_widgets[
                 "cancel_button"
             ] = cancel_button
+
+            self._make_action_button(
+                button_panel,
+                text="Add Unmoderated Hack",
+                command=lambda: self._edit_custom_hack(new_record=True),
+                bg=THEME["purple"],
+                active_bg="#6037AA",
+                width=22,
+                pad_y=5,
+            ).pack(side="left", padx=(8, 0))
 
         self._make_action_button(
             button_panel,
@@ -45031,7 +47222,28 @@ class TrackerApp:
         rating_value: str,
         difficulty_value: str,
         type_value: str,
+        uploaded_within_months: int | None = None,
+        *,
+        reference_date: date | None = None,
     ) -> list[dict[str, Any]]:
+        today = reference_date or date.today()
+        cutoff = (
+            calendar_month_cutoff(today, uploaded_within_months)
+            if uploaded_within_months is not None
+            else None
+        )
+
+        def matches_upload_window(game: dict[str, Any]) -> bool:
+            if cutoff is None:
+                return True
+            added_date = rom_builder_parse_date(
+                game.get("added_date", "")
+            )
+            return (
+                added_date is not None
+                and cutoff <= added_date <= today
+            )
+
         return [
             game
             for game in self.hack_catalog
@@ -45044,20 +47256,57 @@ class TrackerApp:
                 type_value,
                 "All",
             )
+            and matches_upload_window(game)
             and self._catalog_game_has_downloaded_rom(game)
         ]
+
+    def _random_upload_age_options(
+        self,
+    ) -> tuple[tuple[str, int | None], ...]:
+        options: list[tuple[str, int | None]] = [
+            (self._translate_ui_text("Any upload date"), None),
+            (self._translate_ui_text("Last month"), 1),
+            (
+                self._format_ui_text(
+                    "Last {months} months",
+                    months=3,
+                ),
+                3,
+            ),
+            (
+                self._format_ui_text(
+                    "Last {months} months",
+                    months=6,
+                ),
+                6,
+            ),
+            (self._translate_ui_text("Last year"), 12),
+        ]
+        options.extend(
+            (
+                self._format_ui_text(
+                    "Last {years} years",
+                    years=years,
+                ),
+                years * 12,
+            )
+            for years in range(2, 14)
+        )
+        return tuple(options)
 
     def _launch_filtered_random_main_hack(
         self,
         rating_var: tk.StringVar,
         difficulty_var: tk.StringVar,
         type_var: tk.StringVar,
+        uploaded_within_months: int | None,
         dialog: tk.Toplevel,
     ) -> None:
         candidates = self._random_main_hack_candidates(
             rating_var.get(),
             difficulty_var.get(),
             type_var.get(),
+            uploaded_within_months,
         )
         if not candidates:
             messagebox.showinfo(
@@ -45110,7 +47359,7 @@ class TrackerApp:
         self.random_hack_dialog = dialog
         dialog.title("Random Hack Filters")
         dialog.configure(bg=palette["window"])
-        self._size_dialog_for_ui(dialog, 620, 410, 540, 350)
+        self._size_dialog_for_ui(dialog, 660, 470, 580, 410)
         dialog.resizable(True, True)
         self._add_dialog_window_controls(
             dialog,
@@ -45142,7 +47391,7 @@ class TrackerApp:
 
         filter_frame = tk.Frame(dialog, bg=palette["panel"], padx=14, pady=14)
         filter_frame.pack(fill="both", expand=True, padx=18, pady=(0, 12))
-        for column in range(3):
+        for column in range(2):
             filter_frame.columnconfigure(
                 column,
                 weight=1,
@@ -45151,6 +47400,12 @@ class TrackerApp:
         difficulty_var = tk.StringVar(value="Any")
         type_var = tk.StringVar(value="Any")
         rating_var = tk.StringVar(value="Any")
+        upload_age_options = self._random_upload_age_options()
+        upload_age_values = tuple(
+            label for label, _months in upload_age_options
+        )
+        upload_age_months = dict(upload_age_options)
+        upload_age_var = tk.StringVar(value=upload_age_values[0])
         filter_controls = (
             (
                 "Difficulty",
@@ -45167,10 +47422,17 @@ class TrackerApp:
                 rating_var,
                 ("Any", "1+", "2+", "3+", "4+", "4.5+", "5"),
             ),
+            (
+                "Uploaded to SMW Central",
+                upload_age_var,
+                upload_age_values,
+            ),
         )
-        for column, (label_text, variable, values) in enumerate(
+        for index, (label_text, variable, values) in enumerate(
             filter_controls
         ):
+            grid_row, column = divmod(index, 2)
+            label_row = grid_row * 2
             tk.Label(
                 filter_frame,
                 text=label_text,
@@ -45178,7 +47440,13 @@ class TrackerApp:
                 fg=palette["text"],
                 bg=palette["panel"],
                 anchor="center",
-            ).grid(row=0, column=column, sticky="ew", padx=6, pady=(0, 5))
+            ).grid(
+                row=label_row,
+                column=column,
+                sticky="ew",
+                padx=8,
+                pady=(0 if grid_row == 0 else 12, 5),
+            )
             combo = ttk.Combobox(
                 filter_frame,
                 textvariable=variable,
@@ -45187,7 +47455,12 @@ class TrackerApp:
                 justify="center",
                 style="Mario.TCombobox",
             )
-            combo.grid(row=1, column=column, sticky="ew", padx=6)
+            combo.grid(
+                row=label_row + 1,
+                column=column,
+                sticky="ew",
+                padx=8,
+            )
 
         actions = tk.Frame(dialog, bg=palette["window"])
         actions.pack(fill="x", padx=18, pady=(0, 16))
@@ -45198,6 +47471,7 @@ class TrackerApp:
                 rating_var,
                 difficulty_var,
                 type_var,
+                upload_age_months.get(upload_age_var.get()),
                 dialog,
             ),
             THEME["green"],
@@ -45251,7 +47525,10 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "platform_game_library",
+            platform_name + " Game Library",
+        )
         self.game_library_dialog = dialog
         dialog.title(platform_name + " Game Library")
         self._size_dialog_for_ui(
@@ -47350,7 +49627,265 @@ class TrackerApp:
             timeout=timeout,
         )
 
-    def _prepare_retroarch_game_switch(self) -> str:
+    @staticmethod
+    def _retroarch_status_content_key(status: str | None) -> str:
+        """Return the normalized content name reported by GET_STATUS."""
+        if not status or "CONTENTLESS" in status.upper():
+            return ""
+        fields = status.split(",", 2)
+        if len(fields) < 2:
+            return ""
+        return normalize_title(clean_rom_filename(fields[1].strip()))
+
+    @staticmethod
+    def _find_windows_for_executable(executable: Path) -> list[int]:
+        """Return visible top-level Windows handles owned by an executable."""
+        if os.name != "nt":
+            return []
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        process_query_limited_information = 0x1000
+        expected_path = os.path.normcase(
+            os.path.normpath(str(executable.resolve()))
+        )
+        handles: list[int] = []
+
+        enum_callback_type = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HWND,
+            wintypes.LPARAM,
+        )
+        user32.EnumWindows.argtypes = [
+            enum_callback_type,
+            wintypes.LPARAM,
+        ]
+        user32.EnumWindows.restype = wintypes.BOOL
+
+        def visit_window(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+
+            process_id = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(
+                hwnd,
+                ctypes.byref(process_id),
+            )
+            process_handle = kernel32.OpenProcess(
+                process_query_limited_information,
+                False,
+                process_id.value,
+            )
+            if not process_handle:
+                return True
+
+            try:
+                path_buffer = ctypes.create_unicode_buffer(32768)
+                path_size = wintypes.DWORD(len(path_buffer))
+                if kernel32.QueryFullProcessImageNameW(
+                    process_handle,
+                    0,
+                    path_buffer,
+                    ctypes.byref(path_size),
+                ):
+                    actual_path = os.path.normcase(
+                        os.path.normpath(path_buffer.value)
+                    )
+                    if actual_path == expected_path:
+                        handle_value = (
+                            hwnd
+                            if isinstance(hwnd, int)
+                            else ctypes.cast(hwnd, ctypes.c_void_p).value
+                        )
+                        if handle_value:
+                            handles.append(int(handle_value))
+            finally:
+                kernel32.CloseHandle(process_handle)
+            return True
+
+        callback = enum_callback_type(visit_window)
+        user32.EnumWindows(callback, 0)
+        return handles
+
+    def _post_retroarch_file_drop(
+        self,
+        executable: Path,
+        rom_path: Path,
+    ) -> bool:
+        """Drop a ROM onto RetroArch's existing Windows content window."""
+        if os.name != "nt":
+            return False
+
+        window_handles = self._find_windows_for_executable(executable)
+        if not window_handles:
+            return False
+
+        class Point(ctypes.Structure):
+            _fields_ = [
+                ("x", wintypes.LONG),
+                ("y", wintypes.LONG),
+            ]
+
+        class DropFiles(ctypes.Structure):
+            _fields_ = [
+                ("pFiles", wintypes.DWORD),
+                ("pt", Point),
+                ("fNC", wintypes.BOOL),
+                ("fWide", wintypes.BOOL),
+            ]
+
+        shell_payload = (
+            str(rom_path.resolve()).encode("utf-16-le")
+            + b"\x00\x00\x00\x00"
+        )
+        header = DropFiles(
+            pFiles=ctypes.sizeof(DropFiles),
+            pt=Point(0, 0),
+            fNC=False,
+            fWide=True,
+        )
+        total_size = ctypes.sizeof(header) + len(shell_payload)
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        kernel32.GlobalAlloc.argtypes = [
+            wintypes.UINT,
+            ctypes.c_size_t,
+        ]
+        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
+        kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalFree.restype = wintypes.HGLOBAL
+        user32.PostMessageW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        user32.PostMessageW.restype = wintypes.BOOL
+        global_memory = kernel32.GlobalAlloc(0x0042, total_size)
+        if not global_memory:
+            return False
+
+        locked_memory = kernel32.GlobalLock(global_memory)
+        if not locked_memory:
+            kernel32.GlobalFree(global_memory)
+            return False
+
+        try:
+            base_address = ctypes.cast(
+                locked_memory,
+                ctypes.c_void_p,
+            ).value
+            if base_address is None:
+                return False
+            ctypes.memmove(
+                base_address,
+                ctypes.byref(header),
+                ctypes.sizeof(header),
+            )
+            ctypes.memmove(
+                base_address + ctypes.sizeof(header),
+                shell_payload,
+                len(shell_payload),
+            )
+        finally:
+            kernel32.GlobalUnlock(global_memory)
+
+        # RetroArch enables WM_DROPFILES on its main graphics window and
+        # loads supported content with the already active core. Ownership of
+        # the HDROP memory passes to RetroArch when PostMessage succeeds.
+        for window_handle in window_handles:
+            if user32.PostMessageW(
+                window_handle,
+                0x0233,
+                global_memory,
+                0,
+            ):
+                return True
+
+        kernel32.GlobalFree(global_memory)
+        return False
+
+    def _load_retroarch_content_in_place(
+        self,
+        core_path: Path,
+        rom_path: Path,
+    ) -> tuple[bool, bool]:
+        """Ask a running RetroArch process to load content in its window."""
+        original_status = self._retroarch_status()
+        if original_status is None:
+            return False, False
+
+        had_content = "CONTENTLESS" not in original_status.upper()
+        saved_previous_state = False
+        if had_content:
+            self._send_retroarch_network_command("SAVE_STATE")
+            # SAVE_STATE is fire-and-forget. Let RetroArch finish writing
+            # before replacing the running content in the same process.
+            time.sleep(0.75)
+            saved_previous_state = True
+
+        executable = Path(
+            str(
+                self.config.get(
+                    "retroarch_executable_path",
+                    "",
+                )
+            ).strip()
+        )
+        handoff_sent = self._post_retroarch_file_drop(
+            executable,
+            rom_path,
+        )
+        if not handoff_sent:
+            # Newer RetroArch builds also expose this Network Commands entry.
+            # Keep it as a forward-compatible fallback; v1.22.2 uses the
+            # native Windows file-drop path above.
+            self._send_retroarch_network_command(
+                f"LOAD_CONTENT {core_path}|{rom_path}"
+            )
+
+        target_key = normalize_title(clean_rom_filename(rom_path.name))
+        load_deadline = time.monotonic() + 12.0
+        while time.monotonic() < load_deadline:
+            current_status = self._retroarch_status(timeout=0.30)
+            current_key = self._retroarch_status_content_key(current_status)
+            if current_key and current_key == target_key:
+                return True, saved_previous_state
+            time.sleep(0.12)
+
+        return False, saved_previous_state
+
+    def _prepare_retroarch_game_switch(
+        self,
+        *,
+        already_saved: bool = False,
+    ) -> str:
         """Save and retire a running instance before launching new content."""
         status = self._retroarch_status()
         if status is None:
@@ -47358,10 +49893,11 @@ class TrackerApp:
 
         had_content = "CONTENTLESS" not in status.upper()
         if had_content:
-            self._send_retroarch_network_command("SAVE_STATE")
-            # SAVE_STATE has no acknowledgement. Give RetroArch enough time
-            # to flush the state file before safely closing the core.
-            time.sleep(1.0)
+            if not already_saved:
+                self._send_retroarch_network_command("SAVE_STATE")
+                # SAVE_STATE has no acknowledgement. Give RetroArch enough
+                # time to flush the state file before safely closing the core.
+                time.sleep(1.0)
             self._send_retroarch_network_command("CLOSE_CONTENT")
 
             close_deadline = time.monotonic() + 4.0
@@ -47434,7 +49970,36 @@ class TrackerApp:
         command.append(str(rom_path))
 
         if platform == "RetroArch":
-            switch_method = self._prepare_retroarch_game_switch()
+            loaded_in_place, saved_previous_state = (
+                self._load_retroarch_content_in_place(
+                    core_path,
+                    rom_path,
+                )
+            )
+            if loaded_in_place:
+                return {
+                    "path": str(rom_path),
+                    "device": platform,
+                    "method": (
+                        match_method
+                        + "; saved previous state and loaded in the "
+                        "existing RetroArch window"
+                        if saved_previous_state
+                        else match_method
+                        + "; loaded in the existing RetroArch window"
+                    ),
+                }
+            if self._retroarch_status(timeout=0.35) is not None:
+                raise RuntimeError(
+                    "RetroArch is still running, but it did not accept the "
+                    "new ROM in its existing window. Keep RetroArch's main "
+                    "game window open and try again. The tracker left the "
+                    "current game running instead of opening a duplicate "
+                    "RetroArch window."
+                )
+            switch_method = self._prepare_retroarch_game_switch(
+                already_saved=saved_previous_state,
+            )
 
         creation_flags = 0
         if os.name == "nt":
@@ -47693,6 +50258,10 @@ class TrackerApp:
                 except OSError:
                     pass
 
+    def open_fxpak_pro_page(self) -> None:
+        """Compatibility route for old shortcuts: go straight to the card."""
+        self.open_fxpak_sd_card_browser()
+
     def open_fxpak_sd_card_browser(self) -> None:
         if (
             self.fxpak_sd_dialog is not None
@@ -47704,7 +50273,10 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "fxpak_game_library",
+            "FXPAK Pro Game Library",
+        )
         self.fxpak_sd_dialog = dialog
         dialog.title("FXPAK Pro SD Card")
         self._size_dialog_for_ui(dialog, 1180, 820, 900, 650)
@@ -49195,12 +51767,30 @@ class TrackerApp:
             )
         )
         append_error_log("Tkinter callback error", details)
+        copied_report = False
+        try:
+            safe_report = self._redact_diagnostic_text(
+                "SMW STREAM TRACKER ERROR REPORT\n\n" + details
+            )
+            self.root.clipboard_clear()
+            self.root.clipboard_append(safe_report)
+            self.root.update_idletasks()
+            copied_report = True
+        except (tk.TclError, AttributeError):
+            pass
         try:
             messagebox.showerror(
                 "SMW Stream Tracker Error",
-                "Something unexpected happened. The app saved a local "
-                "error report. Open File > Diagnostics to copy a safe, "
-                "redacted report.",
+                (
+                    "Something unexpected happened. A safe, redacted "
+                    "error report was copied to your clipboard. Paste it "
+                    "into your message when reporting the problem."
+                    if copied_report
+                    else
+                    "Something unexpected happened. The app saved a local "
+                    "error report. Open Help > Diagnostics to copy a safe, "
+                    "redacted report."
+                ),
                 parent=self.root,
             )
         except tk.TclError:
@@ -49242,7 +51832,7 @@ class TrackerApp:
     ) -> str:
         raw = str(value or "").strip()
         if not raw:
-            return "Not configured"
+            return self._translate_ui_text("Not configured")
         candidate = Path(raw)
         exists = (
             candidate.is_file()
@@ -49251,7 +51841,9 @@ class TrackerApp:
             if expected == "folder"
             else candidate.exists()
         )
-        return "Configured and found" if exists else "Configured but missing"
+        return self._translate_ui_text(
+            "Configured and found" if exists else "Configured but missing"
+        )
 
     def _recent_error_summary(self) -> str:
         collected: list[str] = []
@@ -49281,7 +51873,9 @@ class TrackerApp:
                     )
                 )
         if not collected:
-            return "No recent errors were found."
+            return self._translate_ui_text(
+                "No recent errors were found."
+            )
         redacted = self._redact_diagnostic_text("\n".join(collected[-80:]))
         return re.sub(
             r'([\"\']).*?\1',
@@ -49293,26 +51887,31 @@ class TrackerApp:
         selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
         connection = self.connection_var.get().strip() or "Unknown"
         frozen = bool(getattr(sys, "frozen", False))
+        tr = self._translate_ui_text
         details = [
-            "SMW STREAM TRACKER DIAGNOSTICS",
-            "Generated: " + datetime.now().astimezone().isoformat(timespec="seconds"),
-            "App version: " + APP_VERSION,
-            "Build date: " + APP_BUILD_DATE,
-            "Build type: " + ("Installed application" if frozen else "Development source"),
+            tr("SMW STREAM TRACKER DIAGNOSTICS"),
+            tr("Generated:") + " " + datetime.now().astimezone().isoformat(timespec="seconds"),
+            tr("App version:") + " " + APP_VERSION,
+            tr("Build date:") + " " + APP_BUILD_DATE,
+            tr("Build type:") + " " + tr(
+                "Installed application" if frozen else "Development source"
+            ),
             "Windows: " + system_platform.platform(),
             "Python: " + system_platform.python_version(),
-            "Theme: " + self.appearance_var.get(),
-            "Selected platform: " + selected_platform,
-            "Connection status: " + connection,
-            "Tracker worker: " + ("Running" if self._tracker_is_running() else "Stopped"),
+            tr("Theme:") + " " + self.appearance_var.get(),
+            tr("Selected platform:") + " " + selected_platform,
+            tr("Connection status:") + " " + connection,
+            tr("Tracker worker:") + " " + tr(
+                "Running" if self._tracker_is_running() else "Stopped"
+            ),
             "",
-            "CONFIGURATION STATUS",
-            "Preferred connection service: " + str(
+            tr("CONFIGURATION STATUS"),
+            tr("Preferred connection service:") + " " + tr(str(
                 self.config.get(
                     "connection_service_preference",
                     "Automatic",
                 )
-            ),
+            )),
             "SNI: " + self._configured_path_status(
                 self.config.get("sni_path", ""), "file"
             ),
@@ -49322,28 +51921,28 @@ class TrackerApp:
             "RetroArch: " + self._configured_path_status(
                 self.config.get("retroarch_executable_path", ""), "file"
             ),
-            "RetroArch SNES core: " + self._configured_path_status(
+            tr("RetroArch SNES core:") + " " + self._configured_path_status(
                 self.config.get("retroarch_core_path", ""), "file"
             ),
-            "ROM library: " + self._configured_path_status(
+            tr("ROM library:") + " " + self._configured_path_status(
                 self.config.get("platform_rom_library_folder", "")
                 or self.config.get("rom_builder_library_folder", ""),
                 "folder",
             ),
-            "OBS output: " + self._configured_path_status(
+            tr("OBS output:") + " " + self._configured_path_status(
                 self.config.get("output_folder", ""), "folder"
             ),
-            "Tracker database: " + self._configured_path_status(
+            tr("Tracker database:") + " " + self._configured_path_status(
                 STATS_DB_FILE, "file"
             ),
-            "Automatic backups: " + str(len(list(AUTOMATIC_BACKUP_DIR.glob("*.zip"))))
+            tr("Automatic backups:") + " " + str(len(list(AUTOMATIC_BACKUP_DIR.glob("*.zip"))))
             if AUTOMATIC_BACKUP_DIR.is_dir()
-            else "Automatic backups: 0",
+            else tr("Automatic backups:") + " 0",
             "",
-            "RECENT LOCAL ERRORS (REDACTED)",
+            tr("RECENT LOCAL ERRORS (REDACTED)"),
             self._recent_error_summary(),
             "",
-            "Privacy: this report does not include ROM titles, usernames, or full personal paths.",
+            tr("Privacy: this report does not include ROM titles, usernames, or full personal paths."),
         ]
         return self._redact_diagnostic_text("\n".join(details))
 
@@ -49351,7 +51950,11 @@ class TrackerApp:
         report = text_widget.get("1.0", "end-1c")
         self.root.clipboard_clear()
         self.root.clipboard_append(report)
-        self.status_var.set("Redacted diagnostics copied to the clipboard.")
+        self.status_var.set(
+            self._translate_ui_text(
+                "Redacted diagnostics copied to the clipboard."
+            )
+        )
 
     def open_diagnostics(self) -> None:
         if self.diagnostics_dialog is not None:
@@ -49364,7 +51967,10 @@ class TrackerApp:
                 pass
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "diagnostics",
+            "Diagnostics",
+        )
         self.diagnostics_dialog = dialog
         dialog.title("SMW Stream Tracker Diagnostics")
         dialog.configure(bg=palette["window"])
@@ -49564,6 +52170,52 @@ class TrackerApp:
         results.append((retro_state, "RetroArch", retro_detail))
 
         try:
+            _, game_livesplit_port = livesplit_endpoint(self.config, "game")
+            _, level_livesplit_port = livesplit_endpoint(self.config, "level")
+            game_livesplit_ready = livesplit_server_is_running(
+                self.config,
+                "game",
+            )
+            level_livesplit_ready = livesplit_server_is_running(
+                self.config,
+                "level",
+            )
+            if game_livesplit_ready and level_livesplit_ready:
+                livesplit_state = "Ready"
+                livesplit_detail = (
+                    "LiveSplit is running on the game and level timer ports "
+                    f"({game_livesplit_port} and {level_livesplit_port})."
+                )
+            elif game_livesplit_ready or level_livesplit_ready:
+                livesplit_state = "Needs Attention"
+                running_name = "game" if game_livesplit_ready else "level"
+                missing_name = "level" if game_livesplit_ready else "game"
+                livesplit_detail = (
+                    f"The {running_name} timer server is running, but the "
+                    f"{missing_name} timer server is not. Commands for the "
+                    "missing server are disabled."
+                )
+            else:
+                livesplit_state = "Optional"
+                livesplit_detail = (
+                    "LiveSplit is not running (it is optional) on the configured timer ports "
+                    f"({game_livesplit_port} and {level_livesplit_port}). "
+                    "LiveSplit commands are disabled; built-in timers and "
+                    "OBS text files continue to work normally."
+                )
+        except (TypeError, ValueError):
+            livesplit_state = "Needs Attention"
+            livesplit_detail = (
+                "The LiveSplit timer ports are invalid. LiveSplit commands "
+                "are disabled until the ports are corrected in Settings."
+            )
+        results.append((
+            livesplit_state,
+            "LiveSplit timer servers",
+            livesplit_detail,
+        ))
+
+        try:
             AUTOMATIC_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
             backup_state = "Ready"
             backup_detail = "Automatic rotating backups are available."
@@ -49594,7 +52246,10 @@ class TrackerApp:
             except tk.TclError:
                 pass
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "setup_health_check",
+            "Setup & Health Check",
+        )
         self.health_check_dialog = dialog
         dialog.title("First-Run Setup Check" if first_run else "Setup & Health Check")
         dialog.configure(bg=palette["window"])
@@ -49611,8 +52266,19 @@ class TrackerApp:
             padx=18,
             pady=12,
         ).pack(fill="x")
-        tk.Label(
+
+        content = self._create_centered_page_panel(
             dialog,
+            outer_bg=palette["window"],
+            panel_bg=palette["window"],
+            border=palette["border"],
+            max_width=1180,
+            padx=14,
+            pady=12,
+            outer_pad=10,
+        )
+        tk.Label(
+            content,
             text=(
                 "Required and optional parts are shown separately. An optional tool that is not "
                 "installed will not prevent SMW Stream Tracker from running."
@@ -49625,14 +52291,15 @@ class TrackerApp:
             wraplength=self._ui_px(900),
             padx=16,
             pady=10,
-        ).pack(fill="x", padx=12, pady=(12, 6))
-        rows = tk.Frame(dialog, bg=palette["window"])
-        rows.pack(fill="both", expand=True, padx=12, pady=6)
+        ).pack(fill="x", padx=4, pady=(2, 10))
+        rows = tk.Frame(content, bg=palette["window"])
+        rows.pack(fill="both", expand=True, padx=4, pady=2)
 
         status_colors = {
             "Ready": THEME["green"],
             "Missing": THEME["red"],
             "Needs Attention": THEME["yellow"],
+            "Optional": "#60758D",
         }
         for index, (status, title, detail) in enumerate(self._health_check_results()):
             row = tk.Frame(
@@ -49672,8 +52339,8 @@ class TrackerApp:
                 justify="left",
             ).pack(fill="x")
 
-        actions = tk.Frame(dialog, bg=palette["window"])
-        actions.pack(fill="x", padx=12, pady=(6, 12))
+        actions = tk.Frame(content, bg=palette["window"])
+        actions.pack(fill="x", padx=4, pady=(10, 2))
         self._make_action_button(
             actions,
             "Recheck",
@@ -49743,6 +52410,11 @@ class TrackerApp:
                     archive.write(
                         DEATH_SAVE_FILE,
                         "SMWStreamTrackerDeaths.json",
+                    )
+                if LEVEL_PROGRESS_SAVE_FILE.is_file():
+                    archive.write(
+                        LEVEL_PROGRESS_SAVE_FILE,
+                        "SMWStreamTrackerLevelProgress.json",
                     )
                 archive.writestr("backup_info.json", json.dumps(metadata, indent=2))
             backups = sorted(
@@ -49881,8 +52553,11 @@ class TrackerApp:
             self.status_var.set("SMW Stream Tracker is up to date.")
             if not silent:
                 messagebox.showinfo(
-                    "No Update Available",
-                    f"You have the latest version ({APP_VERSION}).",
+                    self._translate_ui_text("No Update Available"),
+                    self._format_ui_text(
+                        "You have the latest version ({version}).",
+                        version=APP_VERSION,
+                    ),
                     parent=self.root,
                 )
             return
@@ -50072,8 +52747,10 @@ class TrackerApp:
             or not rollback_script.is_file()
         ):
             messagebox.showinfo(
-                "No Previous Version",
-                "No previous installed app version is available to restore yet.",
+                self._translate_ui_text("No Previous Version"),
+                self._translate_ui_text(
+                    "No previous installed app version is available to restore yet."
+                ),
                 parent=self.root,
             )
             return
@@ -50148,22 +52825,24 @@ class TrackerApp:
 
     def _selected_readme_path(self) -> Path:
         """Return only the guide selected by Setup, with an English fallback."""
-        installed_readme = application_directory() / "README.txt"
-        if installed_readme.is_file():
-            return installed_readme
-
-        bundled_readme = bundled_resource_path(
-            "docs",
-            "README.en.txt",
+        language = str(getattr(self, "app_language", "en") or "en")
+        readme_filename = README_LANGUAGE_FILENAMES.get(
+            language,
+            README_LANGUAGE_FILENAMES["en"],
         )
-        if bundled_readme.is_file():
-            return bundled_readme
-
-        return (
+        candidates = (
+            bundled_resource_path("docs", readme_filename),
+            Path(__file__).resolve().parent / "docs" / readme_filename,
+            application_directory() / "README.txt",
+            bundled_resource_path("docs", README_LANGUAGE_FILENAMES["en"]),
             Path(__file__).resolve().parent
             / "docs"
-            / "README.en.txt"
+            / README_LANGUAGE_FILENAMES["en"],
         )
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return candidates[-1]
 
     def open_readme_dialog(self) -> None:
         if self.readme_dialog is not None:
@@ -50184,15 +52863,21 @@ class TrackerApp:
             )
         except OSError as error:
             messagebox.showerror(
-                "Read Me",
-                "The selected-language Read Me could not be opened.\n\n"
+                self._translate_ui_text("Read Me"),
+                self._translate_ui_text(
+                    "The selected-language Read Me could not be opened."
+                )
+                + "\n\n"
                 + str(error),
                 parent=self.root,
             )
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "readme",
+            "Read Me / Setup Guide",
+        )
         self.readme_dialog = dialog
         dialog.title("Read Me / Setup Guide - SMW Stream Tracker")
         dialog.configure(bg=palette["window"])
@@ -50242,6 +52927,47 @@ class TrackerApp:
         )
         scrollbar.configure(command=guide.yview)
         guide.insert("1.0", readme_text)
+
+        def jump_to_readme_line(target_line: int):
+            def jump(_event=None):
+                target = f"{target_line}.0"
+                guide.see(target)
+                guide.mark_set("insert", target)
+                guide.focus_set()
+                return "break"
+
+            return jump
+
+        for link_number, (toc_line, target_line) in enumerate(
+            _readme_toc_targets(readme_text),
+            start=1,
+        ):
+            tag_name = f"readme_toc_link_{link_number}"
+            guide.tag_add(
+                tag_name,
+                f"{toc_line}.0",
+                f"{toc_line}.end",
+            )
+            guide.tag_configure(
+                tag_name,
+                foreground=THEME["blue"],
+                underline=True,
+            )
+            guide.tag_bind(
+                tag_name,
+                "<Button-1>",
+                jump_to_readme_line(target_line),
+            )
+            guide.tag_bind(
+                tag_name,
+                "<Enter>",
+                lambda _event: guide.configure(cursor="hand2"),
+            )
+            guide.tag_bind(
+                tag_name,
+                "<Leave>",
+                lambda _event: guide.configure(cursor="xterm"),
+            )
         guide.configure(state="disabled")
         guide.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -50294,165 +53020,89 @@ class TrackerApp:
                 pass
 
     def open_feedback_dialog(self) -> None:
-        feedback_process = self.feedback_webview_process
-        if feedback_process is not None and feedback_process.poll() is None:
-            messagebox.showinfo(
-                "Feedback & Suggestions",
-                "The anonymous feedback window is already open.",
-                parent=self.root,
-            )
-            return
-
+        # The Help command is the action: skip an intermediate page and open
+        # the anonymous Microsoft Form in the app's private WebView2 window.
+        self._stop_feedback_webview_process()
+        environment = os.environ.copy()
+        for variable_name in tuple(environment):
+            if variable_name.startswith("_PYI_"):
+                environment.pop(variable_name, None)
+        environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
         try:
-            feedback_process = subprocess.Popen(
+            self.feedback_webview_process = subprocess.Popen(
                 _feedback_webview_command(
                     self.appearance_var.get(),
+                    self.app_language,
                 ),
-                close_fds=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                env=environment,
+                creationflags=getattr(
+                    subprocess,
+                    "CREATE_NO_WINDOW",
+                    0,
+                ),
             )
-            self.feedback_webview_process = feedback_process
-            try:
-                exit_code = feedback_process.wait(timeout=1.5)
-            except subprocess.TimeoutExpired:
-                return
-
+        except OSError as error:
             self.feedback_webview_process = None
-            append_error_log(
-                "Embedded feedback window exited during startup",
-                f"Child process exit code: {exit_code}",
-            )
-        except Exception as error:
-            self.feedback_webview_process = None
-            append_error_log(
-                "Could not launch the embedded feedback window",
-                f"{type(error).__name__}: {error}",
-            )
-
-        if self.feedback_dialog is not None:
-            try:
-                if self.feedback_dialog.winfo_exists():
-                    self.feedback_dialog.deiconify()
-                    self.feedback_dialog.lift()
-                    self.feedback_dialog.focus_force()
-                    return
-            except tk.TclError:
-                pass
-
-        palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
-        self.feedback_dialog = dialog
-        dialog.title("Feedback & Suggestions - SMW Stream Tracker")
-        dialog.configure(bg=palette["window"])
-        self._size_dialog_for_ui(dialog, 720, 430, 600, 390)
-        self._add_dialog_window_controls(dialog, dialog, palette["window"])
-
-        tk.Label(
-            dialog,
-            text="FEEDBACK & SUGGESTIONS",
-            font=("Segoe UI", 20, "bold"),
-            fg="white",
-            bg=THEME["green"],
-            padx=18,
-            pady=12,
-        ).pack(fill="x")
-        tk.Label(
-            dialog,
-            text=(
-                "The embedded feedback window could not be started. You can "
-                "still open the same anonymous Microsoft Form in your default "
-                "browser.\n\n"
-                "The form does not ask for your name or email address. SMW "
-                "Stream Tracker does not attach settings, diagnostics, ROM "
-                "information, file paths, or tracker data."
-            ),
-            font=("Segoe UI", 10),
-            fg=palette["text"],
-            bg=palette["panel"],
-            justify="left",
-            anchor="w",
-            wraplength=self._ui_px(650),
-            padx=16,
-            pady=14,
-        ).pack(fill="x", padx=12, pady=(12, 8))
-
-        privacy_panel = tk.Frame(
-            dialog,
-            bg=palette["panel"],
-            highlightbackground=palette["border"],
-            highlightthickness=1,
-            padx=14,
-            pady=12,
-        )
-        privacy_panel.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-        tk.Label(
-            privacy_panel,
-            text=(
-                "Only the answers you type into the form are submitted. "
-                "Microsoft may process normal service data under its privacy "
-                "policy."
-            ),
-            font=("Segoe UI", 10),
-            fg=palette["text"],
-            bg=palette["panel"],
-            justify="left",
-            anchor="w",
-            wraplength=self._ui_px(650),
-        ).pack(fill="both", expand=True)
-
-        actions = tk.Frame(dialog, bg=palette["window"])
-        actions.pack(fill="x", padx=12, pady=(0, 12))
-        open_form_button = self._make_action_button(
-            actions,
-            "Open Anonymous Feedback Form",
-            lambda: None,
-            THEME["green"],
-            THEME["green_dark"],
-            width=29,
-        )
-        open_form_button.pack(side="left")
-
-        def close_feedback() -> None:
-            try:
-                dialog.destroy()
-            finally:
-                self.feedback_dialog = None
-
-        self._make_action_button(
-            actions,
-            "Close",
-            close_feedback,
-            "#60758D",
-            "#40566E",
-            width=10,
-        ).pack(side="right")
-
-        def open_feedback_form() -> None:
-            try:
-                opened = webbrowser.open(FEEDBACK_FORM_URL)
-            except Exception as error:
-                opened = False
-                error_detail = str(error)
-            else:
-                error_detail = ""
-
-            if opened:
-                return
-
             messagebox.showerror(
                 "Feedback Form Could Not Be Opened",
-                "Windows could not open the anonymous feedback form in "
-                "your default browser."
-                + ("\n\n" + error_detail if error_detail else ""),
-                parent=dialog,
+                "The anonymous feedback form could not be opened inside "
+                "SMW Stream Tracker.\n\n" + str(error),
+                parent=self.root,
             )
 
-        open_form_button.configure(command=open_feedback_form)
-        dialog.protocol("WM_DELETE_WINDOW", close_feedback)
-        self._apply_widget_appearance(
-            dialog,
-            dark=(self.appearance_var.get() == "dark"),
-        )
+    def _localized_about_text(self) -> str:
+        texts = {
+            "en": (
+                "Tracks Super Mario World ROM-hack progress with FXPAK Pro or RetroArch, maintains a local catalog, and writes optional stream text files.\n\n"
+                "SMW Central & the SMW community\nCatalog data comes directly from SMW Central's moderated catalog. Huge thanks to its staff and moderators, and to every creator, tester, player, and tool developer supporting these remarkable hacks.\n\n"
+                "Testers\nJole_12 — thank you for detailed testing and feedback that helps make each release more reliable.\n\n"
+                "Looking ahead\nFuture releases may explore more hardware setups, flash-cartridge workflows, and emulator integrations beyond FXPAK Pro and RetroArch.\n\n"
+                "Privacy\nNo telemetry is collected. Network access is used only for requested features. Feedback sends only answers entered in the anonymous form; ROMs, settings, paths, diagnostics, and tracker data are never attached.\n\n"
+                "Acknowledgments\nSNI, QUsb2Snes, RetroArch, Libretro/bsnes-mercury, SMW Central, openpyxl, Pillow, websocket-client, pystray, pywebview, pythonnet, Microsoft Edge WebView2, and their contributors.\n\n"
+                "Copyright (c) 2026 FredDOGG23. All rights reserved."
+            ),
+            "au": (
+                "Keeps track of Super Mario World ROM-hack progress with FXPAK Pro or RetroArch, maintains a local catalogue, and writes optional stream text files.\n\n"
+                "SMW Central & the SMW community\nThe catalogue data comes straight from SMW Central's moderated catalogue. A massive cheers to its staff, moderators, creators, testers, players, and tool developers for all their ripper work.\n\n"
+                "Testers\nJole_12 — cheers for the detailed testing and feedback that helps make every release sturdier.\n\n"
+                "Looking ahead\nFuture releases may have a crack at more hardware setups, flash-cart workflows, and emulator integrations.\n\n"
+                "Privacy\nNo telemetry is collected. Network access is used only when you ask for an online feature. Feedback sends only what you type; your ROMs, settings, paths, diagnostics, and tracker data stay put.\n\n"
+                "Copyright (c) 2026 FredDOGG23. All rights reserved."
+            ),
+            "es": (
+                "Registra el progreso de hacks de Super Mario World con FXPAK Pro o RetroArch, mantiene un catálogo local y crea archivos de texto opcionales para transmisiones.\n\n"
+                "SMW Central y la comunidad de SMW\nLos datos proceden directamente del catálogo moderado de SMW Central. Muchísimas gracias a su personal y moderadores, y a todos los creadores, probadores, jugadores y desarrolladores de herramientas.\n\n"
+                "Probadores\nJole_12: gracias por las pruebas detalladas y los comentarios que hacen cada versión más fiable.\n\n"
+                "Mirando al futuro\nLas próximas versiones pueden explorar más configuraciones de hardware, cartuchos flash e integraciones con emuladores.\n\n"
+                "Privacidad\nNo se recopila telemetría. El acceso a la red solo se usa para funciones solicitadas. El formulario anónimo envía únicamente las respuestas escritas; nunca adjunta ROM, configuración, rutas, diagnósticos ni datos del tracker.\n\n"
+                "Copyright (c) 2026 FredDOGG23. Todos los derechos reservados."
+            ),
+            "fr": (
+                "Suit la progression des hacks de Super Mario World avec FXPAK Pro ou RetroArch, conserve un catalogue local et crée des fichiers texte facultatifs pour le stream.\n\n"
+                "SMW Central et la communauté SMW\nLes données proviennent directement du catalogue modéré de SMW Central. Un immense merci à son équipe, à ses modérateurs, ainsi qu'aux créateurs, testeurs, joueurs et développeurs d'outils.\n\n"
+                "Testeurs\nJole_12 — merci pour les tests détaillés et les retours qui rendent chaque version plus fiable.\n\n"
+                "À venir\nDe futures versions pourront explorer davantage de configurations matérielles, de cartouches flash et d'émulateurs.\n\n"
+                "Confidentialité\nAucune télémétrie n'est collectée. Le réseau n'est utilisé que pour les fonctions demandées. Le formulaire anonyme envoie uniquement vos réponses ; ROM, paramètres, chemins, diagnostics et données du tracker ne sont jamais joints.\n\n"
+                "Copyright (c) 2026 FredDOGG23. Tous droits réservés."
+            ),
+            "de": (
+                "Verfolgt den Fortschritt von Super-Mario-World-ROM-Hacks mit FXPAK Pro oder RetroArch, verwaltet einen lokalen Katalog und erstellt optionale Textdateien für Streams.\n\n"
+                "SMW Central und die SMW-Community\nDie Katalogdaten stammen direkt aus dem moderierten Katalog von SMW Central. Herzlichen Dank an Team und Moderatoren sowie an alle Ersteller, Tester, Spieler und Werkzeugentwickler.\n\n"
+                "Tester\nJole_12 — vielen Dank für die ausführlichen Tests und Rückmeldungen, die jede Version zuverlässiger machen.\n\n"
+                "Ausblick\nKünftige Versionen können weitere Hardware-Einrichtungen, Flash-Cartridge-Abläufe und Emulator-Integrationen untersuchen.\n\n"
+                "Datenschutz\nEs werden keine Telemetriedaten gesammelt. Netzwerkzugriff erfolgt nur für ausdrücklich angeforderte Funktionen. Das anonyme Formular sendet ausschließlich eingegebene Antworten; ROMs, Einstellungen, Pfade, Diagnosen und Tracker-Daten werden nie angehängt.\n\n"
+                "Copyright (c) 2026 FredDOGG23. Alle Rechte vorbehalten."
+            ),
+            "pt-BR": (
+                "Acompanha o progresso de hacks de Super Mario World com FXPAK Pro ou RetroArch, mantém um catálogo local e cria arquivos de texto opcionais para transmissões.\n\n"
+                "SMW Central e a comunidade SMW\nOs dados vêm diretamente do catálogo moderado do SMW Central. Muito obrigado à equipe e aos moderadores, além de todos os criadores, testadores, jogadores e desenvolvedores de ferramentas.\n\n"
+                "Testadores\nJole_12 — obrigado pelos testes detalhados e comentários que tornam cada versão mais confiável.\n\n"
+                "Olhando para o futuro\nVersões futuras poderão explorar mais configurações de hardware, cartuchos flash e integrações com emuladores.\n\n"
+                "Privacidade\nNenhuma telemetria é coletada. A rede é usada somente para recursos solicitados. O formulário anônimo envia apenas as respostas digitadas; ROMs, configurações, caminhos, diagnósticos e dados do tracker nunca são anexados.\n\n"
+                "Copyright (c) 2026 FredDOGG23. Todos os direitos reservados."
+            ),
+        }
+        return texts.get(self.app_language, texts["en"])
 
     def open_about_dialog(self) -> None:
         if self.about_dialog is not None:
@@ -50524,7 +53174,7 @@ class TrackerApp:
         )
         tk.Label(
             dialog,
-            text=about_text,
+            text=self._localized_about_text(),
             font=("Segoe UI", 11),
             fg=palette["text"],
             bg=palette["panel"],
@@ -50552,10 +53202,113 @@ class TrackerApp:
             THEME["navy"],
             width=10,
         ).pack(side="left", padx=(0, 8))
+
+        def show_about_document(
+            filename: str,
+            heading: str,
+            accent: str,
+        ) -> None:
+            packed_children: list[tuple[tk.Widget, dict[str, object]]] = []
+            for child in dialog.winfo_children():
+                try:
+                    pack_info = dict(child.pack_info())
+                except tk.TclError:
+                    continue
+                packed_children.append((child, pack_info))
+                child.pack_forget()
+
+            document_page = tk.Frame(dialog, bg=palette["window"])
+            document_page.pack(fill="both", expand=True)
+            tk.Label(
+                document_page,
+                text=heading,
+                font=("Segoe UI", 22, "bold"),
+                fg="white",
+                bg=accent,
+                padx=18,
+                pady=14,
+            ).pack(fill="x")
+            document_frame = tk.Frame(
+                document_page,
+                bg=palette["panel"],
+                highlightbackground=palette["border"],
+                highlightthickness=1,
+            )
+            document_frame.pack(
+                fill="both",
+                expand=True,
+                padx=12,
+                pady=12,
+            )
+            scrollbar = tk.Scrollbar(document_frame)
+            scrollbar.pack(side="right", fill="y")
+            document_widget = tk.Text(
+                document_frame,
+                wrap="word",
+                font=("Segoe UI", 11),
+                fg=palette["text"],
+                bg=palette["panel"],
+                insertbackground=palette["text"],
+                relief="flat",
+                padx=18,
+                pady=14,
+                yscrollcommand=scrollbar.set,
+            )
+            document_widget.pack(fill="both", expand=True)
+            scrollbar.configure(command=document_widget.yview)
+            document_path = localized_installed_document_path(
+                filename,
+                getattr(self, "app_language", "en"),
+            )
+            try:
+                document_contents = document_path.read_text(
+                    encoding="utf-8-sig",
+                    errors="replace",
+                )
+            except OSError as error:
+                document_contents = filename + "\n\n" + str(error)
+            document_widget.insert("1.0", document_contents)
+            document_widget.configure(state="disabled")
+
+            def restore_about_page() -> None:
+                document_page.destroy()
+                for child, pack_info in packed_children:
+                    pack_options = {
+                        key: value
+                        for key, value in pack_info.items()
+                        if key != "in"
+                    }
+                    child.pack(**pack_options)
+                self._localize_widget_tree(dialog)
+                self._refresh_about_update_button()
+
+            document_actions = tk.Frame(
+                document_page,
+                bg=palette["window"],
+            )
+            document_actions.pack(fill="x", padx=12, pady=(0, 12))
+            self._make_action_button(
+                document_actions,
+                "Back",
+                restore_about_page,
+                THEME["blue"],
+                THEME["navy"],
+                width=10,
+            ).pack(side="left")
+            self._localize_widget_tree(document_page)
+            self._apply_widget_appearance(
+                document_page,
+                dark=(self.appearance_var.get() == "dark"),
+            )
+
         self._make_action_button(
             actions,
             "Privacy",
-            lambda: self._open_installed_document("PRIVACY.txt"),
+            lambda: show_about_document(
+                "PRIVACY.txt",
+                "Privacy",
+                THEME["purple"],
+            ),
             THEME["purple"],
             "#6037AA",
             width=10,
@@ -50563,7 +53316,11 @@ class TrackerApp:
         self._make_action_button(
             actions,
             "App License",
-            lambda: self._open_installed_document("LICENSE.txt"),
+            lambda: show_about_document(
+                "LICENSE.txt",
+                "App License",
+                THEME["orange"],
+            ),
             THEME["orange"],
             "#A84808",
             width=11,
@@ -50571,7 +53328,11 @@ class TrackerApp:
         self._make_action_button(
             actions,
             "Third-Party",
-            lambda: self._open_installed_document("THIRD_PARTY_NOTICE.txt"),
+            lambda: show_about_document(
+                "THIRD_PARTY_NOTICE.txt",
+                "Third-Party",
+                "#60758D",
+            ),
             "#60758D",
             "#40566E",
             width=11,
@@ -50609,6 +53370,7 @@ class TrackerApp:
             width=10,
         ).pack(side="right")
         dialog.protocol("WM_DELETE_WINDOW", close_about)
+        self._localize_widget_tree(dialog)
         self._apply_widget_appearance(
             dialog,
             dark=(self.appearance_var.get() == "dark"),
@@ -50627,7 +53389,10 @@ class TrackerApp:
                 pass
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "obs_text_settings",
+            "OBS Text Settings",
+        )
         self.obs_settings_dialog = dialog
         dialog.title("OBS Text Settings")
         dialog.configure(bg=palette["window"])
@@ -50650,15 +53415,16 @@ class TrackerApp:
             bg=THEME["purple"],
         ).pack(side="left", padx=18, pady=12)
 
-        body = tk.Frame(
+        body = self._create_centered_page_panel(
             dialog,
-            bg=palette["panel"],
-            highlightbackground=palette["border"],
-            highlightthickness=1,
-            padx=18,
-            pady=16,
+            outer_bg=palette["window"],
+            panel_bg=palette["panel"],
+            border=palette["border"],
+            max_width=1120,
+            padx=24,
+            pady=20,
+            outer_pad=10,
         )
-        body.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         body.columnconfigure(1, weight=1)
 
         folder_var = tk.StringVar(value=self.output_folder_var.get())
@@ -50913,9 +53679,10 @@ class TrackerApp:
         total_deaths_format_var.trace_add("write", update_previews)
         update_previews()
 
+        body.rowconfigure(11, weight=1)
         actions = tk.Frame(body, bg=palette["panel"])
         actions.grid(
-            row=10,
+            row=12,
             column=0,
             columnspan=3,
             sticky="ew",
@@ -51196,17 +53963,29 @@ class TrackerApp:
                             str(self.config.get("retroarch_core_path", ""))
                         ).is_file()
                     launch_note = (
-                        "\n\nGame launching: ready"
+                        "\n\n"
+                        + self._translate_ui_text("Game launching: ready")
                         if executable_ok and library_ok and core_ok
-                        else "\n\nLive tracking is connected, but game "
-                        "launching still needs the missing path(s) in Settings."
+                        else "\n\n"
+                        + self._translate_ui_text(
+                            "Live tracking is connected, but game launching still needs the missing path(s) in Settings."
+                        )
                     )
                 message = (
-                    f"{platform} is connected through {device}."
+                    self._format_ui_text(
+                        "{platform} is connected through {device}.",
+                        platform=platform,
+                        device=device,
+                    )
                     + (
-                        f"\n\nDetected ROM: {clean_rom_filename(detected_rom)}"
+                        "\n\n"
+                        + self._translate_ui_text("Detected ROM:")
+                        + f" {clean_rom_filename(detected_rom)}"
                         if detected_rom
-                        else "\n\nThe connection is ready; no running ROM was detected."
+                        else "\n\n"
+                        + self._translate_ui_text(
+                            "The connection is ready; no running ROM was detected."
+                        )
                     )
                     + launch_note
                 )
@@ -51215,7 +53994,9 @@ class TrackerApp:
                     lambda: (
                         self.status_var.set(f"{platform} test passed."),
                         messagebox.showinfo(
-                            "Platform Test Passed",
+                            self._translate_ui_text(
+                                "Platform Test Passed"
+                            ),
                             message,
                             parent=self.root,
                         ),
@@ -51230,8 +54011,14 @@ class TrackerApp:
                             f"{platform} test failed: {error_text}"
                         ),
                         messagebox.showerror(
-                            "Platform Test Failed",
-                            f"{platform} could not connect.\n\n{error_text}",
+                            self._translate_ui_text(
+                                "Platform Test Failed"
+                            ),
+                            self._format_ui_text(
+                                "{platform} could not connect.",
+                                platform=platform,
+                            )
+                            + f"\n\n{error_text}",
                             parent=self.root,
                         ),
                     ),
@@ -51674,6 +54461,7 @@ class TrackerApp:
                 == "dark"
             ),
         )
+        self._localize_widget_tree(dialog)
         self.root.wait_window(dialog)
 
     def add_current_hack_to_tracker(self) -> None:
@@ -51800,22 +54588,44 @@ class TrackerApp:
                             fg=THEME["green_dark"]
                         )
                     else:
-                        self.connection_var.set(
-                            self._translate_ui_text("Disconnected")
+                        transient_error = bool(
+                            event.get("transient")
                         )
-                        self.connection_dot.configure(
-                            fg=THEME["bad"]
-                        )
-                        self.connection_status_label.configure(
-                            fg=THEME["bad"]
-                        )
-                        self.status_var.set(
-                            self._translate_ui_text("Reconnecting:")
-                            + " "
-                            + self._translate_ui_text(
-                                str(event.get("error", ""))
+                        if transient_error:
+                            reconnecting_text = (
+                                self._translate_ui_text("Reconnecting:")
+                                + " "
+                                + self.platform_var.get().strip()
                             )
-                        )
+                            self.connection_var.set(
+                                reconnecting_text
+                            )
+                            self.connection_dot.configure(
+                                fg=THEME["warning"]
+                            )
+                            self.connection_status_label.configure(
+                                fg=THEME["warning"]
+                            )
+                            self.status_var.set(
+                                reconnecting_text
+                            )
+                        else:
+                            self.connection_var.set(
+                                self._translate_ui_text("Disconnected")
+                            )
+                            self.connection_dot.configure(
+                                fg=THEME["bad"]
+                            )
+                            self.connection_status_label.configure(
+                                fg=THEME["bad"]
+                            )
+                            self.status_var.set(
+                                self._translate_ui_text("Reconnecting:")
+                                + " "
+                                + self._translate_ui_text(
+                                    str(event.get("error", ""))
+                                )
+                            )
                     self._set_tracking_icon(
                         bool(event.get("connected"))
                     )
@@ -52295,6 +55105,7 @@ class TrackerApp:
             pass
 
         if self.worker:
+            self.worker.save_current_level_progress()
             self.worker.save_current_game_time()
             self.worker.save_current_death_count()
             self.worker.stop()
@@ -52334,27 +55145,104 @@ def _enable_windows_dpi_awareness() -> None:
         pass
 
 
+def _readme_toc_targets(readme_text: str) -> list[tuple[int, int]]:
+    """Return one-based Table-of-Contents and matching heading line pairs."""
+    lines = str(readme_text or "").splitlines()
+    numbered_line = re.compile(r"^\s*(\d+)\.\s+(.+?)\s*$")
+
+    toc_block: list[tuple[int, str]] = []
+    for start in range(len(lines)):
+        candidate: list[tuple[int, str]] = []
+        expected = 1
+        for line_index in range(start, len(lines)):
+            match = numbered_line.match(lines[line_index])
+            if match is None or int(match.group(1)) != expected:
+                break
+            candidate.append((line_index, match.group(2)))
+            expected += 1
+        if len(candidate) >= 3:
+            toc_block = candidate
+            break
+
+    if not toc_block:
+        return []
+
+    search_start = toc_block[-1][0] + 1
+    links: list[tuple[int, int]] = []
+    for toc_line_index, toc_title in toc_block:
+        normalized_title = " ".join(toc_title.casefold().split())
+        toc_number_match = numbered_line.match(lines[toc_line_index])
+        if toc_number_match is None:
+            continue
+        toc_number = toc_number_match.group(1)
+        for heading_line_index in range(search_start, len(lines)):
+            heading_match = numbered_line.match(lines[heading_line_index])
+            if heading_match is None or heading_match.group(1) != toc_number:
+                continue
+            heading_title = " ".join(
+                heading_match.group(2).casefold().split()
+            )
+            if heading_title == normalized_title:
+                links.append((toc_line_index + 1, heading_line_index + 1))
+                break
+    return links
+
+
 def _normalize_feedback_appearance(value: object) -> str:
     normalized = str(value or "").strip().casefold()
     return "dark" if normalized == "dark" else "light"
 
 
-def _feedback_webview_command(appearance: object) -> list[str]:
+def _normalize_feedback_language(value: object) -> str:
+    normalized = str(value or "").strip()
+    return normalized if normalized in FEEDBACK_LANGUAGE_LOCALES else "en"
+
+
+def _localized_feedback_form_url(language: object) -> str:
+    language_code = _normalize_feedback_language(language)
+    form_url = FEEDBACK_FORM_URLS.get(language_code, FEEDBACK_FORM_URLS["en"])
+    locale = FEEDBACK_LANGUAGE_LOCALES[language_code]
+    separator = "&" if "?" in form_url else "?"
+    return f"{form_url}{separator}{urlencode({'lang': locale})}"
+
+
+def _feedback_window_title(language: object) -> str:
+    titles = {
+        "en": "Feedback & Suggestions - SMW Stream Tracker",
+        "au": "Feedback & Suggestions - SMW Stream Tracker",
+        "es": "Comentarios y sugerencias - SMW Stream Tracker",
+        "fr": "Commentaires et suggestions - SMW Stream Tracker",
+        "de": "Feedback und Vorschläge - SMW Stream Tracker",
+        "pt-BR": "Comentários e sugestões - SMW Stream Tracker",
+    }
+    return titles[_normalize_feedback_language(language)]
+
+
+def _feedback_webview_command(
+    appearance: object,
+    language: object = "en",
+) -> list[str]:
     appearance_argument = (
         FEEDBACK_APPEARANCE_ARGUMENT_PREFIX
         + _normalize_feedback_appearance(appearance)
+    )
+    language_argument = (
+        FEEDBACK_LANGUAGE_ARGUMENT_PREFIX
+        + _normalize_feedback_language(language)
     )
     if getattr(sys, "frozen", False):
         return [
             sys.executable,
             FEEDBACK_WEBVIEW_ARGUMENT,
             appearance_argument,
+            language_argument,
         ]
     return [
         sys.executable,
         str(Path(__file__).resolve()),
         FEEDBACK_WEBVIEW_ARGUMENT,
         appearance_argument,
+        language_argument,
     ]
 
 
@@ -52367,6 +55255,15 @@ def _feedback_appearance_from_arguments(arguments: list[str]) -> str:
                 )
             )
     return "light"
+
+
+def _feedback_language_from_arguments(arguments: list[str]) -> str:
+    for argument in arguments:
+        if argument.startswith(FEEDBACK_LANGUAGE_ARGUMENT_PREFIX):
+            return _normalize_feedback_language(
+                argument.removeprefix(FEEDBACK_LANGUAGE_ARGUMENT_PREFIX)
+            )
+    return "en"
 
 
 def _feedback_dark_mode_script() -> str:
@@ -52395,7 +55292,10 @@ def _feedback_dark_mode_script() -> str:
 """
 
 
-def _run_feedback_webview(appearance: str) -> int:
+def _run_feedback_webview(
+    appearance: str,
+    language: str = "en",
+) -> int:
     try:
         import webview
 
@@ -52404,8 +55304,8 @@ def _run_feedback_webview(appearance: str) -> int:
             "smw_stream_tracker_icon.ico",
         )
         feedback_window = webview.create_window(
-            "Feedback & Suggestions - SMW Stream Tracker",
-            FEEDBACK_FORM_URL,
+            _feedback_window_title(language),
+            _localized_feedback_form_url(language),
             width=1040,
             height=820,
             min_size=(700, 560),
@@ -52457,7 +55357,8 @@ def main() -> None:
     if FEEDBACK_WEBVIEW_ARGUMENT in sys.argv[1:]:
         raise SystemExit(
             _run_feedback_webview(
-                _feedback_appearance_from_arguments(sys.argv[1:])
+                _feedback_appearance_from_arguments(sys.argv[1:]),
+                _feedback_language_from_arguments(sys.argv[1:]),
             )
         )
 

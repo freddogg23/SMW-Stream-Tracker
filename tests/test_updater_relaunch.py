@@ -96,11 +96,16 @@ class UpdaterRelaunchTests(unittest.TestCase):
         self.assertIn("Test-BuildPython", release_script)
         self.assertIn("working Tcl/Tk runtime", release_script)
         self.assertIn("__smw_tcl_log|tcl-init-log", release_script)
+        self.assertIn("WaitForExit(30000)", release_script)
+        self.assertIn("Stop-Process -Id $process.Id -Force", release_script)
 
         build_spec = (MODULE_PATH.parent / "SMWStreamTracker.spec").read_text(
             encoding="utf-8"
         )
         self.assertIn("SMWStreamTrackerLauncher.py", build_spec)
+        self.assertIn("import tkinter as tk", build_spec)
+        self.assertIn("_tk_build_probe = tk.Tk()", build_spec)
+        self.assertIn("cannot be packaged with this Python runtime", build_spec)
         self.assertIn("hookspath=[]", build_spec)
         self.assertIn("runtime_hooks=[]", build_spec)
 

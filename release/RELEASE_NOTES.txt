@@ -1,9 +1,10 @@
-Release 1.0.6
+Release 1.0.7
 
-* Shows Help and About update indicators only when a newer published release is available.
-* Adds filtered random play for downloaded and patched ROMs with Confirm and Cancel controls.
-* Detects playable catalog games from direct paths, platform mappings, FXPAK mappings, and the configured ROM library.
-* Makes playable catalog titles yellow and launchable from the catalog.
-* Adds navigation between Overview and My Tracker and moves spreadsheet tools into My Tracker.
-* Improves full-screen window scaling, filter alignment, and translations.
-* Fixes the Tk update-badge startup crash.
+* Redesigns the main dashboard with centered Live Session, Game Controls, and Timers sections while preserving the panoramic banner.
+* Keeps the current hack, FXPAK Pro or RetroArch status, My Tracker status, exits, deaths, timers, and controls together in a responsive layout.
+* Improves in-app navigation for Overview, My Tracker, downloads, the SMW Central Catalog, Settings, OBS text settings, diagnostics, health checks, and game libraries.
+* Improves RetroArch game handoff, timer and death tracking, exit counting, grace-time behavior, and optional LiveSplit handling.
+* Adds a translated upload-date filter to random play while continuing to select only downloaded and patched ROMs.
+* Expands localization and language-aware Read Me and feedback behavior across the supported languages.
+* Restores bundled banner and interface images and adds a permanent Tcl/Tk runtime fallback for updated installations.
+* Refreshes the main dashboard and SMW Central Catalog screenshots.

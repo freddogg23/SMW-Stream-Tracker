@@ -1,0 +1,29 @@
+DATENSCHUTZ BEI SMW STREAM TRACKER
+==================================
+
+SMW Stream Tracker erfasst keine Telemetriedaten und lädt keine ROM-Dateien
+hoch.
+
+Die App nutzt das Netzwerk nur für Funktionen, die der Benutzer anfordert oder
+aktiviert: den moderierten Katalog und die Patch-Informationen von SMW Central,
+GitHub-Versionsprüfungen, die optionale Google-Sheets-Synchronisierung,
+optionale Downloads von SNI, QUsb2Snes, RetroArch und Libretro-Cores, die lokale
+Kommunikation mit diesen Werkzeugen und das optionale Microsoft-Forms-Formular.
+
+Feedback und Vorschläge öffnet ein öffentliches Microsoft-Forms-Formular in
+einem eigenen WebView2-Fenster von SMW Stream Tracker. Ist WebView2 nicht
+verfügbar, wird dasselbe Formular im Standardbrowser geöffnet. Das Formular
+fragt weder Name noch E-Mail-Adresse ab. Die App fügt keine Einstellungen,
+Diagnosen, Dateipfade, ROM-Informationen oder Tracker-Daten an. Übermittelt
+werden nur die Antworten, die der Benutzer selbst eingibt.
+
+Microsoft kann beim Öffnen oder Absenden des Formulars übliche Dienstdaten nach
+seiner Datenschutzrichtlinie verarbeiten. SMW Stream Tracker empfängt oder
+speichert diese Dienstdaten nicht.
+
+Tracker-Daten, Einstellungen, Timerzustände, Zuordnungen,
+Wiederherstellungssicherungen und Fehlerprotokolle werden lokal gespeichert.
+Diagnose kopieren blendet Benutzernamen, ROM-Namen und persönliche Pfade aus.
+
+SMW Stream Tracker enthält, lädt und überträgt niemals ein kommerzielles
+Basis-ROM.

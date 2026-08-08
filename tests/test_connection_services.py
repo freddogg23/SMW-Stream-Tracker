@@ -1,7 +1,9 @@
 import importlib.util
 from pathlib import Path
+import queue
 import sys
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = (
@@ -89,6 +91,94 @@ class ConnectionServiceTests(unittest.TestCase):
         self.assertIn("RetroArch-Netzwerkbefehle", error)
         self.assertNotIn("are not responding", error)
 
+    def test_remote_host_loss_is_treated_as_transient(self):
+        self.assertTrue(
+            self.tracker.is_transient_connection_error(
+                "Connection to remote host was lost."
+            )
+        )
+
+    def test_configuration_error_is_not_treated_as_transient(self):
+        self.assertFalse(
+            self.tracker.is_transient_connection_error(
+                "RetroArch Network Commands are not responding."
+            )
+        )
+
+    def test_recent_live_sample_hides_brief_retroarch_disconnect(self):
+        self.assertFalse(
+            self.tracker.connection_loss_needs_user_attention(
+                "Connection to remote host was lost.",
+                last_successful_sample_at=100.0,
+                now=106.0,
+            )
+        )
+
+    def test_stale_live_sample_surfaces_retroarch_disconnect(self):
+        self.assertTrue(
+            self.tracker.connection_loss_needs_user_attention(
+                "Connection to remote host was lost.",
+                last_successful_sample_at=100.0,
+                now=116.0,
+            )
+        )
+
+    def test_game_state_uses_small_wram_windows_including_death_memory(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        snapshot = bytearray(self.tracker.LIVE_STATE_SIZE)
+        expected = {
+            self.tracker.GAME_MODE_ADDRESS: 0x14,
+            self.tracker.SAVE_SLOT_ADDRESS: 0x02,
+            self.tracker.PLAYER_STATE_ADDRESS: 0x09,
+            self.tracker.PLAYER_LIVES_ADDRESS: 0x04,
+            self.tracker.PAUSE_FLAG_ADDRESS: 0x01,
+            self.tracker.TRANSLEVEL_ADDRESS: 0x2A,
+            self.tracker.EXIT_COUNTER_ADDRESS: 0x11,
+            self.tracker.LEVEL_END_TIMER_ADDRESS: 0x20,
+            self.tracker.JOYPAD_HELD_ADDRESS: 0x10,
+            self.tracker.JOYPAD_AXLR_ADDRESS: 0x20,
+        }
+        base = int(self.tracker.LIVE_STATE_BASE_ADDRESS, 16)
+        for address, value in expected.items():
+            snapshot[int(address, 16) - base] = value
+
+        calls = []
+
+        def read_snapshot_chunk(_ws, address, size):
+            offset = int(address, 16) - base
+            calls.append((address, size))
+            return bytes(snapshot[offset : offset + size])
+
+        worker.read_memory = read_snapshot_chunk
+        state = worker.read_game_state(object())
+
+        self.assertEqual(calls, list(self.tracker.LIVE_STATE_WINDOWS))
+        self.assertEqual(state["mode"], 0x14)
+        self.assertEqual(state["save_slot"], 0x02)
+        self.assertEqual(state["player_state"], 0x09)
+        self.assertEqual(state["player_lives"], 0x04)
+        self.assertEqual(state["translevel"], 0x2A)
+        self.assertEqual(state["exits"], 0x11)
+
+    def test_retroarch_game_name_is_used_before_bridge_info(self):
+        config = dict(self.tracker.DEFAULT_CONFIG)
+        config["selected_platform"] = "RetroArch"
+        worker = self.tracker.TrackerWorker(config, queue.Queue())
+        worker.get_retroarch_game_name = (
+            lambda timeout=0.18: "Quickie World 2.sfc"
+        )
+        worker.send_request = lambda *_args, **_kwargs: self.fail(
+            "RetroArch title should be resolved before bridge Info"
+        )
+
+        self.assertEqual(
+            worker.get_loaded_rom_path(object()),
+            "Quickie World 2.sfc",
+        )
+
     def test_running_retroarch_is_ready_without_strict_saved_paths(self):
         class Value:
             def get(self):
@@ -111,6 +201,58 @@ class ConnectionServiceTests(unittest.TestCase):
             if result[1] == "RetroArch"
         )
         self.assertEqual(retroarch_result[0], "Ready")
+
+    def test_livesplit_commands_are_skipped_when_server_is_not_running(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        with (
+            mock.patch.object(
+                self.tracker,
+                "livesplit_server_is_running",
+                return_value=False,
+            ) as running_check,
+            mock.patch.object(
+                self.tracker.socket,
+                "create_connection",
+            ) as create_connection,
+        ):
+            self.assertFalse(
+                worker.send_livesplit_command("game", "starttimer")
+            )
+            self.assertFalse(
+                worker.send_livesplit_command("game", "pause")
+            )
+
+        running_check.assert_called_once()
+        create_connection.assert_not_called()
+
+    def test_health_check_lists_livesplit_as_optional_when_not_running(self):
+        class Value:
+            def get(self):
+                return "FXPAK Pro"
+
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        app.platform_var = Value()
+        app.connection_is_connected = False
+        app.config = dict(self.tracker.DEFAULT_CONFIG)
+        app._test_tcp_port = lambda host, port: False
+        app._retroarch_status = lambda timeout=0.5: None
+        with mock.patch.object(
+            self.tracker,
+            "livesplit_server_is_running",
+            return_value=False,
+        ):
+            livesplit_result = next(
+                result
+                for result in app._health_check_results()
+                if result[1] == "LiveSplit timer servers"
+            )
+
+        self.assertEqual(livesplit_result[0], "Optional")
+        self.assertIn("commands are disabled", livesplit_result[2])
+        self.assertIn("OBS text files continue", livesplit_result[2])
 
 
 if __name__ == "__main__":
