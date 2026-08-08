@@ -1,10 +1,12 @@
-Release 1.0.7
+Release 1.0.8
 
-* Redesigns the main dashboard with centered Live Session, Game Controls, and Timers sections while preserving the panoramic banner.
-* Keeps the current hack, FXPAK Pro or RetroArch status, My Tracker status, exits, deaths, timers, and controls together in a responsive layout.
+* Refines the centered Live Session dashboard while preserving the panoramic banner.
+* Places level time and deaths, current-hack exits, difficulty and rating, and game time and deaths together in one vertically centered panel.
+* Automatically reduces long current-hack titles so the complete live-session panel stays visible.
+* Makes the Timer & Death Controls section more compact while retaining the full timer, reset, finish, and manual override controls.
 * Improves in-app navigation for Overview, My Tracker, downloads, the SMW Central Catalog, Settings, OBS text settings, diagnostics, health checks, and game libraries.
 * Improves RetroArch game handoff, timer and death tracking, exit counting, grace-time behavior, and optional LiveSplit handling.
 * Adds a translated upload-date filter to random play while continuing to select only downloaded and patched ROMs.
 * Expands localization and language-aware Read Me and feedback behavior across the supported languages.
 * Restores bundled banner and interface images and adds a permanent Tcl/Tk runtime fallback for updated installations.
-* Refreshes the main dashboard and SMW Central Catalog screenshots.
+* Refreshes the main dashboard screenshot while reusing the current feature screenshots elsewhere.

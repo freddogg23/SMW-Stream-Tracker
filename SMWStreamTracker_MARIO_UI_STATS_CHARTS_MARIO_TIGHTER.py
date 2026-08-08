@@ -80,7 +80,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 APP_BUILD_DATE = "2026-08-08"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
@@ -15518,9 +15518,9 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Complete Hack": "Completar hack", "Current Hack": "Hack actual",
         "Live Session": "Sesión en vivo",
         "Game Controls": "Controles del juego",
-        "Timers": "Temporizadores", "Game Time": "Tiempo de juego",
+        "Timers": "Temporizadores", "Timer & Death Controls": "Controles de tiempo y muertes", "Game Time": "Tiempo de juego",
         "Level Time": "Tiempo de nivel", "Level Deaths": "Muertes del nivel",
-        "Total Deaths": "Muertes totales", "Reset": "Reiniciar",
+        "Total Deaths": "Muertes totales", "Game Deaths": "Muertes del juego", "Reset": "Reiniciar",
         "Language": "Idioma", "Start Game Timer": "Iniciar tiempo de juego",
         "Start Level Timer": "Iniciar tiempo de nivel",
         "Start Timers": "Iniciar temporizadores",
@@ -15529,7 +15529,8 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Finish Game Timer": "Finalizar tiempo de juego",
         "Apply Override": "Aplicar corrección",
         "Game Time:": "Tiempo de juego:", "Level Time:": "Tiempo de nivel:",
-        "Level Deaths:": "Muertes del nivel:", "Total Deaths:": "Muertes totales:",
+        "Level Deaths:": "Muertes del nivel:", "Total Deaths:": "Muertes totales:", "Game Deaths:": "Muertes del juego:",
+        "Reset Game Deaths": "Reiniciar muertes del juego",
         "Created by FredDOGG23": "Creado por FredDOGG23",
         "Save": "Guardar", "Open": "Abrir", "Refresh": "Actualizar",
         "Overview…": "Resumen…", "My Tracker…": "Mi Tracker…",
@@ -15588,9 +15589,9 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Complete Hack": "Terminer le hack", "Current Hack": "Hack actuel",
         "Live Session": "Session en direct",
         "Game Controls": "Commandes du jeu",
-        "Timers": "Chronomètres", "Game Time": "Temps de jeu",
+        "Timers": "Chronomètres", "Timer & Death Controls": "Contrôles des temps et des morts", "Game Time": "Temps de jeu",
         "Level Time": "Temps du niveau", "Level Deaths": "Morts du niveau",
-        "Total Deaths": "Morts totales", "Reset": "Réinitialiser",
+        "Total Deaths": "Morts totales", "Game Deaths": "Morts du jeu", "Reset": "Réinitialiser",
         "Language": "Langue", "Start Game Timer": "Démarrer le temps de jeu",
         "Start Level Timer": "Démarrer le temps du niveau",
         "Start Timers": "Démarrer les chronomètres",
@@ -15599,7 +15600,8 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Finish Game Timer": "Terminer le temps de jeu",
         "Apply Override": "Appliquer la correction",
         "Game Time:": "Temps de jeu :", "Level Time:": "Temps du niveau :",
-        "Level Deaths:": "Morts du niveau :", "Total Deaths:": "Morts totales :",
+        "Level Deaths:": "Morts du niveau :", "Total Deaths:": "Morts totales :", "Game Deaths:": "Morts du jeu :",
+        "Reset Game Deaths": "Réinitialiser les morts du jeu",
         "Created by FredDOGG23": "Créé par FredDOGG23",
         "Save": "Enregistrer", "Open": "Ouvrir", "Refresh": "Actualiser",
         "Overview…": "Vue d’ensemble…", "My Tracker…": "Mon Tracker…",
@@ -15658,9 +15660,9 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Complete Hack": "Hack abschließen", "Current Hack": "Aktueller Hack",
         "Live Session": "Live-Sitzung",
         "Game Controls": "Spielsteuerung",
-        "Timers": "Timer", "Game Time": "Spielzeit",
+        "Timers": "Timer", "Timer & Death Controls": "Timer- und Todessteuerung", "Game Time": "Spielzeit",
         "Level Time": "Levelzeit", "Level Deaths": "Level-Tode",
-        "Total Deaths": "Tode insgesamt", "Reset": "Zurücksetzen",
+        "Total Deaths": "Tode insgesamt", "Game Deaths": "Spiel-Tode", "Reset": "Zurücksetzen",
         "Language": "Sprache", "Start Game Timer": "Spielzeit starten",
         "Start Level Timer": "Levelzeit starten",
         "Start Timers": "Timer starten",
@@ -15669,7 +15671,8 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Finish Game Timer": "Spielzeit beenden",
         "Apply Override": "Korrektur anwenden",
         "Game Time:": "Spielzeit:", "Level Time:": "Levelzeit:",
-        "Level Deaths:": "Level-Tode:", "Total Deaths:": "Tode insgesamt:",
+        "Level Deaths:": "Level-Tode:", "Total Deaths:": "Tode insgesamt:", "Game Deaths:": "Spiel-Tode:",
+        "Reset Game Deaths": "Spiel-Tode zurücksetzen",
         "Created by FredDOGG23": "Erstellt von FredDOGG23",
         "Save": "Speichern", "Open": "Öffnen", "Refresh": "Aktualisieren",
         "Overview…": "Übersicht…", "My Tracker…": "Mein Tracker…",
@@ -15728,9 +15731,9 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Complete Hack": "Concluir hack", "Current Hack": "Hack atual",
         "Live Session": "Sessão ao vivo",
         "Game Controls": "Controles do jogo",
-        "Timers": "Cronômetros", "Game Time": "Tempo de jogo",
+        "Timers": "Cronômetros", "Timer & Death Controls": "Controles de tempo e mortes", "Game Time": "Tempo de jogo",
         "Level Time": "Tempo da fase", "Level Deaths": "Mortes na fase",
-        "Total Deaths": "Mortes totais", "Reset": "Redefinir",
+        "Total Deaths": "Mortes totais", "Game Deaths": "Mortes no jogo", "Reset": "Redefinir",
         "Language": "Idioma", "Start Game Timer": "Iniciar tempo de jogo",
         "Start Level Timer": "Iniciar tempo da fase",
         "Start Timers": "Iniciar cronômetros",
@@ -15739,7 +15742,8 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Finish Game Timer": "Finalizar tempo de jogo",
         "Apply Override": "Aplicar correção",
         "Game Time:": "Tempo de jogo:", "Level Time:": "Tempo da fase:",
-        "Level Deaths:": "Mortes na fase:", "Total Deaths:": "Mortes totais:",
+        "Level Deaths:": "Mortes na fase:", "Total Deaths:": "Mortes totais:", "Game Deaths:": "Mortes no jogo:",
+        "Reset Game Deaths": "Redefinir mortes no jogo",
         "Created by FredDOGG23": "Criado por FredDOGG23",
         "Save": "Salvar", "Open": "Abrir", "Refresh": "Atualizar",
         "Overview…": "Visão geral…", "My Tracker…": "Meu Tracker…",
@@ -23406,6 +23410,12 @@ class TrackerApp:
         self.game_var = tk.StringVar(
             value=self._translate_ui_text("No game detected")
         )
+        self.current_hack_title_label = None
+        self.current_hack_title_font_after_id: str | None = None
+        self.game_var.trace_add(
+            "write",
+            lambda *_args: self._queue_current_hack_title_font_refresh(),
+        )
         self.author_var = tk.StringVar(
             value=(
                 self._translate_ui_text("By:")
@@ -23710,6 +23720,61 @@ class TrackerApp:
             minimum,
             round(float(value) * self.main_ui_scale),
         )
+
+    def _queue_current_hack_title_font_refresh(
+        self,
+        _event: object | None = None,
+    ) -> None:
+        """Keep long live-session titles on one compact, centered line."""
+        pending = getattr(
+            self,
+            "current_hack_title_font_after_id",
+            None,
+        )
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except tk.TclError:
+                pass
+        try:
+            self.current_hack_title_font_after_id = self.root.after_idle(
+                self._refresh_current_hack_title_font
+            )
+        except tk.TclError:
+            self.current_hack_title_font_after_id = None
+
+    def _refresh_current_hack_title_font(self) -> None:
+        self.current_hack_title_font_after_id = None
+        label = getattr(self, "current_hack_title_label", None)
+        try:
+            if label is None or not label.winfo_exists():
+                return
+            label.update_idletasks()
+            available_width = label.winfo_width() - self._ui_px(20)
+            if available_width <= self._ui_px(120):
+                available_width = (
+                    label.master.winfo_width() - self._ui_px(24)
+                )
+            available_width = max(self._ui_px(160), available_width)
+            title = str(self.game_var.get()).strip()
+            chosen_size = 17
+            for size in range(17, 9, -1):
+                candidate = tkfont.Font(
+                    root=self.root,
+                    family="Segoe UI",
+                    size=size,
+                    weight="bold",
+                    underline=True,
+                )
+                chosen_size = size
+                if candidate.measure(title) <= available_width:
+                    break
+            label.configure(
+                font=("Segoe UI", chosen_size, "bold underline"),
+                wraplength=available_width,
+            )
+        except tk.TclError:
+            return
 
     def _translate_ui_text(self, text: object) -> str:
         source_text = str(text)
@@ -24769,6 +24834,7 @@ class TrackerApp:
         status_grid.columnconfigure(0, weight=0)
         status_grid.columnconfigure(1, weight=1)
         status_grid.columnconfigure(2, weight=0)
+        status_grid.rowconfigure(0, weight=1)
 
         fx_tile = self._make_status_tile(
             status_grid,
@@ -24787,7 +24853,7 @@ class TrackerApp:
             pad_x=13,
             pad_y=8,
             tile_width=400,
-            tile_height=150,
+            tile_height=205,
         )
         self.fx_status_tile = fx_tile
         try:
@@ -24913,7 +24979,7 @@ class TrackerApp:
             pad_x=13,
             pad_y=8,
             tile_width=400,
-            tile_height=150,
+            tile_height=205,
         )
         self.tracker_status_tile = sheet_tile
         # Mirror the FXPAK layout so the artwork has a real media column
@@ -25003,7 +25069,7 @@ class TrackerApp:
             highlightbackground=THEME["green"],
             highlightthickness=self._ui_px(2),
             width=self._ui_px(720),
-            height=self._ui_px(150),
+            height=self._ui_px(205),
         )
         self.current_hack_layout = game_layout
         game_layout.grid(
@@ -25017,61 +25083,169 @@ class TrackerApp:
         game_layout.columnconfigure(0, weight=1)
         game_layout.rowconfigure(0, weight=1)
 
-        identity_row = tk.Frame(game_layout, bg="#F1FFF0")
-        identity_row.grid(
+        live_game_grid = tk.Frame(
+            game_layout,
+            bg="#F1FFF0",
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
+        )
+        self.current_hack_death_panel = live_game_grid
+        live_game_grid.grid(
             row=0,
             column=0,
             sticky="nsew",
             padx=self._ui_px(10),
-            pady=(self._ui_px(5), self._ui_px(2)),
+            pady=self._ui_px(7),
         )
-        identity_row.columnconfigure(0, weight=0)
-        identity_row.columnconfigure(1, weight=1)
-        identity_row.rowconfigure(0, weight=1)
+        for live_column in range(3):
+            live_game_grid.columnconfigure(
+                live_column,
+                weight=1,
+                uniform="live_game_columns",
+            )
+        live_game_grid.rowconfigure(0, weight=1)
 
-        question_block = tk.Label(
-            identity_row,
-            image=self.coin_block_photo,
+        def make_live_time_death_metric(
+            column: int,
+            time_title: str,
+            time_variable: tk.StringVar,
+            time_accent: str,
+            death_title: str,
+            death_variable: tk.StringVar,
+            death_accent: str,
+            reset_text: str,
+            reset_command: Callable[[], None],
+        ) -> tuple[tk.Frame, tk.Button]:
+            metric = tk.Frame(
+                live_game_grid,
+                bg="#F1FFF0",
+                highlightbackground=THEME["border"],
+                highlightthickness=1,
+            )
+            metric.grid(row=0, column=column, sticky="nsew")
+            metric.columnconfigure(0, weight=1)
+            metric.rowconfigure(0, weight=1)
+            metric.rowconfigure(6, weight=1)
+
+            tk.Label(
+                metric,
+                text=time_title,
+                font=("Segoe UI", 8, "bold"),
+                fg=time_accent,
+                bg="#F1FFF0",
+                anchor="center",
+            ).grid(
+                row=1,
+                column=0,
+                sticky="ew",
+            )
+            OutlinedLabel(
+                metric,
+                textvariable=time_variable,
+                font=("Segoe UI", 17, "bold"),
+                fg=THEME["text"],
+                bg="#F1FFF0",
+                anchor="center",
+                justify="center",
+            ).grid(row=2, column=0, sticky="ew")
+
+            tk.Label(
+                metric,
+                text=death_title,
+                font=("Segoe UI", 8, "bold"),
+                fg=death_accent,
+                bg="#F1FFF0",
+                anchor="center",
+            ).grid(
+                row=3,
+                column=0,
+                sticky="ew",
+                pady=(self._ui_px(4), 0),
+            )
+            OutlinedLabel(
+                metric,
+                textvariable=death_variable,
+                font=("Segoe UI", 12, "bold"),
+                fg=THEME["text"],
+                bg="#F1FFF0",
+                anchor="center",
+                justify="center",
+            ).grid(row=4, column=0, sticky="ew")
+
+            button = self._make_action_button(
+                metric,
+                text=reset_text,
+                command=reset_command,
+                bg=death_accent,
+                active_bg=THEME["navy"],
+                width=18,
+                pad_y=2,
+                font_size=8,
+            )
+            button.grid(
+                row=5,
+                column=0,
+                pady=(self._ui_px(2), 0),
+            )
+            return metric, button
+
+        (
+            self.current_hack_level_death_panel,
+            self.reset_deaths_button,
+        ) = make_live_time_death_metric(
+            0,
+            "LEVEL TIME",
+            self.level_timer_var,
+            THEME["green"],
+            "LEVEL DEATHS",
+            self.death_counter_var,
+            THEME["red"],
+            "Reset Level Deaths",
+            self.reset_death_counter,
+        )
+
+        identity_text = tk.Frame(
+            live_game_grid,
             bg="#F1FFF0",
-            bd=0,
-            highlightthickness=0,
-            cursor="hand2",
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
         )
-        question_block.grid(
+        identity_text.grid(
             row=0,
-            column=0,
-            sticky="e",
-            padx=(0, self._ui_px(12)),
+            column=1,
+            sticky="nsew",
         )
-        question_block.bind(
-            "<Button-1>",
-            self.open_current_hack_page,
-        )
-
-        identity_text = tk.Frame(identity_row, bg="#F1FFF0")
-        identity_text.grid(row=0, column=1, sticky="nsew")
         identity_text.columnconfigure(0, weight=1)
+        identity_text.rowconfigure(0, weight=1)
+        identity_text.rowconfigure(6, weight=1)
 
         self.current_hack_title_label = tk.Label(
             identity_text,
             textvariable=self.game_var,
-            font=("Segoe UI", 18, "bold underline"),
+            font=("Segoe UI", 17, "bold underline"),
             fg="#145C21",
             bg="#F1FFF0",
             anchor="center",
             justify="center",
-            wraplength=self._ui_px(470),
+            wraplength=self._ui_px(330),
             cursor="hand2",
         )
         self.current_hack_title_label.grid(
-            row=0,
+            row=1,
             column=0,
             sticky="ew",
+            padx=self._ui_px(8),
         )
         self.current_hack_title_label.bind(
             "<Button-1>",
             self.open_current_hack_page,
         )
+        self.current_hack_title_label.bind(
+            "<Configure>",
+            self._queue_current_hack_title_font_refresh,
+            add="+",
+        )
+        self._queue_current_hack_title_font_refresh()
 
         tk.Label(
             identity_text,
@@ -25082,25 +25256,47 @@ class TrackerApp:
             anchor="center",
             justify="center",
         ).grid(
-            row=1,
+            row=2,
             column=0,
             sticky="ew",
             pady=(self._ui_px(2), 0),
         )
+        tk.Label(
+            identity_text,
+            text="EXITS",
+            font=("Segoe UI", 8, "bold"),
+            fg=THEME["blue"],
+            bg="#F1FFF0",
+            anchor="center",
+        ).grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            pady=(self._ui_px(8), 0),
+        )
+        tk.Label(
+            identity_text,
+            textvariable=self.exits_var,
+            font=("Segoe UI", 11, "bold"),
+            fg=THEME["text"],
+            bg="#F1FFF0",
+            anchor="center",
+            justify="center",
+        ).grid(row=4, column=0, sticky="ew")
 
         details_frame = tk.Frame(identity_text, bg="#F1FFF0")
         details_frame.grid(
-            row=2,
+            row=5,
             column=0,
-            pady=(self._ui_px(3), 0),
+            pady=(self._ui_px(3), self._ui_px(7)),
         )
         self.current_difficulty_label = tk.Label(
             details_frame,
             textvariable=self.difficulty_var,
-            font=("Segoe UI", 9, "bold"),
+            font=("Segoe UI", 8, "bold"),
             fg="#7F6000",
             bg="#FFF2CC",
-            padx=self._ui_px(7),
+            padx=self._ui_px(5),
             pady=self._ui_px(1),
         )
         self.current_difficulty_label.pack(side="left")
@@ -25120,126 +25316,28 @@ class TrackerApp:
         tk.Label(
             details_frame,
             textvariable=self.smwc_rating_var,
-            font=("Segoe UI", 9, "bold"),
+            font=("Segoe UI", 8, "bold"),
             fg="#5F497A",
             bg="#E4DFEC",
-            padx=self._ui_px(7),
+            padx=self._ui_px(5),
             pady=self._ui_px(1),
         ).pack(
             side="left",
-            padx=(self._ui_px(7), 0),
-        )
-
-        metric_strip = tk.Frame(
-            game_layout,
-            bg="#F1FFF0",
-            highlightbackground=THEME["border"],
-            highlightthickness=1,
-        )
-        self.current_hack_death_panel = metric_strip
-        metric_strip.grid(
-            row=1,
-            column=0,
-            sticky="ew",
-            padx=self._ui_px(10),
-            pady=(0, self._ui_px(7)),
-        )
-        for metric_column in range(3):
-            metric_strip.columnconfigure(
-                metric_column,
-                weight=1,
-                uniform="live_session_metrics",
-            )
-
-        exits_metric = tk.Frame(metric_strip, bg="#F1FFF0")
-        exits_metric.grid(row=0, column=0, sticky="nsew")
-        tk.Label(
-            exits_metric,
-            text="EXITS",
-            font=("Segoe UI", 8, "bold"),
-            fg=THEME["blue"],
-            bg="#F1FFF0",
-            anchor="center",
-        ).pack(fill="x", pady=(self._ui_px(2), 0))
-        tk.Label(
-            exits_metric,
-            textvariable=self.exits_var,
-            font=("Segoe UI", 11, "bold"),
-            fg=THEME["text"],
-            bg="#F1FFF0",
-            anchor="center",
-            justify="center",
-        ).pack(fill="x", pady=(0, self._ui_px(3)))
-
-        def make_live_death_metric(
-            column: int,
-            title: str,
-            variable: tk.StringVar,
-            reset_text: str,
-            reset_command: Callable[[], None],
-            accent: str,
-        ) -> tuple[tk.Frame, tk.Button]:
-            metric = tk.Frame(
-                metric_strip,
-                bg="#F1FFF0",
-                highlightbackground=THEME["border"],
-                highlightthickness=1,
-            )
-            metric.grid(row=0, column=column, sticky="nsew")
-            tk.Label(
-                metric,
-                text=title,
-                font=("Segoe UI", 8, "bold"),
-                fg=accent,
-                bg="#F1FFF0",
-                anchor="center",
-            ).pack(fill="x", pady=(self._ui_px(2), 0))
-            OutlinedLabel(
-                metric,
-                textvariable=variable,
-                font=("Segoe UI", 11, "bold"),
-                fg=THEME["text"],
-                bg="#F1FFF0",
-                anchor="center",
-                justify="center",
-            ).pack(fill="x")
-            button = self._make_action_button(
-                metric,
-                text=reset_text,
-                command=reset_command,
-                bg=accent,
-                active_bg=THEME["navy"],
-                width=16,
-                pad_y=1,
-                font_size=7,
-            )
-            button.pack(
-                padx=self._ui_px(5),
-                pady=(0, self._ui_px(3)),
-            )
-            return metric, button
-
-        (
-            self.current_hack_level_death_panel,
-            self.reset_deaths_button,
-        ) = make_live_death_metric(
-            1,
-            "LEVEL DEATHS",
-            self.death_counter_var,
-            "Reset Level Deaths",
-            self.reset_death_counter,
-            THEME["red"],
+            padx=(self._ui_px(2), 0),
         )
         (
             self.current_hack_total_death_panel,
             self.reset_total_deaths_button,
-        ) = make_live_death_metric(
+        ) = make_live_time_death_metric(
             2,
-            "TOTAL DEATHS",
+            "GAME TIME",
+            self.game_timer_var,
+            THEME["blue"],
+            "GAME DEATHS",
             self.total_death_counter_var,
-            "Reset Total Deaths",
-            self.reset_total_death_counter,
             THEME["purple"],
+            "Reset Game Deaths",
+            self.reset_total_death_counter,
         )
 
         self.tracker_open_hint = None
@@ -25477,7 +25575,7 @@ class TrackerApp:
 
         timer_body = self._make_card(
             self.content_frame,
-            title="TIMERS",
+            title="TIMER & DEATH CONTROLS",
             accent=THEME["blue"],
             icon="◷",
             center_title=True,
@@ -25489,44 +25587,9 @@ class TrackerApp:
         )
         self.timer_layout = timer_layout
         timer_layout.pack(fill="x")
-        timer_layout.columnconfigure(1, weight=1)
-        timer_layout.rowconfigure(0, weight=1)
-        timer_layout.rowconfigure(1, weight=0)
-
-        timer_cards = tk.Frame(
-            timer_layout,
-            bg=THEME["panel"],
-        )
-        timer_cards.grid(
-            row=0,
-            column=0,
-            rowspan=2,
-            sticky="nsw",
-            padx=(0, self._ui_px(18)),
-        )
-
-        self.game_timer_card = self._make_timer_card(
-            timer_cards,
-            title="GAME TIME",
-            symbol="★",
-            variable=self.game_timer_var,
-            accent=THEME["blue"],
-            icon_photo=self.mario_timer_photo,
-        )
-        self.game_timer_card.pack(
-            fill="x",
-            pady=(0, self._ui_px(5)),
-        )
-
-        self.level_timer_card = self._make_timer_card(
-            timer_cards,
-            title="LEVEL TIME",
-            symbol="▮",
-            variable=self.level_timer_var,
-            accent=THEME["green"],
-            icon_photo=self.piranha_pipe_photo,
-        )
-        self.level_timer_card.pack(fill="x")
+        timer_layout.columnconfigure(0, weight=1)
+        self.game_timer_card = None
+        self.level_timer_card = None
 
         action_grid = tk.Frame(
             timer_layout,
@@ -25535,18 +25598,8 @@ class TrackerApp:
         self.timer_action_grid = action_grid
         action_grid.grid(
             row=0,
-            column=1,
-            sticky="nsew",
-        )
-        action_grid.rowconfigure(
-            0,
-            weight=1,
-            uniform="timer_action_row",
-        )
-        action_grid.rowconfigure(
-            1,
-            weight=1,
-            uniform="timer_action_row",
+            column=0,
+            sticky="ew",
         )
         self.game_toggle_button = self._make_action_button(
             action_grid,
@@ -25554,15 +25607,16 @@ class TrackerApp:
             command=self.toggle_game_timer,
             bg=THEME["green"],
             active_bg=THEME["green_dark"],
-            pad_y=27,
-            font_size=12,
+            width=24,
+            pad_y=8,
+            font_size=11,
         )
         self.game_toggle_button.grid(
             row=0,
             column=0,
-            padx=(0, 8),
-            pady=(0, 8),
-            sticky="nsew",
+            padx=(0, self._ui_px(5)),
+            pady=(0, self._ui_px(5)),
+            sticky="ew",
         )
 
         self.level_toggle_button = self._make_action_button(
@@ -25571,15 +25625,16 @@ class TrackerApp:
             command=self.toggle_level_timer,
             bg=THEME["green"],
             active_bg=THEME["green_dark"],
-            pad_y=27,
-            font_size=12,
+            width=24,
+            pad_y=8,
+            font_size=11,
         )
         self.level_toggle_button.grid(
             row=0,
             column=1,
-            padx=(0, 8),
-            pady=(0, 8),
-            sticky="nsew",
+            padx=self._ui_px(5),
+            pady=(0, self._ui_px(5)),
+            sticky="ew",
         )
 
         self.both_toggle_button = self._make_action_button(
@@ -25588,14 +25643,16 @@ class TrackerApp:
             command=self.toggle_both_timers,
             bg=THEME["green"],
             active_bg=THEME["green_dark"],
-            pad_y=27,
-            font_size=12,
+            width=24,
+            pad_y=8,
+            font_size=11,
         )
         self.both_toggle_button.grid(
             row=0,
             column=2,
-            pady=(0, 8),
-            sticky="nsew",
+            padx=(self._ui_px(5), 0),
+            pady=(0, self._ui_px(5)),
+            sticky="ew",
         )
 
         self.reset_game_button = self._make_action_button(
@@ -25604,14 +25661,15 @@ class TrackerApp:
             command=self.reset_game_timer,
             bg=THEME["red"],
             active_bg="#B92824",
-            pad_y=27,
-            font_size=12,
+            width=24,
+            pad_y=8,
+            font_size=11,
         )
         self.reset_game_button.grid(
             row=1,
             column=0,
-            padx=(0, 8),
-            sticky="nsew",
+            padx=(0, self._ui_px(5)),
+            sticky="ew",
         )
 
         self.reset_level_button = self._make_action_button(
@@ -25620,14 +25678,15 @@ class TrackerApp:
             command=self.reset_level_timer,
             bg=THEME["red"],
             active_bg="#B92824",
-            pad_y=27,
-            font_size=12,
+            width=24,
+            pad_y=8,
+            font_size=11,
         )
         self.reset_level_button.grid(
             row=1,
             column=1,
-            padx=(0, 8),
-            sticky="nsew",
+            padx=self._ui_px(5),
+            sticky="ew",
         )
 
         self.finish_game_button = self._make_action_button(
@@ -25636,13 +25695,15 @@ class TrackerApp:
             command=self.finish_game_timer,
             bg=THEME["yellow"],
             active_bg=THEME["orange"],
-            pad_y=27,
-            font_size=12,
+            width=24,
+            pad_y=8,
+            font_size=11,
         )
         self.finish_game_button.grid(
             row=1,
             column=2,
-            sticky="nsew",
+            padx=(self._ui_px(5), 0),
+            sticky="ew",
         )
 
         action_grid.columnconfigure(0, weight=1)
@@ -25658,9 +25719,9 @@ class TrackerApp:
         self.timer_override_frame = override_frame
         override_frame.grid(
             row=1,
-            column=1,
+            column=0,
             sticky="ew",
-            pady=(7, 0),
+            pady=(self._ui_px(6), 0),
         )
 
         tk.Label(
@@ -25773,7 +25834,7 @@ class TrackerApp:
 
         tk.Label(
             override_frame,
-            text="☠  Total Deaths:",
+            text="☠  Game Deaths:",
             font=("Segoe UI", 10, "bold"),
             fg=THEME["red"],
             bg="#EDF7FF",
