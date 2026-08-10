@@ -107,7 +107,10 @@ class UpdaterRelaunchTests(unittest.TestCase):
         self.assertIn("_tk_build_probe = tk.Tk()", build_spec)
         self.assertIn("cannot be packaged with this Python runtime", build_spec)
         self.assertIn("hookspath=[]", build_spec)
-        self.assertIn("runtime_hooks=[]", build_spec)
+        self.assertIn(
+            "runtime_hooks=['release_tools\\\\pyi_rth_tcl_find_executable.py']",
+            build_spec,
+        )
 
     def test_installed_runtime_is_preferred_when_complete(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

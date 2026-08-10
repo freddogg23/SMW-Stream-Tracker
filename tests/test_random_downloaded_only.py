@@ -313,17 +313,18 @@ class RandomDownloadedOnlyTests(unittest.TestCase):
             date(2026, 2, 28),
         )
 
-    def test_random_upload_age_options_are_localized_through_13_years(self):
+    def test_random_released_age_options_are_localized_through_13_years(self):
         app = self.make_app("FXPAK Pro")
         app.app_language = "de"
 
         options = app._random_upload_age_options()
 
-        self.assertEqual(options[0], ("Beliebiges Upload-Datum", None))
-        self.assertEqual(options[1], ("Letzter Monat", 1))
-        self.assertEqual(options[2], ("Letzte 3 Monate", 3))
+        self.assertEqual(options[0], ("Beliebig", None))
+        self.assertEqual(options[1], ("Letzte Woche", -7))
+        self.assertEqual(options[2], ("Letzter Monat", 1))
+        self.assertEqual(options[3], ("Letzte 3 Monate", 3))
         self.assertEqual(options[-1], ("Letzte 13 Jahre", 156))
-        self.assertEqual(len(options), 17)
+        self.assertEqual(len(options), 18)
 
     def test_action_button_calls_only_use_supported_arguments(self):
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
@@ -457,6 +458,9 @@ class RandomDownloadedOnlyTests(unittest.TestCase):
         app.catalog_new_hacks_var = Value(
             "0 neue Hacks seit der letzten Aktualisierung"
         )
+        app.catalog_new_moderated_count = 0
+        app.catalog_new_waiting_count = 0
+        app.catalog_freshness_state = "ready"
         app.author_var = Value("Von: Anonymous")
         app.exits_var = Value("Ausgänge: 0 / 9")
         app.difficulty_var = Value("Schwierigkeit: Advanced")
@@ -468,12 +472,20 @@ class RandomDownloadedOnlyTests(unittest.TestCase):
         self.assertTrue(app.catalog_last_refresh_var.get().startswith("Last refreshed:"))
         self.assertEqual(
             app.catalog_new_hacks_var.get(),
-            "0 new hacks since last refresh",
+            "0 new moderated • 0 new waiting since last refresh",
         )
         self.assertEqual(app.author_var.get(), "By: Anonymous")
         self.assertEqual(app.exits_var.get(), "Exits: 0 / 9")
         self.assertEqual(app.difficulty_var.get(), "Difficulty: Advanced")
         self.assertEqual(app.smwc_rating_var.get(), "SMWCentral Rating: 0/5")
+
+        app.app_language = "de"
+        app._relocalize_main_text_variables()
+
+        self.assertEqual(
+            app.catalog_new_hacks_var.get(),
+            "0 neue moderierte • 0 neue wartende seit der letzten Aktualisierung",
+        )
 
 
 if __name__ == "__main__":

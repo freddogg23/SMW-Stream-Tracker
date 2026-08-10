@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.0.8**
+**Version 1.0.9**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports two playable platforms:
 
@@ -9,15 +9,35 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
 
+## What’s new in v1.0.9
+
+- A guided first-run workflow flashes every required connection, catalog,
+  refresh, download, patch, FXPAK, and OBS step in order.
+- FXPAK Pro uploads use emoji-safe ROM filenames while the catalog, tracker,
+  and current-game display preserve the hack’s original title.
+- Two buttons download, separate, and configure Game and Level LiveSplit copies
+  automatically on ports `16834` and `16835`.
+- OBS setup explains how to reuse existing text sources and links them to the
+  tracker’s automatically updated text files.
+- Catalog, download, tracker, and statistics tables use light-blue cell borders,
+  improved column spacing, blue drop-down arrows, and the app’s yellow scrollbars.
+- The statistics overview uses the revised two-column layout with larger charts
+  and a compact Progress by Difficulty table.
+- Every current button, menu, popup, status line, setup screen, and native picker
+  is covered by the complete six-language interface catalogs. Australian English
+  includes playful local wording throughout.
+- **About & Updates** includes a translated **Join Discord** button for help and
+  contact: <https://discord.gg/fHkTRgqjcr>
+
 ## Screenshots
 
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.8 Live Session dashboard with centered controls, platform status, timers, and death counters">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.9 Live Session dashboard with centered controls, platform status, timers, and death counters">
 </p>
 
-The v1.0.8 dashboard places level time and deaths, current-hack details, and game time and deaths in one vertically centered Live Session panel, with compact controls below.
+The v1.0.9 dashboard places level time and deaths, current-hack details, and game time and deaths in one vertically centered Live Session panel, with compact controls below.
 
 <table>
   <tr>
@@ -40,7 +60,29 @@ The v1.0.8 dashboard places level time and deaths, current-hack details, and gam
   <img src="docs/screenshots/smw-central-catalog.png" alt="Searchable and sortable SMW Central catalog">
 </p>
 
-Browse the moderated catalog with title search, letter filters, difficulty and rating filters, sortable columns, SMW Central page links, and patch-download links.
+Browse the moderated catalog with title search, letter filters, difficulty and rating filters, sortable columns, SMW Central page links, patch-download links, and full light-blue cell borders.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/livesplit-setup.png" alt="Automatic Game and Level LiveSplit setup guide"><br>
+      <strong>Two LiveSplit timers</strong><br>
+      Download and configure separate game and level timers with the correct ports and automatic TCP server startup.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/obs-text-setup.png" alt="OBS text-file setup and reusable source paths"><br>
+      <strong>OBS text files</strong><br>
+      Copy the live text-file paths or replace an existing OBS or Streamlabs text source so it updates automatically.
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/screenshots/about-discord.png" alt="About and Updates page with translated Join Discord button"><br>
+      <strong>Help and contact</strong><br>
+      Open the Discord community directly from the translated About & Updates page.
+    </td>
+  </tr>
+</table>
 
 ## Plain-text guides in other languages
 
@@ -124,15 +166,15 @@ labels from the previous language do not remain on screen.
 
 The installer lets you select any combination of these tools.
 
-### SNI — strongly recommended
+### SNI — needed for RetroArch
 
-Select SNI for normal live-memory tracking. The app can start the installed connection service automatically.
+RetroArch users need both RetroArch and SNI for live-memory tracking. The app can start the installed SNI connection service automatically.
 
 Official project: <https://github.com/alttpo/sni>
 
-### QUsb2Snes — recommended for FXPAK Pro and SD2SNES
+### QUsb2Snes — needed for FXPAK Pro and SD2SNES
 
-Select QUsb2Snes when you use FXPAK Pro, especially if you want to upload new ROMs through USB while the SD card remains inside the cartridge.
+FXPAK Pro and SD2SNES users need QUsb2Snes. SNI is not required for the FXPAK Pro workflow.
 
 Official project: <https://github.com/usb2snes/usb2snes>
 
@@ -285,6 +327,9 @@ Use this when the SD card remains in the FXPAK Pro.
 9. Download the missing hacks.
 
 The app uploads completed ROMs without overwriting an existing same-named card file.
+FXPAK Pro filenames are made hardware-safe automatically: unsupported emoji and
+characters are removed from the uploaded filename, but the original SMW Central
+title remains visible in the catalog, My Tracker, and current-game display.
 
 ## 11. Select and play a hack
 
@@ -342,31 +387,33 @@ You can show the timers in either of these ways:
 
 You can also use both methods at the same time.
 
-### A. Connect the full-game LiveSplit timer
+### A. Download and configure both LiveSplit timers
 
-1. Download and extract [LiveSplit](https://livesplit.org/downloads/). The separate, older LiveSplit Server component is not needed because current LiveSplit releases include the server.
-2. Open `LiveSplit.exe`.
-3. Right-click the LiveSplit window and open **Settings**.
-4. Set **Server Port** to `16834`. If you will use only this one LiveSplit timer, you may set **Startup Behavior** to start the TCP server automatically. When using two LiveSplit windows, manual startup is safer because it lets you confirm each window's different port first.
-5. Right-click LiveSplit and select **Control → Start TCP/WS Server**. Do this each time LiveSplit opens unless you intentionally enabled automatic startup for a single timer.
-6. In SMW Stream Tracker, open **File → Settings**.
-7. Set **Game LiveSplit port** to `16834`, leave the level port at `16835`, and save.
-8. Select **Start Game Timer** in SMW Stream Tracker. The LiveSplit timer should start and follow the tracker controls.
+1. Open **File → Settings**.
+2. Select **Set Up Two LiveSplit Timers for OBS**.
+3. Select **Game LiveSplit (16834)** once. The tracker downloads the current
+   official LiveSplit release, extracts its own game-timer copy, sets server
+   port `16834`, enables automatic TCP server startup, and opens it.
+4. Select **Level LiveSplit (16835)** once. The tracker creates a completely
+   separate level-timer copy, sets port `16835`, enables automatic TCP server
+   startup, and opens it.
+5. When each button turns green, that copy is installed. Later button presses
+   simply reopen it.
+6. Select **Done**, save Settings, and keep both LiveSplit windows open and not
+   minimized.
+7. Select **Start Game Timer** or **Start Timers** and confirm that both windows
+   follow the tracker.
 
-LiveSplit uses its built-in TCP server for this connection. SMW Stream Tracker connects locally on `127.0.0.1`; internet or remote access is not required.
+The buttons handle the download, separation, ports, and TCP server settings.
+You do not need the old separate LiveSplit Server component, and you do not need
+to configure the two ports manually. SMW Stream Tracker connects locally on
+`127.0.0.1`; internet or remote access is not required after setup.
 
-### B. Connect the separate level LiveSplit timer
+### B. Reopen the two LiveSplit timers later
 
-Use a second LiveSplit window when you want the full-game and current-level timers visible at the same time.
-
-1. Leave the full-game LiveSplit window open.
-2. Open `LiveSplit.exe` a second time.
-3. In the second window's **Settings**, set **Server Port** to `16835`.
-4. Start its TCP server with **Control → Start TCP/WS Server**.
-5. In SMW Stream Tracker, confirm **Level LiveSplit port** is `16835`.
-6. Select **Start Level Timer** or **Start Timers**. Use **Reset Level Timer** when beginning a new level.
-
-The two LiveSplit windows must use different ports. On later launches, verify the first window is on `16834` before starting its server, then verify the second is on `16835`. Save separate layouts such as `SMW Game Timer.lsl` and `SMW Level Timer.lsl` if you want each window to have a different size or appearance.
+Open **File → Settings → Set Up Two LiveSplit Timers for OBS** and select either
+green LiveSplit button. Each button reopens its own configured copy. Keep both
+windows open and not minimized while OBS is running.
 
 ### C. Add the LiveSplit windows to OBS Studio
 
@@ -404,6 +451,11 @@ This method is recommended when you only want the timer numbers and prefer to st
 8. Add a second Text source and select `level_timer.txt` for the level timer.
 9. Set the font, color, outline, alignment, and size in the Text source properties.
 10. Start, pause, reset, and override the timers in SMW Stream Tracker while watching the preview.
+
+If an existing OBS or Streamlabs text source already shows any of this hack
+information, keep that source, enable **Read from file**, and replace its old
+path with the matching path shown by SMW Stream Tracker. The source will then
+update automatically without being recreated.
 
 Other files in the same folder can be added the same way:
 
@@ -490,8 +542,8 @@ The copied report redacts usernames, ROM names, and full personal paths. Use:
 7. Run **File → Test Selected Platform**.
 
 If **Current Hack** stops detecting games after an in-app update, open
-**Downloads → Connection & Emulator Setup → Install or Find SNI (Strongly
-Recommended)**. Let the tracker find or reinstall SNI, restart SNI, and then
+**Downloads → Connection & Emulator Setup → Install or Find SNI (Needed for
+RetroArch)**. Let the tracker find or reinstall SNI, restart SNI, and then
 select **Refresh**.
 
 ### RetroArch launches games but shows Disconnected

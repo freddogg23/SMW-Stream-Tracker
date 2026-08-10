@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.0.8"
+#define AppVersion "1.0.9"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -70,24 +70,28 @@ spanish.NotInstalled2=Usa el instalador completo para la primera instalación y 
 spanish.RollbackFolderError=El instalador no pudo crear la carpeta de reversión. La actualización se detuvo de forma segura.
 spanish.RollbackCopyError=El instalador no pudo conservar la aplicación actual para revertirla. La actualización se detuvo de forma segura.
 spanish.RollbackHashError=El instalador no pudo verificar la copia guardada para la reversión. La actualización se detuvo de forma segura.
+spanish.StartupCheckFailed=La aplicación actualizada no pudo iniciar su sistema de ventanas. El instalador restauró automáticamente la versión anterior que funcionaba.
 french.LaunchApp=Lancer SMW Stream Tracker
 french.NotInstalled1=SMW Stream Tracker n'est pas installé à l'emplacement attendu.
 french.NotInstalled2=Utilisez d'abord le programme d'installation complet, puis ce programme de mise à jour.
 french.RollbackFolderError=Le programme n'a pas pu créer le dossier de restauration. La mise à jour a été arrêtée en toute sécurité.
 french.RollbackCopyError=Le programme n'a pas pu conserver l'application actuelle pour la restauration. La mise à jour a été arrêtée en toute sécurité.
 french.RollbackHashError=Le programme n'a pas pu vérifier la copie de restauration enregistrée. La mise à jour a été arrêtée en toute sécurité.
+french.StartupCheckFailed=L'application mise à jour n'a pas pu démarrer son système de fenêtres. Le programme a automatiquement restauré la version précédente fonctionnelle.
 german.LaunchApp=SMW Stream Tracker starten
 german.NotInstalled1=SMW Stream Tracker ist nicht am erwarteten Ort installiert.
 german.NotInstalled2=Verwenden Sie zuerst das vollständige Installationsprogramm und danach diesen Updater.
 german.RollbackFolderError=Der Rollback-Ordner konnte nicht erstellt werden. Das Update wurde sicher beendet.
 german.RollbackCopyError=Die aktuelle App konnte nicht für den Rollback gesichert werden. Das Update wurde sicher beendet.
 german.RollbackHashError=Die gespeicherte Rollback-Kopie konnte nicht überprüft werden. Das Update wurde sicher beendet.
+german.StartupCheckFailed=Die aktualisierte App konnte ihr Fenstersystem nicht starten. Das Setup hat die vorherige funktionierende Version automatisch wiederhergestellt.
 brazilianportuguese.LaunchApp=Iniciar o SMW Stream Tracker
 brazilianportuguese.NotInstalled1=O SMW Stream Tracker não está instalado no local esperado.
 brazilianportuguese.NotInstalled2=Use o instalador completo na primeira instalação e depois este atualizador.
 brazilianportuguese.RollbackFolderError=O instalador não conseguiu criar a pasta de reversão. A atualização foi interrompida com segurança.
 brazilianportuguese.RollbackCopyError=O instalador não conseguiu preservar o aplicativo atual para reversão. A atualização foi interrompida com segurança.
 brazilianportuguese.RollbackHashError=O instalador não conseguiu verificar a cópia salva para reversão. A atualização foi interrompida com segurança.
+brazilianportuguese.StartupCheckFailed=O aplicativo atualizado não conseguiu iniciar o sistema de janelas. O instalador restaurou automaticamente a versão anterior que funcionava.
 
 [Files]
 Source: "{#AppExeSource}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion restartreplace

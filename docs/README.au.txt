@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.0.8
+Version 1.0.9
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -12,6 +12,25 @@ Español: README.es.txt
 Français: README.fr.txt
 Deutsch: README.de.txt
 Português (Brasil): README.pt-BR.txt
+
+WHAT'S NEW IN VERSION 1.0.9, MATE
+
+* A new first-run guide flashes every Downloads, connection, catalogue,
+  refresh, patching, FXPAK, and OBS step in order. Too easy.
+* The SMW Central catalogue and hack downloader now have blue drop-down arrows,
+  yellow scrollbars, wider type fields, and light-blue cell borders.
+* FXPAK Pro USB uploads quietly boot unsupported emoji out of the ROM filename,
+  while the catalogue, tracker, and current-game display keep the proper title.
+* The OBS page explains how to reuse existing text sources, and two ripper
+  buttons download and configure separate Game and Level LiveSplit copies on
+  ports 16834 and 16835.
+* The statistics page has the new two-column layout, bigger graphs, and a
+  compact Progress by Difficulty table without the empty paddock underneath.
+* Every popup, menu, control, status line, picker, and setup screen is covered
+  in every language. The Australian option has extra mates, crikeys, and the
+  occasional yeah-nah for good measure.
+* About & Updates has a Join the Discord mob button when you need a hand or a
+  yarn with FredDOGG23: https://discord.gg/fHkTRgqjcr
 
 WHAT'S IN THIS YARN
 1. The gear you'll need
@@ -45,7 +64,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.0.8.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.0.9.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro or RetroArch as your first cab off the rank.
@@ -61,12 +80,11 @@ spot instead of leaving a dog's breakfast of labels from two languages.
 
 3. PICK THE OPTIONAL BITS AND BOBS
 
-SNI is strongly recommended. Fair dinkum, this is the normal live connection
-used by the tracker for supported hardware and emulator setups.
+FXPAK Pro and SD2SNES setups only need QUsb2Snes. You do not need SNI for the
+FXPAK Pro workflow.
 
-QUsb2Snes is recommended for FXPAK Pro and SD2SNES users, especially if you
-want to upload ROMs over USB while the SD card stays tucked inside the cart.
-It is also handy for older or more advanced setups.
+RetroArch setups need both RetroArch and SNI. SNI is the live-memory link that
+lets the tracker see what is happening in the game.
 
 RetroArch is optional. Leave it unticked if you already have it or if you're
 an FXPAK Pro-only operator. If selected, Setup also grabs the bsnes-mercury
@@ -207,6 +225,20 @@ completion by difficulty. Everything in one spot, neat as a new pin. Beauty.
 You've got two fair-dinkum options: capture the LiveSplit windows, or let OBS
 or Streamlabs read the tracker's text files. Use both if that floats your boat.
 The text-file method is the easier caper and doesn't need LiveSplit at all.
+
+AUTOMATIC TWO-COPY SETUP (RECOMMENDED, MATE)
+
+1. Open File > Settings and choose Set Up Two LiveSplit Timers for OBS.
+2. Give Game LiveSplit (16834) a click. The tracker grabs the current official
+   LiveSplit release, makes a separate game-timer folder, sorts port 16834 and
+   automatic TCP server startup, then opens LiveSplit. Too easy.
+3. Click Level LiveSplit (16835). It makes a separate level-timer copy, sorts
+   port 16835 and TCP auto-start, and opens that one too.
+4. When both buttons are green, click Done and Save Settings. Beauty.
+5. Keep both windows open and not minimised while using the tracker or OBS.
+   Later clicks reopen the configured copies—no mucking about, mate.
+
+MANUAL SETUP (THE PLAN B, CRIKEY)
 
 HOOK UP THE FULL-GAME LIVESPLIT TIMER
 

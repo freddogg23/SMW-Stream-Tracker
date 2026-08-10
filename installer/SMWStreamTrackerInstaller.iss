@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.0.8"
+#define AppVersion "1.0.9"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -918,7 +918,8 @@ begin
     '  "retroarch_core_path": "' + JsonEscape(SelectedRetroArchCorePath) + '",'#13#10 +
     '  "retroarch_host": "127.0.0.1",'#13#10 +
     '  "retroarch_port": 55355,'#13#10 +
-    '  "ui_theme": "dark"'#13#10 +
+    '  "ui_theme": "dark",'#13#10 +
+    '  "first_launch_welcome_completed": false'#13#10 +
     '}'#13#10;
 
   if not SaveStringToFile(ConfigFilePath, ConfigText, False) then

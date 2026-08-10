@@ -166,6 +166,8 @@ class InAppNavigationTests(unittest.TestCase):
         }
         self.assertIn("_redact_diagnostic_text", attributes)
         self.assertIn("clipboard_append", attributes)
+        self.assertIn("_show_localized_info", attributes)
+        self.assertNotIn("showerror", attributes)
 
     def test_related_catalog_and_downloader_actions_are_on_their_pages(self):
         method = self.methods["open_hack_downloader"]

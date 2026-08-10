@@ -1,0 +1,10 @@
+SMW STREAM TRACKER LICENCE NOTICE
+=================================
+
+Copyright (c) 2026 FredDOGG23. All rights reserved.
+
+This notice covers the SMW Stream Tracker application only. Third-party tools,
+libraries, names, and artwork remain governed by their respective licences and
+owners. See THIRD_PARTY_NOTICE.au.txt for acknowledgements and project links.
+
+No commercial base ROM is included or licensed with this software.

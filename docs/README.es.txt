@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUÍA COMPLETA DE CONFIGURACIÓN
-Versión 1.0.8
+Versión 1.0.9
 
 IDIOMAS
 English: README.en.txt
@@ -8,6 +8,26 @@ Español: README.es.txt
 Français: README.fr.txt
 Deutsch: README.de.txt
 Português (Brasil): README.pt-BR.txt
+
+NOVEDADES DE LA VERSIÓN 1.0.9
+
+* Una nueva guía inicial hace parpadear en orden cada paso necesario de
+  Descargas, conexión, catálogo, actualización, parcheo, FXPAK y OBS.
+* El catálogo de SMW Central y el descargador usan flechas desplegables azules,
+  barras de desplazamiento amarillas, campos de tipo más anchos y bordes de
+  celda azul claro.
+* Las cargas USB a FXPAK Pro eliminan automáticamente los emoji no compatibles
+  del nombre de archivo de la ROM, pero el catálogo, el tracker y la pantalla
+  del juego actual conservan el título original.
+* La página de OBS explica cómo reutilizar fuentes de texto existentes. Dos
+  botones descargan y configuran copias separadas de LiveSplit para partida y
+  nivel en los puertos 16834 y 16835.
+* Estadísticas tiene el nuevo diseño de dos columnas, gráficos más grandes y
+  una tabla compacta de Progreso por dificultad.
+* Todos los mensajes, menús, controles, estados, selectores y pantallas de
+  configuración están traducidos en todos los idiomas disponibles.
+* Acerca de y actualizaciones incluye un botón Unirse a Discord para obtener
+  ayuda o contactar con FredDOGG23: https://discord.gg/fHkTRgqjcr
 
 ÍNDICE
 1. Requisitos
@@ -38,7 +58,7 @@ SMW Stream Tracker no incluye ni descarga una ROM base comercial.
 
 2. INSTALAR EL PROGRAMA
 
-1. Ejecuta SMWStreamTracker_Setup_1.0.8.exe.
+1. Ejecuta SMWStreamTracker_Setup_1.0.9.exe.
 2. Elige un idioma en la primera pantalla.
 3. Lee el aviso sobre software opcional y ROMs.
 4. Elige FXPAK Pro o RetroArch como plataforma inicial.
@@ -54,11 +74,11 @@ del idioma anterior.
 
 3. ELEGIR SOFTWARE OPCIONAL
 
-SNI es muy recomendable y proporciona la conexión en directo que utiliza el
-tracker. QUsb2Snes es un puente opcional, avanzado y heredado, principalmente
-para usuarios de FXPAK Pro y SD2SNES. RetroArch es opcional: omítelo si ya está
-instalado o si solo usarás FXPAK Pro. Al seleccionarlo, el asistente también
-descarga el núcleo bsnes-mercury Performance de Libretro.
+La configuración de FXPAK Pro o SD2SNES solo requiere QUsb2Snes. SNI no es
+necesario para el flujo de trabajo de FXPAK Pro. La configuración de RetroArch
+requiere RetroArch y SNI; SNI proporciona la conexión de memoria en directo.
+Al seleccionar RetroArch, el asistente también descarga el núcleo
+bsnes-mercury Performance de Libretro.
 
 Si omites una herramienta durante la instalación, abre más tarde Descargas >
 Configuración de conexión y emulador. La aplicación puede localizar una
@@ -152,6 +172,21 @@ resumen progreso, puntuaciones, tiempo, actividad y dificultad.
 Puedes capturar las ventanas de LiveSplit, usar los archivos de texto del
 tracker o combinar ambos métodos. Los archivos de texto son la opción más
 sencilla y no necesitan LiveSplit.
+
+CONFIGURACIÓN AUTOMÁTICA DE DOS COPIAS (RECOMENDADA)
+
+1. Abre Archivo > Configuración y selecciona Configurar dos temporizadores
+   LiveSplit para OBS.
+2. Selecciona LiveSplit de juego (16834). El tracker descarga la versión
+   oficial actual, crea una carpeta independiente, configura el puerto 16834
+   y el inicio automático del servidor TCP, y abre LiveSplit.
+3. Selecciona LiveSplit de nivel (16835). El tracker crea otra copia,
+   configura el puerto 16835 y el inicio automático TCP, y la abre.
+4. Cuando los dos botones estén verdes, selecciona Listo y guarda.
+5. Mantén ambas ventanas abiertas y sin minimizar al usar el tracker u OBS.
+   Los botones volverán a abrir las copias configuradas más adelante.
+
+CONFIGURACIÓN MANUAL (ALTERNATIVA)
 
 CONECTAR EL TEMPORIZADOR DE JUEGO DE LIVESPLIT
 

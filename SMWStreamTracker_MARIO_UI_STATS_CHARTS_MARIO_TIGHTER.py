@@ -25,6 +25,8 @@ import threading
 import time
 import traceback
 import webbrowser
+import unicodedata
+import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 from string import Formatter
 from typing import Any, Callable
@@ -33,8 +35,289 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 import tkinter as tk
+
+
+class HackSelectorYellowScrollbar(tk.Canvas):
+    """A small, reliably colored scrollbar for the hack selector popup."""
+
+    def __init__(self, master, command=None, orient=tk.VERTICAL, **kwargs):
+        width = kwargs.pop("width", 18)
+        for option in (
+            "activebackground", "background", "borderwidth", "elementborderwidth",
+            "highlightcolor", "jump", "relief", "repeatdelay", "repeatinterval",
+            "takefocus", "troughcolor",
+        ):
+            kwargs.pop(option, None)
+        super().__init__(
+            master,
+            width=width,
+            bg="#6A5300",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#FFD43B",
+            cursor="hand2",
+            **kwargs,
+        )
+        self.command = command
+        self.orient = orient
+        self.first = 0.0
+        self.last = 1.0
+        self.bind("<Configure>", lambda _event: self._draw_thumb())
+        self.bind("<Button-1>", self._move_to_pointer)
+        self.bind("<B1-Motion>", self._move_to_pointer)
+
+    def set(self, first, last):
+        self.first = max(0.0, min(1.0, float(first)))
+        self.last = max(self.first, min(1.0, float(last)))
+        self._draw_thumb()
+
+    def _draw_thumb(self):
+        self.delete("thumb")
+        width = max(1, self.winfo_width())
+        height = max(1, self.winfo_height())
+        if str(self.orient) == str(tk.HORIZONTAL):
+            start = int(self.first * width)
+            end = max(start + 18, int(self.last * width))
+            self.create_rectangle(
+                start + 2, 2, min(width - 2, end - 2), height - 2,
+                fill="#FFD43B", outline="#FFE66D", width=1, tags="thumb",
+            )
+        else:
+            start = int(self.first * height)
+            end = max(start + 18, int(self.last * height))
+            self.create_rectangle(
+                2, start + 2, width - 2, min(height - 2, end - 2),
+                fill="#FFD43B", outline="#FFE66D", width=1, tags="thumb",
+            )
+
+    def _move_to_pointer(self, event):
+        if not callable(self.command):
+            return
+        if str(self.orient) == str(tk.HORIZONTAL):
+            extent = max(1, self.winfo_width())
+            visible = max(0.03, self.last - self.first)
+            fraction = (event.x / extent) - (visible / 2.0)
+        else:
+            extent = max(1, self.winfo_height())
+            visible = max(0.03, self.last - self.first)
+            fraction = (event.y / extent) - (visible / 2.0)
+        self.command("moveto", max(0.0, min(1.0 - visible, fraction)))
+
+
+class ReliableYellowScrollbar(tk.Canvas):
+    """Theme-independent vertical scrollbar used by the hack selector popup."""
+
+    def __init__(self, master=None, *, command=None, orient="vertical", **kwargs):
+        self.command = command
+        self.orient = orient
+        self._first = 0.0
+        self._last = 1.0
+        self._drag_offset = 0.0
+        width = kwargs.pop("width", 14)
+        for option in (
+            "activebackground",
+            "troughcolor",
+            "relief",
+            "elementborderwidth",
+            "takefocus",
+            "bg",
+            "bd",
+            "highlightthickness",
+        ):
+            kwargs.pop(option, None)
+        super().__init__(
+            master,
+            width=width,
+            bg="#6A5300",
+            bd=0,
+            highlightthickness=0,
+            takefocus=False,
+            **kwargs,
+        )
+        self.bind("<Configure>", lambda _event: self._redraw())
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+
+    def set(self, first, last):
+        try:
+            self._first = max(0.0, min(1.0, float(first)))
+            self._last = max(self._first, min(1.0, float(last)))
+        except (TypeError, ValueError):
+            self._first, self._last = 0.0, 1.0
+        self._redraw()
+
+    def _track_extent(self):
+        if self.orient == "horizontal":
+            return max(1, self.winfo_width())
+        return max(1, self.winfo_height())
+
+    def _pointer_position(self, event):
+        return event.x if self.orient == "horizontal" else event.y
+
+    def _thumb_geometry(self):
+        extent = self._track_extent()
+        thumb_length = max(26, int((self._last - self._first) * extent))
+        thumb_length = min(extent, thumb_length)
+        available = max(1, extent - thumb_length)
+        start = int(self._first * available)
+        return extent, thumb_length, start
+
+    def _redraw(self):
+        if not self.winfo_exists():
+            return
+        self.delete("thumb")
+        extent, thumb_length, start = self._thumb_geometry()
+        if self.orient == "horizontal":
+            self.create_rectangle(
+                start,
+                0,
+                min(extent, start + thumb_length),
+                max(1, self.winfo_height()),
+                fill="#FFD43B",
+                outline="#FFE66D",
+                width=1,
+                tags="thumb",
+            )
+        else:
+            self.create_rectangle(
+                0,
+                start,
+                max(1, self.winfo_width()),
+                min(extent, start + thumb_length),
+                fill="#FFD43B",
+                outline="#FFE66D",
+                width=1,
+                tags="thumb",
+            )
+
+    def _move_to_pointer(self, position, drag_offset=None):
+        if not callable(self.command):
+            return
+        extent, thumb_length, _start = self._thumb_geometry()
+        available = max(1, extent - thumb_length)
+        if drag_offset is None:
+            drag_offset = thumb_length / 2.0
+        fraction = max(0.0, min(1.0, (position - drag_offset) / available))
+        self.command("moveto", fraction)
+
+    def _on_press(self, event):
+        _extent, thumb_length, start = self._thumb_geometry()
+        position = self._pointer_position(event)
+        if start <= position <= start + thumb_length:
+            self._drag_offset = position - start
+        else:
+            self._drag_offset = thumb_length / 2.0
+            self._move_to_pointer(position, self._drag_offset)
+
+    def _on_drag(self, event):
+        self._move_to_pointer(self._pointer_position(event), self._drag_offset)
+
+
+class YellowCanvasScrollbar(tk.Canvas):
+    """A small themed scrollbar whose colors are not replaced by Windows."""
+
+    def __init__(self, master, *args, command=None, orient=tk.VERTICAL, **kwargs):
+        self._command = command
+        self._orient = str(orient)
+        self._first = 0.0
+        self._last = 1.0
+        width = int(kwargs.pop("width", 14))
+        self._trough_color = kwargs.pop("troughcolor", "#6A5300")
+        self._thumb_color = kwargs.pop("bg", "#FFD43B")
+        self._active_thumb_color = kwargs.pop("activebackground", "#FFE66D")
+        for ignored in (
+            "relief",
+            "bd",
+            "borderwidth",
+            "highlightthickness",
+            "elementborderwidth",
+            "takefocus",
+        ):
+            kwargs.pop(ignored, None)
+        super().__init__(
+            master,
+            width=width,
+            height=1,
+            bg=self._trough_color,
+            highlightbackground=self._thumb_color,
+            highlightcolor=self._thumb_color,
+            highlightthickness=1,
+            bd=0,
+            relief="flat",
+            takefocus=0,
+            cursor="hand2",
+            **kwargs,
+        )
+        self._thumb = self.create_rectangle(
+            1,
+            1,
+            max(2, width - 1),
+            2,
+            fill=self._thumb_color,
+            outline=self._thumb_color,
+        )
+        self.bind("<Configure>", self._redraw_thumb, add="+")
+        self.bind("<Button-1>", self._move_to_pointer, add="+")
+        self.bind("<B1-Motion>", self._move_to_pointer, add="+")
+        self.bind("<Enter>", lambda _event: self.itemconfigure(self._thumb, fill=self._active_thumb_color), add="+")
+        self.bind("<Leave>", lambda _event: self.itemconfigure(self._thumb, fill=self._thumb_color), add="+")
+
+    def set(self, first, last):
+        try:
+            self._first = max(0.0, min(1.0, float(first)))
+            self._last = max(self._first, min(1.0, float(last)))
+        except (TypeError, ValueError):
+            self._first, self._last = 0.0, 1.0
+        self._redraw_thumb()
+
+    def _redraw_thumb(self, _event=None):
+        vertical = self._orient == str(tk.VERTICAL)
+        length = max(1, self.winfo_height() if vertical else self.winfo_width())
+        cross = max(3, self.winfo_width() if vertical else self.winfo_height())
+        start = int(self._first * length)
+        end = int(self._last * length)
+        minimum = min(26, length)
+        if end - start < minimum:
+            end = start + minimum
+        if end > length - 1:
+            start = max(1, length - 1 - (end - start))
+            end = length - 1
+        if vertical:
+            self.coords(self._thumb, 1, start, cross - 1, end)
+        else:
+            self.coords(self._thumb, start, 1, end, cross - 1)
+
+    def _move_to_pointer(self, event):
+        if not callable(self._command):
+            return
+        vertical = self._orient == str(tk.VERTICAL)
+        length = max(1, self.winfo_height() if vertical else self.winfo_width())
+        pointer = event.y if vertical else event.x
+        visible = max(0.01, self._last - self._first)
+        fraction = max(0.0, min(1.0 - visible, (pointer / length) - (visible / 2.0)))
+        self._command("moveto", fraction)
+
 import tkinter.font as tkfont
 from tkinter import colorchooser, filedialog, messagebox, ttk
+
+
+class LocalizedStringVar(tk.StringVar):
+    """Translate user-facing status text whenever its value changes."""
+
+    def __init__(
+        self,
+        master,
+        translator: Callable[[object], str],
+        value: object = "",
+    ) -> None:
+        self._translator = translator
+        super().__init__(
+            master=master,
+            value=self._translator(value),
+        )
+
+    def set(self, value: object) -> None:
+        super().set(self._translator(value))
 
 _ORIGINAL_MESSAGEBOX_FUNCTIONS = {
     name: getattr(messagebox, name)
@@ -80,8 +363,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.8"
-APP_BUILD_DATE = "2026-08-08"
+APP_VERSION = "1.0.9"
+APP_BUILD_DATE = "2026-08-10"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
 FEEDBACK_FORM_URLS = {
@@ -118,6 +401,7 @@ FEEDBACK_FORM_URLS = {
 }
 # Kept as a compatibility alias for older tests and integrations.
 FEEDBACK_FORM_URL = FEEDBACK_FORM_URLS["en"]
+DISCORD_COMMUNITY_URL = "https://discord.gg/fHkTRgqjcr"
 FEEDBACK_WEBVIEW_ARGUMENT = "--embedded-feedback-form"
 FEEDBACK_APPEARANCE_ARGUMENT_PREFIX = "--feedback-appearance="
 FEEDBACK_LANGUAGE_ARGUMENT_PREFIX = "--feedback-language="
@@ -153,6 +437,13 @@ RETROARCH_CORE_DOWNLOAD_URL = (
     "https://buildbot.libretro.com/nightly/windows/x86_64/latest/"
     "bsnes_mercury_performance_libretro.dll.zip"
 )
+LIVESPLIT_RELEASE_API_URL = (
+    "https://api.github.com/repos/LiveSplit/LiveSplit/releases/latest"
+)
+LIVESPLIT_RELEASE_PAGE_URL = (
+    "https://github.com/LiveSplit/LiveSplit/releases/latest"
+)
+LIVESPLIT_RELEASE_MAX_BYTES = 64 * 1024 * 1024
 
 
 def _configure_installed_tcl_tk_runtime() -> bool:
@@ -268,7 +559,23 @@ def _run_tk_startup_check() -> int:
     try:
         probe_root = tk.Tk()
         probe_root.withdraw()
-        TrackerApp(probe_root, startup_check=True)
+        probe_app = TrackerApp(probe_root, startup_check=True)
+        required_runtime_callbacks = (
+            "_translate_dialog_text",
+            "_ask_localized_yes_no",
+            "_guided_setup_hacks_downloaded",
+            "_finish_filtered_hack_download",
+        )
+        missing_callbacks = [
+            callback_name
+            for callback_name in required_runtime_callbacks
+            if not callable(getattr(probe_app, callback_name, None))
+        ]
+        if missing_callbacks:
+            raise AttributeError(
+                "Packaged app is missing required runtime callback(s): "
+                + ", ".join(missing_callbacks)
+            )
         probe_root.update_idletasks()
         return 0
     except Exception as error:
@@ -1713,6 +2020,21 @@ def smwc_rating_value(
     return None
 
 
+def smwc_boolean_value(value: object) -> bool:
+    """Interpret SMW Central's numeric/string feature flags correctly."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, (list, tuple, set)):
+        return any(smwc_boolean_value(item) for item in value)
+    normalized = str(value or "").strip().casefold()
+    return normalized in {
+        "1", "true", "yes", "y", "on", "featured",
+        "hall of fame", "sa-1", "sa1",
+    }
+
+
 def smwc_added_date(
     value: object,
 ) -> str:
@@ -1750,6 +2072,8 @@ def smwc_added_date(
 def parse_smwcentral_api_game(
     hack: dict[str, Any],
     lookups: dict[str, dict[str, str]],
+    *,
+    is_waiting: bool | None = None,
 ) -> dict[str, Any] | None:
     smwc_id = str(
         hack.get("id", "")
@@ -1773,6 +2097,11 @@ def parse_smwcentral_api_game(
 
     if not isinstance(raw_fields, dict):
         raw_fields = {}
+
+    if is_waiting is None:
+        is_waiting = not bool(
+            hack.get("moderated", True)
+        )
 
     difficulty_raw = raw_fields.get(
         "difficulty",
@@ -1855,6 +2184,9 @@ def parse_smwcentral_api_game(
         "page_url": page_url,
         "download_url": download_url,
         "is_custom": False,
+        "sa1": smwc_boolean_value(raw_fields.get("sa1", False)),
+        "hall_of_fame": smwc_boolean_value(raw_fields.get("hof", False)),
+        "is_waiting": bool(is_waiting),
         "rom_path": "",
         "local_rom_path": "",
     }
@@ -1864,6 +2196,8 @@ def fetch_smwcentral_catalog(
     cancel_event: threading.Event,
     progress_callback=None,
     known_ids: set[str] | None = None,
+    *,
+    waiting: bool = False,
 ) -> dict[str, Any]:
     lookups = smwc_section_lookups(
         cancel_event,
@@ -1877,7 +2211,7 @@ def fetch_smwcentral_catalog(
     last_page = 1
     pages_read = 0
     known_only_page_streak = 0
-    incremental = bool(known_ids)
+    incremental = bool(known_ids) and not waiting
     complete_catalog = False
 
     while page <= last_page:
@@ -1900,7 +2234,7 @@ def fetch_smwcentral_catalog(
                 "a": "getsectionlist",
                 "s": "smwhacks",
                 "n": page,
-                "u": "0",
+                "u": "1" if waiting else "0",
             },
             cancel_event,
             progress_callback=progress_callback,
@@ -1940,6 +2274,7 @@ def fetch_smwcentral_catalog(
             game = parse_smwcentral_api_game(
                 raw_game,
                 lookups,
+                is_waiting=waiting,
             )
 
             if game is None:
@@ -1999,6 +2334,8 @@ def fetch_smwcentral_catalog(
     )
 
     if (
+        not waiting
+        and
         complete_catalog
         and
         len(games)
@@ -2021,6 +2358,36 @@ def fetch_smwcentral_catalog(
     }
 
 
+def refresh_waiting_from_smwcentral_site(
+    database,
+    cancel_event: threading.Event,
+    progress_callback=None,
+) -> dict[str, Any]:
+    """Replace the local waiting queue with SMW Central's live queue."""
+    fetch_result = fetch_smwcentral_catalog(
+        cancel_event,
+        progress_callback,
+        waiting=True,
+    )
+    games = list(fetch_result["games"])
+    if cancel_event.is_set():
+        raise RuntimeError("Waiting-hack refresh cancelled.")
+
+    refreshed_at = (
+        datetime.now()
+        .astimezone()
+        .isoformat(timespec="seconds")
+    )
+    if progress_callback is not None:
+        progress_callback(
+            f"Saving {len(games):,} SMW Central waiting entries…"
+        )
+    return database.refresh_waiting_from_smwcentral(
+        games,
+        refreshed_at,
+    )
+
+
 def refresh_catalog_from_smwcentral_site(
     database,
     cancel_event: threading.Event,
@@ -2030,10 +2397,13 @@ def refresh_catalog_from_smwcentral_site(
     existing_by_id = github_catalog_existing_by_id(
         database
     )
+    metadata_complete = (
+        database.metadata().get("SMWC Feature Metadata Complete") == "1"
+    )
     fetch_result = fetch_smwcentral_catalog(
         cancel_event,
         progress_callback,
-        known_ids=set(existing_by_id),
+        known_ids=(set(existing_by_id) if metadata_complete else set()),
     )
     games = list(fetch_result["games"])
     complete_catalog = bool(
@@ -2080,6 +2450,10 @@ def refresh_catalog_from_smwcentral_site(
         removed_count = len(
             set(existing_by_id) - live_ids
         )
+        database.set_metadata(
+            "SMWC Feature Metadata Complete",
+            1,
+        )
     else:
         removal_summary = {
             "deleted": 0,
@@ -2090,7 +2464,10 @@ def refresh_catalog_from_smwcentral_site(
     official_count = sum(
         1
         for game in database.load_catalog()
-        if not bool(game.get("is_custom", False))
+        if (
+            not bool(game.get("is_custom", False))
+            and not bool(game.get("is_waiting", False))
+        )
     )
     refresh_mode = (
         "Live Full"
@@ -2433,6 +2810,7 @@ def github_catalog_existing_by_id(
                     False,
                 )
             )
+            and not bool(game.get("is_waiting", False))
             and str(
                 game.get(
                     "smwc_id",
@@ -2553,6 +2931,13 @@ def github_catalog_row_to_game(
             "",
         ).strip(),
         "is_custom": False,
+        "sa1": bool(existing.get("sa1", False)) if existing else False,
+        "hall_of_fame": (
+            bool(existing.get("hall_of_fame", False)) if existing else False
+        ),
+        "is_waiting": (
+            bool(existing.get("is_waiting", False)) if existing else False
+        ),
         "rom_path": (
             str(
                 existing.get(
@@ -10451,9 +10836,83 @@ def rom_builder_sanitize_filename(
     return cleaned[:160].strip(" .")
 
 
+def rom_builder_fxpak_safe_title(
+    title: object,
+    smwc_id: object = "",
+) -> str:
+    """Return a readable FAT/FXPAK filename stem without emoji glyphs."""
+    raw_title = unicodedata.normalize(
+        "NFC",
+        str(title or "").strip(),
+    )
+    safe_characters: list[str] = []
+    for character in raw_title:
+        codepoint = ord(character)
+        is_emoji = (
+            0x1F000 <= codepoint <= 0x1FFFF
+            or 0x2600 <= codepoint <= 0x27FF
+            or 0x2B00 <= codepoint <= 0x2BFF
+            or 0x1F1E6 <= codepoint <= 0x1F1FF
+            or 0x1F3FB <= codepoint <= 0x1F3FF
+            or 0xE0020 <= codepoint <= 0xE007F
+            or codepoint
+            in {
+                0x00A9,
+                0x00AE,
+                0x203C,
+                0x2049,
+                0x20E3,
+                0x2122,
+                0x2139,
+                0x3030,
+                0x303D,
+                0x3297,
+                0x3299,
+                0xFE0E,
+                0xFE0F,
+                0x200D,
+            }
+        )
+        if not is_emoji:
+            safe_characters.append(character)
+
+    cleaned = rom_builder_sanitize_filename(
+        "".join(safe_characters),
+        "",
+    )
+    if cleaned:
+        return cleaned
+
+    safe_id = rom_builder_sanitize_filename(
+        smwc_id,
+        "",
+    )
+    return f"SMWC {safe_id}" if safe_id else "SMW Hack"
+
+
+def rom_builder_fxpak_relative_rom_path(
+    game: dict[str, Any],
+) -> PurePosixPath:
+    """Build the SD-card-only path while leaving the catalog title intact."""
+    safe_title = rom_builder_fxpak_safe_title(
+        game.get("title", ""),
+        game.get("smwc_id", ""),
+    )
+    return PurePosixPath(
+        rom_builder_alpha_folder(safe_title)
+    ) / (safe_title + ".sfc")
+
+
 def rom_builder_alpha_folder(
     title: object,
 ) -> str:
+    raw_title = unicodedata.normalize("NFKC", str(title or "")).strip()
+    if raw_title:
+        first_raw = raw_title[0]
+        first_category = unicodedata.category(first_raw)
+        if first_category.startswith("S") or ord(first_raw) > 0xFFFF:
+            return "Emoji"
+
     cleaned = rom_builder_sanitize_filename(
         title,
         "#",
@@ -11210,25 +11669,25 @@ def rom_builder_scan_existing_roms(
     if not library_root.exists():
         return found
 
-    for extension in (
-        "*.sfc",
-        "*.smc",
-    ):
-        for rom_path in library_root.rglob(
-            extension
-        ):
-            key = rom_builder_normalized_name(
-                rom_path.stem
-            )
+    # Walk the library once.  Two separate recursive glob passes were
+    # noticeably slow for large libraries stored in OneDrive.
+    for rom_path in library_root.rglob("*"):
+        if rom_path.suffix.casefold() not in {".sfc", ".smc"}:
+            continue
+        key = rom_builder_normalized_name(
+            rom_path.stem
+        )
 
-            if key and key not in found:
-                found[key] = rom_path
+        if key and key not in found:
+            found[key] = rom_path
 
     return found
 
 
 def rom_builder_load_existing_index(
     library_root: Path,
+    *,
+    existing_paths: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Path]:
     by_id: dict[str, Path] = {}
     candidate_indexes = (
@@ -11277,7 +11736,15 @@ def rom_builder_load_existing_index(
                     library_root / rom_path
                 )
 
-            if rom_path.exists():
+            if existing_paths is None:
+                path_exists = rom_path.exists()
+            else:
+                path_key = os.path.normcase(
+                    os.path.abspath(os.path.expanduser(str(rom_path)))
+                )
+                path_exists = path_key in existing_paths
+
+            if path_exists:
                 by_id[str(smwc_id)] = (
                     rom_path
                 )
@@ -11324,10 +11791,10 @@ def rom_builder_copy_rom_to_sd(
             "The selected SD-card folder is no longer available."
         )
 
-    destination = rom_builder_expected_rom_path(
-        sd_root,
-        game,
+    relative_destination = rom_builder_fxpak_relative_rom_path(
+        game
     )
+    destination = sd_root.joinpath(*relative_destination.parts)
     destination.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -11371,6 +11838,9 @@ def rom_builder_existing_game(
     library_root: Path,
     existing_by_name: dict[str, Path],
     existing_by_id: dict[str, Path],
+    *,
+    existing_paths: set[str] | frozenset[str] | None = None,
+    probe_filesystem: bool = True,
 ) -> tuple[bool, str, str]:
     # A saved FXPAK path means this title is already part of the launchable
     # game library, even if the SD card is not mounted as a Windows drive.
@@ -11392,7 +11862,23 @@ def rom_builder_existing_game(
         )
     ).strip()
 
-    if local_path and Path(local_path).exists():
+    def normalized_path(value: str | Path) -> str:
+        return os.path.normcase(
+            os.path.abspath(os.path.expanduser(str(value)))
+        )
+
+    local_path_exists = bool(
+        local_path
+        and (
+            (
+                existing_paths is not None
+                and normalized_path(local_path) in existing_paths
+            )
+            or (probe_filesystem and Path(local_path).exists())
+        )
+    )
+
+    if local_path_exists:
         return (
             True,
             "Already in local library",
@@ -11403,11 +11889,7 @@ def rom_builder_existing_game(
         game.get("smwc_id", "")
     ).strip()
 
-    if (
-        smwc_id
-        and smwc_id in existing_by_id
-        and existing_by_id[smwc_id].exists()
-    ):
+    if smwc_id and smwc_id in existing_by_id:
         return (
             True,
             "Already in local library",
@@ -11421,7 +11903,15 @@ def rom_builder_existing_game(
         )
     )
 
-    if expected_path.exists():
+    expected_path_exists = bool(
+        (
+            existing_paths is not None
+            and normalized_path(expected_path) in existing_paths
+        )
+        or (probe_filesystem and expected_path.exists())
+    )
+
+    if expected_path_exists:
         return (
             True,
             "Already in local library",
@@ -11459,11 +11949,7 @@ def rom_builder_existing_game(
         )
 
     for key in possible_keys:
-        if (
-            key
-            and key in existing_by_name
-            and existing_by_name[key].exists()
-        ):
+        if key and key in existing_by_name:
             return (
                 True,
                 "Already in local library",
@@ -11578,6 +12064,162 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def select_livesplit_release_asset(
+    release_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Select and validate the official Windows LiveSplit release ZIP."""
+    assets = release_payload.get("assets", [])
+    if not isinstance(assets, list):
+        raise RuntimeError("The LiveSplit release did not include an asset list.")
+
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name", "")).strip()
+        if not re.fullmatch(
+            r"LiveSplit_\d+(?:\.\d+)*\.zip",
+            name,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        url = str(asset.get("browser_download_url", "")).strip()
+        parsed_url = urlparse(url)
+        if (
+            parsed_url.scheme.casefold() != "https"
+            or (parsed_url.hostname or "").casefold() != "github.com"
+            or not parsed_url.path.casefold().startswith(
+                "/livesplit/livesplit/releases/download/"
+            )
+        ):
+            continue
+        try:
+            size = int(asset.get("size", 0))
+        except (TypeError, ValueError):
+            continue
+        if not 0 < size <= LIVESPLIT_RELEASE_MAX_BYTES:
+            continue
+        digest_text = str(asset.get("digest", "")).strip()
+        digest_match = re.fullmatch(
+            r"sha256:([0-9a-fA-F]{64})",
+            digest_text,
+        )
+        return {
+            "name": name,
+            "url": url,
+            "size": size,
+            "sha256": digest_match.group(1) if digest_match else "",
+            "version": str(
+                release_payload.get("tag_name", "")
+            ).strip(),
+        }
+
+    raise RuntimeError(
+        "The latest official LiveSplit release did not contain a supported "
+        "Windows ZIP download."
+    )
+
+
+def write_livesplit_tracker_settings(
+    settings_path: Path,
+    server_port: int,
+) -> None:
+    """Create or update LiveSplit settings for tracker TCP control."""
+    port = int(server_port)
+    if not 1 <= port <= 65535:
+        raise ValueError("The LiveSplit server port must be between 1 and 65535.")
+
+    settings_path = Path(settings_path)
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    if settings_path.is_file():
+        try:
+            tree = ET.parse(settings_path)
+        except (ET.ParseError, OSError) as error:
+            raise RuntimeError(
+                "The existing LiveSplit settings file could not be read."
+            ) from error
+        root = tree.getroot()
+        if root.tag != "Settings":
+            raise RuntimeError(
+                "The existing LiveSplit settings file has an unexpected format."
+            )
+    else:
+        root = ET.Element("Settings", {"version": "1.8.18"})
+        hotkey_profiles = ET.SubElement(root, "HotkeyProfiles")
+        hotkey_profile = ET.SubElement(
+            hotkey_profiles,
+            "HotkeyProfile",
+            {"name": "Default"},
+        )
+        for key_name in (
+            "SplitKey",
+            "ResetKey",
+            "SkipKey",
+            "UndoKey",
+            "PauseKey",
+            "ToggleGlobalHotkeys",
+            "SwitchComparisonPrevious",
+            "SwitchComparisonNext",
+        ):
+            ET.SubElement(hotkey_profile, key_name)
+        for setting_name, setting_value in (
+            ("GlobalHotkeysEnabled", "False"),
+            ("DeactivateHotkeysForOtherPrograms", "False"),
+            ("DoubleTapPrevention", "True"),
+            ("HotkeyDelay", "0"),
+            ("AllowGamepadsAsHotkeys", "False"),
+        ):
+            ET.SubElement(hotkey_profile, setting_name).text = setting_value
+        for setting_name, setting_value in (
+            ("WarnOnReset", "True"),
+            ("RaceViewer", "SpeedRunsLive"),
+            ("AgreedToSRLRules", "False"),
+            ("EnableDPIAwareness", "True"),
+            ("UILanguage", ""),
+        ):
+            ET.SubElement(root, setting_name).text = setting_value
+        ET.SubElement(root, "RecentSplits")
+        ET.SubElement(root, "RecentLayouts")
+        for setting_name, setting_value in (
+            ("LastComparison", "Personal Best"),
+            ("SimpleSumOfBest", "False"),
+            ("RefreshRate", "40"),
+            ("ServerPort", str(port)),
+            # TCP server startup. LiveSplit's current enum defines TCP as 1.
+            ("ServerStartup", "1"),
+            ("ServerState", "0"),
+        ):
+            ET.SubElement(root, setting_name).text = setting_value
+        ET.SubElement(root, "ComparisonGeneratorStates")
+        ET.SubElement(root, "RaceProviderPlugins")
+        ET.SubElement(root, "ActiveAutoSplitters")
+        tree = ET.ElementTree(root)
+
+    def set_root_value(name: str, value: str) -> None:
+        element = root.find(name)
+        if element is None:
+            element = ET.SubElement(root, name)
+        element.text = value
+
+    set_root_value("ServerPort", str(port))
+    # Starting the TCP server automatically removes the manual Control menu
+    # step every time either installed copy is opened.
+    set_root_value("ServerStartup", "1")
+
+    ET.indent(tree, space="  ")
+    temporary_path = settings_path.with_name(
+        settings_path.name + f".{os.getpid()}.tmp"
+    )
+    try:
+        tree.write(
+            temporary_path,
+            encoding="utf-8",
+            xml_declaration=True,
+        )
+        os.replace(temporary_path, settings_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def write_retroarch_tracker_settings(config_path: Path) -> None:
@@ -11792,6 +12434,9 @@ class TrackerDatabase:
                     page_url TEXT NOT NULL DEFAULT '',
                     download_url TEXT NOT NULL DEFAULT '',
                     is_custom INTEGER NOT NULL DEFAULT 0,
+                    sa1 INTEGER NOT NULL DEFAULT 0,
+                    hall_of_fame INTEGER NOT NULL DEFAULT 0,
+                    is_waiting INTEGER NOT NULL DEFAULT 0,
                     rom_path TEXT NOT NULL DEFAULT '',
                     local_rom_path TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -11870,6 +12515,23 @@ class TrackerDatabase:
                     "PRAGMA table_info(tracked_hacks)"
                 ).fetchall()
             }
+            catalog_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(catalog_hacks)"
+                ).fetchall()
+            }
+            for column_name in (
+                "sa1",
+                "hall_of_fame",
+                "is_waiting",
+            ):
+                if column_name not in catalog_columns:
+                    connection.execute(
+                        "ALTER TABLE catalog_hacks ADD COLUMN "
+                        + column_name
+                        + " INTEGER NOT NULL DEFAULT 0"
+                    )
             if "total_deaths" not in tracker_columns:
                 connection.execute(
                     "ALTER TABLE tracked_hacks ADD COLUMN total_deaths INTEGER"
@@ -12143,6 +12805,13 @@ class TrackerDatabase:
             if prepared.get("is_custom")
             else 0
         )
+        prepared["sa1"] = 1 if prepared.get("sa1") else 0
+        prepared["hall_of_fame"] = (
+            1 if prepared.get("hall_of_fame") else 0
+        )
+        prepared["is_waiting"] = (
+            1 if prepared.get("is_waiting") else 0
+        )
         prepared["catalog_key"] = str(
             prepared.get("catalog_key")
             or self.catalog_key(
@@ -12218,6 +12887,9 @@ class TrackerDatabase:
                 page_url,
                 download_url,
                 is_custom,
+                sa1,
+                hall_of_fame,
+                is_waiting,
                 rom_path,
                 local_rom_path,
                 updated_at
@@ -12235,6 +12907,9 @@ class TrackerDatabase:
                 :page_url,
                 :download_url,
                 :is_custom,
+                :sa1,
+                :hall_of_fame,
+                :is_waiting,
                 :rom_path,
                 :local_rom_path,
                 CURRENT_TIMESTAMP
@@ -12252,6 +12927,9 @@ class TrackerDatabase:
                 page_url = excluded.page_url,
                 download_url = excluded.download_url,
                 is_custom = excluded.is_custom,
+                sa1 = excluded.sa1,
+                hall_of_fame = excluded.hall_of_fame,
+                is_waiting = excluded.is_waiting,
                 rom_path = CASE
                     WHEN excluded.rom_path <> ''
                     THEN excluded.rom_path
@@ -12278,6 +12956,27 @@ class TrackerDatabase:
                     "SELECT COUNT(*) FROM catalog_hacks"
                 ).fetchone()[0]
             )
+
+    def catalog_status_counts(self) -> dict[str, int]:
+        """Return the current moderated/waiting split for the local catalog."""
+        self.initialize()
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN is_waiting = 1 THEN 1 ELSE 0 END) AS waiting
+                FROM catalog_hacks
+                """
+            ).fetchone()
+        total = int(row["total"] or 0)
+        waiting = int(row["waiting"] or 0)
+        return {
+            "total": total,
+            "waiting": waiting,
+            "moderated": max(0, total - waiting),
+        }
 
     def tracked_count(self) -> int:
         self.initialize()
@@ -13208,6 +13907,7 @@ class TrackerDatabase:
                     WHERE
                         smwc_id = ?
                         AND is_custom = 0
+                        AND is_waiting = 0
                     LIMIT 1
                     """,
                     (smwc_id,),
@@ -13317,7 +14017,7 @@ class TrackerDatabase:
                     """
                     SELECT *
                     FROM catalog_hacks
-                    WHERE is_custom = 0
+                    WHERE is_custom = 0 AND is_waiting = 0
                     """
                 )
             }
@@ -13335,11 +14035,15 @@ class TrackerDatabase:
                 "smwc_rating",
                 "page_url",
                 "download_url",
+                "sa1",
+                "hall_of_fame",
+                "is_waiting",
             )
 
             for game in games:
                 prepared_game = dict(game)
                 prepared_game["is_custom"] = False
+                prepared_game["is_waiting"] = False
                 catalog_key = self.catalog_key(
                     prepared_game.get("smwc_id"),
                     prepared_game.get("title"),
@@ -13407,6 +14111,11 @@ class TrackerDatabase:
                             )
                             or ""
                         ).strip(),
+                        "sa1": 1 if prepared_game.get("sa1") else 0,
+                        "hall_of_fame": (
+                            1 if prepared_game.get("hall_of_fame") else 0
+                        ),
+                        "is_waiting": 0,
                     }
 
                     if any(
@@ -13484,6 +14193,7 @@ class TrackerDatabase:
                     SELECT catalog_key
                     FROM catalog_hacks
                     WHERE is_custom = 0
+                      AND is_waiting = 0
                 )
                 """
             )
@@ -13528,6 +14238,79 @@ class TrackerDatabase:
             "refreshed_at": refreshed_at,
         }
 
+    def refresh_waiting_from_smwcentral(
+        self,
+        games: list[dict[str, Any]],
+        refreshed_at: str,
+    ) -> dict[str, int | str]:
+        """Replace waiting rows while preserving tracked or mapped entries."""
+        self.initialize()
+        incoming_keys: set[str] = set()
+        with self.connect() as connection:
+            existing_waiting_keys = {
+                str(row["catalog_key"])
+                for row in connection.execute(
+                    "SELECT catalog_key FROM catalog_hacks WHERE is_waiting = 1"
+                )
+            }
+            for game in games:
+                prepared_game = dict(game)
+                prepared_game["is_custom"] = False
+                prepared_game["is_waiting"] = True
+                catalog_key = self.catalog_key(
+                    prepared_game.get("smwc_id"),
+                    prepared_game.get("title"),
+                    False,
+                    prepared_game.get("author"),
+                )
+                prepared_game["catalog_key"] = catalog_key
+                incoming_keys.add(catalog_key)
+                self._upsert_catalog(connection, prepared_game)
+
+            stale_rows = connection.execute(
+                "SELECT catalog_key, smwc_id FROM catalog_hacks "
+                "WHERE is_waiting = 1"
+            ).fetchall()
+            removed = 0
+            preserved = 0
+            for row in stale_rows:
+                catalog_key = str(row["catalog_key"])
+                if catalog_key in incoming_keys:
+                    continue
+                referenced = connection.execute(
+                    "SELECT 1 FROM tracked_hacks WHERE catalog_key = ? "
+                    "UNION SELECT 1 FROM rom_mappings "
+                    "WHERE catalog_key = ? OR smwc_id = ? LIMIT 1",
+                    (catalog_key, catalog_key, str(row["smwc_id"] or "")),
+                ).fetchone()
+                if referenced is not None:
+                    preserved += 1
+                    continue
+                connection.execute(
+                    "DELETE FROM catalog_hacks WHERE catalog_key = ?",
+                    (catalog_key,),
+                )
+                removed += 1
+
+            new_count = len(incoming_keys - existing_waiting_keys)
+            for key, value in {
+                "Waiting Last Refresh": refreshed_at,
+                "Waiting Count": len(games),
+                "Waiting New Since Last Refresh": new_count,
+            }.items():
+                connection.execute(
+                    "INSERT INTO app_metadata (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, str(value)),
+                )
+        return {
+            "fetched": len(games),
+            "removed": removed,
+            "preserved": preserved,
+            "new": new_count,
+            "refreshed_at": refreshed_at,
+        }
+
     def metadata(self) -> dict[str, str]:
         self.initialize()
 
@@ -13558,6 +14341,9 @@ class TrackerDatabase:
                     page_url,
                     download_url,
                     is_custom,
+                    sa1,
+                    hall_of_fame,
+                    is_waiting,
                     rom_path,
                     local_rom_path
                 FROM catalog_hacks
@@ -13624,6 +14410,9 @@ class TrackerDatabase:
                     "is_custom": bool(
                         row["is_custom"]
                     ),
+                    "sa1": bool(row["sa1"]),
+                    "hall_of_fame": bool(row["hall_of_fame"]),
+                    "is_waiting": bool(row["is_waiting"]),
                 }
             )
 
@@ -15357,7 +16146,10 @@ TRACKER_RATING_GRADIENT_END = "#F07E20"
 TRACKER_SMWC_RATING_GRADIENT_START = "#16A8F5"
 TRACKER_SMWC_RATING_GRADIENT_END = "#F7C928"
 TRACKER_PERCENT_BORDER_COLOR = "#000000"
-TRACKER_GRID_BORDER_WIDTH = 2
+TABLE_GRID_LINE_DARK = "#4B7CA3"
+TABLE_GRID_LINE_LIGHT = "#86C5EB"
+TABLE_GRID_BORDER_WIDTH = 1
+TRACKER_GRID_BORDER_WIDTH = TABLE_GRID_BORDER_WIDTH
 # Subtle Mario-palette column fills for the full My Tracker data grid.
 # Selected rows intentionally use one solid blue so selection remains
 # immediately obvious over the multicolor data presentation.
@@ -15503,6 +16295,7 @@ FEEDBACK_LANGUAGE_LOCALES = {
 # Dynamic values (hack titles, file paths, authors and catalog data) are never
 # translated or modified.
 UI_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "au": {},
     "es": {
         "Home": "Inicio",
         "File": "Archivo", "Stats": "Estadísticas",
@@ -15543,17 +16336,17 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "OBS Settings": "Configuración de OBS",
         "Import / Refresh from Spreadsheet…": "Importar o actualizar desde una hoja de cálculo…",
         "Restore Previous App Version...": "Restaurar la versión anterior...",
-        "Download Missing Hacks…": "Descargar hacks faltantes…",
+        "Download & Patch Missing Hacks…": "Descargar y parchear hacks faltantes…",
         "Add Unmoderated Hack…": "Añadir hack no moderado…",
         "Use SS, MM:SS, or H:MM:SS. Deaths must be whole numbers. Leave any field blank to keep it unchanged.": "Usa SS, MM:SS o H:MM:SS. Las muertes deben ser números enteros. Deja un campo vacío para conservar su valor.",
         "Status": "Estado", "My Tracker": "Mi Tracker",
         "Search or select a hack...": "Buscar o seleccionar un hack...",
         "Hack catalog is loading...": "El catálogo de hacks se está cargando...",
-        "Download Missing Hacks…": "Descargar hacks faltantes…",
+        "Download & Patch Missing Hacks…": "Descargar y parchear hacks faltantes…",
         "Add Unmoderated Hack…": "Añadir hack no moderado…",
         "Connection & Emulator Setup": "Configuración de conexión y emulador",
-        "Install or Find SNI (Strongly Recommended)...": "Instalar o buscar SNI (muy recomendado)...",
-        "Install or Find QUsb2Snes...": "Instalar o buscar QUsb2Snes...",
+        "Install or Find SNI (Needed for RetroArch)...": "Instalar o buscar SNI (necesario para RetroArch)...",
+        "Install or Find QUsb2Snes (Needed for FXPAK Pro)...": "Instalar o buscar QUsb2Snes (necesario para FXPAK Pro)...",
         "Install or Configure RetroArch...": "Instalar o configurar RetroArch...",
         "SMW Central Catalog": "Catálogo de SMW Central",
         "View Complete Catalog…": "Ver catálogo completo…",
@@ -15572,7 +16365,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Library Status": "Estado de la biblioteca", "Search": "Buscar",
         "Filter by letter": "Filtrar por letra", "Any": "Cualquiera",
         "All": "Todos", "Refresh Preview": "Actualizar vista previa",
-        "Download All Matching Hacks": "Descargar todos los hacks coincidentes",
+        "Download & Patch All Matching Hacks": "Descargar y parchear todos los hacks coincidentes",
     },
     "fr": {
         "Home": "Accueil",
@@ -15614,17 +16407,17 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "OBS Settings": "Paramètres OBS",
         "Import / Refresh from Spreadsheet…": "Importer ou actualiser depuis une feuille…",
         "Restore Previous App Version...": "Restaurer la version précédente...",
-        "Download Missing Hacks…": "Télécharger les hacks manquants…",
+        "Download & Patch Missing Hacks…": "Télécharger et patcher les hacks manquants…",
         "Add Unmoderated Hack…": "Ajouter un hack non modéré…",
         "Use SS, MM:SS, or H:MM:SS. Deaths must be whole numbers. Leave any field blank to keep it unchanged.": "Utilisez SS, MM:SS ou H:MM:SS. Les morts doivent être des nombres entiers. Laissez un champ vide pour conserver sa valeur.",
         "Status": "État", "My Tracker": "Mon Tracker",
         "Search or select a hack...": "Rechercher ou choisir un hack...",
         "Hack catalog is loading...": "Chargement du catalogue de hacks...",
-        "Download Missing Hacks…": "Télécharger les hacks manquants…",
+        "Download & Patch Missing Hacks…": "Télécharger et patcher les hacks manquants…",
         "Add Unmoderated Hack…": "Ajouter un hack non modéré…",
         "Connection & Emulator Setup": "Configuration de la connexion et de l’émulateur",
-        "Install or Find SNI (Strongly Recommended)...": "Installer ou trouver SNI (fortement recommandé)...",
-        "Install or Find QUsb2Snes...": "Installer ou trouver QUsb2Snes...",
+        "Install or Find SNI (Needed for RetroArch)...": "Installer ou trouver SNI (requis pour RetroArch)...",
+        "Install or Find QUsb2Snes (Needed for FXPAK Pro)...": "Installer ou trouver QUsb2Snes (requis pour FXPAK Pro)...",
         "Install or Configure RetroArch...": "Installer ou configurer RetroArch...",
         "SMW Central Catalog": "Catalogue SMW Central",
         "View Complete Catalog…": "Afficher le catalogue complet…",
@@ -15643,7 +16436,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Library Status": "État de la bibliothèque", "Search": "Rechercher",
         "Filter by letter": "Filtrer par lettre", "Any": "Tous",
         "All": "Tous", "Refresh Preview": "Actualiser l’aperçu",
-        "Download All Matching Hacks": "Télécharger tous les hacks correspondants",
+        "Download & Patch All Matching Hacks": "Télécharger et patcher tous les hacks correspondants",
     },
     "de": {
         "Home": "Startseite",
@@ -15685,17 +16478,17 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "OBS Settings": "OBS-Einstellungen",
         "Import / Refresh from Spreadsheet…": "Aus Tabelle importieren oder aktualisieren…",
         "Restore Previous App Version...": "Vorherige App-Version wiederherstellen...",
-        "Download Missing Hacks…": "Fehlende Hacks herunterladen…",
+        "Download & Patch Missing Hacks…": "Fehlende Hacks herunterladen und patchen…",
         "Add Unmoderated Hack…": "Nicht moderierten Hack hinzufügen…",
         "Use SS, MM:SS, or H:MM:SS. Deaths must be whole numbers. Leave any field blank to keep it unchanged.": "Verwenden Sie SS, MM:SS oder H:MM:SS. Todeszahlen müssen ganzzahlig sein. Lassen Sie ein Feld leer, um seinen Wert beizubehalten.",
         "Status": "Status", "My Tracker": "Mein Tracker",
         "Search or select a hack...": "Hack suchen oder auswählen...",
         "Hack catalog is loading...": "Hack-Katalog wird geladen...",
-        "Download Missing Hacks…": "Fehlende Hacks herunterladen…",
+        "Download & Patch Missing Hacks…": "Fehlende Hacks herunterladen und patchen…",
         "Add Unmoderated Hack…": "Nicht moderierten Hack hinzufügen…",
         "Connection & Emulator Setup": "Verbindungs- und Emulator-Einrichtung",
-        "Install or Find SNI (Strongly Recommended)...": "SNI installieren oder suchen (dringend empfohlen)...",
-        "Install or Find QUsb2Snes...": "QUsb2Snes installieren oder suchen...",
+        "Install or Find SNI (Needed for RetroArch)...": "SNI installieren oder suchen (für RetroArch erforderlich)...",
+        "Install or Find QUsb2Snes (Needed for FXPAK Pro)...": "QUsb2Snes installieren oder suchen (für FXPAK Pro erforderlich)...",
         "Install or Configure RetroArch...": "RetroArch installieren oder einrichten...",
         "SMW Central Catalog": "SMW-Central-Katalog",
         "View Complete Catalog…": "Vollständigen Katalog anzeigen…",
@@ -15714,7 +16507,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Library Status": "Bibliotheksstatus", "Search": "Suchen",
         "Filter by letter": "Nach Buchstaben filtern", "Any": "Beliebig",
         "All": "Alle", "Refresh Preview": "Vorschau aktualisieren",
-        "Download All Matching Hacks": "Alle passenden Hacks herunterladen",
+        "Download & Patch All Matching Hacks": "Alle passenden Hacks herunterladen und patchen",
     },
     "pt-BR": {
         "Home": "Início",
@@ -15756,17 +16549,17 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "OBS Settings": "Configurações do OBS",
         "Import / Refresh from Spreadsheet…": "Importar ou atualizar pela planilha…",
         "Restore Previous App Version...": "Restaurar versão anterior do aplicativo...",
-        "Download Missing Hacks…": "Baixar hacks ausentes…",
+        "Download & Patch Missing Hacks…": "Baixar e aplicar patches aos hacks ausentes…",
         "Add Unmoderated Hack…": "Adicionar hack não moderado…",
         "Use SS, MM:SS, or H:MM:SS. Deaths must be whole numbers. Leave any field blank to keep it unchanged.": "Use SS, MM:SS ou H:MM:SS. As mortes devem ser números inteiros. Deixe um campo vazio para manter o valor atual.",
         "Status": "Status", "My Tracker": "Meu Tracker",
         "Search or select a hack...": "Pesquisar ou selecionar um hack...",
         "Hack catalog is loading...": "Carregando o catálogo de hacks...",
-        "Download Missing Hacks…": "Baixar hacks ausentes…",
+        "Download & Patch Missing Hacks…": "Baixar e aplicar patches aos hacks ausentes…",
         "Add Unmoderated Hack…": "Adicionar hack não moderado…",
         "Connection & Emulator Setup": "Configuração de conexão e emulador",
-        "Install or Find SNI (Strongly Recommended)...": "Instalar ou localizar o SNI (altamente recomendado)...",
-        "Install or Find QUsb2Snes...": "Instalar ou localizar o QUsb2Snes...",
+        "Install or Find SNI (Needed for RetroArch)...": "Instalar ou localizar o SNI (necessário para RetroArch)...",
+        "Install or Find QUsb2Snes (Needed for FXPAK Pro)...": "Instalar ou localizar o QUsb2Snes (necessário para FXPAK Pro)...",
         "Install or Configure RetroArch...": "Instalar ou configurar o RetroArch...",
         "SMW Central Catalog": "Catálogo do SMW Central",
         "View Complete Catalog…": "Ver catálogo completo…",
@@ -15785,7 +16578,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "Library Status": "Status da biblioteca", "Search": "Pesquisar",
         "Filter by letter": "Filtrar por letra", "Any": "Qualquer",
         "All": "Todos", "Refresh Preview": "Atualizar prévia",
-        "Download All Matching Hacks": "Baixar todos os hacks correspondentes",
+        "Download & Patch All Matching Hacks": "Baixar e aplicar patches a todos os hacks correspondentes",
     },
 }
 
@@ -15874,7 +16667,7 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Last Refresh: Never": "Última actualización: nunca",
         "Source: Live SMW Central Catalog": "Fuente: catálogo en vivo de SMW Central",
         "Back Up Database": "Crear copia de seguridad de la base de datos",
-        "Download Missing Hacks": "Descargar hacks faltantes",
+        "Download & Patch Missing Hacks": "Descargar y parchear hacks faltantes",
         "Export My Tracker": "Exportar Mi Tracker",
         "FXPAK Pro SD Card": "Tarjeta SD de FXPAK Pro",
         "Google Sheets Sync": "Sincronización con Google Sheets",
@@ -15970,7 +16763,7 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Last Refresh: Never": "Dernière actualisation : jamais",
         "Source: Live SMW Central Catalog": "Source : catalogue SMW Central en direct",
         "Back Up Database": "Sauvegarder la base de données",
-        "Download Missing Hacks": "Télécharger les hacks manquants",
+        "Download & Patch Missing Hacks": "Télécharger et patcher les hacks manquants",
         "Export My Tracker": "Exporter Mon Tracker",
         "FXPAK Pro SD Card": "Carte SD FXPAK Pro",
         "Google Sheets Sync": "Synchronisation Google Sheets",
@@ -16066,7 +16859,7 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Last Refresh: Never": "Letzte Aktualisierung: nie",
         "Source: Live SMW Central Catalog": "Quelle: Live-Katalog von SMW Central",
         "Back Up Database": "Datenbank sichern",
-        "Download Missing Hacks": "Fehlende Hacks herunterladen",
+        "Download & Patch Missing Hacks": "Fehlende Hacks herunterladen und patchen",
         "Export My Tracker": "Mein Tracker exportieren",
         "FXPAK Pro SD Card": "FXPAK-Pro-SD-Karte",
         "Google Sheets Sync": "Google-Sheets-Synchronisierung",
@@ -16162,7 +16955,7 @@ _UI_TRANSLATION_EXTRAS: dict[str, dict[str, str]] = {
         "Last Refresh: Never": "Última atualização: nunca",
         "Source: Live SMW Central Catalog": "Fonte: catálogo ao vivo do SMW Central",
         "Back Up Database": "Fazer backup do banco de dados",
-        "Download Missing Hacks": "Baixar hacks ausentes",
+        "Download & Patch Missing Hacks": "Baixar e aplicar patches aos hacks ausentes",
         "Export My Tracker": "Exportar Meu Tracker",
         "FXPAK Pro SD Card": "Cartão SD do FXPAK Pro",
         "Google Sheets Sync": "Sincronização com o Google Sheets",
@@ -16209,6 +17002,7 @@ _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
         "SMW Central rating": "Puntuación de SMW Central",
         "No downloaded and patched hacks match these filters.": "Ningún hack descargado y parcheado coincide con estos filtros.",
         "Playable - double-click title": "Jugable: haz doble clic en el título",
+        "Playable": "Jugable",
         "Not downloaded": "No descargado",
         "Update {version} is available in Help.": "La actualización {version} está disponible en Ayuda.",
         "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "Se muestran {count} hacks moderados del catálogo. Los títulos amarillos están descargados y listos para jugar; haz doble clic para iniciarlos. Haz clic en cualquier encabezado para ordenar o elige Abrir página / Descargar parche.",
@@ -16240,6 +17034,7 @@ _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
         "SMW Central rating": "Note SMW Central",
         "No downloaded and patched hacks match these filters.": "Aucun hack téléchargé et patché ne correspond à ces filtres.",
         "Playable - double-click title": "Jouable : double-cliquez sur le titre",
+        "Playable": "Jouable",
         "Not downloaded": "Non téléchargé",
         "Update {version} is available in Help.": "La mise à jour {version} est disponible dans Aide.",
         "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "Affichage de {count} hacks modérés du catalogue. Les titres jaunes sont téléchargés et prêts à jouer ; double-cliquez pour les lancer. Cliquez sur un en-tête pour trier ou choisissez Ouvrir la page / Télécharger le patch.",
@@ -16271,6 +17066,7 @@ _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
         "SMW Central rating": "SMW-Central-Bewertung",
         "No downloaded and patched hacks match these filters.": "Keine heruntergeladenen und gepatchten Hacks entsprechen diesen Filtern.",
         "Playable - double-click title": "Spielbereit: Titel doppelklicken",
+        "Playable": "Spielbereit",
         "Not downloaded": "Nicht heruntergeladen",
         "Update {version} is available in Help.": "Update {version} ist unter Hilfe verfügbar.",
         "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "{count} moderierte Katalog-Hacks werden angezeigt. Gelbe Titel sind heruntergeladen und spielbereit; zum Starten doppelklicken. Zum Sortieren eine Spaltenüberschrift anklicken oder Seite öffnen / Patch herunterladen wählen.",
@@ -16302,6 +17098,7 @@ _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
         "SMW Central rating": "Avaliação do SMW Central",
         "No downloaded and patched hacks match these filters.": "Nenhum hack baixado e corrigido corresponde a esses filtros.",
         "Playable - double-click title": "Jogável: clique duas vezes no título",
+        "Playable": "Jogável",
         "Not downloaded": "Não baixado",
         "Update {version} is available in Help.": "A atualização {version} está disponível em Ajuda.",
         "Showing {count} moderated catalog hack(s). Yellow titles are downloaded and ready to play; double-click one to launch it. Click any column heading to sort, or select Open Page / Download Patch.": "Exibindo {count} hacks moderados do catálogo. Títulos amarelos estão baixados e prontos para jogar; clique duas vezes para iniciar. Clique em qualquer cabeçalho para ordenar ou escolha Abrir página / Baixar patch.",
@@ -16375,7 +17172,7 @@ _LOCALIZATION_COMPLETION_ROWS = (
     ("My Rating", "Mi puntuación", "Ma note", "Meine Bewertung", "Minha avaliação"),
     ("Started", "Iniciado", "Commencé", "Begonnen", "Iniciado"),
     ("SMW Central Rating", "Puntuación de SMW Central", "Note SMW Central", "SMW-Central-Bewertung", "Avaliação do SMW Central"),
-    ("Download Missing SMW Hacks", "Descargar hacks faltantes de SMW", "Télécharger les hacks SMW manquants", "Fehlende SMW-Hacks herunterladen", "Baixar hacks ausentes do SMW"),
+    ("Download & Patch Missing Hacks", "Descargar y parchear hacks faltantes", "Télécharger et patcher les hacks manquants", "Fehlende Hacks herunterladen und patchen", "Baixar e aplicar patches aos hacks ausentes"),
     ("Minimum rating", "Puntuación mínima", "Note minimale", "Mindestbewertung", "Avaliação mínima"),
     ("Maximum rating", "Puntuación máxima", "Note maximale", "Höchstbewertung", "Avaliação máxima"),
     ("SMW Central Page", "Página de SMW Central", "Page SMW Central", "SMW-Central-Seite", "Página do SMW Central"),
@@ -16389,6 +17186,7 @@ _LOCALIZATION_COMPLETION_ROWS = (
     ("Could not access the FXPAK Pro SD card.", "No se pudo acceder a la tarjeta SD de FXPAK Pro.", "Impossible d’accéder à la carte SD FXPAK Pro.", "Auf die FXPAK-Pro-SD-Karte konnte nicht zugegriffen werden.", "Não foi possível acessar o cartão SD do FXPAK Pro."),
     ("FXPAK Pro SD Card Could Not Be Opened", "No se pudo abrir la tarjeta SD del FXPAK Pro", "Impossible d’ouvrir la carte SD du FXPAK Pro", "FXPAK-Pro-SD-Karte konnte nicht geöffnet werden", "Não foi possível abrir o cartão SD do FXPAK Pro"),
     ("Make sure the console and FXPAK Pro are powered on, a USB data cable is connected, and QUsb2Snes or SNI shows the FXPAK Pro.", "Asegúrate de que la consola y el FXPAK Pro estén encendidos, que haya un cable USB de datos conectado y que QUsb2Snes o SNI muestre el FXPAK Pro.", "Vérifiez que la console et le FXPAK Pro sont allumés, qu’un câble USB de données est connecté et que QUsb2Snes ou SNI affiche le FXPAK Pro.", "Stelle sicher, dass die Konsole und der FXPAK Pro eingeschaltet sind, ein USB-Datenkabel angeschlossen ist und QUsb2Snes oder SNI den FXPAK Pro anzeigt.", "Verifique se o console e o FXPAK Pro estão ligados, se um cabo USB de dados está conectado e se o QUsb2Snes ou SNI mostra o FXPAK Pro."),
+    ("The FXPAK Pro USB destination is not ready. Connect the USB data cable, power on the console and FXPAK Pro, and make sure QUsb2Snes shows the device.", "El destino USB del FXPAK Pro no está listo. Conecta el cable USB de datos, enciende la consola y el FXPAK Pro, y asegúrate de que QUsb2Snes muestre el dispositivo.", "La destination USB du FXPAK Pro n’est pas prête. Connectez le câble de données USB, allumez la console et le FXPAK Pro, puis vérifiez que QUsb2Snes affiche l’appareil.", "Das FXPAK-Pro-USB-Ziel ist nicht bereit. Schließe das USB-Datenkabel an, schalte Konsole und FXPAK Pro ein und stelle sicher, dass QUsb2Snes das Gerät anzeigt.", "O destino USB do FXPAK Pro não está pronto. Conecte o cabo USB de dados, ligue o console e o FXPAK Pro e verifique se o QUsb2Snes mostra o dispositivo."),
     ("QUsb2Snes did not report a compatible SNES device.", "QUsb2Snes no detectó ningún dispositivo SNES compatible.", "QUsb2Snes n’a détecté aucun appareil SNES compatible.", "QUsb2Snes hat kein kompatibles SNES-Gerät erkannt.", "O QUsb2Snes não detectou um dispositivo SNES compatível."),
     ("READ ME / SETUP GUIDE", "GUÍA DE INSTALACIÓN Y USO", "GUIDE D’INSTALLATION ET D’UTILISATION", "EINRICHTUNGS- UND BEDIENUNGSANLEITUNG", "GUIA DE INSTALAÇÃO E USO"),
     ("ABOUT & UPDATES", "ACERCA DE Y ACTUALIZACIONES", "À PROPOS ET MISES À JOUR", "INFO UND UPDATES", "SOBRE E ATUALIZAÇÕES"),
@@ -16456,7 +17254,7 @@ _LOCALIZATION_COMPLETION_ROWS = (
     ("Later", "Más tarde", "Plus tard", "Später", "Mais tarde"),
     ("⚙  SETTINGS", "⚙  CONFIGURACIÓN", "⚙  PARAMÈTRES", "⚙  EINSTELLUNGEN", "⚙  CONFIGURAÇÕES"),
     ("★  SMW Central Catalog", "★  Catálogo de SMW Central", "★  Catalogue SMW Central", "★  SMW-Central-Katalog", "★  Catálogo do SMW Central"),
-    ("⬇  Download Missing SMW Hacks", "⬇  Descargar hacks faltantes de SMW", "⬇  Télécharger les hacks SMW manquants", "⬇  Fehlende SMW-Hacks herunterladen", "⬇  Baixar hacks ausentes do SMW"),
+    ("⬇  Download & Patch Missing Hacks", "⬇  Descargar y parchear hacks faltantes", "⬇  Télécharger et patcher les hacks manquants", "⬇  Fehlende Hacks herunterladen und patchen", "⬇  Baixar e aplicar patches aos hacks ausentes"),
     ("▣  FXPAK PRO GAME LIBRARY", "▣  BIBLIOTECA DE JUEGOS FXPAK PRO", "▣  BIBLIOTHÈQUE DE JEUX FXPAK PRO", "▣  FXPAK-PRO-SPIELEBIBLIOTHEK", "▣  BIBLIOTECA DE JOGOS FXPAK PRO"),
     ("▶  Launch Selected", "▶  Iniciar selección", "▶  Lancer la sélection", "▶  Auswahl starten", "▶  Iniciar selecionado"),
     ("🎲  RANDOM GAME", "🎲  JUEGO ALEATORIO", "🎲  JEU ALÉATOIRE", "🎲  ZUFÄLLIGES SPIEL", "🎲  JOGO ALEATÓRIO"),
@@ -16465,6 +17263,157 @@ _LOCALIZATION_COMPLETION_ROWS = (
     ("Use {completed} and optionally {total}. Examples:  Exits: {completed} / {total}   or   {completed} / {total}", "Usa {completed} y opcionalmente {total}. Ejemplos:  Salidas: {completed} / {total}   o   {completed} / {total}", "Utilisez {completed} et éventuellement {total}. Exemples :  Sorties : {completed} / {total}   ou   {completed} / {total}", "{completed} und optional {total} verwenden. Beispiele:  Ausgänge: {completed} / {total}   oder   {completed} / {total}", "Use {completed} e opcionalmente {total}. Exemplos:  Saídas: {completed} / {total}   ou   {completed} / {total}"),
     ("Use {deaths}. Examples:  Level Deaths: {deaths}   or   {deaths}", "Usa {deaths}. Ejemplos:  Muertes del nivel: {deaths}   o   {deaths}", "Utilisez {deaths}. Exemples :  Morts du niveau : {deaths}   ou   {deaths}", "{deaths} verwenden. Beispiele:  Level-Tode: {deaths}   oder   {deaths}", "Use {deaths}. Exemplos:  Mortes da fase: {deaths}   ou   {deaths}"),
     ("Use {total_deaths}. Examples:  Total Deaths: {total_deaths}   or   {total_deaths}", "Usa {total_deaths}. Ejemplos:  Muertes totales: {total_deaths}   o   {total_deaths}", "Utilisez {total_deaths}. Exemples :  Morts totales : {total_deaths}   ou   {total_deaths}", "{total_deaths} verwenden. Beispiele:  Tode insgesamt: {total_deaths}   oder   {total_deaths}", "Use {total_deaths}. Exemplos:  Mortes totais: {total_deaths}   ou   {total_deaths}"),
+    ("Released", "Publicado", "Publication", "Veröffentlicht", "Lançado"),
+    ("Released (Newest)", "Publicados (más recientes)", "Publications (plus récentes)", "Veröffentlicht (neueste)", "Lançados (mais recentes)"),
+    ("Released (Oldest)", "Publicados (más antiguos)", "Publications (plus anciennes)", "Veröffentlicht (älteste)", "Lançados (mais antigos)"),
+    ("Downloaded", "Descargado", "Téléchargé", "Heruntergeladen", "Baixado"),
+    ("Hall of Fame", "Salón de la Fama", "Temple de la renommée", "Ruhmeshalle", "Hall da Fama"),
+    ("Waiting", "En espera", "En attente", "Wartend", "Em espera"),
+    ("Yes", "Sí", "Oui", "Ja", "Sim"),
+    ("No", "No", "Non", "Nein", "Não"),
+    ("Last Week", "Última semana", "Semaine dernière", "Letzte Woche", "Última semana"),
+    ("Last Month", "Último mes", "Mois dernier", "Letzter Monat", "Último mês"),
+    ("Last 3 Months", "Últimos 3 meses", "3 derniers mois", "Letzte 3 Monate", "Últimos 3 meses"),
+    ("Last 6 Months", "Últimos 6 meses", "6 derniers mois", "Letzte 6 Monate", "Últimos 6 meses"),
+    ("Last Year", "Último año", "Année dernière", "Letztes Jahr", "Último ano"),
+    ("Last {years} Years", "Últimos {years} años", "{years} dernières années", "Letzte {years} Jahre", "Últimos {years} anos"),
+    ("Refresh Catalog View", "Actualizar vista del catálogo", "Actualiser la vue du catalogue", "Katalogansicht aktualisieren", "Atualizar exibição do catálogo"),
+    ("Refresh Preview", "Actualizar vista previa", "Actualiser l’aperçu", "Vorschau aktualisieren", "Atualizar prévia"),
+    ("Refresh Moderated Hacks from SMW Central", "Actualizar hacks moderados desde SMW Central", "Actualiser les hacks modérés depuis SMW Central", "Moderierte Hacks von SMW Central aktualisieren", "Atualizar hacks moderados do SMW Central"),
+    ("Refresh Waiting Hacks from SMW Central", "Actualizar hacks en espera desde SMW Central", "Actualiser les hacks en attente depuis SMW Central", "Wartende Hacks von SMW Central aktualisieren", "Atualizar hacks em espera do SMW Central"),
+    (
+        "Refresh moderated hacks directly from SMW Central's live catalog?\n\nThis retrieves the current moderated list from the site, including hacks that may not have reached the GitHub spreadsheet mirror yet. Routine refreshes use a fast newest-first scan and stop after reaching already-known hacks.\n\nYour tracked progress, ratings, notes, custom hacks, and ROM mappings will be preserved.",
+        "¿Actualizar los hacks moderados directamente desde el catálogo en vivo de SMW Central?\n\nEsto recupera la lista moderada actual del sitio, incluidos los hacks que quizá todavía no hayan llegado al espejo de la hoja de cálculo de GitHub. Las actualizaciones normales usan un escaneo rápido desde los más recientes y se detienen al llegar a hacks ya conocidos.\n\nSe conservarán tu progreso, puntuaciones, notas, hacks personalizados y asignaciones de ROM.",
+        "Actualiser les hacks modérés directement depuis le catalogue en ligne de SMW Central ?\n\nCette opération récupère la liste modérée actuelle du site, y compris les hacks qui n’ont peut-être pas encore atteint le miroir de la feuille de calcul GitHub. Les actualisations ordinaires analysent rapidement les entrées les plus récentes et s’arrêtent lorsqu’elles atteignent des hacks déjà connus.\n\nVotre progression, vos évaluations, vos notes, vos hacks personnalisés et vos associations de ROM seront conservés.",
+        "Moderierte Hacks direkt aus dem Live-Katalog von SMW Central aktualisieren?\n\nDadurch wird die aktuelle moderierte Liste von der Website abgerufen, einschließlich Hacks, die möglicherweise noch nicht im GitHub-Tabellenspiegel enthalten sind. Reguläre Aktualisierungen beginnen mit den neuesten Einträgen und stoppen, sobald bereits bekannte Hacks erreicht werden.\n\nDein Fortschritt, deine Bewertungen, Notizen, benutzerdefinierten Hacks und ROM-Zuordnungen bleiben erhalten.",
+        "Atualizar os hacks moderados diretamente do catálogo ao vivo do SMW Central?\n\nIsso obtém a lista moderada atual do site, incluindo hacks que talvez ainda não tenham chegado ao espelho da planilha do GitHub. As atualizações normais fazem uma verificação rápida começando pelos mais recentes e param ao encontrar hacks já conhecidos.\n\nSeu progresso, avaliações, notas, hacks personalizados e mapeamentos de ROM serão preservados.",
+    ),
+    (
+        "Refresh waiting hacks directly from SMW Central's live catalog?\n\nWaiting entries are not moderated yet and will appear in bright red throughout the app.",
+        "¿Actualizar los hacks en espera directamente desde el catálogo en vivo de SMW Central?\n\nLas entradas en espera aún no están moderadas y aparecerán en rojo brillante en toda la aplicación.",
+        "Actualiser les hacks en attente directement depuis le catalogue en ligne de SMW Central ?\n\nLes entrées en attente ne sont pas encore modérées et apparaîtront en rouge vif dans toute l’application.",
+        "Wartende Hacks direkt aus dem Live-Katalog von SMW Central aktualisieren?\n\nWartende Einträge sind noch nicht moderiert und werden in der gesamten App leuchtend rot angezeigt.",
+        "Atualizar os hacks em espera diretamente do catálogo ao vivo do SMW Central?\n\nAs entradas em espera ainda não foram moderadas e aparecerão em vermelho vivo em todo o aplicativo.",
+    ),
+    ("Download Moderated Hacks", "Descargar hacks moderados", "Télécharger les hacks modérés", "Moderierte Hacks herunterladen", "Baixar hacks moderados"),
+    ("Download and patch {count} missing moderated hack(s)?", "¿Descargar y aplicar el parche a {count} hack(s) moderado(s) faltante(s)?", "Télécharger et appliquer le patch à {count} hack(s) modéré(s) manquant(s) ?", "{count} fehlende moderierte Hack(s) herunterladen und patchen?", "Baixar e aplicar o patch em {count} hack(s) moderado(s) ausente(s)?"),
+    ("Base ROM:", "ROM base:", "ROM de base :", "Basis-ROM:", "ROM base:"),
+    ("Output library:", "Biblioteca de destino:", "Bibliothèque de destination :", "Ausgabebibliothek:", "Biblioteca de destino:"),
+    ("Also copy each completed ROM to SD:", "Copiar también cada ROM terminada a la tarjeta SD:", "Copier également chaque ROM terminée sur la carte SD :", "Jede fertige ROM zusätzlich auf die SD-Karte kopieren:", "Também copiar cada ROM concluída para o cartão SD:"),
+    ("Also upload each completed ROM through the FXPAK Pro USB connection to:", "Subir también cada ROM terminada mediante la conexión USB de FXPAK Pro a:", "Envoyer également chaque ROM terminée via la connexion USB du FXPAK Pro vers :", "Jede fertige ROM zusätzlich über die FXPAK-Pro-USB-Verbindung hochladen nach:", "Também enviar cada ROM concluída pela conexão USB do FXPAK Pro para:"),
+    (
+        "Games already found in the local library or mapped in the FXPAK game library will be skipped again immediately before each download.",
+        "Los juegos ya encontrados en la biblioteca local o asignados en la biblioteca de juegos FXPAK se omitirán de nuevo inmediatamente antes de cada descarga.",
+        "Les jeux déjà trouvés dans la bibliothèque locale ou associés dans la bibliothèque de jeux FXPAK seront de nouveau ignorés juste avant chaque téléchargement.",
+        "Spiele, die bereits in der lokalen Bibliothek gefunden oder in der FXPAK-Spielbibliothek zugeordnet wurden, werden unmittelbar vor jedem Download erneut übersprungen.",
+        "Os jogos já encontrados na biblioteca local ou mapeados na biblioteca de jogos do FXPAK serão ignorados novamente imediatamente antes de cada download.",
+    ),
+    ("Download & Patch All Matching Hacks", "Descargar y parchear todos los hacks coincidentes", "Télécharger et patcher tous les hacks correspondants", "Alle passenden Hacks herunterladen und patchen", "Baixar e aplicar patches a todos os hacks correspondentes"),
+    ("Waiting hacks are shown in bright red.", "Los hacks en espera se muestran en rojo brillante.", "Les hacks en attente sont affichés en rouge vif.", "Wartende Hacks werden leuchtend rot angezeigt.", "Hacks em espera são exibidos em vermelho vivo."),
+    ("Hall of Fame hacks are shown in yellow.", "Los hacks del Salón de la Fama se muestran en amarillo.", "Les hacks du Temple de la renommée sont affichés en jaune.", "Ruhmeshallen-Hacks werden gelb angezeigt.", "Hacks do Hall da Fama são exibidos em amarelo."),
+    ("Minimum rating", "Puntuación mínima", "Note minimale", "Mindestbewertung", "Avaliação mínima"),
+    ("Maximum rating", "Puntuación máxima", "Note maximale", "Höchstbewertung", "Avaliação máxima"),
+    ("Add Unmoderated Hack", "Añadir hack no moderado", "Ajouter un hack non modéré", "Unmoderierten Hack hinzufügen", "Adicionar hack não moderado"),
+    ("Browse moderated and waiting hacks currently stored in the SMW Central catalog. Use the filters to narrow the list. Search by title or creator, and click any column heading to sort it.", "Explora los hacks moderados y en espera guardados en el catálogo de SMW Central. Usa los filtros, busca por título o creador y haz clic en un encabezado para ordenar.", "Parcourez les hacks modérés et en attente du catalogue SMW Central. Utilisez les filtres, recherchez par titre ou créateur et cliquez sur un en-tête pour trier.", "Moderierte und wartende Hacks im SMW-Central-Katalog durchsuchen. Filter verwenden, nach Titel oder Ersteller suchen und zum Sortieren auf eine Spaltenüberschrift klicken.", "Explore os hacks moderados e em espera salvos no catálogo do SMW Central. Use os filtros, pesquise por título ou criador e clique em um cabeçalho para ordenar."),
+    ("This list includes moderated hacks and hacks still waiting at SMW Central. Waiting hacks appear in bright red. This tool downloads their patch ZIPs and applies them to your own clean Super Mario World ROM. It never downloads a base ROM. Existing mapped or local games are always skipped.", "Esta lista incluye hacks moderados y hacks que aún esperan en SMW Central. Los hacks en espera aparecen en rojo brillante. Esta herramienta descarga sus parches ZIP y los aplica a tu propia ROM limpia de Super Mario World. Nunca descarga una ROM base. Los juegos locales o ya asignados siempre se omiten.", "Cette liste comprend les hacks modérés et ceux encore en attente sur SMW Central. Les hacks en attente apparaissent en rouge vif. Cet outil télécharge leurs patchs ZIP et les applique à votre propre ROM Super Mario World propre. Il ne télécharge jamais de ROM de base. Les jeux locaux ou déjà associés sont toujours ignorés.", "Diese Liste enthält moderierte und bei SMW Central noch wartende Hacks. Wartende Hacks erscheinen leuchtend rot. Das Werkzeug lädt deren Patch-ZIPs herunter und wendet sie auf deine eigene saubere Super-Mario-World-ROM an. Eine Basis-ROM wird niemals heruntergeladen. Bereits zugeordnete oder lokale Spiele werden übersprungen.", "Esta lista inclui hacks moderados e hacks ainda em espera no SMW Central. Hacks em espera aparecem em vermelho vivo. Esta ferramenta baixa os patches ZIP e os aplica à sua própria ROM limpa de Super Mario World. Ela nunca baixa uma ROM base. Jogos locais ou já mapeados são sempre ignorados."),
+    ("Showing {count} moderated and waiting catalog hack(s). A green check means downloaded. Yellow titles are Hall of Fame hacks; bright red titles are still waiting. Double-click a downloaded title to launch it.", "Mostrando {count} hacks moderados y en espera. Una marca verde indica que está descargado. Los títulos amarillos pertenecen al Salón de la Fama; los rojos siguen en espera. Haz doble clic en un título descargado para iniciarlo.", "Affichage de {count} hacks modérés et en attente. Une coche verte signifie qu’il est téléchargé. Les titres jaunes appartiennent au Temple de la renommée ; les titres rouges sont encore en attente. Double-cliquez sur un titre téléchargé pour le lancer.", "{count} moderierte und wartende Hacks werden angezeigt. Ein grünes Häkchen bedeutet heruntergeladen. Gelbe Titel sind Ruhmeshallen-Hacks; leuchtend rote Titel warten noch. Einen heruntergeladenen Titel zum Starten doppelklicken.", "Exibindo {count} hacks moderados e em espera. Uma marca verde significa baixado. Títulos amarelos são do Hall da Fama; títulos vermelhos ainda estão em espera. Clique duas vezes em um título baixado para iniciar."),
+    ("{moderated} moderated • {waiting} waiting", "{moderated} moderados • {waiting} en espera", "{moderated} modérés • {waiting} en attente", "{moderated} moderiert • {waiting} wartend", "{moderated} moderados • {waiting} em espera"),
+    ("Loaded ({moderated} moderated • {waiting} waiting • {tracked} tracked)", "Cargado ({moderated} moderados • {waiting} en espera • {tracked} seguidos)", "Chargé ({moderated} modérés • {waiting} en attente • {tracked} suivis)", "Geladen ({moderated} moderiert • {waiting} wartend • {tracked} verfolgt)", "Carregado ({moderated} moderados • {waiting} em espera • {tracked} acompanhados)"),
+    ("{moderated} new moderated • {waiting} new waiting since last refresh", "{moderated} moderados nuevos • {waiting} nuevos en espera desde la última actualización", "{moderated} nouveaux modérés • {waiting} nouveaux en attente depuis la dernière actualisation", "{moderated} neue moderierte • {waiting} neue wartende seit der letzten Aktualisierung", "{moderated} novos moderados • {waiting} novos em espera desde a última atualização"),
+    ("New moderated count unavailable • {waiting} new waiting since last refresh", "Recuento de moderados nuevos no disponible • {waiting} nuevos en espera desde la última actualización", "Nombre de nouveaux modérés indisponible • {waiting} nouveaux en attente depuis la dernière actualisation", "Anzahl neuer moderierter Hacks nicht verfügbar • {waiting} neue wartende seit der letzten Aktualisierung", "Contagem de novos moderados indisponível • {waiting} novos em espera desde a última atualização"),
+    ("Catalog contains {moderated} moderated and {waiting} waiting hack(s); showing {count} matching. A green check means downloaded. Yellow titles are Hall of Fame hacks; bright red titles are still waiting. Double-click a downloaded title to launch it.", "El catálogo contiene {moderated} hacks moderados y {waiting} en espera; se muestran {count} coincidentes. Una marca verde indica que está descargado. Los títulos amarillos pertenecen al Salón de la Fama; los rojos siguen en espera. Haz doble clic en un título descargado para iniciarlo.", "Le catalogue contient {moderated} hacks modérés et {waiting} en attente ; {count} résultats sont affichés. Une coche verte signifie téléchargé. Les titres jaunes appartiennent au Temple de la renommée ; les titres rouges sont encore en attente. Double-cliquez sur un titre téléchargé pour le lancer.", "Der Katalog enthält {moderated} moderierte und {waiting} wartende Hacks; {count} Treffer werden angezeigt. Ein grünes Häkchen bedeutet heruntergeladen. Gelbe Titel sind Ruhmeshallen-Hacks; leuchtend rote Titel warten noch. Einen heruntergeladenen Titel zum Starten doppelklicken.", "O catálogo contém {moderated} hacks moderados e {waiting} em espera; exibindo {count} correspondentes. Uma marca verde significa baixado. Títulos amarelos são do Hall da Fama; títulos vermelhos ainda estão em espera. Clique duas vezes em um título baixado para iniciar."),
+    (
+        "Missing-only download completed. Newly built: {built}; existing skipped: {existing}; failed: {failed}; no link: {no_link}.",
+        "Descarga de faltantes completada. Creadas: {built}; existentes omitidas: {existing}; fallidas: {failed}; sin enlace: {no_link}.",
+        "Téléchargement des éléments manquants terminé. Nouveaux fichiers créés : {built} ; fichiers existants ignorés : {existing} ; échecs : {failed} ; sans lien : {no_link}.",
+        "Download fehlender Hacks abgeschlossen. Neu erstellt: {built}; vorhandene übersprungen: {existing}; fehlgeschlagen: {failed}; ohne Link: {no_link}.",
+        "Download dos arquivos ausentes concluído. Novos criados: {built}; existentes ignorados: {existing}; falhas: {failed}; sem link: {no_link}.",
+    ),
+    (
+        "SD copied: {copied}; already on SD: {existing}; SD copy failed: {failed}.",
+        "Copiadas a la SD: {copied}; ya estaban en la SD: {existing}; copias a la SD fallidas: {failed}.",
+        "Copies sur la carte SD : {copied} ; déjà présentes sur la carte SD : {existing} ; échecs de copie : {failed}.",
+        "Auf SD kopiert: {copied}; bereits auf SD: {existing}; SD-Kopie fehlgeschlagen: {failed}.",
+        "Copiados para o cartão SD: {copied}; já estavam no cartão SD: {existing}; falhas na cópia: {failed}.",
+    ),
+    (
+        "USB uploaded: {uploaded}; already on FXPAK: {existing}; USB upload failed: {failed}.",
+        "Cargadas por USB: {uploaded}; ya estaban en FXPAK: {existing}; cargas USB fallidas: {failed}.",
+        "Téléversements USB : {uploaded} ; déjà sur FXPAK : {existing} ; échecs USB : {failed}.",
+        "Per USB hochgeladen: {uploaded}; bereits auf FXPAK: {existing}; USB-Upload fehlgeschlagen: {failed}.",
+        "Enviados por USB: {uploaded}; já no FXPAK: {existing}; falhas no envio USB: {failed}.",
+    ),
+    (
+        "Reports were saved in:",
+        "Los informes se guardaron en:",
+        "Les rapports ont été enregistrés dans :",
+        "Berichte wurden gespeichert unter:",
+        "Os relatórios foram salvos em:",
+    ),
+    (
+        "All successfully patched local ROMs were kept. Check the report for SD-card or USB transfer errors.",
+        "Todas las ROM locales parcheadas correctamente se conservaron. Revisa el informe para ver errores de transferencia a la tarjeta SD o por USB.",
+        "Toutes les ROM locales correctement patchées ont été conservées. Consultez le rapport pour les erreurs de transfert vers la carte SD ou par USB.",
+        "Alle erfolgreich gepatchten lokalen ROMs wurden behalten. Prüfe den Bericht auf Fehler bei der SD-Karten- oder USB-Übertragung.",
+        "Todas as ROMs locais corrigidas com sucesso foram mantidas. Verifique o relatório para erros de transferência para o cartão SD ou por USB.",
+    ),
+    (
+        "The download job stopped because of an error: {error}",
+        "La descarga se detuvo debido a un error: {error}",
+        "Le téléchargement s’est arrêté en raison d’une erreur : {error}",
+        "Der Download wurde wegen eines Fehlers beendet: {error}",
+        "O download foi interrompido devido a um erro: {error}",
+    ),
+    (
+        "Download job cancelled. Completed files were kept, and the report/index were updated.",
+        "Descarga cancelada. Los archivos completados se conservaron y el informe/índice se actualizó.",
+        "Téléchargement annulé. Les fichiers terminés ont été conservés et le rapport/index a été mis à jour.",
+        "Download abgebrochen. Fertige Dateien wurden behalten und Bericht/Index aktualisiert.",
+        "Download cancelado. Os arquivos concluídos foram mantidos e o relatório/índice foi atualizado.",
+    ),
+    (
+        "SMWCentral Catalog",
+        "Catálogo de SMW Central",
+        "Catalogue SMW Central",
+        "SMW-Central-Katalog",
+        "Catálogo do SMW Central",
+    ),
+    (
+        "Live SMW Central catalog refresh complete. Pages checked: {pages}; hacks checked: {checked}; new: {new}; updated: {updated}; removed: {removed}; official catalog: {official}.",
+        "Actualización del catálogo en vivo de SMW Central completada. Páginas revisadas: {pages}; hacks revisados: {checked}; nuevos: {new}; actualizados: {updated}; eliminados: {removed}; catálogo oficial: {official}.",
+        "Actualisation du catalogue en ligne de SMW Central terminée. Pages vérifiées : {pages} ; hacks vérifiés : {checked} ; nouveaux : {new} ; mis à jour : {updated} ; supprimés : {removed} ; catalogue officiel : {official}.",
+        "Aktualisierung des Live-Katalogs von SMW Central abgeschlossen. Geprüfte Seiten: {pages}; geprüfte Hacks: {checked}; neu: {new}; aktualisiert: {updated}; entfernt: {removed}; offizieller Katalog: {official}.",
+        "Atualização do catálogo ao vivo do SMW Central concluída. Páginas verificadas: {pages}; hacks verificados: {checked}; novos: {new}; atualizados: {updated}; removidos: {removed}; catálogo oficial: {official}.",
+    ),
+    (
+        "Your hack catalog is already up to date. Catalog version: {version}; sequence: {sequence}.",
+        "Tu catálogo de hacks ya está actualizado. Versión del catálogo: {version}; secuencia: {sequence}.",
+        "Votre catalogue de hacks est déjà à jour. Version du catalogue : {version} ; séquence : {sequence}.",
+        "Dein Hack-Katalog ist bereits aktuell. Katalogversion: {version}; Sequenz: {sequence}.",
+        "Seu catálogo de hacks já está atualizado. Versão do catálogo: {version}; sequência: {sequence}.",
+    ),
+    (
+        "No catalog changes were applied because your local catalog sequence ({local_sequence}) is newer than the GitHub repository sequence ({repository_sequence}). Your current catalog was preserved.",
+        "No se aplicaron cambios porque la secuencia de tu catálogo local ({local_sequence}) es más reciente que la del repositorio de GitHub ({repository_sequence}). Se conservó tu catálogo actual.",
+        "Aucune modification n'a été appliquée car la séquence de votre catalogue local ({local_sequence}) est plus récente que celle du dépôt GitHub ({repository_sequence}). Votre catalogue actuel a été conservé.",
+        "Es wurden keine Katalogänderungen übernommen, da deine lokale Katalogsequenz ({local_sequence}) neuer als die Sequenz des GitHub-Repositorys ({repository_sequence}) ist. Dein aktueller Katalog wurde beibehalten.",
+        "Nenhuma alteração foi aplicada porque a sequência do seu catálogo local ({local_sequence}) é mais recente que a do repositório do GitHub ({repository_sequence}). Seu catálogo atual foi preservado.",
+    ),
+    (
+        "{count} removed catalog entry or entries were retained as local history because they are tracked or have ROM mappings.",
+        "Se conservaron {count} entradas eliminadas como historial local porque están seguidas o tienen asignaciones de ROM.",
+        "{count} entrées supprimées du catalogue ont été conservées dans l'historique local car elles sont suivies ou associées à des ROM.",
+        "{count} entfernte Katalogeinträge wurden als lokaler Verlauf beibehalten, da sie verfolgt werden oder ROM-Zuordnungen besitzen.",
+        "{count} entradas removidas do catálogo foram mantidas no histórico local porque são acompanhadas ou têm mapeamentos de ROM.",
+    ),
+    (
+        "Catalog refresh failed.",
+        "Error al actualizar el catálogo.",
+        "Échec de l'actualisation du catalogue.",
+        "Katalogaktualisierung fehlgeschlagen.",
+        "Falha ao atualizar o catálogo.",
+    ),
+    ("OK", "Aceptar", "OK", "OK", "OK"),
 )
 for (
     _english_text,
@@ -16473,6 +17422,128 @@ for (
     _german_text,
     _portuguese_text,
 ) in _LOCALIZATION_COMPLETION_ROWS:
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+_LIVE_STATUS_LOCALIZATION_ROWS = (
+    ("Join Discord", "Join the Discord mob", "Unirse a Discord", "Rejoindre Discord", "Discord beitreten", "Entrar no Discord"),
+    ("Discord Could Not Be Opened", "Crikey! Discord Wouldn’t Open", "No se pudo abrir Discord", "Impossible d’ouvrir Discord", "Discord konnte nicht geöffnet werden", "Não foi possível abrir o Discord"),
+    ("The Discord invite could not be opened in your default browser. You can copy this address instead:", "Crikey — the Discord invite wouldn’t open in your usual browser. Copy this address instead, mate:", "No se pudo abrir la invitación de Discord en el navegador predeterminado. Puedes copiar esta dirección:", "L’invitation Discord n’a pas pu être ouverte dans votre navigateur par défaut. Vous pouvez copier cette adresse :", "Die Discord-Einladung konnte nicht im Standardbrowser geöffnet werden. Sie können stattdessen diese Adresse kopieren:", "Não foi possível abrir o convite do Discord no navegador padrão. Você pode copiar este endereço:"),
+    ("Done", "Done and dusted", "Listo", "Terminé", "Fertig", "Concluído"),
+    ("Download", "Grab it, mate", "Descargar", "Télécharger", "Herunterladen", "Baixar"),
+    ("Information", "Good oil", "Información", "Information", "Information", "Informação"),
+    ("Next", "Onward, mate", "Siguiente", "Suivant", "Weiter", "Próximo"),
+    ("Retry", "Have another go", "Reintentar", "Réessayer", "Erneut versuchen", "Tentar novamente"),
+    ("Setup", "Get things sorted", "Configuración", "Configuration", "Einrichtung", "Configuração"),
+    ("Setup Complete", "All sorted, you beauty", "Configuración completada", "Configuration terminée", "Einrichtung abgeschlossen", "Configuração concluída"),
+    ("Warning", "Heads up, mate", "Advertencia", "Avertissement", "Warnung", "Aviso"),
+    ("No recent hacks", "No recent hacks, mate", "No hay hacks recientes", "Aucun hack récent", "Keine kürzlich gespielten Hacks", "Nenhum hack recente"),
+    ("Preparing download...", "Getting the download ready, mate...", "Preparando la descarga...", "Préparation du téléchargement...", "Download wird vorbereitet...", "Preparando o download..."),
+    ("Connecting to the live SMW Central catalog…", "Connecting to the live SMW Central catalogue, mate…", "Conectando al catálogo en vivo de SMW Central…", "Connexion au catalogue SMW Central en direct…", "Verbindung zum Live-Katalog von SMW Central wird hergestellt…", "Conectando ao catálogo ao vivo do SMW Central…"),
+    ("Reloading database…", "Reloading the database, mate…", "Recargando la base de datos…", "Rechargement de la base de données…", "Datenbank wird neu geladen…", "Recarregando o banco de dados…"),
+    ("Synchronizing stats with Google Sheets…", "Syncing the stats with Google Sheets, mate…", "Sincronizando estadísticas con Google Sheets…", "Synchronisation des statistiques avec Google Sheets…", "Statistiken werden mit Google Sheets synchronisiert…", "Sincronizando estatísticas com o Google Sheets…"),
+    ("Scanning SD card…", "Having a squiz at the SD card…", "Analizando la tarjeta SD…", "Analyse de la carte SD…", "SD-Karte wird durchsucht…", "Verificando o cartão SD…"),
+    ("Opening spreadsheet…", "Cracking open the spreadsheet…", "Abriendo la hoja de cálculo…", "Ouverture de la feuille de calcul…", "Tabelle wird geöffnet…", "Abrindo a planilha…"),
+    ("Opening the current hack on SMWCentral…", "Opening the current hack on SMW Central, mate…", "Abriendo el hack actual en SMW Central…", "Ouverture du hack actuel sur SMW Central…", "Aktueller Hack wird auf SMW Central geöffnet…", "Abrindo o hack atual no SMW Central…"),
+    ("Starting tracker…", "Firing up the tracker, mate…", "Iniciando el tracker…", "Démarrage du tracker…", "Tracker wird gestartet…", "Iniciando o tracker…"),
+    ("Changing the game timer state…", "Giving the game timer a tweak…", "Cambiando el estado del temporizador de juego…", "Modification de l’état du chronomètre de partie…", "Status des Spiel-Timers wird geändert…", "Alterando o estado do cronômetro do jogo…"),
+    ("Changing the level timer state…", "Giving the level timer a tweak…", "Cambiando el estado del temporizador de nivel…", "Modification de l’état du chronomètre de niveau…", "Status des Level-Timers wird geändert…", "Alterando o estado do cronômetro da fase…"),
+    ("Changing both timer states…", "Giving both timers a tweak…", "Cambiando el estado de ambos temporizadores…", "Modification de l’état des deux chronomètres…", "Status beider Timer wird geändert…", "Alterando o estado dos dois cronômetros…"),
+    ("Finishing the game timer…", "Wrapping up the game timer, mate…", "Finalizando el temporizador de juego…", "Finalisation du chronomètre de partie…", "Spiel-Timer wird beendet…", "Finalizando o cronômetro do jogo…"),
+    ("Saving completion, rating, notes, exits, status, and playtime to the tracker database…", "Saving the whole lot to the tracker database, mate…", "Guardando finalización, puntuación, notas, salidas, estado y tiempo de juego en la base de datos del tracker…", "Enregistrement de la progression, de la note, des notes, des sorties, du statut et du temps de jeu dans la base de données du tracker…", "Abschluss, Bewertung, Notizen, Ausgänge, Status und Spielzeit werden in der Tracker-Datenbank gespeichert…", "Salvando conclusão, avaliação, notas, saídas, status e tempo de jogo no banco de dados do tracker…"),
+    ("{count} hack(s)", "{count} hack(s), mate", "{count} hack(s)", "{count} hack(s)", "{count} Hack(s)", "{count} hack(s)"),
+    ("{count} unmoderated hack(s)", "{count} unmoderated hack(s), mate", "{count} hack(s) no moderado(s)", "{count} hack(s) non modéré(s)", "{count} nicht moderierte(r) Hack(s)", "{count} hack(s) não moderado(s)"),
+    ("{missing} missing • {existing} existing • {matching} matching", "{missing} missing • {existing} already here • {matching} match, mate", "{missing} faltantes • {existing} existentes • {matching} coincidentes", "{missing} manquants • {existing} existants • {matching} correspondants", "{missing} fehlend • {existing} vorhanden • {matching} passend", "{missing} ausentes • {existing} existentes • {matching} correspondentes"),
+    ("{count} games", "{count} games, mate", "{count} juegos", "{count} jeux", "{count} Spiele", "{count} jogos"),
+    ("{filtered} of {total} games", "{filtered} of {total} games, mate", "{filtered} de {total} juegos", "{filtered} jeux sur {total}", "{filtered} von {total} Spielen", "{filtered} de {total} jogos"),
+    ("{visible} shown • {total} ROM file(s)", "{visible} shown • {total} ROM file(s), mate", "{visible} visibles • {total} archivo(s) ROM", "{visible} affichés • {total} fichier(s) ROM", "{visible} angezeigt • {total} ROM-Datei(en)", "{visible} exibidos • {total} arquivo(s) de ROM"),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _LIVE_STATUS_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
+_FULL_UI_LOCALIZATION_ROWS = (
+    ("Never", "Not in a blue moon", "Nunca", "Jamais", "Nie", "Nunca"),
+    ("Random Hack", "Mystery hack, mate", "Hack aleatorio", "Hack aléatoire", "Zufälliger Hack", "Hack aleatório"),
+    ("SMW Stream Tracker Error", "Crikey! SMW Stream Tracker hit a snag", "Error de SMW Stream Tracker", "Erreur de SMW Stream Tracker", "Fehler in SMW Stream Tracker", "Erro do SMW Stream Tracker"),
+    ("⚠  STREAMER PRIVACY WARNING", "⚠  OI, STREAMER — PRIVACY HEADS-UP", "⚠  ADVERTENCIA DE PRIVACIDAD PARA STREAMERS", "⚠  AVERTISSEMENT DE CONFIDENTIALITÉ POUR LES STREAMERS", "⚠  DATENSCHUTZWARNUNG FÜR STREAMER", "⚠  AVISO DE PRIVACIDADE PARA STREAMERS"),
+    ("Apps Script Web App URL:", "Apps Script web-app address, mate:", "URL de la aplicación web de Apps Script:", "URL de l’application Web Apps Script :", "Apps-Script-Web-App-URL:", "URL do aplicativo da Web do Apps Script:"),
+    ("Apps Script code", "Apps Script code, you beauty", "Código de Apps Script", "Code Apps Script", "Apps-Script-Code", "Código do Apps Script"),
+    ("Google tab-name prefix:", "Google tab-name prefix, mate:", "Prefijo del nombre de pestaña de Google:", "Préfixe du nom d’onglet Google :", "Präfix für Google-Tabnamen:", "Prefixo do nome da guia do Google:"),
+    ("No games match the selected filters.", "Yeah, nah — no games match those filters.", "Ningún juego coincide con los filtros seleccionados.", "Aucun jeu ne correspond aux filtres sélectionnés.", "Keine Spiele entsprechen den ausgewählten Filtern.", "Nenhum jogo corresponde aos filtros selecionados."),
+    ("Use YYYY-MM-DD for dates and H:MM:SS for playtime. Enter a whole number for known deaths, or * if unknown.", "Use YYYY-MM-DD for dates and H:MM:SS for playtime, mate. Use a whole number for known deaths, or * when it’s a mystery.", "Usa AAAA-MM-DD para las fechas y H:MM:SS para el tiempo de juego. Introduce un número entero para las muertes conocidas o * si se desconoce.", "Utilisez AAAA-MM-JJ pour les dates et H:MM:SS pour le temps de jeu. Saisissez un nombre entier pour les morts connues, ou * si elles sont inconnues.", "Verwenden Sie JJJJ-MM-TT für Datumsangaben und H:MM:SS für die Spielzeit. Geben Sie für bekannte Tode eine ganze Zahl oder bei unbekanntem Wert * ein.", "Use AAAA-MM-DD para datas e H:MM:SS para o tempo de jogo. Digite um número inteiro para mortes conhecidas ou * se o valor for desconhecido."),
+    ("No catalog changes were applied because your local catalog sequence ({local_sequence}) is newer than the GitHub repository sequence ({sequence}). Your current catalog was preserved.", "No worries, mate — your local catalogue sequence ({local_sequence}) is newer than GitHub’s ({sequence}), so your current catalogue was kept safe.", "No se aplicaron cambios porque la secuencia de tu catálogo local ({local_sequence}) es más reciente que la del repositorio de GitHub ({sequence}). Se conservó tu catálogo actual.", "Aucune modification n’a été appliquée, car la séquence de votre catalogue local ({local_sequence}) est plus récente que celle du dépôt GitHub ({sequence}). Votre catalogue actuel a été conservé.", "Es wurden keine Katalogänderungen angewendet, da Ihre lokale Katalogsequenz ({local_sequence}) neuer als die Sequenz des GitHub-Repositorys ({sequence}) ist. Ihr aktueller Katalog wurde beibehalten.", "Nenhuma alteração foi aplicada porque a sequência do catálogo local ({local_sequence}) é mais recente que a do repositório do GitHub ({sequence}). O catálogo atual foi preservado."),
+    ("A download job is already running.", "Hold your horses, mate — a download is already having a go.", "Ya hay una descarga en curso.", "Un téléchargement est déjà en cours.", "Ein Downloadauftrag wird bereits ausgeführt.", "Já há um download em andamento."),
+    ("A game launch is already in progress.", "Easy there, mate — a game is already launching.", "Ya se está iniciando un juego.", "Un lancement de jeu est déjà en cours.", "Ein Spiel wird bereits gestartet.", "Um jogo já está sendo iniciado."),
+    ("App rollback is available in an installed release, not while running from source.", "Rollback only works from an installed release, mate — not while running the source code in the shed.", "La restauración de la aplicación está disponible en una versión instalada, no al ejecutarla desde el código fuente.", "La restauration de l’application est disponible dans une version installée, pas lors d’une exécution depuis les sources.", "Die App-Wiederherstellung ist nur in einer installierten Version verfügbar, nicht beim Ausführen aus dem Quellcode.", "A restauração do aplicativo está disponível em uma versão instalada, não durante a execução pelo código-fonte."),
+    ("Checking securely for updates...", "Checking the update paddock securely, mate...", "Buscando actualizaciones de forma segura...", "Recherche sécurisée des mises à jour...", "Sichere Suche nach Updates...", "Verificando atualizações com segurança..."),
+    ("Downloading and verifying the update package...", "Fetching and checking the update package, mate...", "Descargando y verificando el paquete de actualización...", "Téléchargement et vérification du paquet de mise à jour...", "Updatepaket wird heruntergeladen und überprüft...", "Baixando e verificando o pacote de atualização..."),
+    ("SMW Stream Tracker is up to date.", "Too easy — SMW Stream Tracker is bang up to date.", "SMW Stream Tracker está actualizado.", "SMW Stream Tracker est à jour.", "SMW Stream Tracker ist auf dem neuesten Stand.", "O SMW Stream Tracker está atualizado."),
+    ("Rollback Available After Installation", "Rollback’s Ready After Installation, Mate", "Restauración disponible después de la instalación", "Restauration disponible après l’installation", "Wiederherstellung nach der Installation verfügbar", "Restauração disponível após a instalação"),
+    ("Restore the previous app version? Your tracker data and settings will be backed up first.", "Reckon we should restore the previous version? Your tracker data and settings get a backup first, no worries.", "¿Restaurar la versión anterior de la aplicación? Primero se hará una copia de seguridad de los datos y la configuración.", "Restaurer la version précédente de l’application ? Vos données et paramètres seront d’abord sauvegardés.", "Vorherige App-Version wiederherstellen? Ihre Tracker-Daten und Einstellungen werden zuerst gesichert.", "Restaurar a versão anterior do aplicativo? Primeiro será feito um backup dos dados e das configurações."),
+    ("The previous executable did not pass its SHA-256 integrity check.", "Crikey — the previous app failed its SHA-256 integrity check.", "El ejecutable anterior no superó la comprobación de integridad SHA-256.", "L’exécutable précédent n’a pas réussi la vérification d’intégrité SHA-256.", "Die vorherige Programmdatei hat die SHA-256-Integritätsprüfung nicht bestanden.", "O executável anterior não passou na verificação de integridade SHA-256."),
+    ("The recovery backup could not be created.", "Crikey — couldn’t make the recovery backup.", "No se pudo crear la copia de seguridad de recuperación.", "La sauvegarde de récupération n’a pas pu être créée.", "Die Wiederherstellungssicherung konnte nicht erstellt werden.", "Não foi possível criar o backup de recuperação."),
+    ("Could Not Start Rollback", "Crikey! Couldn’t Start the Rollback", "No se pudo iniciar la restauración", "Impossible de démarrer la restauration", "Wiederherstellung konnte nicht gestartet werden", "Não foi possível iniciar a restauração"),
+    ("Could Not Start Updater", "Crikey! Couldn’t Start the Updater", "No se pudo iniciar el actualizador", "Impossible de démarrer le programme de mise à jour", "Updater konnte nicht gestartet werden", "Não foi possível iniciar o atualizador"),
+    ("Could not create the OBS text files:\n{error}", "Crikey — couldn’t create the OBS text files:\n{error}", "No se pudieron crear los archivos de texto de OBS:\n{error}", "Impossible de créer les fichiers texte OBS :\n{error}", "Die OBS-Textdateien konnten nicht erstellt werden:\n{error}", "Não foi possível criar os arquivos de texto do OBS:\n{error}"),
+    ("Could not save appearance setting:\n{error}", "Crikey — couldn’t save the appearance setting:\n{error}", "No se pudo guardar la configuración de apariencia:\n{error}", "Impossible d’enregistrer le paramètre d’apparence :\n{error}", "Die Darstellungseinstellung konnte nicht gespeichert werden:\n{error}", "Não foi possível salvar a configuração de aparência:\n{error}"),
+    ("Could not save the language setting:\n{error}", "Crikey — couldn’t save the language setting:\n{error}", "No se pudo guardar la configuración de idioma:\n{error}", "Impossible d’enregistrer le paramètre de langue :\n{error}", "Die Spracheinstellung konnte nicht gespeichert werden:\n{error}", "Não foi possível salvar a configuração de idioma:\n{error}"),
+    ("Delete Unmoderated Hack", "Give This Unmoderated Hack the Boot", "Eliminar hack no moderado", "Supprimer le hack non modéré", "Nicht moderierten Hack löschen", "Excluir hack não moderado"),
+    ("Download and set up", "Download and sort out", "Descargar y configurar", "Télécharger et configurer", "Herunterladen und einrichten", "Baixar e configurar"),
+    ("The download comes from the project's official release server.", "The download comes from the project’s official release server, fair dinkum.", "La descarga procede del servidor oficial de versiones del proyecto.", "Le téléchargement provient du serveur de versions officiel du projet.", "Der Download stammt vom offiziellen Veröffentlichungsserver des Projekts.", "O download vem do servidor oficial de versões do projeto."),
+    ("Edit Tracker Record", "Have a Tinker with the Tracker Record", "Editar registro del tracker", "Modifier l’entrée du tracker", "Tracker-Eintrag bearbeiten", "Editar registro do tracker"),
+    ("Enter a number from 1 through 5. Decimal values are allowed.", "Pop in a number from 1 to 5, mate. Decimals are fair game.", "Introduce un número del 1 al 5. Se permiten valores decimales.", "Saisissez un nombre de 1 à 5. Les valeurs décimales sont autorisées.", "Geben Sie eine Zahl von 1 bis 5 ein. Dezimalwerte sind zulässig.", "Digite um número de 1 a 5. Valores decimais são permitidos."),
+    ("Enter at least one timer or death-counter value before applying the override.", "Give us at least one timer or death-counter value before applying the override, mate.", "Introduce al menos un valor de tiempo o contador de muertes antes de aplicar la corrección.", "Saisissez au moins une valeur de chronomètre ou de compteur de morts avant d’appliquer la correction.", "Geben Sie mindestens einen Timer- oder Todeszählerwert ein, bevor Sie die Korrektur anwenden.", "Digite pelo menos um valor de cronômetro ou contador de mortes antes de aplicar a substituição."),
+    ("Error", "Crikey!", "Error", "Erreur", "Fehler", "Erro"),
+    ("Export Complete", "Export Done and Dusted", "Exportación completada", "Exportation terminée", "Export abgeschlossen", "Exportação concluída"),
+    ("Export Failed", "Crikey! Export Came a Cropper", "Error de exportación", "Échec de l’exportation", "Export fehlgeschlagen", "Falha na exportação"),
+    ("Restore Complete", "Restore Done and Dusted", "Restauración completada", "Restauration terminée", "Wiederherstellung abgeschlossen", "Restauração concluída"),
+    ("Restore Failed", "Crikey! Restore Came a Cropper", "Error de restauración", "Échec de la restauration", "Wiederherstellung fehlgeschlagen", "Falha na restauração"),
+    ("FXPAK Pro USB Test", "FXPAK Pro USB Test, Mate", "Prueba USB de FXPAK Pro", "Test USB du FXPAK Pro", "FXPAK-Pro-USB-Test", "Teste USB do FXPAK Pro"),
+    ("Google Apps Script code copied to the clipboard.", "Too easy — the Google Apps Script code is on the clipboard.", "El código de Google Apps Script se copió al portapapeles.", "Le code Google Apps Script a été copié dans le presse-papiers.", "Der Google-Apps-Script-Code wurde in die Zwischenablage kopiert.", "O código do Google Apps Script foi copiado para a área de transferência."),
+    ("Google Sheets sync settings saved.", "Beauty — Google Sheets sync settings saved.", "Se guardó la configuración de sincronización de Google Sheets.", "Les paramètres de synchronisation Google Sheets ont été enregistrés.", "Die Google-Sheets-Synchronisierungseinstellungen wurden gespeichert.", "As configurações de sincronização do Google Sheets foram salvas."),
+    ("Import existing SMW tracker workbook", "Bring in an Existing SMW Tracker Workbook", "Importar un libro existente del tracker de SMW", "Importer un classeur existant du tracker SMW", "Vorhandene SMW-Tracker-Arbeitsmappe importieren", "Importar uma pasta de trabalho existente do tracker de SMW"),
+    ("Importing spreadsheet into the local tracker database…", "Bringing the spreadsheet into the local tracker database, mate…", "Importando la hoja de cálculo a la base de datos local del tracker…", "Importation de la feuille de calcul dans la base de données locale du tracker…", "Tabelle wird in die lokale Tracker-Datenbank importiert…", "Importando a planilha para o banco de dados local do tracker…"),
+    ("Invalid rating filter", "That rating filter’s gone walkabout", "Filtro de puntuación no válido", "Filtre de note non valide", "Ungültiger Bewertungsfilter", "Filtro de avaliação inválido"),
+    ("LiveSplit ports must be different numbers between 1 and 65535.", "The LiveSplit ports need different numbers from 1 to 65535, mate.", "Los puertos de LiveSplit deben ser números diferentes entre 1 y 65535.", "Les ports LiveSplit doivent être des nombres différents compris entre 1 et 65535.", "Die LiveSplit-Ports müssen unterschiedliche Zahlen zwischen 1 und 65535 sein.", "As portas do LiveSplit devem ser números diferentes entre 1 e 65535."),
+    ("Permanently Remove SD-Card Hack(s)?", "Give These SD-Card Hacks the Permanent Boot?", "¿Eliminar permanentemente los hacks de la tarjeta SD?", "Supprimer définitivement les hacks de la carte SD ?", "SD-Karten-Hacks dauerhaft entfernen?", "Remover permanentemente os hacks do cartão SD?"),
+    ("Select a game first.", "Pick a game first, mate.", "Selecciona primero un juego.", "Sélectionnez d’abord un jeu.", "Wählen Sie zuerst ein Spiel aus.", "Selecione um jogo primeiro."),
+    ("Select a tracker row first.", "Pick a tracker row first, mate.", "Selecciona primero una fila del tracker.", "Sélectionnez d’abord une ligne du tracker.", "Wählen Sie zuerst eine Tracker-Zeile aus.", "Selecione uma linha do tracker primeiro."),
+    ("Select an SD-Card Hack", "Pick an SD-Card Hack, Mate", "Selecciona un hack de la tarjeta SD", "Sélectionnez un hack de la carte SD", "SD-Karten-Hack auswählen", "Selecione um hack do cartão SD"),
+    ("Select an unmoderated hack first.", "Pick an unmoderated hack first, mate.", "Selecciona primero un hack no moderado.", "Sélectionnez d’abord un hack non modéré.", "Wählen Sie zuerst einen nicht moderierten Hack aus.", "Selecione um hack não moderado primeiro."),
+    ("Select one or more ROM files to remove from the FXPAK Pro SD card.", "Pick one or more ROM files to boot off the FXPAK Pro SD card, mate.", "Selecciona uno o más archivos ROM para eliminarlos de la tarjeta SD del FXPAK Pro.", "Sélectionnez un ou plusieurs fichiers ROM à supprimer de la carte SD du FXPAK Pro.", "Wählen Sie eine oder mehrere ROM-Dateien aus, die von der FXPAK-Pro-SD-Karte entfernt werden sollen.", "Selecione um ou mais arquivos ROM para remover do cartão SD do FXPAK Pro."),
+    ("Select your clean Super Mario World ROM", "Pick Your Clean Super Mario World ROM, Mate", "Selecciona tu ROM limpia de Super Mario World", "Sélectionnez votre ROM Super Mario World propre", "Saubere Super-Mario-World-ROM auswählen", "Selecione sua ROM limpa de Super Mario World"),
+    ("Select your clean Super Mario World base ROM.", "Pick your clean Super Mario World base ROM, mate.", "Selecciona tu ROM base limpia de Super Mario World.", "Sélectionnez votre ROM de base Super Mario World propre.", "Wählen Sie Ihre saubere Super-Mario-World-Basis-ROM aus.", "Selecione sua ROM base limpa de Super Mario World."),
+    ("Select your existing/output ROM game-library folder", "Pick Your ROM Game-Library Folder, Mate", "Selecciona la carpeta de la biblioteca de ROM existente o de salida", "Sélectionnez le dossier de bibliothèque de ROM existant ou de sortie", "Ordner der vorhandenen oder ausgegebenen ROM-Spielebibliothek auswählen", "Selecione a pasta existente ou de saída da biblioteca de ROMs"),
+    ("Select your existing/output ROM game-library folder.", "Pick your ROM game-library folder, mate.", "Selecciona la carpeta de la biblioteca de ROM existente o de salida.", "Sélectionnez le dossier de bibliothèque de ROM existant ou de sortie.", "Wählen Sie den Ordner der vorhandenen oder ausgegebenen ROM-Spielebibliothek aus.", "Selecione a pasta existente ou de saída da biblioteca de ROMs."),
+    ("The Web App URL must begin with https:// or http://.", "That Web App URL needs to start with https:// or http://, mate.", "La URL de la aplicación web debe comenzar por https:// o http://.", "L’URL de l’application Web doit commencer par https:// ou http://.", "Die Web-App-URL muss mit https:// oder http:// beginnen.", "A URL do aplicativo da Web deve começar com https:// ou http://."),
+    ("The base ROM must be an existing .sfc or .smc file.", "The base ROM needs to be a real .sfc or .smc file, mate.", "La ROM base debe ser un archivo .sfc o .smc existente.", "La ROM de base doit être un fichier .sfc ou .smc existant.", "Die Basis-ROM muss eine vorhandene .sfc- oder .smc-Datei sein.", "A ROM base deve ser um arquivo .sfc ou .smc existente."),
+    ("The hack catalog is still loading.", "Hang on, mate — the hack catalogue is still loading.", "El catálogo de hacks todavía se está cargando.", "Le catalogue de hacks est encore en cours de chargement.", "Der Hack-Katalog wird noch geladen.", "O catálogo de hacks ainda está carregando."),
+    ("There are no missing downloadable games under the selected filters or selected row.", "Yeah, nah — there are no missing downloadable games under those filters or that row.", "No hay juegos descargables faltantes con los filtros o la fila seleccionados.", "Aucun jeu téléchargeable manquant ne correspond aux filtres ou à la ligne sélectionnés.", "Unter den ausgewählten Filtern oder der ausgewählten Zeile fehlen keine herunterladbaren Spiele.", "Não há jogos baixáveis ausentes nos filtros ou na linha selecionados."),
+    ("Windows could not open this link in your default browser.", "Crikey — Windows couldn’t open that link in your usual browser.", "Windows no pudo abrir este enlace en el navegador predeterminado.", "Windows n’a pas pu ouvrir ce lien dans votre navigateur par défaut.", "Windows konnte diesen Link nicht im Standardbrowser öffnen.", "O Windows não conseguiu abrir este link no navegador padrão."),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _FULL_UI_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
     UI_TRANSLATIONS["es"][_english_text] = _spanish_text
     UI_TRANSLATIONS["fr"][_english_text] = _french_text
     UI_TRANSLATIONS["de"][_english_text] = _german_text
@@ -16645,6 +17716,749 @@ for (
     UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
 
 
+_AUSTRALIAN_UI_OVERRIDES = {
+    "Home": "Back to the homestead",
+    "File": "File, mate",
+    "Stats": "The scorecard",
+    "Downloads": "Grab the goods",
+    "Help": "Give us a hand",
+    "Settings": "Tinker with the settings",
+    "Select Platform": "Pick your rig",
+    "Appearance": "How she looks",
+    "App language": "The local lingo",
+    "Language": "Lingo",
+    "Light Mode": "Bright as the outback",
+    "Dark Mode": "Night at the billabong",
+    "Save Settings": "Save the good oil",
+    "Save": "Save the goods",
+    "Cancel": "Yeah, nah — leave it",
+    "Close": "Chuck it shut",
+    "Browse": "Have a squiz",
+    "Open": "Crack it open",
+    "Refresh": "Give it a freshen-up",
+    "Reset": "Back to square one",
+    "Play": "Have a go",
+    "Play Random Hack": "Spin the mystery hack wheel",
+    "Replay Recent Hack": "Give that recent hack another burl",
+    "Add to My Tracker": "Chuck it in My Tracker",
+    "Complete Hack": "Job done, mate",
+    "Current Hack": "The hack on the barbie",
+    "Live Session": "Live session, you beauty",
+    "Game Controls": "Game controls, mate",
+    "Timers": "Stopwatches",
+    "Timer & Death Controls": "Stopwatches and the death tally",
+    "Game Time": "Game clock",
+    "Level Time": "Level clock",
+    "Level Deaths": "Level mishaps",
+    "Total Deaths": "All the mishaps",
+    "Game Deaths": "Game mishaps",
+    "Start Game Timer": "Kick off the game clock",
+    "Start Level Timer": "Kick off the level clock",
+    "Start Timers": "Fire up both clocks",
+    "Stop Game Timer": "Pull up the game clock",
+    "Stop Level Timer": "Pull up the level clock",
+    "Stop Timers": "Pull up both clocks",
+    "Reset Game Timer": "Wind back the game clock",
+    "Reset Level Timer": "Wind back the level clock",
+    "Finish Game Timer": "Call time on the game",
+    "Apply Override": "Make it so, mate",
+    "Reset Game Deaths": "Clear the game mishaps",
+    "Created by FredDOGG23": "Knocked together by FredDOGG23",
+    "Created By": "Knocked together by",
+    "Overview": "The big picture",
+    "Overview…": "The big picture…",
+    "My Tracker": "My trusty tracker",
+    "My Tracker…": "My trusty tracker…",
+    "Import Existing Spreadsheet…": "Bring in an old spreadsheet…",
+    "Export My Tracker…": "Send My Tracker walkabout…",
+    "Back Up Database…": "Stash a database backup…",
+    "Restore Database…": "Bring the database back…",
+    "Open Database Folder": "Crack open the database folder",
+    "Test Selected Platform": "Give the selected rig a test run",
+    "OBS Settings": "OBS bits and bobs",
+    "Restore Previous App Version...": "Wind back to the previous app version...",
+    "Download & Patch Missing Hacks…": "Grab and patch the missing hacks…",
+    "Download & Patch All Matching Hacks": "Grab and patch every matching hack",
+    "Add Unmoderated Hack…": "Chuck in an unmoderated hack…",
+    "Status": "How she’s travelling",
+    "Search or select a hack...": "Find or pick a hack, mate...",
+    "Hack catalog is loading...": "The hack catalogue is warming up...",
+    "Connection & Emulator Setup": "Connection and emulator wrangling",
+    "Install or Find SNI (Needed for RetroArch)...": "Find or install SNI for RetroArch, mate...",
+    "Install or Find QUsb2Snes (Needed for FXPAK Pro)...": "Find or install QUsb2Snes for FXPAK Pro, mate...",
+    "Install or Configure RetroArch...": "Find, install, or sort out RetroArch...",
+    "SMW Central Catalog": "SMW Central catalogue, mate",
+    "View Complete Catalog…": "Have a squiz at the whole catalogue…",
+    "Refresh Moderated Hacks from SMW Central…": "Freshen up moderated hacks from SMW Central…",
+    "Visit SMW Central Website...": "Pop over to the SMW Central website...",
+    "Read Me / Setup Guide...": "Read Me and setup yarn...",
+    "Feedback & Suggestions...": "Have a yarn and send suggestions...",
+    "About & Updates...": "About this beauty and its updates...",
+    "Open OBS Text Folder": "Crack open the OBS text folder",
+    "Edit OBS Text Settings...": "Tinker with the OBS text settings...",
+    "Setup & Health Check...": "Setup and health check, mate...",
+    "Diagnostics...": "Have a squiz under the bonnet...",
+    "Minimize to Tray": "Tuck it in the tray",
+    "Exit": "Head off",
+    "Search": "Go looking",
+    "Filter by letter": "Pick a letter",
+    "Any": "Whatever, mate",
+    "All": "The whole lot",
+    "Refresh Preview": "Freshen the preview",
+    "Yes": "Too right",
+    "No": "Yeah, nah",
+    "OK": "Too easy",
+    "Ready": "Ready to rip",
+    "Connected": "Hooked up, you beauty",
+    "Disconnected": "Not hooked up, mate",
+    "Unknown": "Who knows, mate",
+    "Warning": "Oi! Heads up",
+    "Information": "Here’s the good oil",
+    "Download": "Grab it",
+    "Retry": "Give it another burl",
+    "Done": "Done and dusted",
+    "Next": "Onward, mate",
+    "Back": "Back we go",
+    "Setup": "Get things sorted",
+    "Setup Complete": "All sorted, you beauty",
+}
+_all_ui_translation_keys = set().union(
+    *(translations.keys() for translations in UI_TRANSLATIONS.values())
+)
+for _english_text in _all_ui_translation_keys:
+    UI_TRANSLATIONS["au"].setdefault(_english_text, _english_text)
+UI_TRANSLATIONS["au"].update(_AUSTRALIAN_UI_OVERRIDES)
+
+_RUNTIME_LOCALIZATION_ROWS = (
+    ("The tracker is reconnecting. Try the override again in a moment.", "The tracker’s reconnecting, mate. Give that override another go in a tick.", "El tracker se está reconectando. Vuelve a intentar la corrección en un momento.", "Le tracker se reconnecte. Réessayez la correction dans un instant.", "Der Tracker stellt die Verbindung wieder her. Versuchen Sie die Korrektur gleich noch einmal.", "O tracker está se reconectando. Tente a substituição novamente em instantes."),
+    ("Edit deaths, rating, progress, and tracker entry", "Tinker with deaths, rating, progress, and the tracker entry", "Editar muertes, puntuación, progreso y registro del tracker", "Modifier les morts, la note, la progression et l’entrée du tracker", "Tode, Bewertung, Fortschritt und Tracker-Eintrag bearbeiten", "Editar mortes, avaliação, progresso e registro do tracker"),
+    ("Solid color for entire table...", "One solid colour for the whole table, mate...", "Color sólido para toda la tabla...", "Couleur unie pour tout le tableau...", "Einfarbige Darstellung für die gesamte Tabelle...", "Cor sólida para toda a tabela..."),
+    ("Gradient for entire table...", "Gradient across the whole table, mate...", "Degradado para toda la tabla...", "Dégradé pour tout le tableau...", "Farbverlauf für die gesamte Tabelle...", "Gradiente para toda a tabela..."),
+    ("Alternating rows for entire table...", "Alternating rows across the whole table...", "Filas alternas para toda la tabla...", "Lignes alternées pour tout le tableau...", "Abwechselnde Zeilen für die gesamte Tabelle...", "Linhas alternadas para toda a tabela..."),
+    ("Restore Mario theme colors", "Put the Mario colours back, mate", "Restaurar colores del tema de Mario", "Restaurer les couleurs du thème Mario", "Farben des Mario-Designs wiederherstellen", "Restaurar cores do tema Mario"),
+    ("No SMWCentral page is stored for this hack.", "Yeah, nah — there’s no SMW Central page saved for this hack.", "No hay ninguna página de SMW Central guardada para este hack.", "Aucune page SMW Central n’est enregistrée pour ce hack.", "Für diesen Hack ist keine SMW-Central-Seite gespeichert.", "Nenhuma página do SMW Central está salva para este hack."),
+    ("The catalog entry for this tracker row could not be found.", "Crikey — couldn’t find the catalogue entry for that tracker row.", "No se encontró la entrada del catálogo para esta fila del tracker.", "L’entrée du catalogue correspondant à cette ligne du tracker est introuvable.", "Der Katalogeintrag für diese Tracker-Zeile wurde nicht gefunden.", "A entrada do catálogo desta linha do tracker não foi encontrada."),
+    ("Select an existing .xlsx or .xlsm tracker workbook.", "Pick an existing .xlsx or .xlsm tracker workbook, mate.", "Selecciona un libro del tracker .xlsx o .xlsm existente.", "Sélectionnez un classeur du tracker .xlsx ou .xlsm existant.", "Wählen Sie eine vorhandene .xlsx- oder .xlsm-Tracker-Arbeitsmappe aus.", "Selecione uma pasta de trabalho existente do tracker em .xlsx ou .xlsm."),
+    ("Spreadsheet Import Failed", "Crikey! The spreadsheet import came a cropper", "Error al importar la hoja de cálculo", "Échec de l’importation de la feuille de calcul", "Tabellenimport fehlgeschlagen", "Falha na importação da planilha"),
+    ("Spreadsheet Import Complete", "Spreadsheet import done and dusted", "Importación de la hoja de cálculo completada", "Importation de la feuille de calcul terminée", "Tabellenimport abgeschlossen", "Importação da planilha concluída"),
+    ("Spreadsheet Update Failed", "Crikey! The spreadsheet update came a cropper", "Error al actualizar la hoja de cálculo", "Échec de la mise à jour de la feuille de calcul", "Tabellenaktualisierung fehlgeschlagen", "Falha na atualização da planilha"),
+    ("Spreadsheet import failed.", "Crikey — the spreadsheet import came a cropper.", "La importación de la hoja de cálculo falló.", "L’importation de la feuille de calcul a échoué.", "Der Tabellenimport ist fehlgeschlagen.", "A importação da planilha falhou."),
+    ("Spreadsheet data imported into the tracker database.", "Beauty — the spreadsheet data is in the tracker database.", "Los datos de la hoja de cálculo se importaron a la base de datos del tracker.", "Les données de la feuille de calcul ont été importées dans la base de données du tracker.", "Die Tabellendaten wurden in die Tracker-Datenbank importiert.", "Os dados da planilha foram importados para o banco de dados do tracker."),
+    ("The local library and SD-card folders are the same. Choose a separate local library, or turn off the extra SD-card copy.", "The local library and SD-card folders are the same, mate. Pick a separate local library or switch off the extra SD-card copy.", "La biblioteca local y la carpeta de la tarjeta SD son iguales. Elige otra biblioteca local o desactiva la copia adicional a la tarjeta SD.", "La bibliothèque locale et le dossier de la carte SD sont identiques. Choisissez une autre bibliothèque locale ou désactivez la copie supplémentaire vers la carte SD.", "Lokale Bibliothek und SD-Karten-Ordner sind identisch. Wählen Sie eine andere lokale Bibliothek oder deaktivieren Sie die zusätzliche SD-Karten-Kopie.", "A biblioteca local e a pasta do cartão SD são iguais. Escolha outra biblioteca local ou desative a cópia extra para o cartão SD."),
+    ("No downloaded hacks are available for the selected platform. Download a hack or map an existing ROM first.", "Yeah, nah — no downloaded hacks are ready for that platform. Download one or map an existing ROM first, mate.", "No hay hacks descargados disponibles para la plataforma seleccionada. Descarga un hack o vincula primero una ROM existente.", "Aucun hack téléchargé n’est disponible pour la plateforme sélectionnée. Téléchargez un hack ou associez d’abord une ROM existante.", "Für die ausgewählte Plattform sind keine heruntergeladenen Hacks verfügbar. Laden Sie zuerst einen Hack herunter oder ordnen Sie eine vorhandene ROM zu.", "Não há hacks baixados para a plataforma selecionada. Baixe um hack ou associe primeiro uma ROM existente."),
+    ("This game does not have a stored SMWCentral page.", "Yeah, nah — this game hasn’t got a saved SMW Central page.", "Este juego no tiene ninguna página de SMW Central guardada.", "Ce jeu ne possède aucune page SMW Central enregistrée.", "Für dieses Spiel ist keine SMW-Central-Seite gespeichert.", "Este jogo não tem uma página do SMW Central salva."),
+    ("No downloaded games match the selected random filters.", "Yeah, nah — no downloaded games match those random filters.", "Ningún juego descargado coincide con los filtros aleatorios seleccionados.", "Aucun jeu téléchargé ne correspond aux filtres aléatoires sélectionnés.", "Keine heruntergeladenen Spiele entsprechen den ausgewählten Zufallsfiltern.", "Nenhum jogo baixado corresponde aos filtros aleatórios selecionados."),
+    ("No optional import workbook is selected.", "No optional import workbook is picked, mate.", "No se ha seleccionado ningún libro opcional para importar.", "Aucun classeur d’importation facultatif n’est sélectionné.", "Es wurde keine optionale Import-Arbeitsmappe ausgewählt.", "Nenhuma pasta de trabalho opcional de importação foi selecionada."),
+    ("No SMWCentral page is available for the currently detected hack.", "Yeah, nah — there’s no SMW Central page for the hack we spotted.", "No hay ninguna página de SMW Central disponible para el hack detectado.", "Aucune page SMW Central n’est disponible pour le hack détecté.", "Für den derzeit erkannten Hack ist keine SMW-Central-Seite verfügbar.", "Nenhuma página do SMW Central está disponível para o hack detectado."),
+    ("Update Check Failed", "Crikey! The update check came a cropper", "Error al buscar actualizaciones", "Échec de la recherche de mises à jour", "Updateprüfung fehlgeschlagen", "Falha ao verificar atualizações"),
+    ("Timer grace must be a whole number that is 0 or greater.", "Timer grace needs to be a whole number of 0 or more, mate.", "La tolerancia del temporizador debe ser un número entero igual o mayor que 0.", "Le délai du chronomètre doit être un nombre entier supérieur ou égal à 0.", "Der Timer-Nachlauf muss eine ganze Zahl ab 0 sein.", "A tolerância do cronômetro deve ser um número inteiro igual ou maior que 0."),
+    ("Invalid Tracker Data", "Crikey! That tracker data’s gone walkabout", "Datos del tracker no válidos", "Données du tracker non valides", "Ungültige Tracker-Daten", "Dados do tracker inválidos"),
+    ("Timer Action Failed", "Crikey! The timer action came a cropper", "Error en la acción del temporizador", "Échec de l’action du chronomètre", "Timer-Aktion fehlgeschlagen", "Falha na ação do cronômetro"),
+    ("Tracker Database Update Failed", "Crikey! The tracker database update came a cropper", "Error al actualizar la base de datos del tracker", "Échec de la mise à jour de la base de données du tracker", "Aktualisierung der Tracker-Datenbank fehlgeschlagen", "Falha na atualização do banco de dados do tracker"),
+    ("The tracker is reconnecting. Try resetting the death counter again in a moment.", "The tracker’s reconnecting, mate. Give that death-counter reset another go in a tick.", "El tracker se está reconectando. Vuelve a intentar restablecer el contador de muertes en un momento.", "Le tracker se reconnecte. Réessayez de réinitialiser le compteur de morts dans un instant.", "Der Tracker stellt die Verbindung wieder her. Versuchen Sie gleich erneut, den Todeszähler zurückzusetzen.", "O tracker está se reconectando. Tente redefinir o contador de mortes novamente em instantes."),
+    ("The tracker is reconnecting. Try the game timer again in a moment.", "The tracker’s reconnecting, mate. Give the game timer another go in a tick.", "El tracker se está reconectando. Vuelve a intentar el temporizador de juego en un momento.", "Le tracker se reconnecte. Réessayez le chronomètre de partie dans un instant.", "Der Tracker stellt die Verbindung wieder her. Versuchen Sie den Spiel-Timer gleich noch einmal.", "O tracker está se reconectando. Tente o cronômetro do jogo novamente em instantes."),
+    ("The tracker is reconnecting. Try the level timer again in a moment.", "The tracker’s reconnecting, mate. Give the level timer another go in a tick.", "El tracker se está reconectando. Vuelve a intentar el temporizador de nivel en un momento.", "Le tracker se reconnecte. Réessayez le chronomètre de niveau dans un instant.", "Der Tracker stellt die Verbindung wieder her. Versuchen Sie den Level-Timer gleich noch einmal.", "O tracker está se reconectando. Tente o cronômetro da fase novamente em instantes."),
+    ("The tracker is reconnecting. Try the timer controls again in a moment.", "The tracker’s reconnecting, mate. Give the timer controls another go in a tick.", "El tracker se está reconectando. Vuelve a intentar los controles del temporizador en un momento.", "Le tracker se reconnecte. Réessayez les commandes du chronomètre dans un instant.", "Der Tracker stellt die Verbindung wieder her. Versuchen Sie die Timer-Steuerung gleich noch einmal.", "O tracker está se reconectando. Tente os controles do cronômetro novamente em instantes."),
+    ("The tracker is reconnecting. Try finishing the game timer again in a moment.", "The tracker’s reconnecting, mate. Try finishing the game timer again in a tick.", "El tracker se está reconectando. Vuelve a intentar finalizar el temporizador de juego en un momento.", "Le tracker se reconnecte. Réessayez de terminer le chronomètre de partie dans un instant.", "Der Tracker stellt die Verbindung wieder her. Versuchen Sie gleich erneut, den Spiel-Timer zu beenden.", "O tracker está se reconectando. Tente finalizar o cronômetro do jogo novamente em instantes."),
+    ("The tracker is reconnecting. Try completing the game again in a moment.", "The tracker’s reconnecting, mate. Try completing the game again in a tick.", "El tracker se está reconectando. Vuelve a intentar completar el juego en un momento.", "Le tracker se reconnecte. Réessayez de terminer le jeu dans un instant.", "Der Tracker stellt die Verbindung wieder her. Versuchen Sie gleich erneut, das Spiel abzuschließen.", "O tracker está se reconectando. Tente concluir o jogo novamente em instantes."),
+    ("The tracker is reconnecting. Try adding the game again in a moment.", "The tracker’s reconnecting, mate. Try adding the game again in a tick.", "El tracker se está reconectando. Vuelve a intentar añadir el juego en un momento.", "Le tracker se reconnecte. Réessayez d’ajouter le jeu dans un instant.", "Der Tracker stellt die Verbindung wieder her. Versuchen Sie gleich erneut, das Spiel hinzuzufügen.", "O tracker está se reconectando. Tente adicionar o jogo novamente em instantes."),
+    ("Type part of a title, author, difficulty, or hack type, then choose a hack from the drop-down list.", "Type a bit of the title, creator, difficulty, or hack type, then pick one from the drop-down, mate.", "Escribe parte del título, autor, dificultad o tipo de hack y elige un hack en la lista desplegable.", "Saisissez une partie du titre, du créateur, de la difficulté ou du type de hack, puis choisissez un hack dans la liste déroulante.", "Geben Sie einen Teil des Titels, Erstellers, Schwierigkeitsgrads oder Hack-Typs ein und wählen Sie dann einen Hack aus der Liste.", "Digite parte do título, autor, dificuldade ou tipo de hack e escolha um hack na lista suspensa."),
+    ("Executable", "Program file, mate", "Ejecutable", "Exécutable", "Programmdatei", "Executável"),
+    ("Excel workbook", "Excel workbook, mate", "Libro de Excel", "Classeur Excel", "Excel-Arbeitsmappe", "Pasta de trabalho do Excel"),
+    ("All files", "All the files", "Todos los archivos", "Tous les fichiers", "Alle Dateien", "Todos os arquivos"),
+    ("Libretro core", "Libretro core, mate", "Núcleo Libretro", "Cœur Libretro", "Libretro-Core", "Núcleo Libretro"),
+    ("CSV file", "CSV file, mate", "Archivo CSV", "Fichier CSV", "CSV-Datei", "Arquivo CSV"),
+    ("Tracker database", "Tracker database, mate", "Base de datos del tracker", "Base de données du tracker", "Tracker-Datenbank", "Banco de dados do tracker"),
+    ("SNES ROM", "SNES ROM, mate", "ROM de SNES", "ROM SNES", "SNES-ROM", "ROM de SNES"),
+    ("Select SNI.exe", "Pick SNI.exe, mate", "Seleccionar SNI.exe", "Sélectionner SNI.exe", "SNI.exe auswählen", "Selecionar SNI.exe"),
+    ("Select QUsb2Snes.exe", "Pick QUsb2Snes.exe, mate", "Seleccionar QUsb2Snes.exe", "Sélectionner QUsb2Snes.exe", "QUsb2Snes.exe auswählen", "Selecionar QUsb2Snes.exe"),
+    ("Select optional workbook to import", "Pick an optional workbook to bring in", "Seleccionar libro opcional para importar", "Sélectionner un classeur facultatif à importer", "Optionale Arbeitsmappe zum Importieren auswählen", "Selecionar pasta de trabalho opcional para importar"),
+    ("Select OBS text-file folder", "Pick the OBS text-file folder, mate", "Seleccionar carpeta de archivos de texto de OBS", "Sélectionner le dossier des fichiers texte OBS", "OBS-Textdateiordner auswählen", "Selecionar pasta dos arquivos de texto do OBS"),
+    ("Select local patched-ROM library", "Pick the local patched-ROM library, mate", "Seleccionar biblioteca local de ROM parcheadas", "Sélectionner la bibliothèque locale de ROM patchées", "Lokale Bibliothek gepatchter ROMs auswählen", "Selecionar biblioteca local de ROMs corrigidas"),
+    ("Select RetroArch SNES core", "Pick the RetroArch SNES core, mate", "Seleccionar núcleo SNES de RetroArch", "Sélectionner le cœur SNES RetroArch", "RetroArch-SNES-Core auswählen", "Selecionar núcleo SNES do RetroArch"),
+    ("Export My Tracker", "Export My Tracker, mate", "Exportar Mi tracker", "Exporter Mon tracker", "Mein Tracker exportieren", "Exportar Meu tracker"),
+    ("Back Up Tracker Database", "Back up the tracker database, mate", "Crear copia de seguridad de la base de datos del tracker", "Sauvegarder la base de données du tracker", "Tracker-Datenbank sichern", "Fazer backup do banco de dados do tracker"),
+    ("Restore Tracker Database Backup", "Restore a tracker database backup, mate", "Restaurar copia de seguridad de la base de datos del tracker", "Restaurer une sauvegarde de la base de données du tracker", "Tracker-Datenbanksicherung wiederherstellen", "Restaurar backup do banco de dados do tracker"),
+    ("Select the All_Hacks folder on the mounted FXPAK Pro SD card", "Pick the All_Hacks folder on the mounted FXPAK Pro SD card, mate", "Seleccionar la carpeta All_Hacks de la tarjeta SD FXPAK Pro montada", "Sélectionner le dossier All_Hacks de la carte SD FXPAK Pro montée", "All_Hacks-Ordner auf der eingebundenen FXPAK-Pro-SD-Karte auswählen", "Selecionar a pasta All_Hacks no cartão SD do FXPAK Pro montado"),
+    ("Choose {label} color", "Pick the colour for {label}, mate", "Elegir color de {label}", "Choisir la couleur de {label}", "Farbe für {label} auswählen", "Escolher a cor de {label}"),
+    ("Choose {label} ending color", "Pick the ending colour for {label}, mate", "Elegir color final de {label}", "Choisir la couleur de fin de {label}", "Endfarbe für {label} auswählen", "Escolher a cor final de {label}"),
+    ("Choose {label} alternate-row color", "Pick the alternate-row colour for {label}, mate", "Elegir color de fila alterna de {label}", "Choisir la couleur des lignes alternées de {label}", "Farbe für abwechselnde Zeilen von {label} auswählen", "Escolher a cor das linhas alternadas de {label}"),
+    ("Choose {label} data-bar starting color", "Pick the data-bar starting colour for {label}, mate", "Elegir color inicial de la barra de datos de {label}", "Choisir la couleur de début de la barre de données de {label}", "Startfarbe des Datenbalkens für {label} auswählen", "Escolher a cor inicial da barra de dados de {label}"),
+    ("Choose {label} data-bar ending color", "Pick the data-bar ending colour for {label}, mate", "Elegir color final de la barra de datos de {label}", "Choisir la couleur de fin de la barre de données de {label}", "Endfarbe des Datenbalkens für {label} auswählen", "Escolher a cor final da barra de dados de {label}"),
+    ("Choose the color for all {difficulty} hacks", "Pick the colour for every {difficulty} hack, mate", "Elegir el color de todos los hacks de dificultad {difficulty}", "Choisir la couleur de tous les hacks de difficulté {difficulty}", "Farbe für alle Hacks der Schwierigkeit {difficulty} auswählen", "Escolher a cor de todos os hacks de dificuldade {difficulty}"),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _RUNTIME_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
+SETUP_GUIDE_TRANSLATIONS = {
+    "en": {
+        "setup_menu": "Setup",
+        "app_setup": "App Setup...",
+        "obs_setup": "OBS Text Setup...",
+        "welcome_title": "Welcome to SMW Stream Tracker",
+        "welcome_message": (
+            "Thank you for downloading and trying SMW Stream Tracker! "
+            "I built this to make discovering, playing, tracking, and streaming "
+            "Super Mario World hacks easier. I truly appreciate you giving it a try.\n\n"
+            "— FredDOGG23"
+        ),
+        "start_full_setup": "Start Full Setup",
+        "setup_later": "Set Up Later",
+        "guide_title": "SMW Stream Tracker Setup Guide",
+        "open_current_step": "Open Current Step",
+        "cancel_guide": "Set Up Later",
+        "follow_flashing_steps": (
+            "Follow each flashing button or yellow-star menu selection to "
+            "continue. The next step appears after the current step is completed."
+        ),
+        "setup_complete_title": "App Setup Complete",
+        "setup_complete_message": "App setup is complete.",
+        "downloads_title": "1. Open Downloads",
+        "downloads_text": (
+            "Select the flashing Downloads button. This guide window will "
+            "close, and the next choices will begin flashing in the menu."
+        ),
+        "connection_title": "2. Connection & Emulator Setup",
+        "connection_text": (
+            "Open Downloads > Connection & Emulator Setup. Choose QUsb2Snes by "
+            "itself, or configure both SNI and RetroArch. This step advances only "
+            "after the required files have been found or installed."
+        ),
+        "catalog_title": "3. Open the SMW Central Catalog",
+        "catalog_text": "Open Downloads > SMW Central Catalog.",
+        "filter_prompt_title": "4. Choose Catalog Filters",
+        "filter_prompt": (
+            "Choose the filters you want in the SMW Central Catalog. Leave every "
+            "filter on Any if you want to retrieve the entire moderated catalog. "
+            "When you are ready, select the flashing Refresh Moderated Hacks from "
+            "SMW Central button."
+        ),
+        "refresh_title": "5. Refresh Moderated Hacks",
+        "refresh_text": (
+            "Choose Refresh Moderated Hacks from SMW Central, then choose Yes in "
+            "the confirmation message."
+        ),
+        "download_menu_title": "6. Open Downloads Again",
+        "download_menu_text": "Select the flashing Downloads button.",
+        "download_title": "7. Download & Patch Missing Hacks",
+        "download_text": "Choose Downloads > Download & Patch Missing Hacks.",
+        "fxpak_prompt_title": "8. Optional FXPAK Pro USB Upload",
+        "fxpak_prompt": (
+            "If you use an FXPAK Pro, enable Upload new ROMs through FXPAK Pro "
+            "USB to transfer each completed ROM directly to the SD card inside "
+            "the FXPAK Pro. Then select the flashing Download & Patch All "
+            "Matching Hacks button."
+        ),
+        "download_all_title": "9. Download & Patch Matching Hacks",
+        "download_all_text": (
+            "Choose Download & Patch All Matching Hacks. The guide will continue "
+            "when the download and patching work finishes."
+        ),
+        "obs_prompt_title": "Set Up OBS Text Files?",
+        "obs_prompt": (
+            "Would you like to set up OBS text files for automatic on-screen updates "
+            "of the hack title, creator, exits, and death counters?"
+        ),
+        "yes_obs": "Yes, Set Up OBS Text Files",
+        "no_obs": "No, Set Up Later from the Help Menu",
+        "obs_title": "OBS Text File Setup",
+        "obs_intro": (
+            "Use each path below for a separate OBS or Streamlabs text source. "
+            "The Copy button copies the complete path."
+        ),
+        "obs_existing_source_note": (
+            "Already have an OBS or Streamlabs text source showing any of this "
+            "hack information? Keep that source, enable Read from file, and "
+            "replace its current file path with the matching path below. The "
+            "tracker will then update it automatically."
+        ),
+        "copy": "Copy",
+        "copied": "Copied",
+        "obs_instructions": (
+            "1. In OBS Studio or Streamlabs Desktop, add a Text (GDI+) source.\n"
+            "2. Enable Read from file.\n"
+            "3. Paste or browse to the copied file path.\n"
+            "4. Repeat for each item you want on screen.\n"
+            "5. Position and style each source in your scene; the tracker updates the files automatically."
+        ),
+        "open_obs_folder": "Open OBS Text Folder",
+        "edit_obs_settings": "Edit OBS Text Settings",
+        "done": "Done",
+        "obs_folder_missing": (
+            "Choose an OBS text folder in OBS Text Settings first. The files will be "
+            "created automatically after the folder is saved."
+        ),
+        "obs_hack_title": "Hack Title",
+        "obs_creator": "Creator",
+        "obs_exits": "Exits",
+        "obs_level_deaths": "Level Deaths",
+        "obs_game_deaths": "Game Deaths",
+        "livesplit_obs_button": "Set Up Two LiveSplit Timers for OBS",
+        "livesplit_obs_note": (
+            "Two separately extracted LiveSplit copies are required to show "
+            "the game and level timers at the same time."
+        ),
+        "livesplit_obs_title": "Two LiveSplit Timers in OBS",
+        "livesplit_obs_instructions": (
+            "1. SELECT GAME LIVESPLIT ({game_port})\n"
+            "\u2022 Select the Game LiveSplit button below.\n"
+            "\u2022 The tracker downloads the game-timer copy into its own folder, "
+            "sets port {game_port}, enables automatic TCP server startup, and "
+            "opens LiveSplit.\n"
+            "\u2022 When the button turns green, the game copy is installed. Later "
+            "clicks open it again.\n\n"
+            "2. SELECT LEVEL LIVESPLIT ({level_port})\n"
+            "\u2022 Select the Level LiveSplit button below.\n"
+            "\u2022 The tracker downloads a separate level-timer copy, sets port "
+            "{level_port}, enables automatic TCP server startup, and opens it.\n"
+            "\u2022 When this button turns green, both copies are installed.\n\n"
+            "3. SAVE AND TEST BOTH TIMERS\n"
+            "\u2022 You do not need to edit LiveSplit ports or manually start its "
+            "server; the two buttons handle those steps.\n"
+            "\u2022 Select Done, then select Save Settings on the tracker Settings "
+            "page.\n"
+            "\u2022 Keep both LiveSplit windows open and not minimized.\n"
+            "\u2022 Use Start Game Timer or Start Timers and confirm that both "
+            "LiveSplit windows follow the tracker.\n\n"
+            "4. ADD THE GAME TIMER TO OBS\n"
+            "\u2022 In OBS, select your scene and choose Sources > + > Window Capture.\n"
+            "\u2022 Name the source Game LiveSplit and select the game-timer "
+            "LiveSplit window.\n\n"
+            "5. ADD THE LEVEL TIMER TO OBS\n"
+            "\u2022 Add another Window Capture named Level LiveSplit and select "
+            "the level-timer LiveSplit window.\n\n"
+            "6. FINISH THE OBS LAYOUT\n"
+            "\u2022 Position and resize both sources. Hold Alt while dragging an "
+            "edge to crop unused space.\n"
+            "\u2022 Keep both LiveSplit windows open and not minimized while OBS "
+            "is running. If a capture is blank, try another Window Capture "
+            "method in that source's properties."
+        ),
+        "open_livesplit_downloads": "Open LiveSplit Downloads",
+        "game_livesplit_button": "Game LiveSplit ({port})",
+        "level_livesplit_button": "Level LiveSplit ({port})",
+        "livesplit_button_note": (
+            "Select each button once. The tracker downloads, separates, and "
+            "configures both copies automatically; later clicks open them."
+        ),
+        "livesplit_setup_header": "LIVESPLIT TIMER SETUP",
+        "livesplit_checking_release": "Checking the official LiveSplit release...",
+        "livesplit_installing_copy": "Installing and configuring {name}...",
+        "livesplit_ready_title": "LiveSplit Ready",
+        "livesplit_ready_message": (
+            "{name} is ready and has been opened.\n\n"
+            "Server port: {port}\nTCP server: starts automatically\nFolder: {folder}"
+        ),
+        "livesplit_setup_failed_title": "LiveSplit Setup Failed",
+        "livesplit_setup_failed_message": "{name} could not be set up:\n\n{error}",
+    },
+    "au": {
+        "welcome_message": (
+            "Cheers for downloading and giving SMW Stream Tracker a go! I built it "
+            "to make finding, playing, tracking, and streaming Super Mario World "
+            "hacks a whole lot easier. Thanks heaps for trying it out.\n\n— FredDOGG23"
+        ),
+        "follow_flashing_steps": (
+            "Follow each flashing button or yellow-star menu choice to keep "
+            "going. The next step appears when the current one is done."
+        ),
+        "setup_complete_title": "App Setup Complete",
+        "setup_complete_message": "App setup is all done.",
+        "livesplit_obs_button": "Set Up Two LiveSplit Timers for OBS",
+        "livesplit_obs_note": (
+            "Two separately extracted LiveSplit copies are needed to show "
+            "the game and level timers together."
+        ),
+        "livesplit_obs_title": "Two LiveSplit Timers in OBS",
+        "livesplit_obs_instructions": (
+            "1. SELECT GAME LIVESPLIT ({game_port})\n"
+            "\u2022 Select the Game LiveSplit button. It downloads its own copy, "
+            "sets port {game_port}, enables TCP server auto-start, and opens it.\n"
+            "\u2022 A green button means it is installed; later clicks reopen it.\n\n"
+            "2. SELECT LEVEL LIVESPLIT ({level_port})\n"
+            "\u2022 Select the Level LiveSplit button. It downloads the second copy, "
+            "sets port {level_port}, enables TCP server auto-start, and opens it.\n\n"
+            "3. SAVE AND TEST BOTH TIMERS\n"
+            "\u2022 The buttons handle the ports and servers for you. Select Done, "
+            "then Save Settings on the tracker Settings page.\n"
+            "\u2022 Keep both windows open and not minimized. Use Start Game Timer "
+            "or Start Timers and check that both follow the tracker.\n\n"
+            "4. ADD THE GAME TIMER TO OBS\n"
+            "\u2022 Choose Sources > + > Window Capture, name it Game LiveSplit, "
+            "and select the game-timer window.\n\n"
+            "5. ADD THE LEVEL TIMER TO OBS\n"
+            "\u2022 Add a second Window Capture named Level LiveSplit and select "
+            "the level-timer window.\n\n"
+            "6. FINISH THE OBS LAYOUT\n"
+            "\u2022 Position and resize both. Hold Alt while dragging an edge to "
+            "crop. Keep both LiveSplit windows open and not minimized. If one is "
+            "blank, try another Window Capture method in its properties."
+        ),
+        "open_livesplit_downloads": "Open LiveSplit Downloads",
+        "game_livesplit_button": "Game LiveSplit ({port})",
+        "level_livesplit_button": "Level LiveSplit ({port})",
+        "livesplit_button_note": "Select each button once. The tracker downloads and configures both copies; later clicks open them.",
+        "livesplit_setup_header": "LIVESPLIT TIMER SETUP",
+        "livesplit_checking_release": "Checking the official LiveSplit release...",
+        "livesplit_installing_copy": "Installing and configuring {name}...",
+        "livesplit_ready_title": "LiveSplit Ready",
+        "livesplit_ready_message": "{name} is ready and has been opened.\n\nServer port: {port}\nTCP server: starts automatically\nFolder: {folder}",
+        "livesplit_setup_failed_title": "LiveSplit Setup Failed",
+        "livesplit_setup_failed_message": "{name} could not be set up:\n\n{error}",
+    },
+    "es": {
+        "setup_menu": "Configuración",
+        "app_setup": "Configurar la aplicación...",
+        "obs_setup": "Configurar textos de OBS...",
+        "welcome_title": "Te damos la bienvenida a SMW Stream Tracker",
+        "welcome_message": "¡Gracias por descargar y probar SMW Stream Tracker! Creé esta aplicación para facilitar descubrir, jugar, registrar y transmitir hacks de Super Mario World. Aprecio mucho que la pruebes.\n\n— FredDOGG23",
+        "start_full_setup": "Iniciar configuración completa",
+        "setup_later": "Configurar más tarde",
+        "guide_title": "Guía de configuración de SMW Stream Tracker",
+        "open_current_step": "Abrir el paso actual",
+        "cancel_guide": "Configurar más tarde",
+        "follow_flashing_steps": "Sigue cada botón intermitente o selección de menú con estrella amarilla para continuar. El siguiente paso aparecerá cuando completes el paso actual.",
+        "setup_complete_title": "Configuración de la aplicación completada",
+        "setup_complete_message": "La configuración de la aplicación está completa.",
+        "downloads_title": "1. Abrir Descargas",
+        "downloads_text": "Selecciona el botón Descargas que parpadea. Esta ventana se cerrará y las siguientes opciones comenzarán a parpadear en el menú.",
+        "connection_title": "2. Conexión y emulador",
+        "connection_text": "Abre Descargas > Configuración de conexión y emulador. Elige QUsb2Snes solo, o configura SNI y RetroArch. El paso avanza cuando se encuentren o instalen los archivos necesarios.",
+        "catalog_title": "3. Abrir el catálogo de SMW Central",
+        "catalog_text": "Abre Descargas > Catálogo de SMW Central.",
+        "filter_prompt_title": "4. Elegir filtros del catálogo",
+        "filter_prompt": "Elige los filtros que quieras en el catálogo de SMW Central. Deja todos los filtros en Cualquiera si quieres obtener todo el catálogo moderado. Cuando estés listo, selecciona el botón intermitente Actualizar hacks moderados desde SMW Central.",
+        "refresh_title": "5. Actualizar hacks moderados",
+        "refresh_text": "Elige Actualizar hacks moderados desde SMW Central y después Sí en la confirmación.",
+        "download_menu_title": "6. Abrir Descargas de nuevo",
+        "download_menu_text": "Selecciona el botón Descargas que parpadea.",
+        "download_title": "7. Descargar y parchear hacks faltantes",
+        "download_text": "Elige Descargas > Descargar y parchear hacks faltantes.",
+        "fxpak_prompt_title": "8. Carga USB opcional para FXPAK Pro",
+        "fxpak_prompt": "Si usas un FXPAK Pro, activa Subir nuevas ROM mediante USB de FXPAK Pro para transferir cada ROM terminada directamente a la tarjeta SD dentro del FXPAK Pro. Después selecciona el botón intermitente Descargar y parchear todos los hacks coincidentes.",
+        "download_all_title": "9. Descargar y parchear hacks coincidentes",
+        "download_all_text": "Elige Descargar y parchear todos los hacks coincidentes. La guía continuará al terminar la descarga y el parcheo.",
+        "obs_prompt_title": "¿Configurar archivos de texto de OBS?",
+        "obs_prompt": "¿Quieres configurar archivos de texto de OBS para actualizar automáticamente en pantalla el título, creador, salidas y contadores de muertes?",
+        "yes_obs": "Sí, configurar textos de OBS",
+        "no_obs": "No, configurar más tarde desde Ayuda",
+        "obs_title": "Configuración de textos de OBS",
+        "obs_intro": "Usa cada ruta para una fuente de texto distinta en OBS o Streamlabs. Copiar guarda la ruta completa.",
+        "obs_existing_source_note": "¿Ya tienes una fuente de texto de OBS o Streamlabs que muestra alguno de estos datos del hack? Conserva esa fuente, activa Leer desde archivo y reemplaza su ruta actual por la ruta correspondiente de abajo. El tracker la actualizará automáticamente.",
+        "copy": "Copiar", "copied": "Copiado",
+        "obs_instructions": "1. En OBS Studio o Streamlabs Desktop, añade una fuente Texto (GDI+).\n2. Activa Leer desde archivo.\n3. Pega o busca la ruta copiada.\n4. Repite para cada elemento que quieras mostrar.\n5. Coloca y diseña cada fuente; el tracker actualiza los archivos automáticamente.",
+        "open_obs_folder": "Abrir carpeta de textos de OBS", "edit_obs_settings": "Editar ajustes de textos de OBS", "done": "Listo",
+        "obs_folder_missing": "Primero elige una carpeta de textos de OBS en Ajustes de textos de OBS. Los archivos se crearán automáticamente al guardar.",
+        "obs_hack_title": "Título del hack", "obs_creator": "Creador", "obs_exits": "Salidas",
+        "obs_level_deaths": "Muertes del nivel", "obs_game_deaths": "Muertes de la partida",
+        "livesplit_obs_button": "Configurar dos temporizadores LiveSplit en OBS",
+        "livesplit_obs_note": "Se necesitan dos copias de LiveSplit extraídas por separado para mostrar a la vez los temporizadores de partida y de nivel.",
+        "livesplit_obs_title": "Dos temporizadores LiveSplit en OBS",
+        "livesplit_obs_instructions": (
+            "1. SELECCIONAR LIVESPLIT DE PARTIDA ({game_port})\n"
+            "• Selecciona el botón LiveSplit de partida. El tracker descarga su propia copia, establece el puerto {game_port}, activa el inicio automático del servidor TCP y la abre.\n"
+            "• Cuando el botón se vuelva verde, la copia de partida estará instalada; los clics posteriores la volverán a abrir.\n\n"
+            "2. SELECCIONAR LIVESPLIT DE NIVEL ({level_port})\n"
+            "• Selecciona el botón LiveSplit de nivel. El tracker descarga la segunda copia, establece el puerto {level_port}, activa el inicio automático del servidor TCP y la abre.\n"
+            "• Cuando este botón se vuelva verde, ambas copias estarán instaladas.\n\n"
+            "3. GUARDAR Y PROBAR AMBOS TEMPORIZADORES\n"
+            "• Los botones configuran los puertos y servidores; no necesitas hacerlo manualmente.\n"
+            "• Selecciona Listo y después Guardar ajustes en la página de Ajustes del tracker.\n"
+            "• Mantén ambas ventanas abiertas y sin minimizar. Usa Iniciar temporizador de partida o Iniciar temporizadores y confirma que ambas siguen al tracker.\n\n"
+            "4. AÑADIR EL TEMPORIZADOR DE PARTIDA A OBS\n"
+            "• En OBS, elige Fuentes > + > Captura de ventana, llámala Game LiveSplit y selecciona la ventana de partida.\n\n"
+            "5. AÑADIR EL TEMPORIZADOR DE NIVEL A OBS\n"
+            "• Añade otra Captura de ventana llamada Level LiveSplit y selecciona la ventana de nivel.\n\n"
+            "6. TERMINAR EL DISEÑO DE OBS\n"
+            "• Coloca y cambia el tamaño de ambas fuentes. Mantén Alt mientras arrastras un borde para recortar. Mantén las ventanas abiertas y sin minimizar. Si una captura queda en blanco, prueba otro método de captura en sus propiedades."
+        ),
+        "open_livesplit_downloads": "Abrir descargas de LiveSplit",
+        "game_livesplit_button": "LiveSplit de partida ({port})",
+        "level_livesplit_button": "LiveSplit de nivel ({port})",
+        "livesplit_button_note": "Selecciona cada botón una vez. El tracker descarga y configura ambas copias; los clics posteriores las abren.",
+        "livesplit_setup_header": "CONFIGURACIÓN DE TEMPORIZADORES LIVESPLIT",
+        "livesplit_checking_release": "Comprobando la versión oficial de LiveSplit...",
+        "livesplit_installing_copy": "Instalando y configurando {name}...",
+        "livesplit_ready_title": "LiveSplit listo",
+        "livesplit_ready_message": "{name} está listo y se ha abierto.\n\nPuerto del servidor: {port}\nServidor TCP: se inicia automáticamente\nCarpeta: {folder}",
+        "livesplit_setup_failed_title": "Error al configurar LiveSplit",
+        "livesplit_setup_failed_message": "No se pudo configurar {name}:\n\n{error}",
+    },
+    "fr": {
+        "setup_menu": "Configuration", "app_setup": "Configurer l’application...", "obs_setup": "Configurer les textes OBS...",
+        "welcome_title": "Bienvenue dans SMW Stream Tracker",
+        "welcome_message": "Merci d’avoir téléchargé et essayé SMW Stream Tracker ! Je l’ai créé pour faciliter la découverte, le jeu, le suivi et la diffusion des hacks Super Mario World. Merci sincèrement de l’essayer.\n\n— FredDOGG23",
+        "start_full_setup": "Démarrer la configuration complète", "setup_later": "Configurer plus tard",
+        "guide_title": "Guide de configuration SMW Stream Tracker", "open_current_step": "Ouvrir l’étape actuelle", "cancel_guide": "Configurer plus tard",
+        "follow_flashing_steps": "Suivez chaque bouton clignotant ou option de menu marquée d’une étoile jaune. L’étape suivante apparaîtra une fois l’étape actuelle terminée.",
+        "setup_complete_title": "Configuration de l’application terminée", "setup_complete_message": "La configuration de l’application est terminée.",
+        "downloads_title": "1. Ouvrir Téléchargements", "downloads_text": "Sélectionnez le bouton Téléchargements qui clignote. Cette fenêtre se fermera et les options suivantes commenceront à clignoter dans le menu.",
+        "connection_title": "2. Connexion et émulateur", "connection_text": "Ouvrez Téléchargements > Configuration de la connexion et de l’émulateur. Choisissez QUsb2Snes seul, ou configurez SNI et RetroArch. L’étape avance après détection ou installation des fichiers requis.",
+        "catalog_title": "3. Ouvrir le catalogue SMW Central", "catalog_text": "Ouvrez Téléchargements > Catalogue SMW Central.",
+        "filter_prompt_title": "4. Choisir les filtres du catalogue", "filter_prompt": "Choisissez les filtres souhaités dans le catalogue SMW Central. Laissez tous les filtres sur Tous pour récupérer l’intégralité du catalogue modéré. Lorsque vous êtes prêt, sélectionnez le bouton clignotant Actualiser les hacks modérés depuis SMW Central.",
+        "refresh_title": "5. Actualiser les hacks modérés", "refresh_text": "Choisissez Actualiser les hacks modérés depuis SMW Central, puis Oui dans la confirmation.",
+        "download_menu_title": "6. Ouvrir de nouveau Téléchargements", "download_menu_text": "Sélectionnez le bouton Téléchargements qui clignote.",
+        "download_title": "7. Télécharger et patcher les hacks manquants", "download_text": "Choisissez Téléchargements > Télécharger et patcher les hacks manquants.",
+        "fxpak_prompt_title": "8. Envoi USB facultatif vers FXPAK Pro", "fxpak_prompt": "Si vous utilisez un FXPAK Pro, activez Envoyer les nouvelles ROM par USB vers FXPAK Pro afin de transférer chaque ROM terminée directement sur la carte SD du FXPAK Pro. Sélectionnez ensuite le bouton clignotant Télécharger et patcher tous les hacks correspondants.",
+        "download_all_title": "9. Télécharger et patcher les hacks correspondants", "download_all_text": "Choisissez Télécharger et patcher tous les hacks correspondants. Le guide continuera une fois le téléchargement et l’application des patchs terminés.",
+        "obs_prompt_title": "Configurer les fichiers texte OBS ?", "obs_prompt": "Voulez-vous configurer les fichiers texte OBS pour mettre à jour automatiquement le titre, le créateur, les sorties et les compteurs de morts à l’écran ?",
+        "yes_obs": "Oui, configurer les textes OBS", "no_obs": "Non, configurer plus tard depuis Aide", "obs_title": "Configuration des textes OBS",
+        "obs_intro": "Utilisez chaque chemin pour une source texte OBS ou Streamlabs distincte. Copier place le chemin complet dans le presse-papiers.",
+        "obs_existing_source_note": "Vous avez déjà une source texte OBS ou Streamlabs qui affiche l’une de ces informations sur le hack ? Conservez cette source, activez Lire depuis un fichier et remplacez son chemin actuel par le chemin correspondant ci-dessous. Le tracker la mettra ensuite à jour automatiquement.",
+        "copy": "Copier", "copied": "Copié",
+        "obs_instructions": "1. Dans OBS Studio ou Streamlabs Desktop, ajoutez une source Texte (GDI+).\n2. Activez Lire depuis un fichier.\n3. Collez ou sélectionnez le chemin copié.\n4. Répétez pour chaque élément souhaité.\n5. Placez et stylisez les sources ; le tracker met les fichiers à jour automatiquement.",
+        "open_obs_folder": "Ouvrir le dossier des textes OBS", "edit_obs_settings": "Modifier les paramètres des textes OBS", "done": "Terminé",
+        "obs_folder_missing": "Choisissez d’abord un dossier de textes OBS dans les paramètres. Les fichiers seront créés automatiquement après l’enregistrement.",
+        "obs_hack_title": "Titre du hack", "obs_creator": "Créateur", "obs_exits": "Sorties",
+        "obs_level_deaths": "Morts du niveau", "obs_game_deaths": "Morts de la partie",
+        "livesplit_obs_button": "Configurer deux chronomètres LiveSplit dans OBS",
+        "livesplit_obs_note": "Deux copies de LiveSplit extraites séparément sont nécessaires pour afficher simultanément les chronomètres de partie et de niveau.",
+        "livesplit_obs_title": "Deux chronomètres LiveSplit dans OBS",
+        "livesplit_obs_instructions": (
+            "1. SÉLECTIONNER LIVESPLIT DE PARTIE ({game_port})\n"
+            "• Sélectionnez le bouton LiveSplit de partie. Le tracker télécharge sa propre copie, règle le port {game_port}, active le démarrage automatique du serveur TCP et l'ouvre.\n"
+            "• Lorsque le bouton devient vert, la copie de partie est installée ; les clics suivants la rouvrent.\n\n"
+            "2. SÉLECTIONNER LIVESPLIT DE NIVEAU ({level_port})\n"
+            "• Sélectionnez le bouton LiveSplit de niveau. Le tracker télécharge la seconde copie, règle le port {level_port}, active le démarrage automatique du serveur TCP et l'ouvre.\n"
+            "• Lorsque ce bouton devient vert, les deux copies sont installées.\n\n"
+            "3. ENREGISTRER ET TESTER LES DEUX CHRONOMÈTRES\n"
+            "• Les boutons configurent les ports et les serveurs ; vous n'avez rien à régler manuellement.\n"
+            "• Sélectionnez Terminé, puis Enregistrer les paramètres sur la page Paramètres du tracker.\n"
+            "• Gardez les deux fenêtres ouvertes et non réduites. Utilisez Démarrer le chronomètre de partie ou Démarrer les chronomètres et vérifiez qu'elles suivent le tracker.\n\n"
+            "4. AJOUTER LE CHRONOMÈTRE DE PARTIE À OBS\n"
+            "• Dans OBS, choisissez Sources > + > Capture de fenêtre, nommez-la Game LiveSplit et sélectionnez la fenêtre de partie.\n\n"
+            "5. AJOUTER LE CHRONOMÈTRE DE NIVEAU À OBS\n"
+            "• Ajoutez une autre Capture de fenêtre nommée Level LiveSplit et sélectionnez la fenêtre de niveau.\n\n"
+            "6. FINALISER LA MISE EN PAGE OBS\n"
+            "• Positionnez et redimensionnez les deux sources. Maintenez Alt en faisant glisser un bord pour recadrer. Gardez les fenêtres ouvertes et non réduites. Si une capture est vide, essayez une autre méthode de capture dans ses propriétés."
+        ),
+        "open_livesplit_downloads": "Ouvrir les téléchargements LiveSplit",
+        "game_livesplit_button": "LiveSplit de partie ({port})",
+        "level_livesplit_button": "LiveSplit de niveau ({port})",
+        "livesplit_button_note": "Sélectionnez chaque bouton une fois. Le tracker télécharge et configure les deux copies ; les clics suivants les ouvrent.",
+        "livesplit_setup_header": "CONFIGURATION DES CHRONOMÈTRES LIVESPLIT",
+        "livesplit_checking_release": "Vérification de la version officielle de LiveSplit...",
+        "livesplit_installing_copy": "Installation et configuration de {name}...",
+        "livesplit_ready_title": "LiveSplit prêt",
+        "livesplit_ready_message": "{name} est prêt et a été ouvert.\n\nPort du serveur : {port}\nServeur TCP : démarrage automatique\nDossier : {folder}",
+        "livesplit_setup_failed_title": "Échec de la configuration de LiveSplit",
+        "livesplit_setup_failed_message": "Impossible de configurer {name} :\n\n{error}",
+    },
+    "de": {
+        "setup_menu": "Einrichtung", "app_setup": "App einrichten...", "obs_setup": "OBS-Texte einrichten...",
+        "welcome_title": "Willkommen bei SMW Stream Tracker", "welcome_message": "Danke, dass du SMW Stream Tracker heruntergeladen hast und ausprobierst! Ich habe die App entwickelt, um das Entdecken, Spielen, Verfolgen und Streamen von Super-Mario-World-Hacks einfacher zu machen. Vielen Dank fürs Ausprobieren.\n\n— FredDOGG23",
+        "start_full_setup": "Vollständige Einrichtung starten", "setup_later": "Später einrichten", "guide_title": "SMW Stream Tracker – Einrichtungsassistent", "open_current_step": "Aktuellen Schritt öffnen", "cancel_guide": "Später einrichten",
+        "follow_flashing_steps": "Folge den blinkenden Schaltflächen oder den Menüoptionen mit gelbem Stern. Der nächste Schritt erscheint, sobald der aktuelle abgeschlossen ist.",
+        "setup_complete_title": "App-Einrichtung abgeschlossen", "setup_complete_message": "Die App-Einrichtung ist abgeschlossen.",
+        "downloads_title": "1. Downloads öffnen", "downloads_text": "Wähle die blinkende Downloads-Schaltfläche. Dieses Fenster wird geschlossen und die nächsten Optionen beginnen im Menü zu blinken.",
+        "connection_title": "2. Verbindung und Emulator", "connection_text": "Öffne Downloads > Verbindung & Emulator. Wähle QUsb2Snes allein oder richte SNI und RetroArch gemeinsam ein. Der Schritt wird erst nach erfolgreicher Erkennung oder Installation fortgesetzt.",
+        "catalog_title": "3. SMW-Central-Katalog öffnen", "catalog_text": "Öffne Downloads > SMW-Central-Katalog.",
+        "filter_prompt_title": "4. Katalogfilter auswählen", "filter_prompt": "Wähle die gewünschten Filter im SMW-Central-Katalog. Lass alle Filter auf Beliebig, wenn du den gesamten moderierten Katalog abrufen möchtest. Wähle anschließend die blinkende Schaltfläche Moderierte Hacks von SMW Central aktualisieren.",
+        "refresh_title": "5. Moderierte Hacks aktualisieren", "refresh_text": "Wähle Moderierte Hacks von SMW Central aktualisieren und bestätige anschließend mit Ja.",
+        "download_menu_title": "6. Downloads erneut öffnen", "download_menu_text": "Wähle die blinkende Downloads-Schaltfläche.",
+        "download_title": "7. Fehlende Hacks herunterladen und patchen", "download_text": "Wähle Downloads > Fehlende Hacks herunterladen und patchen.",
+        "fxpak_prompt_title": "8. Optionaler FXPAK-Pro-USB-Upload", "fxpak_prompt": "Wenn du einen FXPAK Pro verwendest, aktiviere Neue ROMs über FXPAK-Pro-USB hochladen, um jede fertige ROM direkt auf die SD-Karte im FXPAK Pro zu übertragen. Wähle danach die blinkende Schaltfläche Alle passenden Hacks herunterladen und patchen.",
+        "download_all_title": "9. Passende Hacks herunterladen und patchen", "download_all_text": "Wähle Alle passenden Hacks herunterladen und patchen. Der Assistent fährt nach Download und Patchen fort.",
+        "obs_prompt_title": "OBS-Textdateien einrichten?", "obs_prompt": "Möchtest du OBS-Textdateien für automatische Bildschirmaktualisierungen von Hacktitel, Ersteller, Ausgängen und Todeszählern einrichten?",
+        "yes_obs": "Ja, OBS-Texte einrichten", "no_obs": "Nein, später über Hilfe einrichten", "obs_title": "OBS-Textdateien einrichten",
+        "obs_intro": "Verwende jeden Pfad für eine eigene OBS- oder Streamlabs-Textquelle. Kopieren übernimmt den vollständigen Pfad.", "copy": "Kopieren", "copied": "Kopiert",
+        "obs_existing_source_note": "Du hast bereits eine OBS- oder Streamlabs-Textquelle mit einer dieser Hack-Informationen? Behalte die Quelle, aktiviere Aus Datei lesen und ersetze ihren bisherigen Dateipfad durch den passenden Pfad unten. Der Tracker aktualisiert sie anschließend automatisch.",
+        "obs_instructions": "1. Füge in OBS Studio oder Streamlabs Desktop eine Text-(GDI+)-Quelle hinzu.\n2. Aktiviere Aus Datei lesen.\n3. Füge den kopierten Pfad ein oder wähle ihn aus.\n4. Wiederhole dies für jedes gewünschte Element.\n5. Positioniere und gestalte die Quellen; der Tracker aktualisiert die Dateien automatisch.",
+        "open_obs_folder": "OBS-Textordner öffnen", "edit_obs_settings": "OBS-Texteinstellungen bearbeiten", "done": "Fertig",
+        "obs_folder_missing": "Wähle zuerst in den OBS-Texteinstellungen einen Ordner. Die Dateien werden nach dem Speichern automatisch erstellt.",
+        "obs_hack_title": "Hacktitel", "obs_creator": "Ersteller", "obs_exits": "Ausgänge",
+        "obs_level_deaths": "Level-Tode", "obs_game_deaths": "Spiel-Tode",
+        "livesplit_obs_button": "Zwei LiveSplit-Timer für OBS einrichten",
+        "livesplit_obs_note": "Zwei separat entpackte LiveSplit-Kopien sind erforderlich, damit Spiel- und Level-Timer gleichzeitig angezeigt werden.",
+        "livesplit_obs_title": "Zwei LiveSplit-Timer in OBS",
+        "livesplit_obs_instructions": (
+            "1. SPIEL-LIVESPLIT AUSWÄHLEN ({game_port})\n"
+            "• Wähle die Spiel-LiveSplit-Schaltfläche. Der Tracker lädt eine eigene Kopie herunter, setzt Port {game_port}, aktiviert den automatischen TCP-Serverstart und öffnet sie.\n"
+            "• Wird die Schaltfläche grün, ist die Spielkopie installiert; spätere Klicks öffnen sie erneut.\n\n"
+            "2. LEVEL-LIVESPLIT AUSWÄHLEN ({level_port})\n"
+            "• Wähle die Level-LiveSplit-Schaltfläche. Der Tracker lädt die zweite Kopie herunter, setzt Port {level_port}, aktiviert den automatischen TCP-Serverstart und öffnet sie.\n"
+            "• Wird diese Schaltfläche grün, sind beide Kopien installiert.\n\n"
+            "3. BEIDE TIMER SPEICHERN UND TESTEN\n"
+            "• Die Schaltflächen richten Ports und Server ein; du musst nichts manuell einstellen.\n"
+            "• Wähle Fertig und dann Einstellungen speichern auf der Einstellungen-Seite des Trackers.\n"
+            "• Lass beide Fenster geöffnet und nicht minimiert. Nutze Spiel-Timer starten oder Timer starten und prüfe, ob beide dem Tracker folgen.\n\n"
+            "4. SPIEL-TIMER ZU OBS HINZUFÜGEN\n"
+            "• Wähle in OBS Quellen > + > Fensteraufnahme, nenne sie Game LiveSplit und wähle das Spiel-Timer-Fenster.\n\n"
+            "5. LEVEL-TIMER ZU OBS HINZUFÜGEN\n"
+            "• Füge eine weitere Fensteraufnahme namens Level LiveSplit hinzu und wähle das Level-Timer-Fenster.\n\n"
+            "6. OBS-LAYOUT FERTIGSTELLEN\n"
+            "• Positioniere und skaliere beide Quellen. Halte Alt gedrückt und ziehe an einer Kante, um zuzuschneiden. Lass die Fenster geöffnet und nicht minimiert. Ist eine Aufnahme leer, probiere in ihren Eigenschaften eine andere Aufnahmemethode."
+        ),
+        "open_livesplit_downloads": "LiveSplit-Downloads öffnen",
+        "game_livesplit_button": "Spiel-LiveSplit ({port})",
+        "level_livesplit_button": "Level-LiveSplit ({port})",
+        "livesplit_button_note": "Wähle jede Schaltfläche einmal. Der Tracker lädt beide Kopien herunter und richtet sie ein; spätere Klicks öffnen sie.",
+        "livesplit_setup_header": "LIVESPLIT-TIMER EINRICHTEN",
+        "livesplit_checking_release": "Offizielle LiveSplit-Version wird geprüft...",
+        "livesplit_installing_copy": "{name} wird installiert und eingerichtet...",
+        "livesplit_ready_title": "LiveSplit bereit",
+        "livesplit_ready_message": "{name} ist bereit und wurde geöffnet.\n\nServer-Port: {port}\nTCP-Server: startet automatisch\nOrdner: {folder}",
+        "livesplit_setup_failed_title": "LiveSplit-Einrichtung fehlgeschlagen",
+        "livesplit_setup_failed_message": "{name} konnte nicht eingerichtet werden:\n\n{error}",
+    },
+    "pt-BR": {
+        "setup_menu": "Configuração", "app_setup": "Configurar aplicativo...", "obs_setup": "Configurar textos do OBS...",
+        "welcome_title": "Boas-vindas ao SMW Stream Tracker", "welcome_message": "Obrigado por baixar e experimentar o SMW Stream Tracker! Criei o aplicativo para facilitar descobrir, jogar, acompanhar e transmitir hacks de Super Mario World. Agradeço muito por experimentar.\n\n— FredDOGG23",
+        "start_full_setup": "Iniciar configuração completa", "setup_later": "Configurar depois", "guide_title": "Guia de configuração do SMW Stream Tracker", "open_current_step": "Abrir etapa atual", "cancel_guide": "Configurar depois",
+        "follow_flashing_steps": "Siga cada botão piscando ou opção de menu com estrela amarela. A próxima etapa aparecerá quando a etapa atual for concluída.",
+        "setup_complete_title": "Configuração do aplicativo concluída", "setup_complete_message": "A configuração do aplicativo foi concluída.",
+        "downloads_title": "1. Abrir Downloads", "downloads_text": "Selecione o botão Downloads que está piscando. Esta janela será fechada e as próximas opções começarão a piscar no menu.",
+        "connection_title": "2. Conexão e emulador", "connection_text": "Abra Downloads > Configuração de conexão e emulador. Escolha somente QUsb2Snes ou configure SNI e RetroArch juntos. A etapa avança após os arquivos necessários serem encontrados ou instalados.",
+        "catalog_title": "3. Abrir o catálogo do SMW Central", "catalog_text": "Abra Downloads > Catálogo do SMW Central.",
+        "filter_prompt_title": "4. Escolher filtros do catálogo", "filter_prompt": "Escolha os filtros desejados no catálogo do SMW Central. Deixe todos os filtros em Qualquer para obter todo o catálogo moderado. Quando estiver pronto, selecione o botão piscando Atualizar hacks moderados do SMW Central.",
+        "refresh_title": "5. Atualizar hacks moderados", "refresh_text": "Escolha Atualizar hacks moderados do SMW Central e depois Sim na confirmação.",
+        "download_menu_title": "6. Abrir Downloads novamente", "download_menu_text": "Selecione o botão Downloads que está piscando.",
+        "download_title": "7. Baixar e aplicar patches aos hacks ausentes", "download_text": "Escolha Downloads > Baixar e aplicar patches aos hacks ausentes.",
+        "fxpak_prompt_title": "8. Envio USB opcional para o FXPAK Pro", "fxpak_prompt": "Se você usa um FXPAK Pro, ative Enviar novas ROMs por USB para o FXPAK Pro para transferir cada ROM concluída diretamente ao cartão SD dentro do FXPAK Pro. Depois selecione o botão piscando Baixar e aplicar patches a todos os hacks correspondentes.",
+        "download_all_title": "9. Baixar e aplicar patches aos hacks correspondentes", "download_all_text": "Escolha Baixar e aplicar patches a todos os hacks correspondentes. O guia continuará quando o download e a aplicação dos patches terminarem.",
+        "obs_prompt_title": "Configurar arquivos de texto do OBS?", "obs_prompt": "Deseja configurar arquivos de texto do OBS para atualizar automaticamente na tela o título, criador, saídas e contadores de mortes?",
+        "yes_obs": "Sim, configurar textos do OBS", "no_obs": "Não, configurar depois pelo menu Ajuda", "obs_title": "Configuração dos textos do OBS",
+        "obs_intro": "Use cada caminho em uma fonte de texto separada no OBS ou Streamlabs. Copiar envia o caminho completo para a área de transferência.", "copy": "Copiar", "copied": "Copiado",
+        "obs_existing_source_note": "Já tem uma fonte de texto no OBS ou Streamlabs mostrando alguma dessas informações do hack? Mantenha essa fonte, ative Ler do arquivo e substitua o caminho atual pelo caminho correspondente abaixo. O tracker passará a atualizá-la automaticamente.",
+        "obs_instructions": "1. No OBS Studio ou Streamlabs Desktop, adicione uma fonte Texto (GDI+).\n2. Ative Ler do arquivo.\n3. Cole ou procure o caminho copiado.\n4. Repita para cada item desejado.\n5. Posicione e estilize as fontes; o tracker atualiza os arquivos automaticamente.",
+        "open_obs_folder": "Abrir pasta de textos do OBS", "edit_obs_settings": "Editar configurações de textos do OBS", "done": "Concluído",
+        "obs_folder_missing": "Primeiro escolha uma pasta de textos do OBS nas configurações. Os arquivos serão criados automaticamente ao salvar.",
+        "obs_hack_title": "Título do hack", "obs_creator": "Criador", "obs_exits": "Saídas",
+        "obs_level_deaths": "Mortes da fase", "obs_game_deaths": "Mortes do jogo",
+        "livesplit_obs_button": "Configurar dois temporizadores LiveSplit no OBS",
+        "livesplit_obs_note": "São necessárias duas cópias do LiveSplit extraídas separadamente para mostrar ao mesmo tempo os temporizadores do jogo e da fase.",
+        "livesplit_obs_title": "Dois temporizadores LiveSplit no OBS",
+        "livesplit_obs_instructions": (
+            "1. SELECIONAR O LIVESPLIT DO JOGO ({game_port})\n"
+            "• Selecione o botão LiveSplit do jogo. O tracker baixa uma cópia própria, define a porta {game_port}, ativa o início automático do servidor TCP e abre o LiveSplit.\n"
+            "• Quando o botão ficar verde, a cópia do jogo estará instalada; os próximos cliques a abrirão novamente.\n\n"
+            "2. SELECIONAR O LIVESPLIT DA FASE ({level_port})\n"
+            "• Selecione o botão LiveSplit da fase. O tracker baixa a segunda cópia, define a porta {level_port}, ativa o início automático do servidor TCP e a abre.\n"
+            "• Quando este botão ficar verde, as duas cópias estarão instaladas.\n\n"
+            "3. SALVAR E TESTAR OS DOIS TEMPORIZADORES\n"
+            "• Os botões configuram as portas e os servidores; você não precisa fazer isso manualmente.\n"
+            "• Selecione Concluído e depois Salvar configurações na página Configurações do tracker.\n"
+            "• Mantenha as duas janelas abertas e não minimizadas. Use Iniciar temporizador do jogo ou Iniciar temporizadores e confirme que ambas seguem o tracker.\n\n"
+            "4. ADICIONAR O TEMPORIZADOR DO JOGO AO OBS\n"
+            "• No OBS, escolha Fontes > + > Captura de janela, chame-a de Game LiveSplit e selecione a janela do jogo.\n\n"
+            "5. ADICIONAR O TEMPORIZADOR DA FASE AO OBS\n"
+            "• Adicione outra Captura de janela chamada Level LiveSplit e selecione a janela da fase.\n\n"
+            "6. FINALIZAR O LAYOUT DO OBS\n"
+            "• Posicione e redimensione as duas fontes. Segure Alt ao arrastar uma borda para recortar. Mantenha as janelas abertas e não minimizadas. Se uma captura ficar vazia, experimente outro método de captura nas propriedades da fonte."
+        ),
+        "open_livesplit_downloads": "Abrir downloads do LiveSplit",
+        "game_livesplit_button": "LiveSplit do jogo ({port})",
+        "level_livesplit_button": "LiveSplit da fase ({port})",
+        "livesplit_button_note": "Selecione cada botão uma vez. O tracker baixa e configura as duas cópias; os próximos cliques as abrem.",
+        "livesplit_setup_header": "CONFIGURAÇÃO DOS TEMPORIZADORES LIVESPLIT",
+        "livesplit_checking_release": "Verificando a versão oficial do LiveSplit...",
+        "livesplit_installing_copy": "Instalando e configurando {name}...",
+        "livesplit_ready_title": "LiveSplit pronto",
+        "livesplit_ready_message": "{name} está pronto e foi aberto.\n\nPorta do servidor: {port}\nServidor TCP: inicia automaticamente\nPasta: {folder}",
+        "livesplit_setup_failed_title": "Falha na configuração do LiveSplit",
+        "livesplit_setup_failed_message": "Não foi possível configurar {name}:\n\n{error}",
+    },
+}
+
+# Australian English is intentionally playful, but it must still cover every
+# setup-guide key so no screen silently drops back to another language.
+for _setup_key, _english_setup_text in SETUP_GUIDE_TRANSLATIONS["en"].items():
+    SETUP_GUIDE_TRANSLATIONS["au"].setdefault(
+        _setup_key,
+        _english_setup_text,
+    )
+SETUP_GUIDE_TRANSLATIONS["au"].update({
+    "setup_menu": "Get set up, mate",
+    "app_setup": "Set up the whole shebang...",
+    "obs_setup": "Sort out OBS text...",
+    "welcome_title": "G'day! Welcome to SMW Stream Tracker",
+    "start_full_setup": "Let's get cracking",
+    "setup_later": "She'll be right for now",
+    "guide_title": "SMW Stream Tracker Setup Guide, mate",
+    "open_current_step": "Open this bit",
+    "cancel_guide": "Do it later, mate",
+    "follow_flashing_steps": (
+        "Follow each flashing button or yellow-star menu choice, mate. "
+        "The next step appears when this one is done and dusted."
+    ),
+    "setup_complete_title": "Setup complete, you beauty!",
+    "setup_complete_message": "Everything is set up and ready to rip, mate.",
+    "downloads_title": "1. Crack open Downloads",
+    "downloads_text": (
+        "Select the flashing Downloads button. This window will nick off, "
+        "and the next choices will start flashing in the menu."
+    ),
+    "connection_title": "2. Sort out the connection and emulator",
+    "connection_text": (
+        "Open Downloads > Connection & Emulator Setup. Use QUsb2Snes on its "
+        "own, or set up both SNI and RetroArch. Once the required files are "
+        "found or installed, you're right to continue."
+    ),
+    "catalog_title": "3. Open the SMW Central Catalog",
+    "catalog_text": "Open Downloads > SMW Central Catalog. Too easy, mate.",
+    "filter_prompt_title": "4. Pick your catalog filters",
+    "filter_prompt": (
+        "Choose whichever catalog filters take your fancy. Leave the lot on "
+        "Any to fetch the entire moderated catalog. Then select the flashing "
+        "Refresh Moderated Hacks from SMW Central button."
+    ),
+    "refresh_title": "5. Give the moderated hacks a refresh",
+    "refresh_text": (
+        "Choose Refresh Moderated Hacks from SMW Central, then choose Too "
+        "right in the confirmation message."
+    ),
+    "download_menu_title": "6. Back to Downloads, mate",
+    "download_menu_text": "Select the flashing Downloads button again.",
+    "download_title": "7. Download and patch the missing hacks",
+    "download_text": "Choose Downloads > Download & Patch Missing Hacks.",
+    "fxpak_prompt_title": "8. Optional FXPAK Pro USB upload",
+    "fxpak_prompt": (
+        "Using an FXPAK Pro? Enable Upload new ROMs through FXPAK Pro USB to "
+        "send each finished ROM straight to its SD card. Then select the "
+        "flashing Download & Patch All Matching Hacks button. Crikey, that's handy!"
+    ),
+    "download_all_title": "9. Download and patch the matching hacks",
+    "download_all_text": (
+        "Choose Download & Patch All Matching Hacks. The guide keeps going "
+        "once the downloading and patching are done and dusted."
+    ),
+    "obs_prompt_title": "Want to sort out OBS text files?",
+    "obs_prompt": (
+        "Would you like automatic on-screen updates for the hack title, "
+        "creator, exits, and death counters in OBS?"
+    ),
+    "yes_obs": "Too right, set up OBS",
+    "no_obs": "Yeah, nah — I'll do it later",
+    "obs_intro": (
+        "Use each path below for a separate OBS or Streamlabs text source. "
+        "The Copy button grabs the whole path for you, mate."
+    ),
+    "copy": "Grab path",
+    "copied": "Got it, mate",
+    "done": "Done and dusted",
+    "open_obs_folder": "Open the OBS text folder",
+    "edit_obs_settings": "Tinker with OBS text settings",
+    "livesplit_obs_button": "Set up two LiveSplit timers for OBS, mate",
+    "livesplit_obs_title": "Two LiveSplit timers in OBS — you beauty!",
+    "livesplit_checking_release": "Checking the official LiveSplit release, mate...",
+    "livesplit_installing_copy": "Installing and sorting out {name}...",
+    "livesplit_ready_title": "LiveSplit is ready to rip",
+    "livesplit_setup_failed_title": "Crikey! LiveSplit setup failed",
+})
+
+
 DEFAULT_CONFIG = {
     "app_language": "en",
     "sni_path": "",
@@ -16703,6 +18517,7 @@ DEFAULT_CONFIG = {
     "update_manifest_url": DEFAULT_UPDATE_MANIFEST_URL,
     "check_for_updates_at_startup": False,
     "first_run_health_check_completed": False,
+    "first_launch_welcome_completed": False,
     "automatic_backup_retention": 10,
     "last_automatic_backup_date": "",
 }
@@ -17037,6 +18852,14 @@ def load_config() -> dict[str, Any]:
 
         except (OSError, json.JSONDecodeError):
             pass
+
+    # Do not surprise established users with the new welcome page after an
+    # update.  A completed legacy first-run health check is treated as an
+    # already completed welcome flow; genuinely new installs still see it.
+    if "first_launch_welcome_completed" not in saved:
+        config["first_launch_welcome_completed"] = bool(
+            saved.get("first_run_health_check_completed", False)
+        )
 
     # Migrate the original overworld-only grace setting without changing a
     # user's saved value. Newer builds use the same grace anywhere gameplay
@@ -18333,7 +20156,7 @@ class TrackerWorker:
                 self.progress_sync_thread
                 and self.progress_sync_thread.is_alive()
             ):
-                return
+                return False
 
             self.progress_sync_thread = threading.Thread(
                 target=self._progress_sync_loop,
@@ -20888,6 +22711,79 @@ finally {
 
         return "TITLE:" + str(title).casefold().strip()
 
+    def register_fxpak_mapping(
+        self,
+        game: dict[str, Any],
+        rom_path: str,
+    ) -> None:
+        """Make a new SD filename alias available to live tracking at once."""
+        mapping_key = str(game.get("mapping_key", "")).casefold().strip()
+        smwc_id = str(game.get("smwc_id", "")).strip()
+        if not mapping_key:
+            mapping_key = self.make_fxpak_mapping_key(
+                str(game.get("title", "")),
+                smwc_id,
+            ).casefold()
+
+        updated_path_map = dict(self.fxpak_path_map)
+        updated_path_map[mapping_key] = rom_path
+        self.fxpak_path_map = updated_path_map
+
+        configured_mappings = self.config.get("fxpak_rom_mappings", {})
+        if not isinstance(configured_mappings, dict):
+            configured_mappings = {}
+        configured_mappings = dict(configured_mappings)
+        configured_mappings[mapping_key] = rom_path
+        self.config["fxpak_rom_mappings"] = configured_mappings
+
+        catalog_key = str(game.get("catalog_key", "")).casefold().strip()
+        title_key = normalize_title(game.get("title", ""))
+
+        def is_same_game(candidate: dict[str, Any]) -> bool:
+            candidate_id = str(candidate.get("smwc_id", "")).strip()
+            if smwc_id and candidate_id:
+                return smwc_id == candidate_id
+            candidate_catalog_key = str(
+                candidate.get("catalog_key", "")
+            ).casefold().strip()
+            if catalog_key and candidate_catalog_key:
+                return catalog_key == candidate_catalog_key
+            return normalize_title(candidate.get("title", "")) == title_key
+
+        matching_record: dict[str, Any] | None = None
+        for catalog_game in self.hack_catalog:
+            if is_same_game(catalog_game):
+                catalog_game["rom_path"] = rom_path
+                matching_record = catalog_game
+                break
+        if matching_record is None:
+            matching_record = dict(game)
+            matching_record["rom_path"] = rom_path
+            self.hack_catalog.append(matching_record)
+
+        updated_database = {
+            key: list(entries)
+            for key, entries in self.database.items()
+        }
+        alias_key = normalize_title(clean_rom_filename(rom_path))
+        for database_key in {title_key, alias_key}:
+            if not database_key:
+                continue
+            entries = updated_database.setdefault(database_key, [])
+            existing_record = next(
+                (
+                    candidate
+                    for candidate in entries
+                    if is_same_game(candidate)
+                ),
+                None,
+            )
+            if existing_record is not None:
+                existing_record["rom_path"] = rom_path
+            else:
+                entries.append(matching_record)
+        self.database = updated_database
+
     def load_hack_database(
         self,
     ) -> dict[str, list[dict[str, Any]]]:
@@ -21033,6 +22929,19 @@ finally {
             if key:
                 database.setdefault(
                     key,
+                    [],
+                ).append(game)
+
+            # A mapped FXPAK filename may intentionally omit emoji that remain
+            # in the real catalog title. Register the filename as an exact
+            # detection alias, while the record still supplies the full title
+            # to Current Game and stream text files.
+            mapped_filename_key = normalize_title(
+                clean_rom_filename(rom_path)
+            )
+            if mapped_filename_key and mapped_filename_key != key:
+                database.setdefault(
+                    mapped_filename_key,
                     [],
                 ).append(game)
 
@@ -23349,6 +25258,18 @@ class TrackerApp:
         )
         self.event_queue: queue.Queue = queue.Queue()
         self.worker: TrackerWorker | None = None
+        configured_fxpak_mappings = self.config.get(
+            "fxpak_rom_mappings",
+            {},
+        )
+        self.fxpak_path_map: dict[str, str] = (
+            {
+                str(key).casefold(): str(value)
+                for key, value in configured_fxpak_mappings.items()
+            }
+            if isinstance(configured_fxpak_mappings, dict)
+            else {}
+        )
         self.tray_icon = None
         self.tracking_icon_active = False
         self.app_icon_idle_image = None
@@ -23382,8 +25303,8 @@ class TrackerApp:
             value=saved_platform
         )
 
-        self.connection_var = tk.StringVar(
-            value=self._translate_ui_text("Disconnected")
+        self.connection_var = self._localized_string_var(
+            value="Disconnected"
         )
         self.connection_is_connected = False
         self.spreadsheet_var = tk.StringVar(
@@ -23393,19 +25314,31 @@ class TrackerApp:
             catalog_metadata = self.stats_db.metadata()
         except Exception:
             catalog_metadata = {}
-        self.catalog_last_refresh_var = tk.StringVar(
-            value=(
-                self._translate_ui_text("Last refreshed:") + " "
-                + format_display_datetime(
+        try:
+            self.catalog_new_waiting_count = max(
+                0,
+                int(
                     catalog_metadata.get(
-                        "Catalog Last Refresh",
-                        "",
+                        "Waiting New Since Last Refresh",
+                        "0",
                     )
-                )
+                    or 0
+                ),
             )
+        except (TypeError, ValueError):
+            self.catalog_new_waiting_count = 0
+        self.catalog_new_moderated_count: int | None = None
+        self.catalog_freshness_state = "checking"
+        self.catalog_last_refresh_var = self._localized_string_var(
+            value=self._catalog_last_refresh_status_text()
         )
-        self.catalog_new_hacks_var = tk.StringVar(
-            value=self._translate_ui_text("Checking for new hacks...")
+        self.catalog_new_hacks_var = self._localized_string_var(
+            value=self._catalog_freshness_status_text()
+        )
+        self.catalog_new_hacks_font_after_id: str | None = None
+        self.catalog_new_hacks_var.trace_add(
+            "write",
+            lambda *_args: self._queue_catalog_new_hacks_font_refresh(),
         )
         self.game_var = tk.StringVar(
             value=self._translate_ui_text("No game detected")
@@ -23457,8 +25390,8 @@ class TrackerApp:
         self.total_death_counter_var = tk.StringVar(
             value="0"
         )
-        self.status_var = tk.StringVar(
-            value=self._translate_ui_text("Ready")
+        self.status_var = self._localized_string_var(
+            value="Ready"
         )
         self.current_hack_url = ""
         self.current_hack_record: dict[str, Any] = {}
@@ -23507,7 +25440,7 @@ class TrackerApp:
                     self.recent_launched_hacks[:5]
                 )
         self.replay_recent_hack_var = tk.StringVar(
-            value="No recent hacks"
+            value=self._translate_ui_text("No recent hacks")
         )
         self.replay_recent_hack_games: dict[
             str,
@@ -23587,6 +25520,32 @@ class TrackerApp:
         self.feedback_dialog: tk.Toplevel | None = None
         self.feedback_webview_process: subprocess.Popen | None = None
         self.obs_settings_dialog: tk.Toplevel | None = None
+        self.welcome_setup_dialog: tk.Toplevel | None = None
+        self.guided_setup_dialog: tk.Toplevel | None = None
+        self.guided_obs_dialog: tk.Toplevel | None = None
+        self.livesplit_obs_guide_dialog: tk.Toplevel | None = None
+        self.livesplit_install_in_progress: set[str] = set()
+        self.livesplit_install_buttons: dict[str, tk.Widget] = {}
+        self.livesplit_release_asset_cache: tuple[
+            float,
+            dict[str, Any],
+        ] | None = None
+        self._guided_setup_stage = ""
+        self._guided_setup_software_choice = ""
+        self._guided_setup_flash_widget: tk.Widget | None = None
+        self._guided_setup_flash_after_id: str | None = None
+        self._guided_setup_flash_original_bg = ""
+        self._guided_setup_flash_on = False
+        self._guided_setup_flash_menu_entries: list[
+            tuple[tk.Menu, int, str, str]
+        ] = []
+        self.downloads_menu: tk.Menu | None = None
+        self.connection_setup_menu: tk.Menu | None = None
+        self.download_patch_menu_index: int | None = None
+        self.connection_setup_menu_index: int | None = None
+        self.connection_option_menu_indexes: tuple[int, ...] = ()
+        self.smwcentral_catalog_menu_index: int | None = None
+        self.catalog_page_refresh_button: tk.Widget | None = None
         self.in_app_page_shell: tk.Frame | None = None
         self.active_in_app_page: InAppPage | None = None
         self.in_app_page_title_var = tk.StringVar(value="")
@@ -23682,7 +25641,7 @@ class TrackerApp:
             self.root.after(200, self.process_events)
             self.root.after(400, self.start_tracker)
             self.root.after(700, self._create_daily_recovery_backup)
-            self.root.after(1100, self._offer_first_run_health_check)
+            self.root.after(1100, self._offer_first_launch_welcome)
             # Always perform one quiet release check so the Help-tab badge can
             # advertise an available update without interrupting the user.
             self.root.after(
@@ -23776,9 +25735,94 @@ class TrackerApp:
         except tk.TclError:
             return
 
+    def _queue_catalog_new_hacks_font_refresh(self) -> None:
+        """Keep the catalog-freshness sentence on one centered line."""
+        pending = getattr(
+            self,
+            "catalog_new_hacks_font_after_id",
+            None,
+        )
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except tk.TclError:
+                pass
+        try:
+            self.catalog_new_hacks_font_after_id = self.root.after_idle(
+                self._refresh_catalog_new_hacks_font
+            )
+        except tk.TclError:
+            self.catalog_new_hacks_font_after_id = None
+
+    def _refresh_catalog_new_hacks_font(self) -> None:
+        self.catalog_new_hacks_font_after_id = None
+        label = getattr(self, "catalog_new_hacks_label", None)
+        try:
+            if label is None or not label.winfo_exists():
+                return
+            label.update_idletasks()
+            available_width = max(
+                self._ui_px(120),
+                label.winfo_width() - self._ui_px(10),
+            )
+            text = str(self.catalog_new_hacks_var.get()).strip()
+            # Prefer a slightly larger status line, but keep shrinking it for
+            # longer translations so it stays inside the text area and never
+            # reaches the spreadsheet logo.
+            chosen_size = 9
+            for size in range(9, 3, -1):
+                candidate = tkfont.Font(
+                    root=self.root,
+                    family="Segoe UI",
+                    size=size,
+                    weight="bold",
+                )
+                chosen_size = size
+                if candidate.measure(text) <= available_width:
+                    break
+            label.configure(
+                font=("Segoe UI", chosen_size, "bold"),
+                wraplength=0,
+            )
+        except tk.TclError:
+            return
+
+    def _active_language_code(self) -> str:
+        """Return the language currently selected in the live UI.
+
+        Dialogs can be opened while a language change is rebuilding the main
+        page.  During that short window ``app_language`` may still contain the
+        previously saved value, while ``language_var`` already contains the
+        user's new selection.  Prefer the live variable so a confirmation can
+        never fall back to English while the visible app is localized.
+        """
+        candidates: list[object] = []
+        language_var = getattr(self, "language_var", None)
+        if language_var is not None:
+            try:
+                candidates.append(language_var.get())
+            except (AttributeError, tk.TclError):
+                pass
+        candidates.append(getattr(self, "app_language", ""))
+        config = getattr(self, "config", {})
+        if isinstance(config, dict):
+            candidates.append(config.get("app_language", ""))
+
+        labels_to_codes = {
+            str(label).strip(): code
+            for code, label in APP_LANGUAGE_LABELS.items()
+        }
+        for candidate in candidates:
+            selected = str(candidate or "").strip()
+            if selected in APP_LANGUAGE_LABELS:
+                return selected
+            if selected in labels_to_codes:
+                return labels_to_codes[selected]
+        return "en"
+
     def _translate_ui_text(self, text: object) -> str:
         source_text = str(text)
-        language = getattr(self, "app_language", "en")
+        language = self._active_language_code()
         # First turn any already-localized phrases back into their English
         # source. This also handles labels with icons or dynamic suffixes,
         # allowing an open window to switch languages immediately.
@@ -23840,7 +25884,7 @@ class TrackerApp:
                                 english.upper(),
                             )
 
-        if language in {"en", "au"}:
+        if language == "en":
             return canonical_text
 
         translations = UI_TRANSLATIONS.get(language, {})
@@ -23866,6 +25910,18 @@ class TrackerApp:
             localized = localized.replace(english, translated)
         return localized
 
+    def _localized_string_var(
+        self,
+        value: object = "",
+        master=None,
+    ) -> LocalizedStringVar:
+        """Create a StringVar that keeps later status updates localized."""
+        return LocalizedStringVar(
+            master=master or self.root,
+            translator=self._translate_dialog_text,
+            value=value,
+        )
+
     def _format_ui_text(
         self,
         text: str,
@@ -23887,8 +25943,8 @@ class TrackerApp:
     def _translate_dialog_text(self, text: object) -> str:
         """Translate message-box text without modifying paths or ROM names."""
         source_text = str(text)
-        language = getattr(self, "app_language", "en")
-        if language in {"en", "au"}:
+        language = self._active_language_code()
+        if language == "en":
             return source_text
         translations = UI_TRANSLATIONS.get(language, {})
         if source_text in translations:
@@ -23908,17 +25964,42 @@ class TrackerApp:
         return localized
 
     def _install_localized_messageboxes(self) -> None:
-        """Make every app message box follow the active app language."""
+        """Localize dialogs and use the blue app style for one-button messages."""
+        blue_message_names = {
+            "showinfo",
+            "showwarning",
+            "showerror",
+        }
         for name, original in _ORIGINAL_MESSAGEBOX_FUNCTIONS.items():
             def localized_messagebox(
                 title=None,
                 message=None,
+                _name=name,
                 _original=original,
                 **options,
             ):
+                localized_title = self._translate_dialog_text(title or "")
+                localized_message = self._translate_dialog_text(message or "")
+                if _name in blue_message_names:
+                    parent = options.pop("parent", None)
+                    try:
+                        self._show_localized_info(
+                            localized_title,
+                            localized_message,
+                            parent=parent,
+                        )
+                        return "ok"
+                    except (tk.TclError, AttributeError):
+                        # Keep startup and shutdown messages available if their
+                        # requested owner was destroyed during a callback.
+                        return _original(
+                            localized_title,
+                            localized_message,
+                            parent=self.root,
+                        )
                 return _original(
-                    self._translate_dialog_text(title or ""),
-                    self._translate_dialog_text(message or ""),
+                    localized_title,
+                    localized_message,
                     **options,
                 )
 
@@ -24353,11 +26434,7 @@ class TrackerApp:
             except (tk.TclError, AttributeError):
                 continue
 
-        for variable_name in (
-            "connection_var",
-            "catalog_last_refresh_var",
-            "catalog_new_hacks_var",
-        ):
+        for variable_name in ("connection_var",):
             variable = getattr(self, variable_name, None)
             if variable is None:
                 continue
@@ -24365,6 +26442,30 @@ class TrackerApp:
                 variable.set(
                     self._translate_ui_text(variable.get())
                 )
+            except (tk.TclError, AttributeError):
+                continue
+
+        # Catalog status lines contain live counts and timestamps.  Rebuild
+        # them from their language-neutral values instead of translating the
+        # sentence currently on screen, which can leave fragments of the
+        # previous language behind.
+        for variable_name, builder_name in (
+            ("spreadsheet_var", "_database_status_text"),
+            (
+                "catalog_last_refresh_var",
+                "_catalog_last_refresh_status_text",
+            ),
+            (
+                "catalog_new_hacks_var",
+                "_catalog_freshness_status_text",
+            ),
+        ):
+            variable = getattr(self, variable_name, None)
+            builder = getattr(self, builder_name, None)
+            if variable is None or builder is None:
+                continue
+            try:
+                variable.set(builder())
             except (tk.TclError, AttributeError):
                 continue
 
@@ -24633,6 +26734,31 @@ class TrackerApp:
         self.root.after_idle(self._queue_responsive_ui_scale)
 
     def _build_ui(self) -> None:
+        # Keep every vertical scrollbar consistent with the app's yellow
+        # scrolling accent, including the custom hack-selector popup.
+        try:
+            self.root.option_add("*Scrollbar.background", "#FFD43B")
+            self.root.option_add("*Scrollbar.activeBackground", "#FFE56B")
+            self.root.option_add("*Scrollbar.troughColor", "#17243A")
+            self.root.option_add("*Scrollbar.highlightBackground", "#FFD43B")
+            self.root.option_add("*Scrollbar.highlightColor", "#FFD43B")
+            self.root.option_add("*Scrollbar.width", "16")
+            scrollbar_style = ttk.Style(self.root)
+            scrollbar_style.configure(
+                "Vertical.TScrollbar",
+                background="#FFD43B",
+                troughcolor="#17243A",
+                arrowcolor="#17243A",
+                bordercolor="#FFD43B",
+                lightcolor="#FFD43B",
+                darkcolor="#FFD43B",
+            )
+            scrollbar_style.map(
+                "Vertical.TScrollbar",
+                background=[("active", "#FFE56B"), ("pressed", "#E6B800")],
+            )
+        except (tk.TclError, AttributeError):
+            pass
         self.root.configure(bg=THEME["sky_dark"])
         self.root.option_add("*Font", ("Segoe UI", 10))
 
@@ -24891,7 +27017,7 @@ class TrackerApp:
         self.platform_name_label = tk.Label(
             fx_tile,
             text=self.platform_var.get().upper(),
-            font=("Segoe UI", 15, "bold"),
+            font=("Segoe UI", 15, "bold", "underline"),
             fg=THEME["blue"],
             bg="#ECF6FF",
             bd=0,
@@ -24985,21 +27111,29 @@ class TrackerApp:
         # Mirror the FXPAK layout so the artwork has a real media column
         # instead of sitting against (and appearing clipped by) the border.
         sheet_tile.status_icon_label.place_configure(
-            relx=0.83,
+            relx=0.86,
             rely=0.50,
             x=0,
             anchor="center",
         )
         sheet_tile.status_title_label.place_configure(
-            relx=0.39,
+            relx=0.35,
+        )
+        sheet_tile.status_title_label.configure(
+            font=("Segoe UI", 12, "bold", "underline"),
         )
         sheet_status_line = tk.Frame(
             sheet_tile,
             bg="#F1FFF0",
+            width=self._ui_px(265),
+            height=self._ui_px(48),
         )
+        sheet_status_line.grid_propagate(False)
+        sheet_status_line.grid_columnconfigure(1, weight=1)
+        sheet_status_line.grid_rowconfigure(0, weight=1)
         sheet_status_line.place(
-            relx=0.39,
-            rely=0.56,
+            relx=0.35,
+            rely=0.54,
             anchor="center",
         )
         self.spreadsheet_dot = tk.Label(
@@ -25009,9 +27143,11 @@ class TrackerApp:
             fg=THEME["warning"],
             bg="#F1FFF0",
         )
-        self.spreadsheet_dot.pack(
-            side="left",
-            padx=(0, self._ui_px(6)),
+        self.spreadsheet_dot.grid(
+            row=0,
+            column=0,
+            padx=(0, self._ui_px(5)),
+            sticky="e",
         )
         self.spreadsheet_status_label = tk.Label(
             sheet_status_line,
@@ -25020,8 +27156,14 @@ class TrackerApp:
             fg=THEME["warning"],
             bg="#F1FFF0",
             anchor="center",
+            justify="center",
+            wraplength=self._ui_px(220),
         )
-        self.spreadsheet_status_label.pack(side="left")
+        self.spreadsheet_status_label.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+        )
         self.catalog_last_refresh_label = tk.Label(
             sheet_tile,
             textvariable=self.catalog_last_refresh_var,
@@ -25029,11 +27171,14 @@ class TrackerApp:
             fg=THEME["muted"],
             bg="#F1FFF0",
             anchor="center",
+            justify="center",
+            wraplength=self._ui_px(255),
         )
         self.catalog_last_refresh_label.place(
-            relx=0.39,
+            relx=0.35,
             rely=0.74,
             anchor="center",
+            width=self._ui_px(265),
         )
         self.catalog_new_hacks_label = tk.Label(
             sheet_tile,
@@ -25042,12 +27187,16 @@ class TrackerApp:
             fg=THEME["bad"],
             bg="#F1FFF0",
             anchor="center",
+            justify="center",
+            wraplength=0,
         )
         self.catalog_new_hacks_label.place(
-            relx=0.39,
+            relx=0.35,
             rely=0.88,
             anchor="center",
+            width=self._ui_px(265),
         )
+        self._queue_catalog_new_hacks_font_refresh()
         for clickable_widget in (
             sheet_status_line,
             self.spreadsheet_dot,
@@ -25405,6 +27554,14 @@ class TrackerApp:
         selector_row.columnconfigure(0, weight=1)
         selector_row.rowconfigure(0, weight=1)
 
+        def select_all_combo_text(event: tk.Event) -> str:
+            try:
+                event.widget.selection_range(0, tk.END)
+                event.widget.icursor(tk.END)
+            except tk.TclError:
+                pass
+            return "break"
+
         self.main_hack_selector_var.set(
             self._main_hack_selector_prompt_text()
         )
@@ -25457,6 +27614,14 @@ class TrackerApp:
             "<KeyPress-Up>",
             self._move_main_hack_selector_choice,
         )
+        self.main_hack_selector_combo.bind(
+            "<Control-a>",
+            select_all_combo_text,
+        )
+        self.main_hack_selector_combo.bind(
+            "<Control-A>",
+            select_all_combo_text,
+        )
 
         self._make_action_button(
             selector_row,
@@ -25489,7 +27654,7 @@ class TrackerApp:
         self.replay_recent_hack_combo = ttk.Combobox(
             recent_row,
             textvariable=self.replay_recent_hack_var,
-            state="readonly",
+            state="normal",
             style="HackPicker.TCombobox",
             width=27,
             height=5,
@@ -25502,6 +27667,14 @@ class TrackerApp:
             sticky="nsew",
             ipady=self._ui_px(5),
             padx=(0, self._ui_px(8)),
+        )
+        self.replay_recent_hack_combo.bind(
+            "<Control-a>",
+            select_all_combo_text,
+        )
+        self.replay_recent_hack_combo.bind(
+            "<Control-A>",
+            select_all_combo_text,
         )
 
         self.replay_last_hack_button = self._make_action_button(
@@ -25879,7 +28052,7 @@ class TrackerApp:
         ).grid(
             row=0,
             column=4,
-            rowspan=2,
+            rowspan=3,
             padx=self._ui_px(10),
             pady=self._ui_px(6),
             sticky="",
@@ -25898,7 +28071,7 @@ class TrackerApp:
         ).grid(
             row=2,
             column=0,
-            columnspan=5,
+            columnspan=4,
             padx=12,
             pady=(0, 8),
             sticky="w",
@@ -26441,17 +28614,19 @@ class TrackerApp:
                 "peach",
             )
         )
+        self.downloads_menu = downloads_menu
         add_mario_command(
             downloads_menu,
-            "Download Missing Hacks…",
+            "Download & Patch Missing Hacks…",
             protected_menu_action(
                 "downloads_files",
                 "Downloads",
-                "Download Missing Hacks",
+                "Download & Patch Missing Hacks",
                 self.open_hack_downloader,
             ),
             "peach",
         )
+        self.download_patch_menu_index = downloads_menu.index("end")
         downloads_menu.add_separator()
 
         software_menu = tk.Menu(
@@ -26467,29 +28642,38 @@ class TrackerApp:
             bd=1,
             font=("Segoe UI", 10, "bold"),
         )
+        self.connection_setup_menu = software_menu
+        connection_option_indexes: list[int] = []
         add_mario_command(
             software_menu,
-            "Install or Find SNI (Strongly Recommended)...",
-            lambda: self.install_optional_software("sni"),
+            "Install or Find SNI (Needed for RetroArch)...",
+            lambda: self._guided_install_optional_software("sni"),
             "star",
         )
+        connection_option_indexes.append(int(software_menu.index("end")))
         add_mario_command(
             software_menu,
-            "Install or Find QUsb2Snes...",
-            lambda: self.install_optional_software("qusb2snes"),
+            "Install or Find QUsb2Snes (Needed for FXPAK Pro)...",
+            lambda: self._guided_install_optional_software("qusb2snes"),
             "mario",
         )
+        connection_option_indexes.append(int(software_menu.index("end")))
         software_menu.add_separator()
         add_mario_command(
             software_menu,
             "Install or Configure RetroArch...",
-            lambda: self.install_optional_software("retroarch"),
+            lambda: self._guided_install_optional_software("retroarch"),
             "mushroom",
+        )
+        connection_option_indexes.append(int(software_menu.index("end")))
+        self.connection_option_menu_indexes = tuple(
+            connection_option_indexes
         )
         downloads_menu.add_cascade(
             label="Connection & Emulator Setup",
             menu=software_menu,
         )
+        self.connection_setup_menu_index = downloads_menu.index("end")
         downloads_menu.add_separator()
 
         add_mario_command(
@@ -26564,6 +28748,7 @@ class TrackerApp:
             self.open_smwcentral_catalog_browser,
             "toad",
         )
+        self.smwcentral_catalog_menu_index = downloads_menu.index("end")
         self.catalog_menu = catalog_menu
         self._update_catalog_menu_labels()
         downloads_menu.add_separator()
@@ -26572,6 +28757,9 @@ class TrackerApp:
             "Visit SMW Central Website...",
             lambda: webbrowser.open(SMW_CENTRAL_WEBSITE_URL),
             "star",
+        )
+        self.downloads_menu_button.configure(
+            command=self._guided_downloads_menu_button_clicked
         )
 
         self.help_menu_button, help_menu = (
@@ -26592,6 +28780,35 @@ class TrackerApp:
             "Feedback & Suggestions...",
             self.open_feedback_dialog,
             "one_up",
+        )
+        setup_guide_menu = tk.Menu(
+            help_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["blue"],
+            activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        add_mario_command(
+            setup_guide_menu,
+            self._setup_guide_text("app_setup"),
+            self.start_guided_app_setup,
+            "star",
+        )
+        add_mario_command(
+            setup_guide_menu,
+            self._setup_guide_text("obs_setup"),
+            self.open_guided_obs_text_setup,
+            "sheet",
+        )
+        help_menu.add_cascade(
+            label=self._setup_guide_text("setup_menu"),
+            menu=setup_guide_menu,
         )
         help_menu.add_separator()
         add_mario_command(
@@ -26853,6 +29070,7 @@ class TrackerApp:
     def _show_optional_install_progress(
         self,
         title: str,
+        header_text: str = "CONNECTION & EMULATOR SETUP",
     ) -> tuple[tk.Toplevel, tk.StringVar]:
         palette = self._library_palette()
         dialog = tk.Toplevel(self.root)
@@ -26866,7 +29084,7 @@ class TrackerApp:
 
         tk.Label(
             dialog,
-            text="CONNECTION & EMULATOR SETUP",
+            text=header_text,
             font=("Segoe UI", 17, "bold"),
             fg="white",
             bg=THEME["green"],
@@ -26874,7 +29092,10 @@ class TrackerApp:
             pady=12,
             anchor="w",
         ).pack(fill="x")
-        status_variable = tk.StringVar(value="Preparing download...")
+        status_variable = self._localized_string_var(
+            value="Preparing download...",
+            master=dialog,
+        )
         tk.Label(
             dialog,
             textvariable=status_variable,
@@ -27052,7 +29273,7 @@ class TrackerApp:
         )
         return core_path.resolve()
 
-    def install_optional_software(self, software: str) -> None:
+    def install_optional_software(self, software: str) -> bool:
         names = {
             "sni": "SNI",
             "qusb2snes": "QUsb2Snes",
@@ -27060,7 +29281,7 @@ class TrackerApp:
         }
         name = names.get(software)
         if name is None:
-            return
+            return False
 
         existing = self._find_optional_software_executable(software)
         if existing is not None:
@@ -27087,7 +29308,7 @@ class TrackerApp:
                     self._save_discovered_interface(existing)
                 except OSError as error:
                     messagebox.showerror(name, str(error), parent=self.root)
-                    return
+                    return False
                 messagebox.showinfo(
                     f"{name} {self._translate_ui_text('Ready')}",
                     self._translate_ui_text("Settings now point to:")
@@ -27096,7 +29317,8 @@ class TrackerApp:
                 )
                 if self._tracker_is_running():
                     self.refresh_tracker()
-                return
+                self._guided_optional_software_completed(software)
+                return True
         else:
             use_existing = False
 
@@ -27317,6 +29539,7 @@ class TrackerApp:
         self.status_var.set(f"{name} setup is complete.")
         if software != "retroarch" and self._tracker_is_running():
             self.refresh_tracker()
+        self._guided_optional_software_completed(software)
 
     def _streamer_privacy_warning_is_suppressed(
         self,
@@ -28009,11 +30232,6 @@ class TrackerApp:
             "main_hack_selector_popup_frame",
             None,
         )
-        popup_scrollbar = getattr(
-            self,
-            "main_hack_selector_popup_scrollbar",
-            None,
-        )
         if popup_listbox is not None:
             try:
                 dark = (
@@ -28040,14 +30258,6 @@ class TrackerApp:
                             THEME["yellow"]
                             if dark
                             else THEME["navy"]
-                        )
-                    )
-                if popup_scrollbar is not None:
-                    popup_scrollbar.configure(
-                        troughcolor=(
-                            "#0C1220"
-                            if dark
-                            else "#DCEEFF"
                         )
                     )
             except tk.TclError:
@@ -28161,6 +30371,11 @@ class TrackerApp:
         dark: bool,
     ) -> None:
         self._center_single_line_box_text(widget)
+        if (
+            isinstance(widget, ttk.Treeview)
+            and getattr(widget, "_smw_cell_grid_installed", False)
+        ):
+            self._schedule_treeview_cell_grid(widget)
 
         if isinstance(widget, tk.Toplevel):
             self._set_windows_titlebar_theme(
@@ -28524,15 +30739,9 @@ class TrackerApp:
             downloader_style.configure(
                 "Downloader.TCombobox",
                 fieldbackground=palette["entry"],
-                background=(
-                    THEME["yellow"]
-                    if dark_mode
-                    else THEME["blue"]
-                ),
+                background=THEME["blue"],
                 foreground=palette["text"],
-                arrowcolor=(
-                    THEME["navy"] if dark_mode else "#FFFFFF"
-                ),
+                arrowcolor="#FFFFFF",
                 bordercolor=palette["border"],
                 lightcolor=palette["border"],
                 darkcolor=palette["border"],
@@ -28723,8 +30932,245 @@ class TrackerApp:
         except tk.TclError:
             pass
 
+    def _ask_localized_yes_no(
+        self,
+        title: str,
+        message: str,
+        *,
+        parent: tk.Widget | None = None,
+    ) -> bool:
+        """Show a fully app-localized confirmation, including its buttons."""
+        owner = parent or self.root
+        palette = self._library_palette()
+        answer = {"confirmed": False}
+        dialog = tk.Toplevel(owner)
+        # Treat confirmations as complete dialog text.  This avoids the
+        # phrase-by-phrase fallback producing mixed-language sentences when
+        # an older localized fragment is still present after a language
+        # switch.
+        dialog_translator = getattr(
+            self,
+            "_translate_dialog_text",
+            None,
+        )
+        if not callable(dialog_translator):
+            dialog_translator = self._translate_ui_text
+        localized_title = dialog_translator(title)
+        localized_message = dialog_translator(message)
+        dialog.title(localized_title)
+        self._size_dialog_for_ui(
+            dialog,
+            760,
+            430,
+            660,
+            380,
+        )
+        dialog.resizable(False, False)
+        dialog.transient(owner)
+        dialog.configure(bg=palette["window"])
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["orange"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(12),
+        )
+        title_bar.pack(fill="x")
+        OutlinedLabel(
+            title_bar,
+            text=localized_title.upper(),
+            font=("Segoe UI", 14, "bold"),
+            fg="white",
+            bg=THEME["orange"],
+            anchor="center",
+            justify="center",
+        ).pack(fill="x")
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=self._ui_px(24),
+            pady=self._ui_px(22),
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(12)),
+        )
+        tk.Label(
+            body,
+            text=localized_message,
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="nw",
+            justify="left",
+            wraplength=self._ui_px(690),
+        ).pack(fill="both", expand=True)
+
+        def finish(confirmed: bool) -> None:
+            answer["confirmed"] = confirmed
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
+        button_bar = tk.Frame(
+            body,
+            bg=palette["panel"],
+        )
+        button_bar.pack(fill="x", pady=(self._ui_px(18), 0))
+        centered_buttons = tk.Frame(
+            button_bar,
+            bg=palette["panel"],
+        )
+        centered_buttons.pack(anchor="center")
+        no_button = self._make_action_button(
+            centered_buttons,
+            text=self._translate_ui_text("No"),
+            command=lambda: finish(False),
+            bg="#63788F",
+            active_bg="#4A6078",
+            width=12,
+            pad_y=6,
+            fixed_pixel_width=self._ui_px(150),
+        )
+        no_button.pack(side="left", padx=self._ui_px(7))
+        yes_button = self._make_action_button(
+            centered_buttons,
+            text=self._translate_ui_text("Yes"),
+            command=lambda: finish(True),
+            bg=THEME["green"],
+            active_bg="#208A39",
+            width=12,
+            pad_y=6,
+            fixed_pixel_width=self._ui_px(150),
+        )
+        yes_button.pack(side="left", padx=self._ui_px(7))
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        dialog.bind("<Escape>", lambda _event: finish(False))
+        dialog.bind("<Return>", lambda _event: finish(True))
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        dialog.grab_set()
+        yes_button.focus_set()
+        owner.wait_window(dialog)
+        return bool(answer["confirmed"])
+
+    def _show_localized_info(
+        self,
+        title: str,
+        message: str,
+        *,
+        parent: tk.Widget | None = None,
+    ) -> None:
+        """Show an app-localized information dialog, including its button."""
+        owner = parent or self.root
+        try:
+            if not owner.winfo_exists():
+                owner = self.root
+        except (AttributeError, tk.TclError):
+            owner = self.root
+        palette = self._library_palette()
+        dialog = tk.Toplevel(owner)
+        localized_title = self._translate_dialog_text(title)
+        localized_message = self._translate_dialog_text(message)
+        dialog.title(localized_title)
+        self._size_dialog_for_ui(dialog, 760, 330, 660, 290)
+        dialog.resizable(False, False)
+        dialog.transient(owner)
+        dialog.configure(bg=palette["window"])
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["blue"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(12),
+        )
+        title_bar.pack(fill="x")
+        OutlinedLabel(
+            title_bar,
+            text=localized_title.upper(),
+            font=("Segoe UI", 14, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            anchor="center",
+            justify="center",
+        ).pack(fill="x")
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=self._ui_px(24),
+            pady=self._ui_px(22),
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(12)),
+        )
+        tk.Label(
+            body,
+            text=localized_message,
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+            wraplength=self._ui_px(690),
+        ).pack(fill="both", expand=True)
+
+        def close_dialog() -> None:
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
+        ok_button = self._make_action_button(
+            body,
+            text=self._translate_ui_text("OK"),
+            command=close_dialog,
+            bg=THEME["blue"],
+            active_bg="#1768B2",
+            width=12,
+            pad_y=6,
+            fixed_pixel_width=self._ui_px(150),
+        )
+        ok_button.pack(anchor="center", pady=(self._ui_px(16), 0))
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.bind("<Escape>", lambda _event: close_dialog())
+        dialog.bind("<Return>", lambda _event: close_dialog())
+        try:
+            dialog_is_dark = self.appearance_var.get() == "dark"
+        except (AttributeError, tk.TclError):
+            dialog_is_dark = (
+                str(self.config.get("ui_theme", "dark")).casefold()
+                == "dark"
+            )
+        self._apply_widget_appearance(
+            dialog,
+            dark=dialog_is_dark,
+        )
+        dialog.grab_set()
+        ok_button.focus_set()
+        owner.wait_window(dialog)
+
     def refresh_smwcentral_catalog(
         self,
+        *,
+        waiting: bool = False,
     ) -> None:
         if (
             self.catalog_refresh_thread is not None
@@ -28737,19 +31183,29 @@ class TrackerApp:
                 self.catalog_refresh_dialog.lift()
             return
 
-        confirmed = messagebox.askyesno(
-            "Refresh Moderated Hacks from SMW Central",
-            (
-                "Refresh moderated hacks directly from SMW Central's "
-                "live catalog?\n\n"
-                "This retrieves the current moderated list from the site, "
-                "including hacks that may not have reached the GitHub "
-                "spreadsheet mirror yet. Routine refreshes use a fast "
-                "newest-first scan and stop after reaching already-known "
-                "hacks.\n\n"
-                "Your tracked progress, ratings, notes, custom hacks, "
-                "and ROM mappings will be preserved."
-            ),
+        refresh_title = (
+            "Refresh Waiting Hacks from SMW Central"
+            if waiting
+            else "Refresh Moderated Hacks from SMW Central"
+        )
+        refresh_message = (
+            "Refresh waiting hacks directly from SMW Central's live "
+            "catalog?\n\nWaiting entries are not moderated yet and "
+            "will appear in bright red throughout the app."
+            if waiting
+            else "Refresh moderated hacks directly from SMW Central's "
+            "live catalog?\n\n"
+            "This retrieves the current moderated list from the site, "
+            "including hacks that may not have reached the GitHub "
+            "spreadsheet mirror yet. Routine refreshes use a fast "
+            "newest-first scan and stop after reaching already-known "
+            "hacks.\n\n"
+            "Your tracked progress, ratings, notes, custom hacks, "
+            "and ROM mappings will be preserved."
+        )
+        confirmed = self._ask_localized_yes_no(
+            refresh_title,
+            refresh_message,
             parent=self.root,
         )
 
@@ -28759,7 +31215,8 @@ class TrackerApp:
         palette = self._library_palette()
         dialog = tk.Toplevel(self.root)
         self.catalog_refresh_dialog = dialog
-        dialog.title("Refresh Moderated Hacks from SMW Central")
+        localized_refresh_title = self._translate_ui_text(refresh_title)
+        dialog.title(localized_refresh_title)
         self._size_dialog_for_ui(
             dialog,
             620,
@@ -28772,10 +31229,11 @@ class TrackerApp:
             bg=palette["window"]
         )
 
-        status_var = tk.StringVar(
+        status_var = self._localized_string_var(
             value=(
                 "Connecting to the live SMW Central catalog…"
-            )
+            ),
+            master=dialog,
         )
         self.catalog_refresh_status_var = (
             status_var
@@ -28795,7 +31253,7 @@ class TrackerApp:
         )
         OutlinedLabel(
             title_bar,
-            text="↻  REFRESH MODERATED HACKS FROM SMW CENTRAL",
+            text="↻  " + localized_refresh_title.upper(),
             font=("Segoe UI", 14, "bold"),
             fg="white",
             bg=THEME["orange"],
@@ -28865,9 +31323,10 @@ class TrackerApp:
         self.status_var.set(
             "Refreshing the catalog directly from SMW Central…"
         )
+        self._catalog_refresh_waiting = waiting
         self.catalog_refresh_thread = (
             threading.Thread(
-                target=self._catalog_refresh_worker,
+                target=lambda: self._catalog_refresh_worker(waiting=waiting),
                 daemon=True,
             )
         )
@@ -28909,13 +31368,17 @@ class TrackerApp:
             ),
         )
 
-    def _catalog_refresh_worker(self) -> None:
+    def _catalog_refresh_worker(self, *, waiting: bool = False) -> None:
         summary: dict[str, Any] | None = None
         error_message = ""
 
         try:
             summary = (
-                refresh_catalog_from_smwcentral_site(
+                (
+                    refresh_waiting_from_smwcentral_site
+                    if waiting
+                    else refresh_catalog_from_smwcentral_site
+                )(
                     self.stats_db,
                     self.catalog_refresh_cancel_event,
                     self._catalog_refresh_progress,
@@ -29027,35 +31490,39 @@ class TrackerApp:
         )
 
         if refresh_status == "up_to_date":
-            message = (
-                "Your hack catalog is already up to date. "
-                f"Catalog version: "
-                f"{summary.get('version', 'Unknown')}; "
-                f"sequence: "
-                f"{int(summary.get('sequence', 0)):,}."
+            message = self._translate_ui_text(
+                "Your hack catalog is already up to date. Catalog version: "
+                "{version}; sequence: {sequence}."
+            ).format(
+                version=summary.get("version", self._translate_ui_text("Unknown")),
+                sequence=f"{int(summary.get('sequence', 0)):,}",
             )
 
         elif refresh_status == "local_newer":
-            message = (
-                "No catalog changes were applied because your "
-                "local catalog sequence "
-                f"({int(summary.get('local_sequence', 0)):,}) "
-                "is newer than the GitHub repository sequence "
-                f"({int(summary.get('sequence', 0)):,}). "
-                "Your current catalog was preserved."
+            message = self._translate_ui_text(
+                "No catalog changes were applied because your local catalog "
+                "sequence ({local_sequence}) is newer than the GitHub "
+                "repository sequence ({sequence}). Your current catalog was "
+                "preserved."
+            ).format(
+                local_sequence=(
+                    f"{int(summary.get('local_sequence', 0)):,}"
+                ),
+                sequence=f"{int(summary.get('sequence', 0)):,}",
             )
 
         else:
-            message = (
-                "Live SMW Central catalog refresh complete. "
-                f"Pages checked: "
-                f"{int(summary.get('pages_read', 0)):,}; "
-                f"hacks checked: {int(summary.get('fetched', 0)):,}; "
-                f"new: {int(summary.get('new', 0)):,}; "
-                f"updated: {int(summary.get('updated', 0)):,}; "
-                f"removed: {int(summary.get('removed', 0)):,}; "
-                f"official catalog: "
-                f"{int(summary.get('official', 0)):,}."
+            message = self._translate_ui_text(
+                "Live SMW Central catalog refresh complete. Pages checked: "
+                "{pages}; hacks checked: {checked}; new: {new}; updated: "
+                "{updated}; removed: {removed}; official catalog: {official}."
+            ).format(
+                pages=f"{int(summary.get('pages_read', 0)):,}",
+                checked=f"{int(summary.get('fetched', 0)):,}",
+                new=f"{int(summary.get('new', 0)):,}",
+                updated=f"{int(summary.get('updated', 0)):,}",
+                removed=f"{int(summary.get('removed', 0)):,}",
+                official=f"{int(summary.get('official', 0)):,}",
             )
 
             preserved_removed = int(
@@ -29066,18 +31533,19 @@ class TrackerApp:
             )
 
             if preserved_removed:
-                message += (
-                    f" {preserved_removed:,} removed "
-                    "catalog entry or entries were retained "
-                    "as local history because they are tracked "
-                    "or have ROM mappings."
-                )
+                message += " " + self._translate_ui_text(
+                    "{count} removed catalog entry or entries were retained "
+                    "as local history because they are tracked or have ROM "
+                    "mappings."
+                ).format(count=f"{preserved_removed:,}")
         self.status_var.set(message)
-        messagebox.showinfo(
+        self._show_localized_info(
             "SMWCentral Catalog",
             message,
             parent=self.root,
         )
+        if not bool(getattr(self, "_catalog_refresh_waiting", False)):
+            self._guided_setup_catalog_refreshed()
 
     def _reload_selected_spreadsheet(self) -> None:
         spreadsheet_text = self.spreadsheet_path_var.get().strip()
@@ -29281,8 +31749,8 @@ class TrackerApp:
         def choose_sni() -> None:
             selected = filedialog.askopenfilename(
                 parent=dialog,
-                title="Select SNI.exe",
-                filetypes=[("Executable", "*.exe")],
+                title=self._translate_ui_text("Select SNI.exe"),
+                filetypes=[(self._translate_ui_text("Executable"), "*.exe")],
             )
             if selected:
                 local_sni.set(selected)
@@ -29290,8 +31758,8 @@ class TrackerApp:
         def choose_qusb() -> None:
             selected = filedialog.askopenfilename(
                 parent=dialog,
-                title="Select QUsb2Snes.exe",
-                filetypes=[("Executable", "*.exe")],
+                title=self._translate_ui_text("Select QUsb2Snes.exe"),
+                filetypes=[(self._translate_ui_text("Executable"), "*.exe")],
             )
             if selected:
                 local_qusb.set(selected)
@@ -29299,10 +31767,10 @@ class TrackerApp:
         def choose_spreadsheet() -> None:
             selected = filedialog.askopenfilename(
                 parent=dialog,
-                title="Select optional workbook to import",
+                title=self._translate_ui_text("Select optional workbook to import"),
                 filetypes=[
-                    ("Excel workbook", "*.xlsx *.xlsm"),
-                    ("All files", "*.*"),
+                    (self._translate_ui_text("Excel workbook"), "*.xlsx *.xlsm"),
+                    (self._translate_ui_text("All files"), "*.*"),
                 ],
             )
             if selected:
@@ -29311,7 +31779,7 @@ class TrackerApp:
         def choose_output() -> None:
             selected = filedialog.askdirectory(
                 parent=dialog,
-                title="Select OBS text-file folder",
+                title=self._translate_ui_text("Select OBS text-file folder"),
             )
             if selected:
                 local_output.set(selected)
@@ -29319,7 +31787,7 @@ class TrackerApp:
         def choose_rom_library() -> None:
             selected = filedialog.askdirectory(
                 parent=dialog,
-                title="Select local patched-ROM library",
+                title=self._translate_ui_text("Select local patched-ROM library"),
             )
             if selected:
                 local_rom_library.set(selected)
@@ -29330,8 +31798,11 @@ class TrackerApp:
         ) -> None:
             selected = filedialog.askopenfilename(
                 parent=dialog,
-                title=title,
-                filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
+                title=self._translate_ui_text(title),
+                filetypes=[
+                    (self._translate_ui_text("Executable"), "*.exe"),
+                    (self._translate_ui_text("All files"), "*.*"),
+                ],
             )
             if selected:
                 target.set(selected)
@@ -29339,10 +31810,10 @@ class TrackerApp:
         def choose_retroarch_core() -> None:
             selected = filedialog.askopenfilename(
                 parent=dialog,
-                title="Select RetroArch SNES core",
+                title=self._translate_ui_text("Select RetroArch SNES core"),
                 filetypes=[
-                    ("Libretro core", "*.dll *.so *.dylib"),
-                    ("All files", "*.*"),
+                    (self._translate_ui_text("Libretro core"), "*.dll *.so *.dylib"),
+                    (self._translate_ui_text("All files"), "*.*"),
                 ],
             )
             if selected:
@@ -29705,6 +32176,50 @@ class TrackerApp:
             pady=7,
         )
 
+        livesplit_help = tk.Frame(
+            body,
+            bg="#F9F5FF",
+        )
+        livesplit_help.grid(
+            row=15,
+            column=0,
+            columnspan=4,
+            sticky="ew",
+            pady=(8, 2),
+        )
+        livesplit_help.columnconfigure(0, weight=1)
+        tk.Label(
+            livesplit_help,
+            text=self._setup_guide_text("livesplit_obs_note"),
+            font=("Segoe UI", 9, "bold"),
+            fg="#7F6000",
+            bg="#F9F5FF",
+            justify="left",
+            anchor="w",
+            wraplength=760,
+        ).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, 14),
+        )
+        self._make_action_button(
+            livesplit_help,
+            text=self._setup_guide_text("livesplit_obs_button"),
+            command=lambda: self.open_livesplit_obs_setup_guide(
+                local_game_port.get(),
+                local_level_port.get(),
+            ),
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=30,
+            pad_y=6,
+        ).grid(
+            row=0,
+            column=1,
+            sticky="e",
+        )
+
         tk.Label(
             body,
             text=(
@@ -29718,7 +32233,7 @@ class TrackerApp:
             justify="left",
             wraplength=900,
         ).grid(
-            row=15,
+            row=16,
             column=0,
             columnspan=4,
             sticky="w",
@@ -29729,9 +32244,9 @@ class TrackerApp:
             body,
             bg="#F9F5FF",
         )
-        body.rowconfigure(16, weight=1)
+        body.rowconfigure(17, weight=1)
         button_row.grid(
-            row=17,
+            row=18,
             column=0,
             columnspan=4,
             sticky="e",
@@ -33426,8 +35941,8 @@ class TrackerApp:
 
     def browse_qusb(self) -> None:
         selected = filedialog.askopenfilename(
-            title="Select QUsb2Snes.exe",
-            filetypes=[("Executable", "*.exe")],
+            title=self._translate_ui_text("Select QUsb2Snes.exe"),
+            filetypes=[(self._translate_ui_text("Executable"), "*.exe")],
         )
         if selected:
             self.qusb_path_var.set(selected)
@@ -33443,7 +35958,7 @@ class TrackerApp:
 
     def browse_output_folder(self) -> None:
         selected = filedialog.askdirectory(
-            title="Select OBS text-file folder"
+            title=self._translate_ui_text("Select OBS text-file folder")
         )
         if selected:
             self.output_folder_var.set(selected)
@@ -33489,9 +36004,12 @@ class TrackerApp:
     def _database_status_text(self) -> str:
         try:
             overview = self.stats_db.overview()
-            return (
-                f"Loaded ({overview['official'] + overview['custom']:,} catalog • "
-                f"{overview['tracked']:,} tracked)"
+            catalog_counts = self.stats_db.catalog_status_counts()
+            return self._format_ui_text(
+                "Loaded ({moderated} moderated • {waiting} waiting • {tracked} tracked)",
+                moderated=f"{int(catalog_counts.get('moderated', 0) or 0):,}",
+                waiting=f"{int(catalog_counts.get('waiting', 0) or 0):,}",
+                tracked=f"{int(overview.get('tracked', 0) or 0):,}",
             )
         except Exception as error:
             return "Database error: " + str(error)
@@ -33503,12 +36021,40 @@ class TrackerApp:
                 metadata.get(
                     "Catalog Last Refresh",
                     "",
-                )
+                ),
+                empty=self._translate_ui_text("Never"),
             )
         except Exception:
-            refreshed = "Unknown"
+            refreshed = self._translate_ui_text("Unknown")
 
-        return "Last refreshed: " + refreshed
+        return self._translate_ui_text("Last refreshed:") + " " + refreshed
+
+    def _catalog_freshness_status_text(self) -> str:
+        state = str(
+            getattr(self, "catalog_freshness_state", "checking")
+        ).strip().lower()
+        if state == "checking":
+            return self._translate_ui_text("Checking for new hacks...")
+
+        waiting_count = max(
+            0,
+            int(getattr(self, "catalog_new_waiting_count", 0) or 0),
+        )
+        moderated_count = getattr(
+            self,
+            "catalog_new_moderated_count",
+            None,
+        )
+        if moderated_count is None:
+            return self._format_ui_text(
+                "New moderated count unavailable • {waiting} new waiting since last refresh",
+                waiting=f"{waiting_count:,}",
+            )
+        return self._format_ui_text(
+            "{moderated} new moderated • {waiting} new waiting since last refresh",
+            moderated=f"{max(0, int(moderated_count)):,}",
+            waiting=f"{waiting_count:,}",
+        )
 
     def _check_catalog_freshness_async(self) -> None:
         if hasattr(self, "catalog_last_refresh_var"):
@@ -33523,8 +36069,9 @@ class TrackerApp:
             return
 
         if hasattr(self, "catalog_new_hacks_var"):
+            self.catalog_freshness_state = "checking"
             self.catalog_new_hacks_var.set(
-                "Checking for new hacks..."
+                self._catalog_freshness_status_text()
             )
 
         self.catalog_freshness_cancel_event.clear()
@@ -33535,14 +36082,29 @@ class TrackerApp:
         self.catalog_freshness_thread.start()
 
     def _catalog_freshness_worker(self) -> None:
+        waiting_available = 0
         try:
+            metadata = self.stats_db.metadata()
+            try:
+                waiting_available = max(
+                    0,
+                    int(
+                        metadata.get(
+                            "Waiting New Since Last Refresh",
+                            "0",
+                        )
+                        or 0
+                    ),
+                )
+            except (TypeError, ValueError):
+                waiting_available = 0
+
             payload = github_catalog_get_json(
                 GITHUB_CATALOG_VERSION_URL,
                 self.catalog_freshness_cancel_event,
             )
-            local_count = self.stats_db.overview().get(
-                "official",
-                0,
+            local_count = self.stats_db.catalog_status_counts().get(
+                "moderated", 0
             )
             available = catalog_available_new_hack_count(
                 local_count,
@@ -33558,6 +36120,7 @@ class TrackerApp:
                 {
                     "type": "catalog_freshness",
                     "available": available,
+                    "waiting_available": waiting_available,
                 }
             )
         except Exception as error:
@@ -33566,6 +36129,7 @@ class TrackerApp:
                     {
                         "type": "catalog_freshness",
                         "available": None,
+                        "waiting_available": waiting_available,
                         "error": str(error),
                     }
                 )
@@ -33748,12 +36312,20 @@ class TrackerApp:
                     for tag in tree.item(iid, "tags")
                     if tag not in {even_tag, odd_tag}
                 )
-                tree.item(
-                    iid,
-                    tags=existing_tags + (
-                        even_tag if row_index % 2 == 0 else odd_tag,
-                    ),
+                updated_tags = existing_tags + (
+                    even_tag if row_index % 2 == 0 else odd_tag,
                 )
+                tree.item(iid, tags=updated_tags)
+                downloader_widgets = getattr(self, "downloader_widgets", {})
+                if downloader_widgets.get("tree") is tree:
+                    payloads = downloader_widgets.get("row_payloads", {})
+                    payload = payloads.get(iid)
+                    if isinstance(payload, tuple) and len(payload) == 3:
+                        payloads[iid] = (
+                            payload[0],
+                            payload[1],
+                            updated_tags,
+                        )
             except tk.TclError:
                 continue
 
@@ -33765,6 +36337,7 @@ class TrackerApp:
         default_column: str | None = None,
         default_descending: bool = False,
         after_sort=None,
+        presence_columns: set[str] | None = None,
     ) -> None:
         # Treeview headings are not regular Tk widgets, so the normal
         # widget-tree localization pass cannot reach them.  Keep the English
@@ -33778,6 +36351,11 @@ class TrackerApp:
         tree._smw_sort_column = default_column
         tree._smw_sort_descending = bool(default_descending)
         tree._smw_after_sort = after_sort
+        # A few compact indicator columns intentionally use a blank cell for
+        # ``False`` and an icon/check mark for ``True``.  Treat both states as
+        # real sortable values instead of sending every blank cell to the
+        # unsorted "missing" bucket.
+        tree._smw_sort_presence_columns = set(presence_columns or ())
         for column, label in tree._smw_sort_headings.items():
             tree.heading(
                 column,
@@ -33841,6 +36419,9 @@ class TrackerApp:
 
         populated: list[tuple[tuple[int, object], str]] = []
         missing: list[str] = []
+        presence_columns = set(
+            getattr(tree, "_smw_sort_presence_columns", ())
+        )
         for iid in tree.get_children(""):
             display_value = self._treeview_display_value(tree, iid, column)
             heading_label = str(
@@ -33858,18 +36439,24 @@ class TrackerApp:
                 display_value = self._title_without_leading_article(
                     display_value
                 )
-            sort_value = self._treeview_sort_value(display_value)
+            if column in presence_columns:
+                # Ascending places unchecked rows first; the next header
+                # click reverses the order and places downloaded rows first.
+                sort_value = (0, 1 if display_value.strip() else 0)
+            else:
+                sort_value = self._treeview_sort_value(display_value)
             if sort_value[0] == 9:
                 missing.append(iid)
             else:
                 populated.append((sort_value, iid))
         populated.sort(key=lambda item: item[0], reverse=descending)
         ordered_iids = [iid for _value, iid in populated] + missing
-        for row_index, iid in enumerate(ordered_iids):
-            try:
-                tree.move(iid, "", row_index)
-            except tk.TclError:
-                pass
+        try:
+            # Reorder all children in one Tcl call.  Moving several thousand
+            # catalog rows one by one made column sorting needlessly slow.
+            tree.set_children("", *ordered_iids)
+        except tk.TclError:
+            pass
         self._update_treeview_sort_headings(tree)
         after_sort = getattr(tree, "_smw_after_sort", None)
         if after_sort is not None:
@@ -33985,7 +36572,7 @@ class TrackerApp:
             "recent": "Recent Activity",
             "unmoderated_hacks": "Unmoderated Hacks",
             "complete_catalog": "Complete SMW Central Catalog",
-            "missing_hacks": "Download Missing Hacks",
+            "missing_hacks": "Download & Patch Missing Hacks",
             "game_library": "Game Library",
             "fxpak_sd": "FXPAK Pro SD Card",
         }.get(table_key, "Statistics table")
@@ -34034,6 +36621,33 @@ class TrackerApp:
 
         palette = self._library_palette()
         style = self._statistics_table_style(table_key)
+
+        # Downloader rows are already inserted with their alternating parity
+        # tags.  Re-reading and rewriting every row through Tcl made opening or
+        # filtering a 2,700+ item catalog unnecessarily expensive.  Keep that
+        # fast path unless the user has explicitly chosen a custom table style.
+        if (
+            style is None
+            and table_key in {"complete_catalog", "missing_hacks"}
+        ):
+            tree.tag_configure(
+                "downloader_even",
+                background=palette["tree"],
+                foreground=palette["text"],
+            )
+            tree.tag_configure(
+                "downloader_odd",
+                background=palette["panel_alt"],
+                foreground=palette["text"],
+            )
+            after_style = getattr(tree, "_smw_after_table_style", None)
+            if callable(after_style):
+                try:
+                    after_style()
+                except tk.TclError:
+                    pass
+            return
+
         children = self._treeview_all_items(tree)
         total_rows = max(1, len(children) - 1)
 
@@ -34047,14 +36661,25 @@ class TrackerApp:
             background=palette["panel_alt"],
             foreground=palette["text"],
         )
-
         for row_index, iid in enumerate(children):
-            if style is None:
-                tag_name = (
-                    "even"
-                    if row_index % 2 == 0
-                    else "odd"
+            try:
+                existing_tags = tuple(str(tag) for tag in tree.item(iid, "tags"))
+            except tk.TclError:
+                continue
+
+            preserved_tags = tuple(
+                tag
+                for tag in existing_tags
+                if tag not in {"waiting", "hall_of_fame"}
+                and not tag.endswith(("_waiting", "_hall_of_fame"))
+                and not tag.startswith(
+                    f"stats_{table_key}_appearance_"
                 )
+                and tag not in {"even", "odd"}
+            )
+            parity = "even" if row_index % 2 == 0 else "odd"
+            if style is None:
+                tag_name = parity
             else:
                 if style["mode"] == "alternating":
                     background = (
@@ -34085,7 +36710,7 @@ class TrackerApp:
                     foreground=foreground,
                 )
             try:
-                tree.item(iid, tags=(tag_name,))
+                tree.item(iid, tags=preserved_tags + (tag_name,))
             except tk.TclError:
                 continue
 
@@ -34096,6 +36721,232 @@ class TrackerApp:
             except tk.TclError:
                 pass
 
+    def _table_grid_line_color(self) -> str:
+        """Return the shared light-blue divider used by every data table."""
+        return (
+            TABLE_GRID_LINE_DARK
+            if self.appearance_var.get() == "dark"
+            else TABLE_GRID_LINE_LIGHT
+        )
+
+    def _schedule_treeview_cell_grid(
+        self,
+        tree: ttk.Treeview,
+        delay_ms: int = 20,
+    ) -> None:
+        try:
+            if not tree.winfo_exists():
+                return
+            if getattr(tree, "_smw_cell_grid_after_id", None) is not None:
+                return
+            tree._smw_cell_grid_after_id = tree.after(
+                max(0, int(delay_ms)),
+                lambda: self._render_treeview_cell_grid(tree),
+            )
+        except (tk.TclError, TypeError, ValueError):
+            pass
+
+    def _install_treeview_cell_grid(self, tree: ttk.Treeview) -> None:
+        """Add light-blue horizontal and vertical cell lines to a Treeview."""
+        if getattr(tree, "_smw_cell_grid_installed", False):
+            self._schedule_treeview_cell_grid(tree)
+            return
+        tree._smw_cell_grid_installed = True
+        tree._smw_cell_grid_after_id = None
+        tree._smw_cell_grid_vertical_lines = []
+        tree._smw_cell_grid_horizontal_lines = []
+
+        for sequence in (
+            "<Configure>",
+            "<Map>",
+            "<Expose>",
+            "<ButtonRelease-1>",
+            "<<TreeviewSelect>>",
+            "<<TreeviewOpen>>",
+            "<<TreeviewClose>>",
+        ):
+            tree.bind(
+                sequence,
+                lambda _event, target=tree: self._schedule_treeview_cell_grid(
+                    target
+                ),
+                add="+",
+            )
+
+        def preserve_scroll_command(command_name: str, first, last) -> None:
+            if command_name:
+                try:
+                    tree.tk.call(command_name, first, last)
+                except tk.TclError:
+                    pass
+            self._schedule_treeview_cell_grid(tree)
+
+        try:
+            original_y_scroll = str(tree.cget("yscrollcommand") or "").strip()
+            original_x_scroll = str(tree.cget("xscrollcommand") or "").strip()
+            tree.configure(
+                yscrollcommand=lambda first, last: preserve_scroll_command(
+                    original_y_scroll,
+                    first,
+                    last,
+                ),
+                xscrollcommand=lambda first, last: preserve_scroll_command(
+                    original_x_scroll,
+                    first,
+                    last,
+                ),
+            )
+        except tk.TclError:
+            pass
+
+        def cancel_grid_callback(event) -> None:
+            if event.widget is not tree:
+                return
+            after_id = getattr(tree, "_smw_cell_grid_after_id", None)
+            if after_id is not None:
+                try:
+                    tree.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+                tree._smw_cell_grid_after_id = None
+
+        tree.bind("<Destroy>", cancel_grid_callback, add="+")
+        for retry_delay in (0, 60, 250, 800):
+            try:
+                tree.after(
+                    retry_delay,
+                    lambda target=tree: self._schedule_treeview_cell_grid(
+                        target
+                    ),
+                )
+            except tk.TclError:
+                break
+
+    def _render_treeview_cell_grid(self, tree: ttk.Treeview) -> None:
+        tree._smw_cell_grid_after_id = None
+        try:
+            if not tree.winfo_exists() or not tree.winfo_ismapped():
+                return
+            tree_width = max(1, int(tree.winfo_width()))
+            tree_height = max(1, int(tree.winfo_height()))
+        except (tk.TclError, TypeError, ValueError):
+            return
+
+        visible_iids: list[str] = []
+        previous_iid = ""
+        sample_step = max(3, self._ui_px(4))
+        for y_position in range(0, tree_height, sample_step):
+            try:
+                iid = str(tree.identify_row(y_position) or "")
+            except tk.TclError:
+                break
+            if iid and iid != previous_iid:
+                visible_iids.append(iid)
+            previous_iid = iid
+
+        row_edges: set[int] = set()
+        for iid in visible_iids:
+            try:
+                row_box = tree.bbox(iid, "#0")
+            except tk.TclError:
+                continue
+            if row_box:
+                _x, row_y, _width, row_height = row_box
+                edge = int(row_y) + int(row_height) - TABLE_GRID_BORDER_WIDTH
+                if 0 < edge < tree_height:
+                    row_edges.add(edge)
+
+        column_edges: set[int] = set()
+        if visible_iids:
+            reference_iid = visible_iids[0]
+            try:
+                configured_columns = tuple(tree.cget("columns"))
+                raw_display_columns = tree.cget("displaycolumns")
+                if isinstance(raw_display_columns, (tuple, list)):
+                    display_columns = tuple(
+                        str(column) for column in raw_display_columns
+                    )
+                else:
+                    display_columns = tuple(
+                        tree.tk.splitlist(raw_display_columns)
+                    )
+            except (tk.TclError, TypeError):
+                configured_columns = ()
+                display_columns = ()
+            if not display_columns or display_columns == ("#all",):
+                display_columns = configured_columns
+            for column in ("#0", *display_columns):
+                try:
+                    cell_box = tree.bbox(reference_iid, column)
+                except tk.TclError:
+                    continue
+                if cell_box:
+                    cell_x, _y, cell_width, _height = cell_box
+                    edge = (
+                        int(cell_x)
+                        + int(cell_width)
+                        - TABLE_GRID_BORDER_WIDTH
+                    )
+                    if 0 < edge < tree_width:
+                        column_edges.add(edge)
+
+        color = self._table_grid_line_color()
+
+        def place_lines(
+            attribute_name: str,
+            positions: list[int],
+            *,
+            vertical: bool,
+        ) -> None:
+            lines: list[tk.Frame] = getattr(tree, attribute_name, [])
+            while len(lines) < len(positions):
+                lines.append(
+                    tk.Frame(
+                        tree,
+                        bg=color,
+                        bd=0,
+                        highlightthickness=0,
+                        takefocus=0,
+                    )
+                )
+            setattr(tree, attribute_name, lines)
+            for index, position in enumerate(positions):
+                line = lines[index]
+                try:
+                    line.configure(bg=color)
+                    if vertical:
+                        line.place(
+                            x=position,
+                            y=0,
+                            width=TABLE_GRID_BORDER_WIDTH,
+                            height=tree_height,
+                        )
+                    else:
+                        line.place(
+                            x=0,
+                            y=position,
+                            width=tree_width,
+                            height=TABLE_GRID_BORDER_WIDTH,
+                        )
+                    line.lift()
+                except tk.TclError:
+                    pass
+            for line in lines[len(positions):]:
+                try:
+                    line.place_forget()
+                except tk.TclError:
+                    pass
+
+        place_lines(
+            "_smw_cell_grid_vertical_lines",
+            sorted(column_edges),
+            vertical=True,
+        )
+        place_lines(
+            "_smw_cell_grid_horizontal_lines",
+            sorted(row_edges),
+            vertical=False,
+        )
     def _set_statistics_table_style(
         self,
         tree: ttk.Treeview,
@@ -34112,7 +36963,10 @@ class TrackerApp:
                 if current is not None
                 else palette["tree"]
             ),
-            title=f"Choose {label} color",
+            title=self._format_ui_text(
+                "Choose {label} color",
+                label=label,
+            ),
             parent=parent,
         )
         if not start_color:
@@ -34127,10 +36981,13 @@ class TrackerApp:
                     if current is not None
                     else palette["panel_alt"]
                 ),
-                title=(
-                    f"Choose {label} ending color"
-                    if mode == "gradient"
-                    else f"Choose {label} alternate-row color"
+                title=self._format_ui_text(
+                    (
+                        "Choose {label} ending color"
+                        if mode == "gradient"
+                        else "Choose {label} alternate-row color"
+                    ),
+                    label=label,
                 ),
                 parent=parent,
             )
@@ -34547,15 +37404,19 @@ class TrackerApp:
                 )
                 return
 
-            size = min(
+            target_donut_size = max(
                 self._ui_px(166),
-                max(
-                    self._ui_px(136),
-                    height - self._ui_px(24),
-                ),
+                int(height * 0.76),
             )
-            legend_block_width = self._ui_px(224)
-            gap = self._ui_px(34)
+            size = min(
+                self._ui_px(320),
+                target_donut_size,
+            )
+            legend_block_width = max(
+                self._ui_px(250),
+                int(width * 0.18),
+            )
+            gap = self._ui_px(42)
             group_width = size + gap + legend_block_width
             left = max(
                 self._ui_px(18),
@@ -34566,16 +37427,28 @@ class TrackerApp:
                 int((height - size) / 2),
             )
             legend_x = left + size + gap
-            legend_total_height = (
-                max(1, len(data)) * self._ui_px(48)
+            legend_row_height = max(
+                self._ui_px(48),
+                min(
+                    self._ui_px(74),
+                    int(size / max(1, len(data)) * 0.72),
+                ),
             )
+            legend_total_height = max(1, len(data)) * legend_row_height
             legend_y = top + max(0, int((size - legend_total_height) / 2))
+            chart_scale = max(
+                1.0,
+                min(
+                    1.55,
+                    size / max(1, self._ui_px(166)),
+                ),
+            )
 
             scale = 5
             hi_size = size * scale
             ring_thickness = max(
-                self._ui_px(18),
-                int(size * 0.13),
+                self._ui_px(20),
+                int(size * 0.14),
             ) * scale
 
             def _hex_to_rgba(value: str, alpha: int = 255):
@@ -34635,44 +37508,56 @@ class TrackerApp:
             create_outlined_canvas_text(
                 canvas,
                 center_x,
-                center_y - self._ui_px(9),
+                center_y - int(size * 0.055),
                 text=str(total),
                 fill=palette["text"],
-                font=("Segoe UI", 23, "bold"),
+                font=(
+                    "Segoe UI",
+                    int(round(23 * chart_scale)),
+                    "bold",
+                ),
             )
             create_outlined_canvas_text(
                 canvas,
                 center_x,
-                center_y + self._ui_px(19),
+                center_y + int(size * 0.105),
                 text=tr("TRACKED"),
                 fill=palette["muted"],
-                font=("Segoe UI", 8, "bold"),
+                font=(
+                    "Segoe UI",
+                    int(round(8 * chart_scale)),
+                    "bold",
+                ),
             )
 
             for index, (label, value, color) in enumerate(data):
-                y = legend_y + index * self._ui_px(48)
+                y = legend_y + index * legend_row_height
                 pct = (value / total) if total else 0
                 canvas.create_rectangle(
                     legend_x,
-                    y + self._ui_px(3),
-                    legend_x + self._ui_px(5),
-                    y + self._ui_px(35),
+                    y + self._ui_px(4),
+                    legend_x + self._ui_px(7),
+                    y + int(legend_row_height * 0.78),
                     fill=color,
                     outline="",
                 )
                 create_outlined_canvas_text(
                     canvas,
-                    legend_x + self._ui_px(16),
-                    y,
+                    legend_x + self._ui_px(22),
+                    y + int(legend_row_height * 0.08),
                     anchor="nw",
                     text=label,
                     fill=palette["text"],
-                    font=("Segoe UI", 11, "bold"),
+                    font=(
+                        "Segoe UI",
+                        int(round(11 * chart_scale)),
+                        "bold",
+                    ),
                 )
                 create_outlined_canvas_text(
                     canvas,
-                    legend_x + self._ui_px(16),
-                    y + self._ui_px(22),
+                    legend_x + self._ui_px(22),
+                    y + int(legend_row_height * 0.46),
                     anchor="nw",
                     text=f"{value} {tr('hacks')}  •  {pct:.0%}",
                     fill=palette["muted"],
@@ -34756,58 +37641,65 @@ class TrackerApp:
                     outline="",
                 )
 
-            left_label_width = self._ui_px(145)
-            exits_value_width = self._ui_px(96)
-            percent_value_width = self._ui_px(62)
-            max_bar_width = min(
-                self._ui_px(290),
-                max(
-                    self._ui_px(180),
-                    width - (
-                        left_label_width
-                        + exits_value_width
-                        + percent_value_width
-                        + self._ui_px(110)
-                    ),
-                ),
+            outer_margin = max(
+                self._ui_px(22),
+                int(width * 0.055),
             )
-            group_width = (
-                left_label_width
-                + max_bar_width
-                + exits_value_width
-                + percent_value_width
-                + self._ui_px(34)
+            group_left = outer_margin
+            group_right = width - outer_margin
+            left_label_width = max(
+                self._ui_px(145),
+                int(width * 0.18),
             )
-            group_left = max(
-                self._ui_px(18),
-                int((width - group_width) / 2),
+            result_value_width = max(
+                self._ui_px(150),
+                int(width * 0.16),
             )
+            value_gap = self._ui_px(22)
             label_x = group_left
             bar_x = label_x + left_label_width
+            max_bar_width = max(
+                self._ui_px(180),
+                group_right
+                - result_value_width
+                - value_gap
+                - bar_x,
+            )
+            group_width = group_right - group_left
 
-            header_y = self._ui_px(10)
-            content_top = self._ui_px(34)
+            header_y = self._ui_px(6)
+            content_top = self._ui_px(32)
             bottom_margin = self._ui_px(8)
             available_height = max(
                 self._ui_px(100),
                 height - content_top - bottom_margin,
             )
             row_gap = max(
-                self._ui_px(16),
+                self._ui_px(20),
                 min(
-                    self._ui_px(26),
+                    self._ui_px(42),
                     int(available_height / max(len(rows), 1)),
                 ),
             )
             bar_height = max(
-                self._ui_px(10),
+                self._ui_px(12),
                 min(
-                    self._ui_px(14),
-                    int(row_gap * 0.56),
+                    self._ui_px(22),
+                    int(row_gap * 0.50),
                 ),
             )
-            total_chart_height = len(rows) * row_gap
+            total_chart_height = (
+                max(0, len(rows) - 1) * row_gap
+                + bar_height
+            )
             top_y = content_top + max(0, int((available_height - total_chart_height) / 2))
+            large_chart = (
+                width >= self._ui_px(850)
+                or height >= self._ui_px(260)
+            )
+            header_font_size = 11 if large_chart else 9
+            label_font_size = 12 if large_chart else 10
+            value_font_size = 11 if large_chart else 9
 
             create_outlined_canvas_text(
                 canvas,
@@ -34816,7 +37708,7 @@ class TrackerApp:
                 anchor="n",
                 text=tr("Exit completion by difficulty"),
                 fill=palette["muted"],
-                font=("Segoe UI", 9, "bold"),
+                font=("Segoe UI", header_font_size, "bold"),
             )
 
             track_background = (
@@ -34848,7 +37740,7 @@ class TrackerApp:
                     anchor="w",
                     text=tr(difficulty_name),
                     fill=palette["text"],
-                    font=("Segoe UI", 10, "bold"),
+                    font=("Segoe UI", label_font_size, "bold"),
                 )
 
                 rounded_bar(
@@ -34898,7 +37790,7 @@ class TrackerApp:
                     anchor="e",
                     text=f"{exits_text}  |  {rate:.0%}",
                     fill=palette["muted"],
-                    font=("Segoe UI", 9, "bold"),
+                    font=("Segoe UI", value_font_size, "bold"),
                 )
 
 
@@ -35309,29 +38201,14 @@ class TrackerApp:
             ],
         )
 
-        charts_row = tk.Frame(
-            content,
-            bg=palette["window"],
-        )
-        charts_row.grid(
-            row=0,
-            column=0,
-            columnspan=2,
-            sticky="nsew",
-            pady=(0, self._ui_px(10)),
-        )
-        charts_row.columnconfigure(0, weight=1)
-        charts_row.columnconfigure(1, weight=1)
-        charts_row.rowconfigure(0, weight=1)
-
         pie_outer, pie_body = create_section_panel(
-            charts_row,
+            content,
             tr("Tracker Status Breakdown"),
             status_colors["In Progress"],
             "🪙",
         )
         pie_outer.grid(
-            row=0,
+            row=1,
             column=0,
             sticky="nsew",
             padx=(0, self._ui_px(6)),
@@ -35356,7 +38233,7 @@ class TrackerApp:
         )
 
         bar_outer, bar_body = create_section_panel(
-            charts_row,
+            content,
             tr("Difficulty Progress Graph"),
             self._effective_difficulty_color(
                 "Advanced",
@@ -35366,9 +38243,10 @@ class TrackerApp:
         )
         bar_outer.grid(
             row=0,
-            column=1,
+            column=0,
             sticky="nsew",
-            padx=(self._ui_px(6), 0),
+            padx=(0, self._ui_px(6)),
+            pady=(0, self._ui_px(10)),
         )
 
         bar_canvas = tk.Canvas(
@@ -35396,10 +38274,11 @@ class TrackerApp:
             "⭐",
         )
         difficulty_outer.grid(
-            row=1,
-            column=0,
+            row=0,
+            column=1,
             sticky="nsew",
-            padx=(0, self._ui_px(6)),
+            padx=(self._ui_px(6), 0),
+            pady=(0, self._ui_px(10)),
         )
 
         difficulty_table = tk.Frame(
@@ -35410,6 +38289,7 @@ class TrackerApp:
             fill="both",
             expand=True,
         )
+        difficulty_rows = list(overview["difficulty"])
         difficulty_tree = ttk.Treeview(
             difficulty_table,
             columns=(
@@ -35419,7 +38299,7 @@ class TrackerApp:
                 "rate",
             ),
             show="tree headings",
-            height=10,
+            height=max(1, len(difficulty_rows)),
             style="Stats.Treeview",
         )
         difficulty_tree.heading(
@@ -35485,6 +38365,7 @@ class TrackerApp:
         difficulty_tree.configure(
             yscrollcommand=update_difficulty_scrollbar,
         )
+        self._install_treeview_cell_grid(difficulty_tree)
         difficulty_tree.pack(
             side="left",
             fill="both",
@@ -35510,7 +38391,7 @@ class TrackerApp:
             foreground=palette["text"],
         )
 
-        for row_index, row in enumerate(overview["difficulty"]):
+        for row_index, row in enumerate(difficulty_rows):
             tracked = int(row["tracked"] or 0)
             completed = int(row["completed"] or 0)
             completed_exits = int(
@@ -35743,6 +38624,7 @@ class TrackerApp:
         recent_tree.configure(
             yscrollcommand=recent_scrollbar.set,
         )
+        self._install_treeview_cell_grid(recent_tree)
         recent_tree.pack(
             side="left",
             fill="both",
@@ -35918,7 +38800,7 @@ class TrackerApp:
             "hero": hero_strip,
             "metrics": metrics,
             "content": content,
-            "charts": charts_row,
+            "charts": content,
             "pie_canvas": pie_canvas,
             "bar_canvas": bar_canvas,
             "difficulty_tree": difficulty_tree,
@@ -36156,7 +39038,10 @@ class TrackerApp:
             side="left",
             pady=(5, 0),
         )
-        count_var = tk.StringVar(value="0 hacks")
+        count_var = self._localized_string_var(
+            value="0 hacks",
+            master=dialog,
+        )
         yoshi_header_photo = (
             self.mario_card_photos.get(
                 "yoshi"
@@ -36536,6 +39421,7 @@ class TrackerApp:
                 update_tracker_horizontal_scrollbar
             ),
         )
+        self._install_treeview_cell_grid(tree)
         scrollbar.pack(side="right", fill="y")
         horizontal_scrollbar.pack(
             side="bottom",
@@ -37169,7 +40055,10 @@ class TrackerApp:
             visible += 1
 
         self.tracker_list_widgets["count_var"].set(
-            f"{visible:,} hack(s)"
+            self._format_ui_text(
+                "{count} hack(s)",
+                count=f"{visible:,}",
+            )
         )
         self._reapply_treeview_sorting(tree)
         self._schedule_tracker_cell_overlays()
@@ -37194,11 +40083,7 @@ class TrackerApp:
     def _tracker_grid_border_color(
         self,
     ) -> str:
-        return (
-            "#2E5E8E"
-            if self.appearance_var.get() == "dark"
-            else THEME["navy"]
-        )
+        return self._table_grid_line_color()
 
     def _tracker_column_label(
         self,
@@ -37492,8 +40377,9 @@ class TrackerApp:
         )[0]
         _rgb, selected = colorchooser.askcolor(
             color=current or default_color,
-            title=(
-                f"Choose the color for all {difficulty} hacks"
+            title=self._format_ui_text(
+                "Choose the color for all {difficulty} hacks",
+                difficulty=difficulty,
             ),
             parent=parent,
         )
@@ -37633,10 +40519,13 @@ class TrackerApp:
         )
         _rgb, start_color = colorchooser.askcolor(
             color=default_start,
-            title=(
-                f"Choose {label} data-bar starting color"
-                if mode == "data_bar"
-                else f"Choose {label} color"
+            title=self._format_ui_text(
+                (
+                    "Choose {label} data-bar starting color"
+                    if mode == "data_bar"
+                    else "Choose {label} color"
+                ),
+                label=label,
             ),
             parent=parent,
         )
@@ -37657,12 +40546,15 @@ class TrackerApp:
             )
             _rgb, selected_end = colorchooser.askcolor(
                 color=default_end,
-                title=(
-                    f"Choose {label} data-bar ending color"
-                    if mode == "data_bar"
-                    else f"Choose {label} ending color"
-                    if mode == "gradient"
-                    else f"Choose {label} alternate-row color"
+                title=self._format_ui_text(
+                    (
+                        "Choose {label} data-bar ending color"
+                        if mode == "data_bar"
+                        else "Choose {label} ending color"
+                        if mode == "gradient"
+                        else "Choose {label} alternate-row color"
+                    ),
+                    label=label,
                 ),
                 parent=parent,
             )
@@ -37919,14 +40811,20 @@ class TrackerApp:
         parent = self.stats_overview_dialog or self.root
         _rgb, start = colorchooser.askcolor(
             color=current["start"],
-            title="Choose Rate data-bar starting color",
+            title=self._format_ui_text(
+                "Choose {label} data-bar starting color",
+                label="Rate",
+            ),
             parent=parent,
         )
         if not start:
             return
         _rgb, end = colorchooser.askcolor(
             color=current["end"],
-            title="Choose Rate data-bar ending color",
+            title=self._format_ui_text(
+                "Choose {label} data-bar ending color",
+                label="Rate",
+            ),
             parent=parent,
         )
         if not end:
@@ -38163,7 +41061,7 @@ class TrackerApp:
                         column_width,
                         row_y + row_height,
                         fill=background,
-                        outline=palette["border"],
+                        outline=self._table_grid_line_color(),
                         width=1,
                     )
                 else:
@@ -38175,7 +41073,7 @@ class TrackerApp:
                         column_width,
                         row_y + row_height,
                         fill=base_background,
-                        outline=palette["border"],
+                        outline=self._table_grid_line_color(),
                         width=1,
                     )
                     match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
@@ -38223,7 +41121,7 @@ class TrackerApp:
                             column_width,
                             row_y + row_height,
                             fill="",
-                            outline=palette["border"],
+                            outline=self._table_grid_line_color(),
                             width=1,
                         )
 
@@ -40187,7 +43085,10 @@ class TrackerApp:
             fg="white",
             bg=THEME["purple"],
         ).pack(side="left")
-        count_var = tk.StringVar(value="0 unmoderated hacks")
+        count_var = self._localized_string_var(
+            value="0 unmoderated hacks",
+            master=dialog,
+        )
         OutlinedLabel(
             title_bar,
             textvariable=count_var,
@@ -40298,7 +43199,7 @@ class TrackerApp:
             "difficulty": "Difficulty",
             "type": "Type",
             "rating": "SMWC Rating",
-            "added": "Added Date",
+            "added": "Released",
         }
 
         for column, heading in headings.items():
@@ -40358,6 +43259,7 @@ class TrackerApp:
         tree.configure(
             yscrollcommand=scrollbar.set
         )
+        self._install_treeview_cell_grid(tree)
         tree.pack(
             side="left",
             fill="both",
@@ -40530,7 +43432,10 @@ class TrackerApp:
             "unmoderated_hacks",
         )
         self.custom_hacks_widgets["count_var"].set(
-            f"{len(records):,} unmoderated hack(s)"
+            self._format_ui_text(
+                "{count} unmoderated hack(s)",
+                count=f"{len(records):,}",
+            )
         )
 
     def _selected_custom_hack(self) -> dict[str, Any] | None:
@@ -40691,7 +43596,7 @@ class TrackerApp:
             ("Exits:", "exits"),
             ("Difficulty:", "difficulty"),
             ("Type:", "type"),
-            ("Added Date:", "added"),
+            ("Released:", "added"),
             ("SMWC ID (optional):", "smwc_id"),
             ("SMWCentral Rating:", "rating"),
             ("SMWCentral Page URL:", "page_url"),
@@ -41049,7 +43954,7 @@ class TrackerApp:
                     "Unmoderated Hacks",
                     (
                         "Exits must be 0 or greater, rating must be blank "
-                        "or from 0 through 5, and Added Date must use "
+                        "or from 0 through 5, and Released must use "
                         "YYYY-MM-DD."
                     ),
                     parent=dialog,
@@ -41149,13 +44054,13 @@ class TrackerApp:
     ) -> None:
         if workbook_path is None:
             selected = filedialog.askopenfilename(
-                title="Import existing SMW tracker workbook",
+                title=self._translate_ui_text("Import existing SMW tracker workbook"),
                 filetypes=(
                     (
-                        "Excel workbook",
+                        self._translate_ui_text("Excel workbook"),
                         "*.xlsx *.xlsm",
                     ),
-                    ("All files", "*.*"),
+                    (self._translate_ui_text("All files"), "*.*"),
                 ),
                 parent=self.root,
             )
@@ -41274,12 +44179,12 @@ class TrackerApp:
 
     def export_my_tracker(self) -> None:
         selected = filedialog.asksaveasfilename(
-            title="Export My Tracker",
+            title=self._translate_ui_text("Export My Tracker"),
             defaultextension=".xlsx",
             initialfile="SMW_Stream_Tracker_Export.xlsx",
             filetypes=(
-                ("Excel workbook", "*.xlsx"),
-                ("CSV file", "*.csv"),
+                (self._translate_ui_text("Excel workbook"), "*.xlsx"),
+                (self._translate_ui_text("CSV file"), "*.csv"),
             ),
             parent=self.root,
         )
@@ -41322,7 +44227,7 @@ class TrackerApp:
 
     def backup_tracker_database(self) -> None:
         selected = filedialog.asksaveasfilename(
-            title="Back Up Tracker Database",
+            title=self._translate_ui_text("Back Up Tracker Database"),
             defaultextension=".db",
             initialfile=(
                 "SMWStreamTracker_Backup_"
@@ -41330,8 +44235,8 @@ class TrackerApp:
                 + ".db"
             ),
             filetypes=(
-                ("Tracker database", "*.db"),
-                ("All files", "*.*"),
+                (self._translate_ui_text("Tracker database"), "*.db"),
+                (self._translate_ui_text("All files"), "*.*"),
             ),
             parent=self.root,
         )
@@ -41359,10 +44264,10 @@ class TrackerApp:
 
     def restore_tracker_database(self) -> None:
         selected = filedialog.askopenfilename(
-            title="Restore Tracker Database Backup",
+            title=self._translate_ui_text("Restore Tracker Database Backup"),
             filetypes=(
-                ("Tracker database", "*.db"),
-                ("All files", "*.*"),
+                (self._translate_ui_text("Tracker database"), "*.db"),
+                (self._translate_ui_text("All files"), "*.*"),
             ),
             parent=self.root,
         )
@@ -42100,6 +45005,12 @@ class TrackerApp:
         self.open_hack_downloader(
             catalog_view_only=True,
         )
+        if self._guided_setup_stage == "catalog":
+            self._guided_setup_set_stage("refresh_catalog")
+            self.root.after(
+                100,
+                self._guided_setup_show_catalog_filter_prompt,
+            )
 
     def _downloader_catalog_link_target(
         self,
@@ -42215,16 +45126,18 @@ class TrackerApp:
                 )
             )
             if current_catalog_mode == catalog_view_only:
-                # Re-read the database before reusing an existing window so
-                # a catalog refreshed while the window was minimized cannot
-                # keep displaying its old in-memory rows.
-                self.hack_catalog = (
-                    self.stats_db.load_catalog()
-                )
-                self._refresh_downloader_preview()
+                # Reusing an already-open page should be instant. Explicit
+                # refresh actions update the catalog and rebuild the rows;
+                # reopening the same page does not need another database load,
+                # filesystem inventory, and 2,700-row redraw.
                 self.downloader_dialog.deiconify()
                 self.downloader_dialog.lift()
                 self.downloader_dialog.focus_force()
+                if (
+                    not catalog_view_only
+                    and self._guided_setup_stage == "download_missing"
+                ):
+                    self._guided_setup_downloader_opened()
                 return
 
             if (
@@ -42263,14 +45176,14 @@ class TrackerApp:
         palette = self._library_palette()
         dialog = self._open_in_app_page(
             "smwcentral_catalog" if catalog_view_only else "download_missing_hacks",
-            "SMW Central Catalog" if catalog_view_only else "Download Missing Hacks",
+            "SMW Central Catalog" if catalog_view_only else "Download & Patch Missing Hacks",
         )
         self.downloader_dialog = dialog
         dialog.title(
             (
                 "SMW Central Catalog"
                 if catalog_view_only
-                else "Download Missing SMW Hacks"
+                else "Download & Patch Missing Hacks"
             )
         )
         self._size_dialog_for_ui(
@@ -42334,11 +45247,9 @@ class TrackerApp:
         downloader_style.configure(
             "Downloader.TCombobox",
             fieldbackground=palette["entry"],
-            background=(
-                THEME["yellow"] if dark_mode else THEME["blue"]
-            ),
+            background=THEME["blue"],
             foreground=palette["text"],
-            arrowcolor=(THEME["navy"] if dark_mode else "white"),
+            arrowcolor="white",
             bordercolor=palette["border"],
             lightcolor=palette["border"],
             darkcolor=palette["border"],
@@ -42442,22 +45353,23 @@ class TrackerApp:
         maximum_rating_var = tk.StringVar(
             value="Any"
         )
-        from_date_var = tk.StringVar(
-            value=""
-        )
-        through_date_var = tk.StringVar(
-            value=""
-        )
+        released_options = self._released_filter_options()
+        released_var = tk.StringVar(value=released_options[0][0])
+        boolean_options = self._boolean_filter_options()
+        sa1_var = tk.StringVar(value=boolean_options[0])
+        hall_of_fame_var = tk.StringVar(value=boolean_options[0])
+        waiting_var = tk.StringVar(value=boolean_options[0])
         search_var = tk.StringVar(value="")
         letter_filter_var = tk.StringVar(value="All")
-        count_var = tk.StringVar(
+        count_var = self._localized_string_var(
             value=(
                 "Loading moderated catalog…"
                 if catalog_view_only
                 else "Scanning game library…"
-            )
+            ),
+            master=dialog,
         )
-        status_var = tk.StringVar(
+        status_var = self._localized_string_var(
             value=(
                 (
                     "Showing every moderated hack in the local "
@@ -42482,8 +45394,10 @@ class TrackerApp:
             "difficulty_var": difficulty_var,
             "minimum_rating_var": minimum_rating_var,
             "maximum_rating_var": maximum_rating_var,
-            "from_date_var": from_date_var,
-            "through_date_var": through_date_var,
+            "released_var": released_var,
+            "sa1_var": sa1_var,
+            "hall_of_fame_var": hall_of_fame_var,
+            "waiting_var": waiting_var,
             "search_var": search_var,
             "letter_filter_var": letter_filter_var,
             "count_var": count_var,
@@ -42493,7 +45407,13 @@ class TrackerApp:
             "difficulty_overlay": None,
             "title_overlay": None,
             "difficulty_overlay_after_id": None,
+            "difficulty_overlay_retry_after_id": None,
+            "difficulty_overlay_retry_count": 0,
             "settings_save_after_id": None,
+            # Scanning a large ROM library is the expensive part of opening
+            # and filtering these pages.  Reuse the inventory until the user
+            # explicitly refreshes it, changes folders, or finishes a build.
+            "library_inventory_cache": None,
             "catalog_view_only": catalog_view_only,
         }
 
@@ -42532,7 +45452,7 @@ class TrackerApp:
             text=(
                 "★  SMW Central Catalog"
                 if catalog_view_only
-                else "⬇  Download Missing SMW Hacks"
+                else "⬇  Download & Patch Missing Hacks"
             ),
             font=("Segoe UI", 16, "bold"),
             fg="white",
@@ -42567,15 +45487,16 @@ class TrackerApp:
             legal_panel,
             text=(
                 (
-                    "Browse every moderated hack currently stored in the "
-                    "SMW Central catalog. Use the filters to narrow the "
+                    "Browse moderated and waiting hacks currently stored "
+                    "in the SMW Central catalog. Use the filters to narrow the "
                     "list. Search by title or creator, and click any column "
                     "heading to sort it."
                 )
                 if catalog_view_only
                 else (
-                    "Only hacks that have been moderated and included in "
-                    "the SMW Central catalog are downloaded. This tool "
+                    "This list includes moderated hacks and hacks still "
+                    "waiting at SMW Central. Waiting hacks appear in bright "
+                    "red. This tool "
                     "downloads their patch ZIPs and applies them to your "
                     "own clean Super Mario World ROM. It never downloads "
                     "a base ROM. Existing mapped or local games are always "
@@ -42848,7 +45769,7 @@ class TrackerApp:
             padx=14,
             pady=(0, 8),
         )
-        for filter_column in range(6):
+        for filter_column in range(8):
             filter_panel.columnconfigure(
                 filter_column,
                 weight=1,
@@ -42910,6 +45831,15 @@ class TrackerApp:
                 ),
                 12,
             ),
+            (
+                "Released",
+                released_var,
+                tuple(label for label, _period in released_options),
+                14,
+            ),
+            ("SA-1", sa1_var, boolean_options, 8),
+            ("Hall of Fame", hall_of_fame_var, boolean_options, 10),
+            ("Waiting", waiting_var, boolean_options, 8),
         )
 
         for column_index, (
@@ -42957,108 +45887,9 @@ class TrackerApp:
             )
             combo.bind(
                 "<<ComboboxSelected>>",
-                lambda _event: self._refresh_downloader_preview(),
-            )
-
-        OutlinedLabel(
-            filter_panel,
-            text="Added from",
-            font=("Segoe UI", 9, "bold"),
-            fg=palette["text"],
-            bg=palette["panel"],
-            anchor="center",
-            justify="center",
-        ).grid(
-            row=0,
-            column=4,
-            sticky="ew",
-            padx=(8, 8),
-        )
-        from_entry = tk.Entry(
-            filter_panel,
-            textvariable=from_date_var,
-            width=12,
-            justify="center",
-            font=("Segoe UI", 9),
-            fg=palette["text"],
-            bg=palette["entry"],
-            insertbackground=palette["text"],
-            relief="flat",
-            highlightbackground=palette["border"],
-            highlightthickness=1,
-        )
-        from_entry.grid(
-            row=1,
-            column=4,
-            sticky="ew",
-            padx=(8, 8),
-            pady=(3, 0),
-        )
-
-        OutlinedLabel(
-            filter_panel,
-            text="Added through",
-            font=("Segoe UI", 9, "bold"),
-            fg=palette["text"],
-            bg=palette["panel"],
-            anchor="center",
-            justify="center",
-        ).grid(
-            row=0,
-            column=5,
-            sticky="ew",
-            padx=(8, 0),
-        )
-        through_entry = tk.Entry(
-            filter_panel,
-            textvariable=through_date_var,
-            width=12,
-            justify="center",
-            font=("Segoe UI", 9),
-            fg=palette["text"],
-            bg=palette["entry"],
-            insertbackground=palette["text"],
-            relief="flat",
-            highlightbackground=palette["border"],
-            highlightthickness=1,
-        )
-        through_entry.grid(
-            row=1,
-            column=5,
-            sticky="ew",
-            padx=(8, 0),
-            pady=(3, 0),
-        )
-
-        for date_entry in (
-            from_entry,
-            through_entry,
-        ):
-            date_entry.bind(
-                "<Return>",
-                lambda _event: self._refresh_downloader_preview(),
-            )
-            date_entry.bind(
-                "<FocusOut>",
-                lambda _event: self._refresh_downloader_preview(),
-            )
-
-        tk.Label(
-            filter_panel,
-            text=(
-                "Date format: YYYY-MM-DD. Leave either date blank "
-                "for no boundary."
+                lambda _event: self._queue_downloader_preview_refresh(70),
             ),
-            font=("Segoe UI", 8),
-            fg=palette["muted"],
-            bg=palette["panel"],
-        ).grid(
-            row=2,
-            column=0,
-            columnspan=6,
-            sticky="w",
-            pady=(7, 0),
-        )
+            master=dialog,
 
         OutlinedLabel(
             filter_panel,
@@ -43069,9 +45900,9 @@ class TrackerApp:
             anchor="center",
             justify="center",
         ).grid(
-            row=3,
+            row=2,
             column=0,
-            columnspan=3,
+            columnspan=4,
             sticky="ew",
             pady=(8, 0),
         )
@@ -43088,9 +45919,9 @@ class TrackerApp:
             highlightthickness=1,
         )
         search_entry.grid(
-            row=4,
+            row=3,
             column=0,
-            columnspan=3,
+            columnspan=4,
             sticky="ew",
             padx=(0, 8),
             pady=(3, 0),
@@ -43105,9 +45936,9 @@ class TrackerApp:
             anchor="center",
             justify="center",
         ).grid(
-            row=3,
-            column=3,
-            columnspan=2,
+            row=2,
+            column=4,
+            columnspan=3,
             sticky="ew",
             padx=(8, self._ui_px(27)),
             pady=(8, 0),
@@ -43121,16 +45952,16 @@ class TrackerApp:
             style="Downloader.TCombobox",
         )
         letter_filter_combo.grid(
-            row=4,
-            column=3,
-            columnspan=2,
+            row=3,
+            column=4,
+            columnspan=3,
             sticky="ew",
             padx=(8, 0),
             pady=(3, 0),
         )
         letter_filter_combo.bind(
             "<<ComboboxSelected>>",
-            lambda _event: self._refresh_downloader_preview(),
+            lambda _event: self._queue_downloader_preview_refresh(70),
         )
         self._make_action_button(
             filter_panel,
@@ -43141,8 +45972,8 @@ class TrackerApp:
             width=12,
             pad_y=4,
         ).grid(
-            row=4,
-            column=5,
+            row=3,
+            column=7,
             sticky="e",
             padx=(8, 0),
             pady=(3, 0),
@@ -43166,6 +45997,7 @@ class TrackerApp:
         )
 
         columns = (
+            *(("title",) if catalog_view_only else ()),
             "difficulty",
             "type",
             "rating",
@@ -43195,11 +46027,12 @@ class TrackerApp:
             foreground=palette["text"],
         )
         downloader_headings = {
-            "#0": "ROM Hack Title",
+            "#0": "Downloaded" if catalog_view_only else "Hack Title",
+            **({"title": "Hack Title"} if catalog_view_only else {}),
             "difficulty": "Difficulty",
             "type": "Type",
             "rating": "Rating",
-            "added": "Added Date",
+            "added": "Released",
         }
         downloader_headings.update(
             {
@@ -43220,8 +46053,14 @@ class TrackerApp:
         self._configure_treeview_sorting(
             tree,
             downloader_headings,
-            default_column="#0",
+            default_column="title" if catalog_view_only else "#0",
+            presence_columns={"#0"} if catalog_view_only else None,
             after_sort=lambda: (
+                self._retag_treeview_alternating(
+                    tree,
+                    "downloader_even",
+                    "downloader_odd",
+                ),
                 self._apply_statistics_table_colors(
                     tree,
                     downloader_table_key,
@@ -43231,60 +46070,183 @@ class TrackerApp:
         )
         tree.column(
             "#0",
-            width=self._ui_px(
-                315 if catalog_view_only else 390
+            width=(
+                260
+                if catalog_view_only
+                else self._ui_px(390)
             ),
-            minwidth=self._ui_px(240),
+            minwidth=(
+                245 if catalog_view_only else self._ui_px(240)
+            ),
             anchor="center",
-            stretch=True,
+            stretch=not catalog_view_only,
         )
+        if catalog_view_only:
+            tree.column(
+                "title",
+                width=190,
+                minwidth=150,
+                anchor="center",
+                stretch=True,
+            )
         tree.column(
             "difficulty",
-            width=self._ui_px(115),
+            width=(190 if catalog_view_only else max(self._ui_px(140), 120)),
+            minwidth=(180 if catalog_view_only else 120),
             anchor="center",
             stretch=False,
         )
         tree.column(
             "type",
-            width=self._ui_px(135),
+            width=(260 if catalog_view_only else max(self._ui_px(190), 170)),
+            minwidth=(240 if catalog_view_only else 170),
             anchor="center",
             stretch=False,
         )
         tree.column(
             "rating",
-            width=self._ui_px(75),
+            width=(90 if catalog_view_only else max(self._ui_px(86), 74)),
+            minwidth=(85 if catalog_view_only else 74),
             anchor="center",
             stretch=False,
         )
         tree.column(
             "added",
-            width=self._ui_px(105),
+            width=(200 if catalog_view_only else max(self._ui_px(140), 120)),
+            minwidth=(190 if catalog_view_only else 120),
             anchor="center",
             stretch=False,
         )
         tree.column(
             "status",
-            width=self._ui_px(
-                150 if catalog_view_only else 190
+            width=(
+                310
+                if catalog_view_only
+                else max(self._ui_px(220), 190)
             ),
+            minwidth=(280 if catalog_view_only else 190),
             anchor="center",
             stretch=False,
         )
         tree.column(
             "page_link",
-            width=self._ui_px(140),
-            minwidth=self._ui_px(125),
+            width=(250 if catalog_view_only else max(self._ui_px(190), 165)),
+            minwidth=(240 if catalog_view_only else 165),
             anchor="center",
             stretch=False,
         )
         tree.column(
             "download_link",
-            width=self._ui_px(145),
-            minwidth=self._ui_px(125),
+            width=(265 if catalog_view_only else max(self._ui_px(200), 175)),
+            minwidth=(250 if catalog_view_only else 175),
             anchor="center",
             stretch=False,
         )
         self._center_treeview_content(tree)
+
+        def size_downloader_columns(event=None) -> None:
+            """Keep every action/status heading visible and give the title the remainder."""
+            try:
+                available_width = int(
+                    getattr(event, "width", 0) or tree.winfo_width()
+                )
+            except (TypeError, ValueError, tk.TclError):
+                return
+            if available_width < 100:
+                return
+            try:
+                heading_signature = tuple(
+                    (column_name, str(tree.heading(column_name, "text")))
+                    for column_name in ("#0", *tree["columns"])
+                )
+            except tk.TclError:
+                heading_signature = ()
+            layout_key = (available_width, heading_signature)
+            if (
+                getattr(tree, "_smw_last_column_layout_key", None)
+                == layout_key
+            ):
+                return False
+            tree._smw_last_column_layout_key = layout_key
+
+            try:
+                heading_font = tkfont.nametofont("TkHeadingFont")
+            except tk.TclError:
+                heading_font = None
+
+            def heading_width(column_name: str, minimum: int) -> int:
+                try:
+                    heading_text = str(tree.heading(column_name, "text"))
+                except tk.TclError:
+                    heading_text = ""
+                if heading_font is not None:
+                    try:
+                        measured = int(heading_font.measure(heading_text))
+                    except tk.TclError:
+                        measured = len(heading_text) * 9
+                else:
+                    measured = len(heading_text) * 9
+                # Leave room for sorting arrows without allowing translated
+                # headings to consume most of the table.  Long content stays
+                # available through the horizontal scrollbar, but every
+                # heading remains readable at normal desktop widths.
+                return max(int(minimum), measured + self._ui_px(24))
+
+            if catalog_view_only:
+                fixed_widths = {
+                    # The downloaded/check column and the status text were
+                    # being squeezed after the initial layout pass.  Keep
+                    # both headings and their normal cell text readable, and
+                    # give the flexible title column whatever remains.
+                    "#0": heading_width("#0", 245),
+                    "difficulty": heading_width("difficulty", 180),
+                    "type": heading_width("type", 240),
+                    "rating": heading_width("rating", 86),
+                    "added": heading_width("added", 190),
+                    "page_link": heading_width("page_link", 240),
+                    "download_link": heading_width("download_link", 250),
+                    "status": heading_width("status", 250),
+                }
+                title_column = "title"
+                title_minimum = heading_width("title", 150)
+            else:
+                fixed_widths = {
+                    "difficulty": heading_width("difficulty", max(self._ui_px(120), 110)),
+                    "type": heading_width("type", max(self._ui_px(180), 160)),
+                    "rating": heading_width("rating", max(self._ui_px(90), 82)),
+                    "added": heading_width("added", max(self._ui_px(130), 115)),
+                    "page_link": heading_width("page_link", max(self._ui_px(170), 150)),
+                    "download_link": heading_width("download_link", max(self._ui_px(190), 165)),
+                    "status": heading_width("status", max(self._ui_px(250), 220)),
+                }
+                title_column = "#0"
+                title_minimum = heading_width("#0", max(self._ui_px(360), 320))
+
+            for column_name, column_width in fixed_widths.items():
+                try:
+                    tree.column(
+                        column_name,
+                        width=column_width,
+                        minwidth=column_width,
+                        stretch=False,
+                    )
+                except tk.TclError:
+                    pass
+            title_width = max(
+                title_minimum,
+                available_width - sum(fixed_widths.values()) - self._ui_px(22),
+            )
+            try:
+                tree.column(
+                    title_column,
+                    width=title_width,
+                    minwidth=title_minimum,
+                    stretch=False,
+                )
+            except tk.TclError:
+                pass
+            self._schedule_downloader_difficulty_overlays()
+            self._queue_downloader_overlay_retry(55)
 
         def scroll_downloader_tree(*arguments) -> None:
             tree.yview(*arguments)
@@ -43319,6 +46281,7 @@ class TrackerApp:
             yscrollcommand=update_downloader_scrollbar,
             xscrollcommand=horizontal_scrollbar.set,
         )
+        self._install_treeview_cell_grid(tree)
         horizontal_scrollbar.pack(
             side="bottom",
             fill="x",
@@ -43341,6 +46304,9 @@ class TrackerApp:
         self.downloader_widgets[
             "tree"
         ] = tree
+        self.downloader_widgets[
+            "size_columns"
+        ] = size_downloader_columns
         self._register_customizable_table(
             tree,
             downloader_table_key,
@@ -43351,6 +46317,13 @@ class TrackerApp:
             self._schedule_downloader_difficulty_overlays,
             add="+",
         )
+        tree.bind(
+            "<Configure>",
+            size_downloader_columns,
+            add="+",
+        )
+        dialog.after_idle(size_downloader_columns)
+        dialog.after_idle(lambda: tree.xview_moveto(0))
         tree.bind(
             "<<TreeviewSelect>>",
             self._schedule_downloader_difficulty_overlays,
@@ -43431,7 +46404,9 @@ class TrackerApp:
                 if catalog_view_only
                 else "Refresh Preview"
             ),
-            command=self._refresh_downloader_preview,
+            command=lambda: self._refresh_downloader_preview(
+                force_library_scan=True
+            ),
             bg=THEME["blue"],
             active_bg=THEME["navy"],
             width=16,
@@ -43442,7 +46417,7 @@ class TrackerApp:
         )
 
         if catalog_view_only:
-            self._make_action_button(
+            self.catalog_page_refresh_button = self._make_action_button(
                 button_panel,
                 text="Refresh Moderated Hacks from SMW Central",
                 command=self.refresh_smwcentral_catalog,
@@ -43450,11 +46425,33 @@ class TrackerApp:
                 active_bg=THEME["green_dark"],
                 width=34,
                 pad_y=5,
+            )
+            self.catalog_page_refresh_button.pack(
+                side="left",
+                padx=(8, 0),
+            )
+            self._make_action_button(
+                button_panel,
+                text="Refresh Waiting Hacks from SMW Central",
+                command=lambda: self.refresh_smwcentral_catalog(waiting=True),
+                bg=THEME["red"],
+                active_bg="#B92824",
+                width=33,
+                pad_y=5,
             ).pack(side="left", padx=(8, 0))
         else:
+            self._make_action_button(
+                button_panel,
+                text="Refresh Waiting Hacks from SMW Central",
+                command=lambda: self.refresh_smwcentral_catalog(waiting=True),
+                bg=THEME["red"],
+                active_bg="#B92824",
+                width=33,
+                pad_y=5,
+            ).pack(side="left", padx=(8, 0))
             download_button = self._make_action_button(
                 button_panel,
-                text="Download All Matching Hacks",
+                text="Download & Patch All Matching Hacks",
                 command=self._start_filtered_hack_download,
                 bg=THEME["green"],
                 active_bg=THEME["green_dark"],
@@ -43522,11 +46519,18 @@ class TrackerApp:
                 == "dark"
             ),
         )
-        self._refresh_downloader_preview()
+        # Paint the page before building a catalog that may contain thousands
+        # of records.  The actual row update is already coalesced below.
+        dialog.after_idle(self._refresh_downloader_preview)
         self._fit_dialog_height_to_contents(
             dialog,
             padding=12,
         )
+        if (
+            not catalog_view_only
+            and self._guided_setup_stage == "download_missing"
+        ):
+            self._guided_setup_downloader_opened()
 
     def _queue_downloader_settings_save(self) -> None:
         """Remember downloader locations shortly after the user edits them."""
@@ -43615,14 +46619,14 @@ class TrackerApp:
 
     def _browse_downloader_base_rom(self) -> None:
         selected = filedialog.askopenfilename(
-            title="Select your clean Super Mario World ROM",
+            title=self._translate_ui_text("Select your clean Super Mario World ROM"),
             filetypes=(
                 (
-                    "SNES ROM",
+                    self._translate_ui_text("SNES ROM"),
                     "*.sfc *.smc",
                 ),
                 (
-                    "All files",
+                    self._translate_ui_text("All files"),
                     "*.*",
                 ),
             ),
@@ -43642,15 +46646,15 @@ class TrackerApp:
             "difficulty_var",
             "minimum_rating_var",
             "maximum_rating_var",
+            "released_var",
+            "sa1_var",
+            "hall_of_fame_var",
+            "waiting_var",
         ):
             variable = self.downloader_widgets.get(key)
             if variable is not None:
                 variable.set("Any")
-        for key in (
-            "from_date_var",
-            "through_date_var",
-            "search_var",
-        ):
+        for key in ("search_var",):
             variable = self.downloader_widgets.get(key)
             if variable is not None:
                 variable.set("")
@@ -43665,7 +46669,7 @@ class TrackerApp:
         self,
     ) -> None:
         selected = filedialog.askdirectory(
-            title=(
+            title=self._translate_ui_text(
                 "Select your existing/output ROM game-library folder"
             ),
             parent=self.downloader_dialog or self.root,
@@ -43679,7 +46683,7 @@ class TrackerApp:
 
     def _browse_downloader_sd_folder(self) -> None:
         selected = filedialog.askdirectory(
-            title=(
+            title=self._translate_ui_text(
                 "Select the All_Hacks folder on the mounted FXPAK Pro SD card"
             ),
             parent=self.downloader_dialog or self.root,
@@ -43786,7 +46790,7 @@ class TrackerApp:
 
         return parsed
 
-    def _queue_downloader_preview_refresh(self) -> None:
+    def _queue_downloader_preview_refresh(self, delay_ms: int = 100) -> None:
         if not self.downloader_widgets:
             return
         pending = self.downloader_widgets.get("search_refresh_after_id")
@@ -43796,7 +46800,7 @@ class TrackerApp:
             except tk.TclError:
                 pass
         self.downloader_widgets["search_refresh_after_id"] = self.root.after(
-            180,
+            max(0, int(delay_ms)),
             self._run_queued_downloader_preview_refresh,
         )
 
@@ -43813,10 +46817,12 @@ class TrackerApp:
         difficulty_value: str,
         minimum_rating: float | None,
         maximum_rating: float | None,
-        from_date: date | None,
-        through_date: date | None,
+        released_value: str = "Any",
+        sa1_value: str = "Any",
+        hall_of_fame_value: str = "Any",
+        waiting_value: str = "Any",
     ) -> bool:
-        if type_value != "Any":
+        if not self._filter_value_is_any(type_value):
             type_tokens = {
                 token.strip().casefold()
                 for token in str(
@@ -43832,7 +46838,7 @@ class TrackerApp:
                 return False
 
         if (
-            difficulty_value != "Any"
+            not self._filter_value_is_any(difficulty_value)
             and str(
                 game.get(
                     "difficulty",
@@ -43858,28 +46864,125 @@ class TrackerApp:
             ):
                 return False
 
-        added_date = rom_builder_parse_date(
-            game.get(
-                "added_date",
-                "",
-            )
-        )
-
-        if from_date is not None:
-            if (
-                added_date is None
-                or added_date < from_date
-            ):
-                return False
-
-        if through_date is not None:
-            if (
-                added_date is None
-                or added_date > through_date
-            ):
-                return False
+        if not self._game_matches_released_filter(game, released_value):
+            return False
+        if not self._game_matches_boolean_filter(game, "sa1", sa1_value):
+            return False
+        if not self._game_matches_boolean_filter(
+            game, "hall_of_fame", hall_of_fame_value
+        ):
+            return False
+        if not self._game_matches_boolean_filter(
+            game, "is_waiting", waiting_value
+        ):
+            return False
 
         return True
+
+    def _filter_value_is_any(self, value: object) -> bool:
+        normalized = str(value or "").strip().casefold()
+        any_values = getattr(self, "_filter_any_values_cache", None)
+        if not isinstance(any_values, frozenset):
+            values = {"", "any"}
+            for language in APP_LANGUAGE_LABELS:
+                translated = UI_TRANSLATIONS.get(language, {}).get("Any", "")
+                if translated:
+                    values.add(str(translated).strip().casefold())
+            any_values = frozenset(values)
+            self._filter_any_values_cache = any_values
+        return normalized in any_values
+
+    def _boolean_filter_options(self) -> tuple[str, str, str]:
+        return tuple(
+            self._translate_ui_text(label) for label in ("Any", "Yes", "No")
+        )
+
+    def _game_matches_boolean_filter(
+        self,
+        game: dict[str, Any],
+        key: str,
+        selected: object,
+    ) -> bool:
+        if self._filter_value_is_any(selected):
+            return True
+        selected_text = str(selected or "").strip().casefold()
+        yes_values = getattr(self, "_filter_yes_values_cache", None)
+        if not isinstance(yes_values, frozenset):
+            values = {"yes"}
+            for language in APP_LANGUAGE_LABELS:
+                translated = UI_TRANSLATIONS.get(language, {}).get("Yes", "")
+                if translated:
+                    values.add(str(translated).strip().casefold())
+            yes_values = frozenset(values)
+            self._filter_yes_values_cache = yes_values
+        wants_yes = selected_text in yes_values
+        return bool(smwc_boolean_value(game.get(key, False))) is wants_yes
+
+    def _released_filter_options(self) -> tuple[tuple[str, int | None], ...]:
+        language = str(getattr(self, "app_language", "en") or "en")
+        cached = getattr(self, "_released_filter_options_cache", None)
+        if isinstance(cached, dict) and cached.get("language") == language:
+            options = cached.get("options")
+            if isinstance(options, tuple):
+                return options
+        options: list[tuple[str, int | None]] = [
+            (self._translate_ui_text("Any"), None),
+            (self._translate_ui_text("Last Week"), -7),
+            (self._translate_ui_text("Last Month"), 1),
+            (self._translate_ui_text("Last 3 Months"), 3),
+            (self._translate_ui_text("Last 6 Months"), 6),
+            (self._translate_ui_text("Last Year"), 12),
+        ]
+        options.extend(
+            (
+                self._format_ui_text("Last {years} Years", years=years),
+                years * 12,
+            )
+            for years in range(2, 14)
+        )
+        result = tuple(options)
+        self._released_filter_options_cache = {
+            "language": language,
+            "options": result,
+            "map": dict(result),
+        }
+        return result
+
+    def _game_matches_released_filter(
+        self,
+        game: dict[str, Any],
+        selected: object,
+        *,
+        reference_date: date | None = None,
+    ) -> bool:
+        selected_text = str(selected or "").strip()
+        options = self._released_filter_options()
+        cached = getattr(self, "_released_filter_options_cache", {})
+        option_map = cached.get("map") if isinstance(cached, dict) else None
+        if not isinstance(option_map, dict):
+            option_map = dict(options)
+        period = option_map.get(selected_text)
+        if period is None:
+            return self._filter_value_is_any(selected_text)
+        released_text = str(game.get("added_date", "") or "")
+        date_cache = getattr(self, "_released_date_parse_cache", None)
+        if not isinstance(date_cache, dict):
+            date_cache = {}
+            self._released_date_parse_cache = date_cache
+        if released_text in date_cache:
+            released = date_cache[released_text]
+        else:
+            released = rom_builder_parse_date(released_text)
+            date_cache[released_text] = released
+        if released is None:
+            return False
+        today = reference_date or date.today()
+        cutoff = (
+            today - timedelta(days=7)
+            if period == -7
+            else calendar_month_cutoff(today, period)
+        )
+        return cutoff <= released <= today
 
     def _toggle_downloader_added_date_sort(self) -> None:
         if not self.downloader_widgets:
@@ -43900,9 +47003,9 @@ class TrackerApp:
             tree.heading(
                 "added",
                 text=(
-                    "Added Date ▼"
+                    "Released ▼"
                     if newest_first
-                    else "Added Date ▲"
+                    else "Released ▲"
                 ),
                 anchor="center",
                 command=self._toggle_downloader_added_date_sort,
@@ -43910,7 +47013,11 @@ class TrackerApp:
 
         self._refresh_downloader_preview()
 
-    def _refresh_downloader_preview(self) -> None:
+    def _refresh_downloader_preview(
+        self,
+        *,
+        force_library_scan: bool = False,
+    ) -> None:
         if not self.downloader_widgets:
             return
 
@@ -43928,40 +47035,16 @@ class TrackerApp:
             )
         )
 
-        tree.delete(
-            *tree.get_children("")
+        if force_library_scan:
+            self._catalog_direct_file_cache = {}
+            self._catalog_playable_filter_cache = None
+
+        row_iids = self.downloader_widgets.setdefault("row_iids", {})
+        row_payloads = self.downloader_widgets.setdefault(
+            "row_payloads",
+            {},
         )
         self.downloader_widgets["games_by_iid"] = {}
-        self._schedule_downloader_difficulty_overlays()
-
-        try:
-            from_date = self._downloader_date_bound(
-                "from_date_var",
-                "Added from",
-            )
-            through_date = self._downloader_date_bound(
-                "through_date_var",
-                "Added through",
-            )
-
-            if (
-                from_date is not None
-                and through_date is not None
-                and from_date > through_date
-            ):
-                raise ValueError(
-                    "Added from cannot be later than Added through."
-                )
-
-        except ValueError as error:
-            self.downloader_preview_games = []
-            self.downloader_widgets[
-                "count_var"
-            ].set("Invalid date filter")
-            self.downloader_widgets[
-                "status_var"
-            ].set(str(error))
-            return
 
         def optional_number(
             value: str,
@@ -43989,6 +47072,9 @@ class TrackerApp:
             and maximum_rating is not None
             and minimum_rating > maximum_rating
         ):
+            attached_rows = tree.get_children("")
+            if attached_rows:
+                tree.detach(*attached_rows)
             self.downloader_preview_games = []
             self.downloader_widgets[
                 "count_var"
@@ -44001,7 +47087,10 @@ class TrackerApp:
             return
 
         selected_folder = (
-            ""
+            str(
+                self.config.get("rom_builder_library_folder", "")
+                or self.config.get("platform_rom_library_folder", "")
+            ).strip()
             if catalog_view_only
             else self.downloader_widgets[
                 "library_folder_var"
@@ -44010,26 +47099,116 @@ class TrackerApp:
         library_root: Path | None = None
         existing_by_name: dict[str, Path] = {}
         existing_by_id: dict[str, Path] = {}
+        existing_paths: frozenset[str] = frozenset()
+        inventory_results: dict[str, tuple[bool, str, str]] = {}
 
         if selected_folder:
             try:
-                library_root = (
-                    rom_builder_detect_library_root(
-                        Path(selected_folder)
-                    )
-                )
-                existing_by_name = (
-                    rom_builder_scan_existing_roms(
-                        library_root
-                    )
-                )
-                existing_by_id = (
-                    rom_builder_load_existing_index(
-                        library_root
-                    )
+                library_root = rom_builder_detect_library_root(
+                    Path(selected_folder)
                 )
             except OSError:
                 library_root = None
+
+            inventory_key = os.path.normcase(
+                os.path.abspath(
+                    os.path.expanduser(
+                        str(library_root or selected_folder)
+                    )
+                )
+            )
+            index_signature: tuple[tuple[str, int, int], ...] = ()
+            if library_root is not None:
+                signatures: list[tuple[str, int, int]] = []
+                for index_path in (
+                    library_root / "_library_index.json",
+                    library_root.parent / "_library_index.json",
+                ):
+                    try:
+                        information = index_path.stat()
+                    except OSError:
+                        continue
+                    signatures.append(
+                        (
+                            os.path.normcase(str(index_path.resolve())),
+                            int(information.st_size),
+                            int(information.st_mtime_ns),
+                        )
+                    )
+                index_signature = tuple(signatures)
+            inventory_cache = self.downloader_widgets.get(
+                "library_inventory_cache"
+            )
+            if not isinstance(inventory_cache, dict):
+                inventory_cache = getattr(
+                    self,
+                    "_downloader_library_inventory_cache",
+                    None,
+                )
+            cache_matches = (
+                not force_library_scan
+                and isinstance(inventory_cache, dict)
+                and inventory_cache.get("schema") == 2
+                and inventory_cache.get("key") == inventory_key
+                and inventory_cache.get("index_signature")
+                == index_signature
+            )
+            if cache_matches:
+                library_root = inventory_cache.get("root")
+                existing_by_name = inventory_cache.get("by_name", {})
+                existing_by_id = inventory_cache.get("by_id", {})
+                existing_paths = inventory_cache.get(
+                    "paths",
+                    frozenset(),
+                )
+                inventory_results = inventory_cache.setdefault("results", {})
+            else:
+                try:
+                    if library_root is None:
+                        raise OSError("ROM library folder is unavailable")
+                    existing_by_name = rom_builder_scan_existing_roms(
+                        library_root
+                    )
+                    scanned_paths = frozenset(
+                        os.path.normcase(
+                            os.path.abspath(os.path.expanduser(str(path)))
+                        )
+                        for path in existing_by_name.values()
+                        if str(path).strip()
+                    )
+                    existing_by_id = rom_builder_load_existing_index(
+                        library_root,
+                        existing_paths=scanned_paths,
+                    )
+                    existing_paths = frozenset(
+                        (*scanned_paths, *(
+                            os.path.normcase(
+                                os.path.abspath(os.path.expanduser(str(path)))
+                            )
+                            for path in existing_by_id.values()
+                            if str(path).strip()
+                        ))
+                    )
+                    self.downloader_widgets["library_inventory_cache"] = {
+                        "schema": 2,
+                        "key": inventory_key,
+                        "index_signature": index_signature,
+                        "root": library_root,
+                        "by_name": existing_by_name,
+                        "by_id": existing_by_id,
+                        "paths": existing_paths,
+                        "results": {},
+                    }
+                    inventory_results = self.downloader_widgets[
+                        "library_inventory_cache"
+                    ]["results"]
+                    self._downloader_library_inventory_cache = (
+                        self.downloader_widgets["library_inventory_cache"]
+                    )
+                except OSError:
+                    library_root = None
+                    self.downloader_widgets["library_inventory_cache"] = None
+                    self._downloader_library_inventory_cache = None
 
         filtered: list[dict[str, Any]] = []
         missing: list[dict[str, Any]] = []
@@ -44049,20 +47228,105 @@ class TrackerApp:
         letter_filter = self.downloader_widgets[
             "letter_filter_var"
         ].get()
+        released_value = self.downloader_widgets[
+            "released_var"
+        ].get()
+        sa1_value = self.downloader_widgets["sa1_var"].get()
+        hall_of_fame_value = self.downloader_widgets[
+            "hall_of_fame_var"
+        ].get()
+        waiting_value = self.downloader_widgets[
+            "waiting_var"
+        ].get()
 
-        for game in self.hack_catalog:
+        catalog_playable_results: dict[str, bool] = {}
+        if catalog_view_only:
+            selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
+            configured_mappings = self.config.get("fxpak_rom_mappings", {})
+            platform_mappings = self.config.get("platform_rom_mappings", {})
+            runtime_mappings = getattr(self, "fxpak_path_map", {})
+            cache_scope = (
+                selected_platform,
+                str(self.config.get("platform_rom_library_folder", "")),
+                str(self.config.get("rom_builder_library_folder", "")),
+                len(configured_mappings) if isinstance(configured_mappings, dict) else 0,
+                len(platform_mappings) if isinstance(platform_mappings, dict) else 0,
+                len(runtime_mappings) if isinstance(runtime_mappings, dict) else 0,
+            )
+            playable_cache = getattr(
+                self,
+                "_catalog_playable_filter_cache",
+                None,
+            )
+            if (
+                force_library_scan
+                or not isinstance(playable_cache, dict)
+                or playable_cache.get("scope") != cache_scope
+                or time.monotonic() - float(playable_cache.get("created", 0.0))
+                >= 300.0
+            ):
+                playable_cache = {
+                    "scope": cache_scope,
+                    "created": time.monotonic(),
+                    "results": {},
+                }
+                self._catalog_playable_filter_cache = playable_cache
+            catalog_playable_results = playable_cache.setdefault("results", {})
+
+        catalog = self.hack_catalog
+        catalog_scope = (
+            id(catalog),
+            len(catalog),
+            id(catalog[0]) if catalog else 0,
+            id(catalog[-1]) if catalog else 0,
+        )
+        metadata_cache = getattr(
+            self,
+            "_downloader_catalog_metadata_cache",
+            None,
+        )
+        if (
+            not isinstance(metadata_cache, dict)
+            or metadata_cache.get("scope") != catalog_scope
+        ):
+            metadata_entries: list[dict[str, Any]] = []
+            for catalog_index, game in enumerate(catalog):
+                title = str(game.get("title", ""))
+                author = str(game.get("author", ""))
+                stable_identity = str(
+                    game.get("smwc_id", "")
+                    or game.get("id", "")
+                    or game.get("page_url", "")
+                    or title
+                ).strip().casefold()
+                metadata_entries.append(
+                    {
+                        "catalog_index": catalog_index,
+                        "game": game,
+                        "search_text": f"{title} {author}".casefold(),
+                        "letter": self._alphabet_segment(title),
+                        "title_sort": (
+                            self._title_without_leading_article(title).casefold(),
+                            title.casefold(),
+                        ),
+                        "stable_identity": stable_identity,
+                    }
+                )
+            metadata_cache = {
+                "scope": catalog_scope,
+                "entries": metadata_entries,
+            }
+            self._downloader_catalog_metadata_cache = metadata_cache
+
+        for catalog_entry in metadata_cache["entries"]:
+            catalog_index = int(catalog_entry["catalog_index"])
+            game = catalog_entry["game"]
             if search_text:
-                searchable = (
-                    str(game.get("title", ""))
-                    + " "
-                    + str(game.get("author", ""))
-                ).casefold()
-                if search_text not in searchable:
+                if search_text not in catalog_entry["search_text"]:
                     continue
             if (
                 letter_filter != "All"
-                and self._alphabet_segment(str(game.get("title", "")))
-                != letter_filter
+                and catalog_entry["letter"] != letter_filter
             ):
                 continue
             if not self._game_matches_downloader_filters(
@@ -44071,35 +47335,97 @@ class TrackerApp:
                 difficulty_value,
                 minimum_rating,
                 maximum_rating,
-                from_date,
-                through_date,
+                released_value,
+                sa1_value,
+                hall_of_fame_value,
+                waiting_value,
             ):
                 continue
 
             display_game = dict(game)
+            stable_identity = str(catalog_entry["stable_identity"])
+            display_game["_downloader_row_key"] = (
+                f"{catalog_index}:{stable_identity}"
+            )
+            display_game["_downloader_title_sort_key"] = catalog_entry[
+                "title_sort"
+            ]
             filtered.append(display_game)
 
-            if catalog_view_only:
-                exists = self._catalog_game_has_downloaded_rom(
-                    display_game
-                )
-                status = (
-                    self._translate_ui_text(
-                        "Playable - double-click title"
+            # Catalog titles and IDs are not guaranteed to be unique.  Cache
+            # the downloaded result per displayed catalog row so one duplicate
+            # cannot incorrectly donate its check mark to another row.
+            game_cache_key = str(display_game["_downloader_row_key"])
+
+            if catalog_view_only and library_root is not None:
+                if game_cache_key and game_cache_key in inventory_results:
+                    exists, _inventory_status, found_path = inventory_results[
+                        game_cache_key
+                    ]
+                else:
+                    exists, _inventory_status, found_path = rom_builder_existing_game(
+                        display_game,
+                        library_root,
+                        existing_by_name,
+                        existing_by_id,
+                        existing_paths=existing_paths,
+                        probe_filesystem=False,
                     )
+                    if game_cache_key:
+                        inventory_results[game_cache_key] = (
+                            bool(exists),
+                            str(_inventory_status),
+                            str(found_path),
+                        )
+                # A ROM may live outside the configured library or be mapped
+                # for the other supported platform.  Inventory lookup alone
+                # therefore cannot decide the Downloaded check mark.
+                if not exists:
+                    exists = self._catalog_game_has_downloaded_rom(
+                        display_game,
+                        probe_direct_paths=False,
+                    )
+                    if game_cache_key:
+                        catalog_playable_results[game_cache_key] = bool(exists)
+                status = (
+                    self._translate_ui_text("Playable")
+                    if exists
+                    else self._translate_ui_text("Not downloaded")
+                )
+            elif catalog_view_only:
+                if game_cache_key and game_cache_key in catalog_playable_results:
+                    exists = bool(catalog_playable_results[game_cache_key])
+                else:
+                    exists = self._catalog_game_has_downloaded_rom(
+                        display_game,
+                        probe_direct_paths=False,
+                    )
+                    if game_cache_key:
+                        catalog_playable_results[game_cache_key] = bool(exists)
+                status = (
+                    self._translate_ui_text("Playable")
                     if exists
                     else self._translate_ui_text("Not downloaded")
                 )
                 found_path = ""
             elif library_root is not None:
-                exists, status, found_path = (
-                    rom_builder_existing_game(
+                if game_cache_key and game_cache_key in inventory_results:
+                    exists, status, found_path = inventory_results[game_cache_key]
+                else:
+                    exists, status, found_path = rom_builder_existing_game(
                         display_game,
                         library_root,
                         existing_by_name,
                         existing_by_id,
+                        existing_paths=existing_paths,
+                        probe_filesystem=False,
                     )
-                )
+                    if game_cache_key:
+                        inventory_results[game_cache_key] = (
+                            bool(exists),
+                            str(status),
+                            str(found_path),
+                        )
             elif str(
                 display_game.get(
                     "rom_path",
@@ -44154,7 +47480,13 @@ class TrackerApp:
         # Catalog and downloader lists begin alphabetically. A subsequent
         # header click is reapplied to the newly built rows below.
         filtered.sort(
-            key=lambda game: str(game.get("title", "")).casefold()
+            key=lambda game: game.get("_downloader_title_sort_key")
+            or (
+                self._title_without_leading_article(
+                    str(game.get("title", ""))
+                ).casefold(),
+                str(game.get("title", "")).casefold(),
+            )
         )
 
         sort_desc = self.downloader_widgets.get(
@@ -44182,9 +47514,14 @@ class TrackerApp:
 
             filtered.sort(key=added_date_sort_key)
 
-        games_by_iid = self.downloader_widgets[
-            "games_by_iid"
-        ]
+        games_by_iid = self.downloader_widgets["games_by_iid"]
+        desired_rows: list[
+            tuple[
+                str,
+                tuple[str, tuple[Any, ...], tuple[str, ...]],
+                dict[str, Any],
+            ]
+        ] = []
         for row_index, display_game in enumerate(filtered):
             rating = display_game.get("rating")
             rating_text = (
@@ -44197,6 +47534,11 @@ class TrackerApp:
                 else "Unrated"
             )
             display_values = [
+                *(
+                    [str(display_game.get("title", "Unknown"))]
+                    if catalog_view_only
+                    else []
+                ),
                 str(
                     display_game.get(
                         "difficulty",
@@ -44240,59 +47582,143 @@ class TrackerApp:
                     )
                 )
             )
-            downloader_iid = f"download::{row_index}"
-            tree.insert(
-                "",
-                "end",
-                iid=downloader_iid,
-                text=str(
-                    display_game.get("title", "Unknown")
-                ),
-                values=tuple(display_values),
-                tags=(
-                    "downloader_even"
-                    if row_index % 2 == 0
-                    else "downloader_odd",
-                ),
+            row_key = str(display_game.get("_downloader_row_key", row_index))
+            downloader_iid = row_iids.get(row_key)
+            if not downloader_iid:
+                downloader_iid = f"download::{len(row_iids)}"
+                row_iids[row_key] = downloader_iid
+            base_tag = (
+                "downloader_even"
+                if row_index % 2 == 0
+                else "downloader_odd"
+            )
+            row_text = (
+                "✅"
+                if catalog_view_only
+                and bool(display_game.get("download_playable", False))
+                else (
+                    ""
+                    if catalog_view_only
+                    else str(display_game.get("title", "Unknown"))
+                )
+            )
+            payload = (
+                row_text,
+                tuple(display_values),
+                (base_tag,),
+            )
+            desired_rows.append(
+                (downloader_iid, payload, display_game)
             )
             games_by_iid[downloader_iid] = display_game
 
-        self._reapply_treeview_sorting(tree)
-        self._apply_statistics_table_colors(
+        desired_iids = tuple(row[0] for row in desired_rows)
+        attached_iids = tuple(tree.get_children(""))
+        structure_changed = attached_iids != desired_iids
+
+        for downloader_iid, payload, _display_game in desired_rows:
+            row_text, display_values, row_tags = payload
+            # ``row_payloads`` is also the inventory of Treeview items for
+            # this page.  Asking Tcl ``tree.exists`` thousands of times on
+            # every filter keystroke was one of the largest remaining costs.
+            # Detached filtered rows stay in the widget and are reattached by
+            # set_children below, so the Python cache is the correct fast
+            # existence check here.
+            if downloader_iid in row_payloads:
+                if row_payloads.get(downloader_iid) != payload:
+                    try:
+                        tree.item(
+                            downloader_iid,
+                            text=row_text,
+                            values=display_values,
+                            tags=row_tags,
+                        )
+                    except tk.TclError:
+                        # Recover gracefully if an item was deleted outside
+                        # the normal downloader refresh lifecycle.
+                        row_payloads.pop(downloader_iid, None)
+                        tree.insert(
+                            "",
+                            "end",
+                            iid=downloader_iid,
+                            text=row_text,
+                            values=display_values,
+                            tags=row_tags,
+                        )
+            else:
+                tree.insert(
+                    "",
+                    "end",
+                    iid=downloader_iid,
+                    text=row_text,
+                    values=display_values,
+                    tags=row_tags,
+                )
+            row_payloads[downloader_iid] = payload
+
+        # Reorder and attach the filtered result in one Tcl operation.  Moving
+        # thousands of rows one at a time made opening and filtering the
+        # catalog noticeably slow, especially with the overlay columns active.
+        if structure_changed:
+            tree.set_children("", *desired_iids)
+
+        active_sort_column = str(
+            getattr(tree, "_smw_sort_column", "") or ""
+        )
+        active_sort_descending = bool(
+            getattr(tree, "_smw_sort_descending", False)
+        )
+        default_sort_column = "title" if catalog_view_only else "#0"
+        if (
+            sort_desc is not None
+            or active_sort_column not in {"", default_sort_column}
+            or active_sort_descending
+        ):
+            self._reapply_treeview_sorting(tree)
+        # Sorting and bulk set_children() both reorder the visible rows.  Tag
+        # the final order so the Downloaded column and every normal cell keep
+        # the same alternating background pattern.
+        self._retag_treeview_alternating(
             tree,
-            (
-                "complete_catalog"
-                if catalog_view_only
-                else "missing_hacks"
-            ),
+            "downloader_even",
+            "downloader_odd",
         )
         self.downloader_preview_games = (
             [] if catalog_view_only else missing
         )
         if catalog_view_only:
+            catalog_counts = self.stats_db.catalog_status_counts()
             self.downloader_widgets[
                 "count_var"
             ].set(
-                f"{len(filtered):,} moderated hack(s)"
+                self._format_ui_text(
+                    "{moderated} moderated • {waiting} waiting",
+                    moderated=f"{catalog_counts['moderated']:,}",
+                    waiting=f"{catalog_counts['waiting']:,}",
+                )
             )
         else:
             self.downloader_widgets[
                 "count_var"
             ].set(
-                (
-                    f"{len(missing):,} missing • "
-                    f"{existing_count:,} existing • "
-                    f"{len(filtered):,} matching"
+                self._format_ui_text(
+                    "{missing} missing • {existing} existing • {matching} matching",
+                    missing=f"{len(missing):,}",
+                    existing=f"{existing_count:,}",
+                    matching=f"{len(filtered):,}",
                 )
             )
 
         if catalog_view_only:
             status_message = self._format_ui_text(
-                "Showing {count} moderated catalog hack(s). Yellow titles "
-                "are downloaded and ready to play; double-click one to "
-                "launch it. Click any column heading to sort, or select "
-                "Open Page / Download Patch.",
+                "Catalog contains {moderated} moderated and {waiting} waiting "
+                "hack(s); showing {count} matching. "
+                "A green check means downloaded. Yellow titles are Hall of "
+                "Fame hacks; bright red titles are still waiting. "
+                "Double-click a downloaded title to launch it.",
                 count=f"{len(filtered):,}",
+                moderated=f"{catalog_counts['moderated']:,}",
+                waiting=f"{catalog_counts['waiting']:,}",
             )
         elif not selected_folder:
             status_message = (
@@ -44323,7 +47749,14 @@ class TrackerApp:
         self.downloader_widgets[
             "status_var"
         ].set(status_message)
+        size_columns = self.downloader_widgets.get("size_columns")
+        if callable(size_columns):
+            try:
+                tree.after_idle(size_columns)
+            except tk.TclError:
+                pass
         self._schedule_downloader_difficulty_overlays()
+        self._queue_downloader_overlay_retry(55)
 
     def _schedule_downloader_difficulty_overlays(
         self,
@@ -44344,6 +47777,32 @@ class TrackerApp:
             self._render_downloader_difficulty_overlays
         )
 
+    def _queue_downloader_overlay_retry(self, delay_ms: int = 55) -> None:
+        """Repaint cell overlays after Treeview geometry has settled."""
+        widgets = self.downloader_widgets
+        if not widgets:
+            return
+        pending = widgets.get("difficulty_overlay_retry_after_id")
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except tk.TclError:
+                pass
+
+        def retry() -> None:
+            if self.downloader_widgets is not widgets:
+                return
+            widgets["difficulty_overlay_retry_after_id"] = None
+            self._schedule_downloader_difficulty_overlays()
+
+        try:
+            widgets["difficulty_overlay_retry_after_id"] = self.root.after(
+                max(1, int(delay_ms)),
+                retry,
+            )
+        except tk.TclError:
+            widgets["difficulty_overlay_retry_after_id"] = None
+
     def _render_downloader_difficulty_overlays(self) -> None:
         if not self.downloader_widgets:
             return
@@ -44363,15 +47822,33 @@ class TrackerApp:
             return
 
         visible_iids: list[str] = []
-        seen_iids: set[str] = set()
-        for sample_y in range(0, tree_height, 4):
-            try:
-                iid = str(tree.identify_row(sample_y))
-            except tk.TclError:
-                iid = ""
-            if iid and iid not in seen_iids:
-                seen_iids.add(iid)
-                visible_iids.append(iid)
+        try:
+            all_iids = tuple(tree.get_children(""))
+            first_iid = str(tree.identify_row(1))
+            last_iid = str(tree.identify_row(max(1, tree_height - 2)))
+            if first_iid and last_iid:
+                first_index = max(0, int(tree.index(first_iid)) - 1)
+                last_index = min(
+                    len(all_iids) - 1,
+                    int(tree.index(last_iid)) + 1,
+                )
+                visible_iids = list(all_iids[first_index : last_index + 1])
+        except (tk.TclError, TypeError, ValueError):
+            visible_iids = []
+
+        # Fallback for the first idle pass, before Treeview has laid out its
+        # top and bottom rows. A row-height-sized sample avoids the hundreds
+        # of Tcl calls that the previous four-pixel scan made on every filter.
+        if not visible_iids:
+            seen_iids: set[str] = set()
+            for sample_y in range(0, tree_height, 12):
+                try:
+                    iid = str(tree.identify_row(sample_y))
+                except tk.TclError:
+                    iid = ""
+                if iid and iid not in seen_iids:
+                    seen_iids.add(iid)
+                    visible_iids.append(iid)
 
         cell_boxes: dict[str, tuple[int, int, int, int]] = {}
         for iid in visible_iids:
@@ -44399,7 +47876,28 @@ class TrackerApp:
                     title_overlay.place_forget()
                 except tk.TclError:
                     pass
+            downloaded_overlay = self.downloader_widgets.get(
+                "downloaded_overlay"
+            )
+            if downloaded_overlay is not None:
+                try:
+                    downloaded_overlay.place_forget()
+                except tk.TclError:
+                    pass
+            retry_count = int(
+                self.downloader_widgets.get(
+                    "difficulty_overlay_retry_count", 0
+                )
+                or 0
+            )
+            if retry_count < 3:
+                self.downloader_widgets[
+                    "difficulty_overlay_retry_count"
+                ] = retry_count + 1
+                self._queue_downloader_overlay_retry(45 * (retry_count + 1))
             return
+
+        self.downloader_widgets["difficulty_overlay_retry_count"] = 0
 
         palette = self._library_palette()
         reference_box = next(iter(cell_boxes.values()))
@@ -44495,7 +47993,7 @@ class TrackerApp:
                 column_width,
                 row_y + row_height,
                 fill=difficulty_color,
-                outline=palette["border"],
+                outline=self._table_grid_line_color(),
                 width=1,
             )
             create_outlined_canvas_text(
@@ -44521,6 +48019,130 @@ class TrackerApp:
             visible_iids,
             palette,
         )
+        self._render_downloader_downloaded_overlay(
+            tree,
+            visible_iids,
+            palette,
+        )
+
+    def _render_downloader_downloaded_overlay(
+        self,
+        tree: ttk.Treeview,
+        visible_iids: list[str],
+        palette: dict[str, str],
+    ) -> None:
+        """Draw the catalog's downloaded indicator as a true green cell mark."""
+        overlay = self.downloader_widgets.get("downloaded_overlay")
+        if not bool(self.downloader_widgets.get("catalog_view_only", False)):
+            if overlay is not None:
+                try:
+                    overlay.place_forget()
+                except tk.TclError:
+                    pass
+            return
+
+        boxes: dict[str, tuple[int, int, int, int]] = {}
+        for iid in visible_iids:
+            try:
+                box = tree.bbox(iid, "#0")
+            except tk.TclError:
+                box = ()
+            if box:
+                boxes[iid] = box
+        if not boxes:
+            if overlay is not None:
+                try:
+                    overlay.place_forget()
+                except tk.TclError:
+                    pass
+            return
+
+        reference_box = next(iter(boxes.values()))
+        column_x = reference_box[0]
+        column_width = reference_box[2]
+        origin_y = min(box[1] for box in boxes.values())
+        overlay_height = max(1, tree.winfo_height() - origin_y)
+        if overlay is None:
+            overlay = tk.Canvas(
+                tree,
+                bd=0,
+                highlightthickness=0,
+                takefocus=False,
+            )
+
+            def select_row(event) -> str:
+                current_origin_y = int(
+                    self.downloader_widgets.get("downloaded_overlay_origin_y", 0)
+                    or 0
+                )
+                try:
+                    iid = str(tree.identify_row(event.y + current_origin_y))
+                except tk.TclError:
+                    iid = ""
+                if iid:
+                    tree.selection_set(iid)
+                    tree.focus(iid)
+                    self._schedule_downloader_difficulty_overlays()
+                return "break"
+
+            overlay.bind("<Button-1>", select_row)
+            for wheel_event in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                overlay.bind(wheel_event, self._scroll_downloader_overlay)
+            self.downloader_widgets["downloaded_overlay"] = overlay
+
+        self.downloader_widgets["downloaded_overlay_origin_y"] = origin_y
+        overlay.configure(
+            width=column_width,
+            height=overlay_height,
+            bg=palette["tree"],
+        )
+        overlay.place(
+            x=column_x,
+            y=origin_y,
+            width=column_width,
+            height=overlay_height,
+        )
+        overlay.delete("all")
+        games_by_iid = self.downloader_widgets.get("games_by_iid", {})
+        selected = set(tree.selection())
+        for iid, box in boxes.items():
+            game = games_by_iid.get(iid)
+            if game is None:
+                continue
+            row_y = box[1] - origin_y
+            row_height = box[3]
+            try:
+                row_index = int(tree.index(iid))
+            except (tk.TclError, TypeError, ValueError):
+                row_index = 0
+            background = (
+                palette["selected"]
+                if iid in selected
+                else (palette["tree"] if row_index % 2 == 0 else palette["panel_alt"])
+            )
+            overlay.create_rectangle(
+                0,
+                row_y,
+                column_width,
+                row_y + row_height,
+                fill=background,
+                outline=self._table_grid_line_color(),
+                width=1,
+            )
+            if bool(game.get("download_playable", False)):
+                create_outlined_canvas_text(
+                    overlay,
+                    column_width / 2,
+                    row_y + row_height / 2,
+                    text="✓",
+                    fill=THEME["green"],
+                    font=("Segoe UI Symbol", 13, "bold"),
+                    anchor="center",
+                )
+        try:
+            overlay.tk.call("raise", overlay._w)
+        except tk.TclError:
+            pass
 
     def _render_downloader_title_overlay(
         self,
@@ -44529,20 +48151,16 @@ class TrackerApp:
         palette: dict[str, str],
     ) -> None:
         overlay = self.downloader_widgets.get("title_overlay")
-        if not bool(
+        catalog_view_only = bool(
             self.downloader_widgets.get("catalog_view_only", False)
-        ):
-            if overlay is not None:
-                try:
-                    overlay.place_forget()
-                except tk.TclError:
-                    pass
-            return
+        )
+        title_column = "title" if catalog_view_only else "#0"
+        table_key = "complete_catalog" if catalog_view_only else "missing_hacks"
 
         title_boxes: dict[str, tuple[int, int, int, int]] = {}
         for iid in visible_iids:
             try:
-                box = tree.bbox(iid, "#0")
+                box = tree.bbox(iid, title_column)
             except tk.TclError:
                 box = ()
             if box:
@@ -44581,7 +48199,7 @@ class TrackerApp:
                 lambda event: self._show_table_appearance_menu(
                     event,
                     tree,
-                    "complete_catalog",
+                    table_key,
                 ),
             )
             for wheel_event in (
@@ -44614,17 +48232,16 @@ class TrackerApp:
             "games_by_iid", {}
         )
         selected = set(tree.selection())
-        all_rows = list(tree.get_children(""))
-        row_positions = {
-            iid: index for index, iid in enumerate(all_rows)
-        }
         for iid, box in title_boxes.items():
             game = games_by_iid.get(iid)
             if game is None:
                 continue
             row_y = box[1] - origin_y
             row_height = box[3]
-            row_index = row_positions.get(iid, 0)
+            try:
+                row_index = int(tree.index(iid))
+            except (tk.TclError, TypeError, ValueError):
+                row_index = 0
             background = (
                 palette["selected"]
                 if iid in selected
@@ -44634,12 +48251,15 @@ class TrackerApp:
                     else palette["panel_alt"]
                 )
             )
-            playable = bool(game.get("download_playable", False))
+            waiting = smwc_boolean_value(game.get("is_waiting", False))
+            hall_of_fame = smwc_boolean_value(game.get("hall_of_fame", False))
             text_color = (
-                THEME["yellow"]
-                if playable
+                "#FF3030"
+                if waiting
                 else (
-                    "white" if iid in selected else palette["text"]
+                    THEME["yellow"]
+                    if hall_of_fame
+                    else ("white" if iid in selected else palette["text"])
                 )
             )
             overlay.create_rectangle(
@@ -44648,7 +48268,7 @@ class TrackerApp:
                 column_width,
                 row_y + row_height,
                 fill=background,
-                outline=palette["border"],
+                outline=self._table_grid_line_color(),
                 width=1,
             )
             create_outlined_canvas_text(
@@ -44660,7 +48280,7 @@ class TrackerApp:
                 font=(
                     "Segoe UI",
                     9,
-                    "bold" if playable else "normal",
+                    "bold" if (waiting or hall_of_fame) else "normal",
                 ),
                 anchor="center",
             )
@@ -44940,7 +48560,7 @@ class TrackerApp:
                     usb_root,
                 )
             except Exception as error:
-                messagebox.showerror(
+                self._show_localized_info(
                     "Hack Downloader",
                     (
                         "The FXPAK Pro USB destination is not ready. "
@@ -44983,29 +48603,49 @@ class TrackerApp:
                 ),
                 parent=self.downloader_dialog or self.root,
             )
+            # Reaching this point during the guided setup means the user's
+            # library already satisfies the selected download step.  Treat
+            # that as a successful setup outcome instead of leaving the
+            # guide stranded on a button that can never start a job.
+            guided_setup_complete = getattr(
+                self,
+                "_guided_setup_hacks_downloaded",
+                None,
+            )
+            if callable(guided_setup_complete):
+                guided_setup_complete()
             return
 
-        confirmed = messagebox.askyesno(
-            "Download Moderated Hacks",
-            (
-                f"Download and patch {len(games):,} missing moderated hack(s)?\n\n"
-                f"Base ROM:\n{base_rom_path}\n\n"
-                f"Output library:\n{library_root}\n\n"
-                + (
-                    f"Also copy each completed ROM to SD:\n{sd_root}\n\n"
-                    if sd_root is not None
-                    else ""
-                )
-                + (
+        confirmation_parts = [
+            self._translate_ui_text(
+                "Download and patch {count} missing moderated hack(s)?"
+            ).format(count=f"{len(games):,}"),
+            f"{self._translate_ui_text('Base ROM:')}\n{base_rom_path}",
+            f"{self._translate_ui_text('Output library:')}\n{library_root}",
+        ]
+        if sd_root is not None:
+            confirmation_parts.append(
+                f"{self._translate_ui_text('Also copy each completed ROM to SD:')}"
+                f"\n{sd_root}"
+            )
+        if upload_via_usb:
+            confirmation_parts.append(
+                self._translate_ui_text(
                     "Also upload each completed ROM through the FXPAK Pro "
-                    f"USB connection to:\n{usb_root}\n\n"
-                    if upload_via_usb
-                    else ""
+                    "USB connection to:"
                 )
-                + "Games already found in the local library or mapped "
-                "in the FXPAK game library will be skipped again "
-                "immediately before each download."
-            ),
+                + f"\n{usb_root}"
+            )
+        confirmation_parts.append(
+            self._translate_ui_text(
+                "Games already found in the local library or mapped in the "
+                "FXPAK game library will be skipped again immediately before "
+                "each download."
+            )
+        )
+        confirmed = self._ask_localized_yes_no(
+            self._translate_ui_text("Download Moderated Hacks"),
+            "\n\n".join(confirmation_parts),
             parent=self.downloader_dialog or self.root,
         )
 
@@ -45175,9 +48815,17 @@ class TrackerApp:
                     library_root
                 )
             )
+            existing_path_keys = frozenset(
+                os.path.normcase(
+                    os.path.abspath(os.path.expanduser(str(path)))
+                )
+                for path in existing_by_name.values()
+                if str(path).strip()
+            )
             existing_by_id = (
                 rom_builder_load_existing_index(
-                    library_root
+                    library_root,
+                    existing_paths=existing_path_keys,
                 )
             )
             index_entries: dict[
@@ -45449,8 +49097,8 @@ class TrackerApp:
                                         usb_ws.settimeout(120)
 
                                     relative_rom_path = (
-                                        output_path.relative_to(
-                                            library_root
+                                        rom_builder_fxpak_relative_rom_path(
+                                            game
                                         ).as_posix()
                                     )
                                     usb_fxpak_path = (
@@ -45647,6 +49295,9 @@ class TrackerApp:
         )
         if not isinstance(saved_mappings, dict):
             saved_mappings = {}
+        runtime_mappings = getattr(self, "fxpak_path_map", None)
+        if not isinstance(runtime_mappings, dict):
+            runtime_mappings = {}
         mappings_changed = False
 
         for game in self.hack_catalog:
@@ -45675,12 +49326,9 @@ class TrackerApp:
                     game.get("mapping_key", "")
                 ).casefold().strip()
                 if not mapping_key:
-                    mapping_key = self.make_fxpak_mapping_key(
-                        str(game.get("title", "")),
-                        smwc_id,
-                    ).casefold()
+                    mapping_key = self._catalog_mapping_key(game).casefold()
                 saved_mappings[mapping_key] = fxpak_path
-                self.fxpak_path_map[mapping_key] = fxpak_path
+                runtime_mappings[mapping_key] = fxpak_path
                 mappings_changed = True
                 try:
                     self.stats_db.save_rom_mapping(
@@ -45691,8 +49339,14 @@ class TrackerApp:
                     )
                 except Exception:
                     pass
+                if self.worker is not None:
+                    self.worker.register_fxpak_mapping(
+                        game,
+                        fxpak_path,
+                    )
 
         if mappings_changed:
+            self.fxpak_path_map = runtime_mappings
             self.config[
                 "fxpak_rom_mappings"
             ] = saved_mappings
@@ -45724,13 +49378,13 @@ class TrackerApp:
 
         sd_summary = ""
         if sd_root is not None:
-            sd_summary = (
-                " SD copied: "
-                f"{sd_counts.get('copied', 0):,}; "
-                "already on SD: "
-                f"{sd_counts.get('already_on_sd', 0):,}; "
-                "SD copy failed: "
-                f"{sd_counts.get('failed', 0):,}."
+            sd_summary = " " + self._translate_ui_text(
+                "SD copied: {copied}; already on SD: {existing}; "
+                "SD copy failed: {failed}."
+            ).format(
+                copied=f"{sd_counts.get('copied', 0):,}",
+                existing=f"{sd_counts.get('already_on_sd', 0):,}",
+                failed=f"{sd_counts.get('failed', 0):,}",
             )
 
         usb_counts: dict[str, int] = {}
@@ -45748,64 +49402,67 @@ class TrackerApp:
 
         usb_summary = ""
         if usb_root:
-            usb_summary = (
-                " USB uploaded: "
-                f"{usb_counts.get('uploaded', 0):,}; "
-                "already on FXPAK: "
-                f"{usb_counts.get('already_on_usb', 0):,}; "
-                "USB upload failed: "
-                f"{usb_counts.get('failed', 0):,}."
+            usb_summary = " " + self._translate_ui_text(
+                "USB uploaded: {uploaded}; already on FXPAK: {existing}; "
+                "USB upload failed: {failed}."
+            ).format(
+                uploaded=f"{usb_counts.get('uploaded', 0):,}",
+                existing=f"{usb_counts.get('already_on_usb', 0):,}",
+                failed=f"{usb_counts.get('failed', 0):,}",
             )
 
         if fatal_error:
-            message = (
-                "The download job stopped because of an error: "
-                + fatal_error
-                + sd_summary
-                + usb_summary
+            message = self._translate_ui_text(
+                "The download job stopped because of an error: {error}"
+            ).format(
+                error=fatal_error,
             )
+            message += sd_summary + usb_summary
             messagebox.showerror(
-                "Hack Downloader",
+                self._translate_ui_text("Hack Downloader"),
                 message,
                 parent=self.downloader_dialog or self.root,
             )
         elif cancelled:
-            message = (
+            message = self._translate_ui_text(
                 "Download job cancelled. Completed files were kept, "
                 "and the report/index were updated."
-                + sd_summary
-                + usb_summary
             )
+            message += sd_summary + usb_summary
         else:
-            message = (
-                "Missing-only download completed. "
-                f"Newly built: {counts.get('ok', 0):,}; "
-                f"existing skipped: {counts.get('already_exists', 0):,}; "
-                f"failed: {counts.get('failed', 0):,}; "
-                f"no link: {counts.get('skipped', 0):,}."
-                + sd_summary
-                + usb_summary
+            message = self._translate_ui_text(
+                "Missing-only download completed. Newly built: {built}; "
+                "existing skipped: {existing}; failed: {failed}; "
+                "no link: {no_link}."
+            ).format(
+                built=f"{counts.get('ok', 0):,}",
+                existing=f"{counts.get('already_exists', 0):,}",
+                failed=f"{counts.get('failed', 0):,}",
+                no_link=f"{counts.get('skipped', 0):,}",
             )
+            message += sd_summary + usb_summary
             completion_message = (
                 message
-                + "\n\nReports were saved in:\n"
+                + "\n\n"
+                + self._translate_ui_text("Reports were saved in:")
+                + "\n"
                 + str(library_root)
             )
             if (
                 sd_counts.get("failed", 0)
                 or usb_counts.get("failed", 0)
             ):
-                completion_message += (
-                    "\n\nAll successfully patched local ROMs were kept. "
+                completion_message += "\n\n" + self._translate_ui_text(
+                    "All successfully patched local ROMs were kept. "
                     "Check the report for SD-card or USB transfer errors."
                 )
                 messagebox.showwarning(
-                    "Hack Downloader",
+                    self._translate_ui_text("Hack Downloader"),
                     completion_message,
                     parent=self.downloader_dialog or self.root,
                 )
             else:
-                messagebox.showinfo(
+                self._show_localized_info(
                     "Hack Downloader",
                     completion_message,
                     parent=self.downloader_dialog or self.root,
@@ -45815,7 +49472,18 @@ class TrackerApp:
             "status_var"
         ].set(message)
         self.status_var.set(message)
-        self._refresh_downloader_preview()
+        self.downloader_widgets["library_inventory_cache"] = None
+        self._downloader_library_inventory_cache = None
+        self._catalog_local_rom_inventory_cache = None
+        self._refresh_downloader_preview(force_library_scan=True)
+        if not fatal_error and not cancelled:
+            guided_setup_complete = getattr(
+                self,
+                "_guided_setup_hacks_downloaded",
+                None,
+            )
+            if callable(guided_setup_complete):
+                guided_setup_complete()
 
     def _close_hack_downloader(self) -> None:
         if (
@@ -45870,7 +49538,19 @@ class TrackerApp:
         self.downloader_preview_games = []
 
     def _library_palette(self) -> dict[str, str]:
-        if self.appearance_var.get() == "dark":
+        appearance_variable = getattr(self, "appearance_var", None)
+        if appearance_variable is not None:
+            try:
+                appearance_mode = str(appearance_variable.get()).casefold()
+            except (AttributeError, tk.TclError):
+                appearance_mode = ""
+        else:
+            appearance_mode = ""
+        if not appearance_mode:
+            appearance_mode = str(
+                getattr(self, "config", {}).get("ui_theme", "dark")
+            ).casefold()
+        if appearance_mode == "dark":
             return {
                 "window": "#0C1220",
                 "panel": "#172235",
@@ -45984,6 +49664,10 @@ class TrackerApp:
         difficulty_value: str,
         type_value: str,
         letter_value: str = "All",
+        released_value: str = "Any",
+        sa1_value: str = "Any",
+        hall_of_fame_value: str = "Any",
+        waiting_value: str = "Any",
     ) -> bool:
         if search_text:
             haystack = " ".join(
@@ -46003,13 +49687,13 @@ class TrackerApp:
                 return False
 
         if (
-            difficulty_value != "Any"
+            not self._filter_value_is_any(difficulty_value)
             and str(game.get("difficulty", ""))
             != difficulty_value
         ):
             return False
 
-        if type_value != "Any":
+        if not self._filter_value_is_any(type_value):
             game_types = {
                 token.strip().casefold()
                 for token in str(
@@ -46021,11 +49705,28 @@ class TrackerApp:
                 return False
 
         if (
-            letter_value != "All"
+            str(letter_value).strip().casefold()
+            not in {
+                "all",
+                self._translate_ui_text("All").strip().casefold(),
+            }
             and self._alphabet_segment(
                 str(game.get("title", ""))
             )
             != letter_value
+        ):
+            return False
+
+        if not self._game_matches_released_filter(game, released_value):
+            return False
+        if not self._game_matches_boolean_filter(game, "sa1", sa1_value):
+            return False
+        if not self._game_matches_boolean_filter(
+            game, "hall_of_fame", hall_of_fame_value
+        ):
+            return False
+        if not self._game_matches_boolean_filter(
+            game, "is_waiting", waiting_value
         ):
             return False
 
@@ -46244,17 +49945,19 @@ class TrackerApp:
         # use the custom suggestion panel instead.
         combo = self.main_hack_selector_combo
         combo.focus_set()
+        self._queue_main_hack_selector_popup()
+        # Preserve Tk's normal mouse handling in the editable field so users
+        # can drag to highlight text and replace/delete it in one action.
+        # Only consume a click on the arrow, which is handled by our custom
+        # suggestion popup.
         if event is not None:
             try:
-                combo.icursor(
-                    combo.index(
-                        f"@{event.x}"
-                    )
-                )
+                element = str(combo.identify(event.x, event.y))
             except tk.TclError:
-                combo.icursor("end")
-        self._queue_main_hack_selector_popup()
-        return "break"
+                element = ""
+            if "downarrow" in element:
+                return "break"
+        return None
 
     def _main_hack_selector_popup_is_open(
         self,
@@ -46508,20 +50211,14 @@ class TrackerApp:
                 exportselection=False,
                 takefocus=False,
             )
-            scrollbar = tk.Scrollbar(
+            scrollbar = YellowCanvasScrollbar(
                 popup_frame,
-                orient="vertical",
+                orient=tk.VERTICAL,
                 command=listbox.yview,
                 bg=THEME["yellow"],
-                activebackground=THEME["orange"],
-                troughcolor=(
-                    "#0C1220"
-                    if dark
-                    else "#DCEEFF"
-                ),
-                relief="flat",
-                bd=0,
-                width=13,
+                activebackground="#FFE56B",
+                troughcolor="#17243A",
+                width=16,
             )
             listbox.configure(
                 yscrollcommand=scrollbar.set
@@ -47144,6 +50841,8 @@ class TrackerApp:
         self,
         game: dict[str, Any],
         platform: str | None = None,
+        *,
+        probe_direct_paths: bool = True,
     ) -> bool:
         """Return whether a catalog game has a known launchable ROM."""
         selected_platform = (
@@ -47152,43 +50851,90 @@ class TrackerApp:
             or "FXPAK Pro"
         )
 
-        # A completed ROM is downloaded regardless of which platform is
-        # currently selected. Check direct local catalog paths first, then the
-        # selected platform's saved mapping.
-        for field_name in ("local_rom_path", "rom_path"):
-            path_text = str(game.get(field_name, "")).strip()
-            if path_text and Path(path_text).is_file():
-                return True
-
-        if selected_platform in PLATFORM_LOCAL_EMULATORS:
-            all_mappings = self.config.get(
-                "platform_rom_mappings",
-                {},
-            )
-            if isinstance(all_mappings, dict):
-                platform_mappings = all_mappings.get(
-                    selected_platform,
-                    {},
-                )
-                if isinstance(platform_mappings, dict):
-                    mapped_text = str(
-                        platform_mappings.get(
-                            self._catalog_mapping_key(game),
-                            "",
-                        )
-                    ).strip()
-                    if mapped_text and Path(mapped_text).is_file():
-                        return True
-
-            return self._catalog_game_exists_in_local_library(game)
-
-        # FXPAK paths are remote POSIX-style paths. A local Windows filename
-        # is not considered launchable unless it has also been copied/mapped
-        # to the card.
+        # Remote FXPAK paths do not require a Windows filesystem probe.
         direct_path = str(game.get("rom_path", "")).strip()
         if direct_path.startswith("/"):
             return True
 
+        # Most downloaded games live under the configured ROM library.  Use
+        # its shared inventory first so opening or filtering a 2,700+ row
+        # catalog does not issue one or more OneDrive-backed ``is_file`` calls
+        # for every game.
+        if self._catalog_game_exists_in_local_library(
+            game,
+            allow_scan=probe_direct_paths,
+        ):
+            return True
+
+        # A completed ROM is downloaded regardless of which platform is
+        # currently selected.  Direct paths are an exceptional fallback for
+        # ROMs stored outside the configured library. Cache positive and
+        # negative probes briefly; otherwise a missing path causes thousands
+        # of repeated OneDrive-backed filesystem calls while filtering.
+        direct_file_cache = getattr(
+            self,
+            "_catalog_direct_file_cache",
+            None,
+        )
+        if not isinstance(direct_file_cache, dict):
+            direct_file_cache = {}
+            self._catalog_direct_file_cache = direct_file_cache
+
+        def direct_file_exists(path_text: str) -> bool:
+            candidate = str(path_text).strip()
+            if not candidate or candidate.startswith("/"):
+                return False
+            cache_key = os.path.normcase(os.path.normpath(candidate))
+            now = time.monotonic()
+            cached_probe = direct_file_cache.get(cache_key)
+            if isinstance(cached_probe, tuple) and len(cached_probe) == 2:
+                cached_at, cached_exists = cached_probe
+                # Positive hits are stable enough to reuse while browsing,
+                # but a missing file may be created by the downloader at any
+                # moment.  Re-probe negative entries so a freshly patched ROM
+                # becomes launchable immediately.
+                if bool(cached_exists) and now - float(cached_at) < 120.0:
+                    return bool(cached_exists)
+            try:
+                exists = Path(candidate).is_file()
+            except OSError:
+                exists = False
+            direct_file_cache[cache_key] = (now, bool(exists))
+            return bool(exists)
+
+        for field_name in ("local_rom_path", "rom_path"):
+            path_text = str(game.get(field_name, "")).strip()
+            if (
+                path_text
+                and not path_text.startswith("/")
+                and not probe_direct_paths
+            ):
+                return True
+            if probe_direct_paths and direct_file_exists(path_text):
+                return True
+
+        # Downloaded status is platform-independent.  Check every emulator's
+        # saved mapping rather than only the platform currently selected.
+        all_mappings = self.config.get(
+            "platform_rom_mappings",
+            {},
+        )
+        mapping_key = self._catalog_mapping_key(game)
+        if isinstance(all_mappings, dict):
+            for platform_mappings in all_mappings.values():
+                if not isinstance(platform_mappings, dict):
+                    continue
+                mapped_text = str(
+                    platform_mappings.get(mapping_key, "")
+                ).strip()
+                if mapped_text and not probe_direct_paths:
+                    return True
+                if probe_direct_paths and direct_file_exists(mapped_text):
+                    return True
+
+        # FXPAK paths are remote POSIX-style paths. A local Windows filename
+        # is not considered launchable unless it has also been copied/mapped
+        # to the card.
         mapping_keys = {
             str(game.get("mapping_key", "")).casefold().strip(),
             self._catalog_mapping_key(game).casefold(),
@@ -47213,22 +50959,46 @@ class TrackerApp:
         runtime_mappings = getattr(self, "fxpak_path_map", {})
         if not isinstance(runtime_mappings, dict):
             runtime_mappings = {}
-        for mappings in (known_mappings, runtime_mappings):
-            normalized = {
-                str(key).casefold().strip(): str(value).strip()
-                for key, value in mappings.items()
-                if str(value).strip()
+        mapping_scope = (
+            id(known_mappings),
+            len(known_mappings),
+            id(runtime_mappings),
+            len(runtime_mappings),
+        )
+        mapping_cache = getattr(
+            self,
+            "_catalog_remote_mapping_keys_cache",
+            None,
+        )
+        if (
+            not isinstance(mapping_cache, dict)
+            or mapping_cache.get("scope") != mapping_scope
+        ):
+            remote_keys: set[str] = set()
+            for mappings in (known_mappings, runtime_mappings):
+                remote_keys.update(
+                    str(key).casefold().strip()
+                    for key, value in mappings.items()
+                    if str(value).strip().startswith("/")
+                )
+            mapping_cache = {
+                "scope": mapping_scope,
+                "keys": frozenset(remote_keys),
             }
-            if any(
-                normalized.get(mapping_key, "").startswith("/")
-                for mapping_key in mapping_keys
-            ):
-                return True
-        return self._catalog_game_exists_in_local_library(game)
+            self._catalog_remote_mapping_keys_cache = mapping_cache
+        remote_mapping_keys = mapping_cache.get("keys", frozenset())
+        if any(
+            mapping_key in remote_mapping_keys
+            for mapping_key in mapping_keys
+        ):
+            return True
+        return False
 
     def _catalog_game_exists_in_local_library(
         self,
         game: dict[str, Any],
+        *,
+        allow_scan: bool = True,
     ) -> bool:
         """Recognize completed ROMs anywhere under the configured library."""
         library_text = str(
@@ -47238,33 +51008,140 @@ class TrackerApp:
         if not library_text:
             return False
 
-        try:
-            library_root = rom_builder_detect_library_root(
-                Path(library_text)
-            )
-        except OSError:
-            return False
-        if not library_root.is_dir():
-            return False
-
         now = time.monotonic()
+        library_key = os.path.normcase(
+            os.path.abspath(os.path.expanduser(library_text))
+        )
         cache = getattr(self, "_catalog_local_rom_inventory_cache", None)
         cache_matches = (
             isinstance(cache, dict)
-            and cache.get("root") == str(library_root)
-            and now - float(cache.get("created", 0.0)) < 10.0
+            and cache.get("key") == library_key
+            and now - float(cache.get("created", 0.0)) < 300.0
         )
+        if not cache_matches and not allow_scan:
+            # Catalog browsing must stay instant. Reuse an inventory already
+            # created by Download Missing Hacks, but never start a recursive
+            # disk/OneDrive scan merely to paint the catalog.
+            shared_cache = getattr(
+                self,
+                "_downloader_library_inventory_cache",
+                None,
+            )
+            if not (
+                isinstance(shared_cache, dict)
+                and shared_cache.get("key") == library_key
+            ):
+                return False
+            cache = {
+                "key": library_key,
+                "root": str(shared_cache.get("root", library_text)),
+                "created": now,
+                "by_name": shared_cache.get("by_name", {}),
+                "by_id": shared_cache.get("by_id", {}),
+                "paths": shared_cache.get("paths", frozenset()),
+                "results": shared_cache.setdefault("results", {}),
+            }
+            self._catalog_local_rom_inventory_cache = cache
+            cache_matches = True
         if not cache_matches:
             try:
-                cache = {
-                    "root": str(library_root),
-                    "created": now,
-                    "by_name": rom_builder_scan_existing_roms(library_root),
-                    "by_id": rom_builder_load_existing_index(library_root),
-                }
+                library_root = rom_builder_detect_library_root(
+                    Path(library_text)
+                )
             except OSError:
                 return False
+            if not library_root.is_dir():
+                return False
+
+            resolved_key = os.path.normcase(
+                os.path.abspath(str(library_root.resolve(strict=False)))
+            )
+            shared_cache = getattr(
+                self,
+                "_downloader_library_inventory_cache",
+                None,
+            )
+            shared_matches = (
+                isinstance(shared_cache, dict)
+                and shared_cache.get("key")
+                == resolved_key
+            )
+            if shared_matches:
+                shared_by_name = shared_cache.get("by_name", {})
+                shared_by_id = shared_cache.get("by_id", {})
+                shared_paths = shared_cache.get("paths")
+                if not isinstance(shared_paths, (set, frozenset)):
+                    shared_paths = frozenset(
+                        os.path.normcase(
+                            os.path.abspath(os.path.expanduser(str(path)))
+                        )
+                        for path in (
+                            *shared_by_name.values(),
+                            *shared_by_id.values(),
+                        )
+                        if str(path).strip()
+                    )
+                cache = {
+                    "key": library_key,
+                    "root": str(library_root),
+                    "created": now,
+                    "by_name": shared_by_name,
+                    "by_id": shared_by_id,
+                    "paths": shared_paths,
+                    "results": {},
+                }
+            else:
+                try:
+                    scanned_by_name = rom_builder_scan_existing_roms(
+                        library_root
+                    )
+                    scanned_paths = frozenset(
+                        os.path.normcase(
+                            os.path.abspath(os.path.expanduser(str(path)))
+                        )
+                        for path in scanned_by_name.values()
+                        if str(path).strip()
+                    )
+                    scanned_by_id = rom_builder_load_existing_index(
+                        library_root,
+                        existing_paths=scanned_paths,
+                    )
+                    cache = {
+                        "key": library_key,
+                        "root": str(library_root),
+                        "created": now,
+                        "by_name": scanned_by_name,
+                        "by_id": scanned_by_id,
+                        "paths": frozenset(
+                            (*scanned_paths, *(
+                                os.path.normcase(
+                                    os.path.abspath(os.path.expanduser(str(path)))
+                                )
+                                for path in scanned_by_id.values()
+                                if str(path).strip()
+                            ))
+                        ),
+                        "results": {},
+                    }
+                except OSError:
+                    return False
             self._catalog_local_rom_inventory_cache = cache
+        else:
+            library_root = Path(str(cache.get("root", library_text)))
+
+        result_key = (
+            str(
+                game.get("smwc_id", "")
+                or game.get("id", "")
+                or game.get("page_url", "")
+                or game.get("title", "")
+            )
+            .strip()
+            .casefold()
+        )
+        cached_results = cache.setdefault("results", {})
+        if result_key and result_key in cached_results:
+            return bool(cached_results[result_key])
 
         probe_game = dict(game)
         # A remote FXPAK path is handled separately above; do not let the
@@ -47275,7 +51152,11 @@ class TrackerApp:
             library_root,
             cache["by_name"],
             cache["by_id"],
+            existing_paths=cache.get("paths", frozenset()),
+            probe_filesystem=False,
         )
+        if result_key:
+            cached_results[result_key] = bool(exists)
         return bool(exists)
 
     def _random_main_hack_candidates(
@@ -47285,6 +51166,8 @@ class TrackerApp:
         type_value: str,
         uploaded_within_months: int | None = None,
         *,
+        released_value: str = "Any",
+        hall_of_fame_value: str = "Any",
         reference_date: date | None = None,
     ) -> list[dict[str, Any]]:
         today = reference_date or date.today()
@@ -47316,6 +51199,15 @@ class TrackerApp:
                 difficulty_value,
                 type_value,
                 "All",
+                "Any",
+                "Any",
+                hall_of_fame_value,
+                "Any",
+            )
+            and self._game_matches_released_filter(
+                game,
+                released_value,
+                reference_date=today,
             )
             and matches_upload_window(game)
             and self._catalog_game_has_downloaded_rom(game)
@@ -47324,50 +51216,24 @@ class TrackerApp:
     def _random_upload_age_options(
         self,
     ) -> tuple[tuple[str, int | None], ...]:
-        options: list[tuple[str, int | None]] = [
-            (self._translate_ui_text("Any upload date"), None),
-            (self._translate_ui_text("Last month"), 1),
-            (
-                self._format_ui_text(
-                    "Last {months} months",
-                    months=3,
-                ),
-                3,
-            ),
-            (
-                self._format_ui_text(
-                    "Last {months} months",
-                    months=6,
-                ),
-                6,
-            ),
-            (self._translate_ui_text("Last year"), 12),
-        ]
-        options.extend(
-            (
-                self._format_ui_text(
-                    "Last {years} years",
-                    years=years,
-                ),
-                years * 12,
-            )
-            for years in range(2, 14)
-        )
-        return tuple(options)
+        # Kept as a compatibility alias for older tests and saved UI state.
+        return self._released_filter_options()
 
     def _launch_filtered_random_main_hack(
         self,
         rating_var: tk.StringVar,
         difficulty_var: tk.StringVar,
         type_var: tk.StringVar,
-        uploaded_within_months: int | None,
+        released_var: tk.StringVar,
+        hall_of_fame_var: tk.StringVar,
         dialog: tk.Toplevel,
     ) -> None:
         candidates = self._random_main_hack_candidates(
             rating_var.get(),
             difficulty_var.get(),
             type_var.get(),
-            uploaded_within_months,
+            released_value=released_var.get(),
+            hall_of_fame_value=hall_of_fame_var.get(),
         )
         if not candidates:
             messagebox.showinfo(
@@ -47420,7 +51286,7 @@ class TrackerApp:
         self.random_hack_dialog = dialog
         dialog.title("Random Hack Filters")
         dialog.configure(bg=palette["window"])
-        self._size_dialog_for_ui(dialog, 660, 470, 580, 410)
+        self._size_dialog_for_ui(dialog, 660, 550, 580, 470)
         dialog.resizable(True, True)
         self._add_dialog_window_controls(
             dialog,
@@ -47461,12 +51327,11 @@ class TrackerApp:
         difficulty_var = tk.StringVar(value="Any")
         type_var = tk.StringVar(value="Any")
         rating_var = tk.StringVar(value="Any")
-        upload_age_options = self._random_upload_age_options()
-        upload_age_values = tuple(
-            label for label, _months in upload_age_options
-        )
-        upload_age_months = dict(upload_age_options)
-        upload_age_var = tk.StringVar(value=upload_age_values[0])
+        released_options = self._released_filter_options()
+        released_values = tuple(label for label, _period in released_options)
+        released_var = tk.StringVar(value=released_values[0])
+        hall_of_fame_values = self._boolean_filter_options()
+        hall_of_fame_var = tk.StringVar(value=hall_of_fame_values[0])
         filter_controls = (
             (
                 "Difficulty",
@@ -47484,9 +51349,14 @@ class TrackerApp:
                 ("Any", "1+", "2+", "3+", "4+", "4.5+", "5"),
             ),
             (
-                "Uploaded to SMW Central",
-                upload_age_var,
-                upload_age_values,
+                "Released",
+                released_var,
+                released_values,
+            ),
+            (
+                "Hall of Fame",
+                hall_of_fame_var,
+                hall_of_fame_values,
             ),
         )
         for index, (label_text, variable, values) in enumerate(
@@ -47532,7 +51402,8 @@ class TrackerApp:
                 rating_var,
                 difficulty_var,
                 type_var,
-                upload_age_months.get(upload_age_var.get()),
+                released_var,
+                hall_of_fame_var,
                 dialog,
             ),
             THEME["green"],
@@ -47624,13 +51495,16 @@ class TrackerApp:
         )
         OutlinedLabel(
             header,
-            text="▣  FXPAK PRO GAME LIBRARY",
+            text="▣  " + platform_name.upper() + " GAME LIBRARY",
             font=("Segoe UI", 17, "bold"),
             fg="white",
             bg=THEME["navy"],
         ).pack(side="left")
-        self.game_library_count_var = tk.StringVar(
-            value=f"{len(self.hack_catalog):,} games"
+        self.game_library_count_var = self._localized_string_var(
+            value=self._format_ui_text(
+                "{count} games",
+                count=f"{len(self.hack_catalog):,}",
+            )
         )
         tk.Label(
             header,
@@ -47670,6 +51544,12 @@ class TrackerApp:
         type_var = tk.StringVar(value="Any")
         sort_var = tk.StringVar(value="Title (A-Z)")
         letter_filter_var = tk.StringVar(value="All")
+        released_options = self._released_filter_options()
+        released_var = tk.StringVar(value=released_options[0][0])
+        boolean_options = self._boolean_filter_options()
+        sa1_var = tk.StringVar(value=boolean_options[0])
+        hall_of_fame_var = tk.StringVar(value=boolean_options[0])
+        waiting_var = tk.StringVar(value=boolean_options[0])
         jump_var = tk.StringVar(value="Top")
 
         self.game_library_widgets = {
@@ -47679,6 +51559,10 @@ class TrackerApp:
             "type_var": type_var,
             "sort_var": sort_var,
             "letter_filter_var": letter_filter_var,
+            "released_var": released_var,
+            "sa1_var": sa1_var,
+            "hall_of_fame_var": hall_of_fame_var,
+            "waiting_var": waiting_var,
             "jump_var": jump_var,
             "header_sort_column": "#0",
             "header_sort_descending": False,
@@ -47714,10 +51598,10 @@ class TrackerApp:
             )
 
         add_filter_label(0, "Search")
-        add_filter_label(1, "SMWC Rating", dropdown=True)
-        add_filter_label(2, "Difficulty", dropdown=True)
-        add_filter_label(3, "Type", dropdown=True)
-        add_filter_label(4, "Sort By", dropdown=True)
+        add_filter_label(2, "SMWC Rating", dropdown=True)
+        add_filter_label(3, "Difficulty", dropdown=True)
+        add_filter_label(4, "Type", dropdown=True)
+        add_filter_label(5, "Sort By", dropdown=True)
 
         search_entry = tk.Entry(
             filter_frame,
@@ -47735,6 +51619,7 @@ class TrackerApp:
         search_entry.grid(
             row=1,
             column=0,
+            columnspan=2,
             sticky="ew",
             padx=(0, 12),
             pady=(3, 0),
@@ -47755,10 +51640,11 @@ class TrackerApp:
                 "4.5+",
                 "5",
             ),
+            justify="center",
         )
         rating_combo.grid(
             row=1,
-            column=1,
+            column=2,
             padx=(0, 12),
             pady=(3, 0),
             sticky="ew",
@@ -47773,10 +51659,11 @@ class TrackerApp:
                 "Any",
                 *self._difficulty_values(),
             ),
+            justify="center",
         )
         difficulty_combo.grid(
             row=1,
-            column=2,
+            column=3,
             padx=(0, 12),
             pady=(3, 0),
             sticky="ew",
@@ -47791,10 +51678,11 @@ class TrackerApp:
                 "Any",
                 *self._type_tokens(),
             ),
+            justify="center",
         )
         type_combo.grid(
             row=1,
-            column=3,
+            column=4,
             padx=(0, 10),
             pady=(3, 0),
             sticky="ew",
@@ -47807,19 +51695,21 @@ class TrackerApp:
             width=18,
             values=(
                 "Title (A-Z)",
-                "Date Added (Newest)",
-                "Date Added (Oldest)",
+                "Released (Newest)",
+                "Released (Oldest)",
             ),
+            justify="center",
         )
         sort_combo.grid(
             row=1,
-            column=4,
+            column=5,
             padx=(0, 10),
             pady=(3, 0),
             sticky="ew",
         )
 
         filter_frame.columnconfigure(0, weight=1)
+        filter_frame.columnconfigure(1, weight=1)
 
         self._make_action_button(
             filter_frame,
@@ -47831,27 +51721,61 @@ class TrackerApp:
             pad_y=5,
         ).grid(
             row=1,
-            column=5,
+            column=6,
             sticky="e",
             pady=(3, 0),
         )
 
-        add_filter_label(
-            0,
-            "Filter by letter",
-            row=2,
-            dropdown=True,
+        add_filter_label(0, "Released", row=2, dropdown=True)
+        add_filter_label(1, "SA-1", row=2, dropdown=True)
+        add_filter_label(2, "Hall of Fame", row=2, dropdown=True)
+        add_filter_label(3, "Waiting", row=2, dropdown=True)
+        add_filter_label(4, "Filter by letter", row=2, dropdown=True)
+
+        released_combo = ttk.Combobox(
+            filter_frame,
+            textvariable=released_var,
+            state="readonly",
+            values=tuple(label for label, _period in released_options),
+            justify="center",
         )
+        released_combo.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            padx=(0, 10),
+            pady=(3, 0),
+        )
+        for column, variable in (
+            (1, sa1_var),
+            (2, hall_of_fame_var),
+            (3, waiting_var),
+        ):
+            ttk.Combobox(
+                filter_frame,
+                textvariable=variable,
+                state="readonly",
+                values=boolean_options,
+                justify="center",
+            ).grid(
+                row=3,
+                column=column,
+                sticky="ew",
+                padx=(0, 10),
+                pady=(3, 0),
+            )
         letter_filter_combo = ttk.Combobox(
             filter_frame,
             textvariable=letter_filter_var,
             state="readonly",
             width=9,
             values=self._letter_filter_values(),
+            justify="center",
         )
         letter_filter_combo.grid(
             row=3,
-            column=0,
+            column=4,
+            columnspan=2,
             sticky="ew",
             padx=(0, 10),
             pady=(3, 0),
@@ -48004,7 +51928,7 @@ class TrackerApp:
             "type": "Type",
             "rating": "Rating",
             "exits": "Exits",
-            "added": "SMWC Added",
+            "added": "Released",
             "rom": "ROM",
         }
         for column_id, heading_text in heading_labels.items():
@@ -48022,15 +51946,15 @@ class TrackerApp:
 
         tree.column(
             "#0",
-            width=360,
-            minwidth=220,
+            width=300,
+            minwidth=175,
             stretch=True,
             anchor="center",
         )
         tree.column(
             "author",
-            width=190,
-            minwidth=120,
+            width=155,
+            minwidth=95,
             stretch=True,
             anchor="center",
         )
@@ -48043,8 +51967,8 @@ class TrackerApp:
         )
         tree.column(
             "type",
-            width=150,
-            minwidth=105,
+            width=135,
+            minwidth=100,
             stretch=False,
             anchor="center",
         )
@@ -48064,8 +51988,8 @@ class TrackerApp:
         )
         tree.column(
             "rom",
-            width=105,
-            minwidth=85,
+            width=120,
+            minwidth=105,
             stretch=False,
             anchor="center",
         )
@@ -48078,7 +52002,6 @@ class TrackerApp:
             anchor="center",
         )
         self._center_treeview_content(tree)
-
         def scroll_library_tree(*arguments) -> None:
             tree.yview(*arguments)
             self._schedule_game_library_difficulty_overlays()
@@ -48098,6 +52021,7 @@ class TrackerApp:
             self._schedule_game_library_difficulty_overlays()
 
         tree.configure(yscrollcommand=update_library_scrollbar)
+        self._install_treeview_cell_grid(tree)
         tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         self._bind_fast_vertical_scroll(
@@ -48109,6 +52033,7 @@ class TrackerApp:
 
         self.game_library_widgets["tree"] = tree
         self.game_library_widgets["difficulty_overlay"] = None
+        self.game_library_widgets["title_overlay"] = None
         self.game_library_widgets[
             "difficulty_overlay_after_id"
         ] = None
@@ -48207,14 +52132,19 @@ class TrackerApp:
             bg=palette["panel"],
         ).grid(row=0, column=0, sticky="w", padx=(0, 14))
 
-        random_rating_var = tk.StringVar(value="Any")
-        random_difficulty_var = tk.StringVar(value="Any")
-        random_type_var = tk.StringVar(value="Any")
+        localized_any = self._translate_ui_text("Any")
+        random_rating_var = tk.StringVar(value=localized_any)
+        random_difficulty_var = tk.StringVar(value=localized_any)
+        random_type_var = tk.StringVar(value=localized_any)
+        random_released_var = tk.StringVar(value=localized_any)
+        random_hall_of_fame_var = tk.StringVar(value=localized_any)
         self.game_library_widgets.update(
             {
                 "random_rating_var": random_rating_var,
                 "random_difficulty_var": random_difficulty_var,
                 "random_type_var": random_type_var,
+                "random_released_var": random_released_var,
+                "random_hall_of_fame_var": random_hall_of_fame_var,
             }
         )
 
@@ -48223,20 +52153,32 @@ class TrackerApp:
                 (
                     "Rating",
                     random_rating_var,
-                    ("Any", "1+", "2+", "3+", "4+", "4.5+", "5"),
+                    (localized_any, "1+", "2+", "3+", "4+", "4.5+", "5"),
                     9,
                 ),
                 (
                     "Difficulty",
                     random_difficulty_var,
-                    ("Any", *self._difficulty_values()),
+                    (localized_any, *self._difficulty_values()),
                     14,
                 ),
                 (
                     "Type",
                     random_type_var,
-                    ("Any", *self._type_tokens()),
+                    (localized_any, *self._type_tokens()),
                     16,
+                ),
+                (
+                    "Released",
+                    random_released_var,
+                    self._released_filter_options(),
+                    16,
+                ),
+                (
+                    "Hall of Fame",
+                    random_hall_of_fame_var,
+                    self._boolean_filter_options(),
+                    14,
                 ),
             ),
             start=1,
@@ -48274,13 +52216,14 @@ class TrackerApp:
             active_bg=THEME["orange"],
             width=19,
             pad_y=6,
-        ).grid(row=0, column=4, sticky="e")
-        random_panel.columnconfigure(4, weight=1)
+        ).grid(row=0, column=6, sticky="e")
+        random_panel.columnconfigure(6, weight=1)
 
-        self.game_library_random_var = tk.StringVar(
+        self.game_library_random_var = self._localized_string_var(
             value=(
                 "The random button applies its own Rating, Difficulty, "
-                "and Type filters, then launches the selected ROM."
+                "Type, Released, and Hall of Fame filters, then launches "
+                "the selected ROM."
             )
         )
         tk.Label(
@@ -48293,12 +52236,12 @@ class TrackerApp:
         ).grid(
             row=1,
             column=0,
-            columnspan=5,
+            columnspan=7,
             sticky="ew",
             pady=(7, 0),
         )
 
-        self.game_library_status_var = tk.StringVar(
+        self.game_library_status_var = self._localized_string_var(
             value=f"Ready to launch a game on {platform_name}."
         )
         status_bar = OutlinedLabel(
@@ -48320,6 +52263,10 @@ class TrackerApp:
             type_var,
             sort_var,
             letter_filter_var,
+            released_var,
+            sa1_var,
+            hall_of_fame_var,
+            waiting_var,
         ):
             variable.trace_add(
                 "write",
@@ -48548,6 +52495,16 @@ class TrackerApp:
         self.game_library_widgets["type_var"].set("Any")
         self.game_library_widgets["sort_var"].set("Title (A-Z)")
         self.game_library_widgets["letter_filter_var"].set("All")
+        released_options = self._released_filter_options()
+        boolean_options = self._boolean_filter_options()
+        self.game_library_widgets["released_var"].set(
+            released_options[0][0]
+        )
+        self.game_library_widgets["sa1_var"].set(boolean_options[0])
+        self.game_library_widgets["hall_of_fame_var"].set(
+            boolean_options[0]
+        )
+        self.game_library_widgets["waiting_var"].set(boolean_options[0])
         self.game_library_widgets["header_sort_column"] = "#0"
         self.game_library_widgets["header_sort_descending"] = False
         self.game_library_widgets["jump_var"].set("Top")
@@ -48625,16 +52582,22 @@ class TrackerApp:
         letter_filter = self.game_library_widgets[
             "letter_filter_var"
         ].get()
+        released_value = self.game_library_widgets["released_var"].get()
+        sa1_value = self.game_library_widgets["sa1_var"].get()
+        hall_of_fame_value = self.game_library_widgets[
+            "hall_of_fame_var"
+        ].get()
+        waiting_value = self.game_library_widgets["waiting_var"].get()
         sort_value = self.game_library_widgets[
             "sort_var"
         ].get()
         if sort_value == "Title (A-Z)":
             self.game_library_widgets["header_sort_column"] = "#0"
             self.game_library_widgets["header_sort_descending"] = False
-        elif sort_value == "Date Added (Newest)":
+        elif sort_value == "Released (Newest)":
             self.game_library_widgets["header_sort_column"] = "added"
             self.game_library_widgets["header_sort_descending"] = True
-        elif sort_value == "Date Added (Oldest)":
+        elif sort_value == "Released (Oldest)":
             self.game_library_widgets["header_sort_column"] = "added"
             self.game_library_widgets["header_sort_descending"] = False
         filtered = [
@@ -48647,6 +52610,10 @@ class TrackerApp:
                 difficulty_value,
                 type_value,
                 letter_filter,
+                released_value,
+                sa1_value,
+                hall_of_fame_value,
+                waiting_value,
             )
         ]
         title_sort_key = lambda game: self._title_without_leading_article(
@@ -48774,6 +52741,10 @@ class TrackerApp:
             or difficulty_value != "Any"
             or type_value != "Any"
             or letter_filter != "All"
+            or not self._filter_value_is_any(released_value)
+            or not self._filter_value_is_any(sa1_value)
+            or not self._filter_value_is_any(hall_of_fame_value)
+            or not self._filter_value_is_any(waiting_value)
         )
 
         game_number = 0
@@ -48824,6 +52795,7 @@ class TrackerApp:
                         ),
                         rom_text,
                     ),
+                    tags=(),
                 )
                 self.game_library_games_by_iid[
                     child_iid
@@ -48831,7 +52803,11 @@ class TrackerApp:
 
         if hasattr(self, "game_library_count_var"):
             self.game_library_count_var.set(
-                f"{len(filtered):,} of {len(self.hack_catalog):,} games"
+                self._format_ui_text(
+                    "{filtered} of {total} games",
+                    filtered=f"{len(filtered):,}",
+                    total=f"{len(self.hack_catalog):,}",
+                )
             )
 
         if filtered and alphabetical_sort:
@@ -49009,7 +52985,7 @@ class TrackerApp:
                     column_width,
                     row_y + row_height,
                     fill=background,
-                    outline=palette["border"],
+                    outline=self._table_grid_line_color(),
                     width=1,
                 )
                 continue
@@ -49029,7 +53005,7 @@ class TrackerApp:
                 column_width,
                 row_y + row_height,
                 fill=difficulty_color,
-                outline=palette["border"],
+                outline=self._table_grid_line_color(),
                 width=1,
             )
             create_outlined_canvas_text(
@@ -49184,6 +53160,12 @@ class TrackerApp:
         type_value = self.game_library_widgets[
             "random_type_var"
         ].get()
+        released_value = self.game_library_widgets[
+            "random_released_var"
+        ].get()
+        hall_of_fame_value = self.game_library_widgets[
+            "random_hall_of_fame_var"
+        ].get()
 
         candidates = [
             game
@@ -49194,7 +53176,11 @@ class TrackerApp:
                 rating_value,
                 difficulty_value,
                 type_value,
-                "All",
+                self._translate_ui_text("All"),
+                released_value,
+                self._translate_ui_text("Any"),
+                hall_of_fame_value,
+                self._translate_ui_text("Any"),
             )
             and self._catalog_game_has_downloaded_rom(game)
         ]
@@ -49329,13 +53315,20 @@ class TrackerApp:
         if variable is not None:
             selected_label = str(variable.get()).strip()
             if selected_label not in label_map:
-                variable.set(labels[0] if labels else "No recent hacks")
+                variable.set(
+                    labels[0]
+                    if labels
+                    else self._translate_ui_text("No recent hacks")
+                )
 
         if combo is not None:
             try:
                 combo.configure(
                     values=labels,
-                    state="readonly" if labels else "disabled",
+                    # Keep the recent-hack selector editable so users can
+                    # drag-select its text (or press Ctrl+A) and clear it in
+                    # one action, just like the main hack selector.
+                    state="normal" if labels else "disabled",
                     justify="center",
                 )
             except tk.TclError:
@@ -49496,7 +53489,7 @@ class TrackerApp:
             if hasattr(self, "game_library_status_var"):
                 self.game_library_status_var.set(message)
             self.status_var.set(message)
-            messagebox.showerror(
+            self._show_localized_info(
                 self.platform_var.get() + " Launch Failed",
                 message,
                 parent=self.game_library_dialog or self.root,
@@ -49617,7 +53610,12 @@ class TrackerApp:
                 "Set the local ROM library folder in Settings first."
             )
 
-        target_key = normalize_title(game.get("title", ""))
+        target_title = str(game.get("title", ""))
+        target_key = normalize_title(target_title)
+        target_exact_key = unicodedata.normalize(
+            "NFKC",
+            target_title,
+        ).strip().casefold()
         best_path: Path | None = None
         best_score = 0.0
         for candidate in library_folder.rglob("*"):
@@ -49627,6 +53625,12 @@ class TrackerApp:
                 not in {".sfc", ".smc", ".fig", ".bin"}
             ):
                 continue
+            candidate_exact_key = unicodedata.normalize(
+                "NFKC",
+                candidate.stem,
+            ).strip().casefold()
+            if target_exact_key and candidate_exact_key == target_exact_key:
+                return candidate, "exact local filename match"
             candidate_key = normalize_title(
                 clean_rom_filename(candidate.name)
             )
@@ -50137,6 +54141,12 @@ class TrackerApp:
             if same_id or same_title:
                 catalog_game["rom_path"] = rom_path
 
+        if self.worker is not None:
+            self.worker.register_fxpak_mapping(
+                game,
+                rom_path,
+            )
+
     def _run_fxpak_game_launch(
         self,
         game: dict[str, Any],
@@ -50392,8 +54402,11 @@ class TrackerApp:
         )
         search_var = tk.StringVar(value="")
         letter_filter_var = tk.StringVar(value="All")
-        count_var = tk.StringVar(value="Connect to view SD-card hacks")
-        status_var = tk.StringVar(
+        count_var = self._localized_string_var(
+            value="Connect to view SD-card hacks",
+            master=dialog,
+        )
+        status_var = self._localized_string_var(
             value=(
                 "Power on the console and FXPAK Pro, connect its USB data "
                 "cable, and keep QUsb2Snes or SNI running."
@@ -50623,6 +54636,7 @@ class TrackerApp:
             yscrollcommand=scrollbar.set,
             xscrollcommand=horizontal_scrollbar.set,
         )
+        self._install_treeview_cell_grid(tree)
         horizontal_scrollbar.pack(side="bottom", fill="x")
         tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -50784,7 +54798,7 @@ class TrackerApp:
                     self.root.after(
                         0,
                         lambda message=str(error): self._fail_fxpak_sd_action(
-                            "FXPAK Pro SD Card Could Not Be Opened",
+                "FXPAK Pro SD Card Could Not Be Opened",
                             message,
                         ),
                     )
@@ -50878,7 +54892,7 @@ class TrackerApp:
         self.fxpak_sd_widgets["status_var"].set(
             "Could not access the FXPAK Pro SD card."
         )
-        messagebox.showerror(
+        self._show_localized_info(
             title,
             (
                 "Make sure the console and FXPAK Pro are powered on, a USB "
@@ -50935,7 +54949,11 @@ class TrackerApp:
         self.fxpak_sd_widgets["records_by_iid"] = records_by_iid
         total = len(self.fxpak_sd_records)
         self.fxpak_sd_widgets["count_var"].set(
-            f"{len(visible):,} shown • {total:,} ROM file(s)"
+            self._format_ui_text(
+                "{visible} shown • {total} ROM file(s)",
+                visible=f"{len(visible):,}",
+                total=f"{total:,}",
+            )
         )
         self._reapply_treeview_sorting(tree)
         self._apply_statistics_table_colors(tree, "fxpak_sd")
@@ -51839,21 +55857,23 @@ class TrackerApp:
             copied_report = True
         except (tk.TclError, AttributeError):
             pass
+        error_message = (
+            "Something unexpected happened. A safe, redacted "
+            "error report was copied to your clipboard. Paste it "
+            "into your message when reporting the problem."
+            if copied_report
+            else
+            "Something unexpected happened. The app saved a local "
+            "error report. Open Help > Diagnostics to copy a safe, "
+            "redacted report."
+        )
         try:
-            messagebox.showerror(
+            self._show_localized_info(
                 "SMW Stream Tracker Error",
-                (
-                    "Something unexpected happened. A safe, redacted "
-                    "error report was copied to your clipboard. Paste it "
-                    "into your message when reporting the problem."
-                    if copied_report
-                    else
-                    "Something unexpected happened. The app saved a local "
-                    "error report. Open Help > Diagnostics to copy a safe, "
-                    "redacted report."
-                ),
+                error_message,
                 parent=self.root,
-            )
+            ),
+            master=dialog,
         except tk.TclError:
             pass
 
@@ -52298,6 +56318,1326 @@ class TrackerApp:
         if not bool(self.config.get("first_run_health_check_completed", False)):
             self.open_setup_health_check(first_run=True)
 
+    def _setup_guide_text(self, key: str) -> str:
+        """Return setup-guide copy in the currently selected app language."""
+        language = str(
+            getattr(self, "app_language", self.config.get("app_language", "en"))
+        )
+        english = SETUP_GUIDE_TRANSLATIONS["en"]
+        selected = SETUP_GUIDE_TRANSLATIONS.get(language, {})
+        return str(selected.get(key, english.get(key, key)))
+
+    def _mark_first_launch_welcome_complete(self) -> None:
+        self.config["first_launch_welcome_completed"] = True
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+
+    def _close_first_launch_welcome(self, start_setup: bool = False) -> None:
+        dialog = self.welcome_setup_dialog
+        self.welcome_setup_dialog = None
+        self._mark_first_launch_welcome_complete()
+        if dialog is not None:
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+
+        pending_retry = self.downloader_widgets.get(
+            "difficulty_overlay_retry_after_id"
+        )
+        if pending_retry is not None:
+            try:
+                self.root.after_cancel(pending_retry)
+            except tk.TclError:
+                pass
+        if dialog is not None:
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+        if start_setup:
+            self.root.after(100, self.start_guided_app_setup)
+
+    def _offer_first_launch_welcome(self) -> None:
+        if bool(self.config.get("first_launch_welcome_completed", False)):
+            return
+        if self.welcome_setup_dialog is not None:
+            try:
+                if self.welcome_setup_dialog.winfo_exists():
+                    self.welcome_setup_dialog.lift()
+                    return
+            except tk.TclError:
+                pass
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.welcome_setup_dialog = dialog
+        dialog.title(self._setup_guide_text("welcome_title"))
+        dialog.configure(bg=palette["window"])
+        dialog.transient(self.root)
+        dialog.resizable(True, True)
+        self._size_dialog_for_ui(dialog, 980, 660, 760, 560)
+
+        banner = getattr(self, "banner_source_image", None)
+        if banner is not None and ImageTk is not None:
+            try:
+                target_width = self._ui_px(940)
+                scale = min(1.0, target_width / max(1, banner.width))
+                target_height = max(1, round(banner.height * scale))
+                banner_image = banner.resize(
+                    (max(1, round(banner.width * scale)), target_height),
+                    Image.Resampling.LANCZOS,
+                )
+                dialog._welcome_banner_photo = ImageTk.PhotoImage(
+                    banner_image,
+                    master=dialog,
+                )
+                tk.Label(
+                    dialog,
+                    image=dialog._welcome_banner_photo,
+                    bg=palette["window"],
+                    bd=0,
+                    highlightthickness=0,
+                ).pack(fill="x", padx=12, pady=(12, 6))
+            except (OSError, tk.TclError, ValueError):
+                pass
+
+        content = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=THEME["green"],
+            highlightthickness=2,
+            bd=0,
+        )
+        content.pack(fill="both", expand=True, padx=18, pady=12)
+        OutlinedLabel(
+            content,
+            text=self._setup_guide_text("welcome_title"),
+            font=("Segoe UI", 24, "bold"),
+            fg=THEME["yellow"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+        ).pack(fill="x", padx=20, pady=(24, 12))
+        tk.Label(
+            content,
+            text=self._setup_guide_text("welcome_message"),
+            font=("Segoe UI", 13),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+            wraplength=self._ui_px(820),
+        ).pack(fill="both", expand=True, padx=35, pady=(4, 18))
+
+        buttons = tk.Frame(content, bg=palette["panel"])
+        buttons.pack(fill="x", padx=24, pady=(0, 24))
+        self._make_action_button(
+            buttons,
+            self._setup_guide_text("start_full_setup"),
+            lambda: self._close_first_launch_welcome(True),
+            THEME["green"],
+            THEME["green_dark"],
+            width=24,
+            pad_y=10,
+            font_size=12,
+        ).pack(side="right", padx=(10, 0))
+        self._make_action_button(
+            buttons,
+            self._setup_guide_text("setup_later"),
+            lambda: self._close_first_launch_welcome(False),
+            "#60758D",
+            "#40566E",
+            width=18,
+            pad_y=10,
+            font_size=12,
+        ).pack(side="right")
+        dialog.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: self._close_first_launch_welcome(False),
+        )
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        dialog.after_idle(dialog.grab_set)
+        dialog.after_idle(dialog.focus_force)
+
+    def _guided_setup_stage_copy(self, stage: str) -> tuple[str, str]:
+        key_map = {
+            "downloads": ("downloads_title", "downloads_text"),
+            "connection": ("connection_title", "connection_text"),
+            "catalog": ("catalog_title", "catalog_text"),
+            "refresh_catalog": ("refresh_title", "refresh_text"),
+            "downloads_again": ("download_menu_title", "download_menu_text"),
+            "download_missing": ("download_title", "download_text"),
+            "download_all": ("download_all_title", "download_all_text"),
+        }
+        title_key, text_key = key_map.get(
+            stage,
+            ("guide_title", "downloads_text"),
+        )
+        return self._setup_guide_text(title_key), self._setup_guide_text(text_key)
+
+    def start_guided_app_setup(self) -> None:
+        if self.guided_setup_dialog is not None:
+            try:
+                if self.guided_setup_dialog.winfo_exists():
+                    self.guided_setup_dialog.lift()
+                    self.guided_setup_dialog.focus_force()
+                    self._guided_setup_set_stage(
+                        self._guided_setup_stage or "downloads"
+                    )
+                    return
+            except tk.TclError:
+                pass
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.guided_setup_dialog = dialog
+        dialog.title(self._setup_guide_text("guide_title"))
+        dialog.configure(bg=palette["window"])
+        dialog.transient(self.root)
+        dialog.resizable(True, False)
+        self._size_dialog_for_ui(dialog, 650, 420, 540, 350)
+
+        tk.Label(
+            dialog,
+            text=self._setup_guide_text("guide_title"),
+            font=("Segoe UI", 18, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            anchor="center",
+            padx=18,
+            pady=12,
+        ).pack(fill="x")
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(fill="both", expand=True, padx=14, pady=14)
+        self.guided_setup_title_var = tk.StringVar()
+        self.guided_setup_text_var = tk.StringVar()
+        tk.Label(
+            body,
+            text=self._setup_guide_text("follow_flashing_steps"),
+            font=("Segoe UI", 11, "bold"),
+            fg=THEME["green"],
+            bg=palette["panel"],
+            justify="center",
+            anchor="center",
+            wraplength=self._ui_px(560),
+        ).pack(fill="x", padx=22, pady=(16, 2))
+        tk.Label(
+            body,
+            textvariable=self.guided_setup_title_var,
+            font=("Segoe UI", 15, "bold"),
+            fg=THEME["yellow"],
+            bg=palette["panel"],
+            justify="center",
+            anchor="center",
+        ).pack(fill="x", padx=16, pady=(12, 8))
+        tk.Label(
+            body,
+            textvariable=self.guided_setup_text_var,
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="center",
+            anchor="center",
+            wraplength=self._ui_px(520),
+        ).pack(fill="both", expand=True, padx=24, pady=(0, 18))
+        actions = tk.Frame(body, bg=palette["panel"])
+        actions.pack(fill="x", padx=18, pady=(0, 18))
+        self.guided_setup_action_button = self._make_action_button(
+            actions,
+            self._setup_guide_text("open_current_step"),
+            self._guided_setup_open_current_step,
+            THEME["green"],
+            THEME["green_dark"],
+            width=23,
+            pad_y=9,
+            font_size=11,
+        )
+        self.guided_setup_action_button.pack(side="right", padx=(10, 0))
+        self._make_action_button(
+            actions,
+            self._setup_guide_text("cancel_guide"),
+            self._close_guided_app_setup,
+            "#60758D",
+            "#40566E",
+            width=16,
+            pad_y=9,
+            font_size=11,
+        ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", self._close_guided_app_setup)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        self._guided_setup_software_choice = ""
+        self._guided_setup_set_stage("downloads")
+        dialog.after_idle(dialog.lift)
+
+    def _guided_setup_hide_dialog(self) -> None:
+        dialog = self.guided_setup_dialog
+        self.guided_setup_dialog = None
+        if dialog is not None:
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+
+    def _close_guided_app_setup(self) -> None:
+        self._guided_setup_stop_flash()
+        self._guided_setup_stage = ""
+        self._guided_setup_hide_dialog()
+
+    def _guided_setup_target_widget(self, stage: str) -> tk.Widget | None:
+        if stage in {"downloads", "downloads_again"}:
+            return getattr(self, "downloads_menu_button", None)
+        if stage == "refresh_catalog":
+            return getattr(self, "catalog_page_refresh_button", None)
+        if stage == "download_all":
+            return getattr(self, "downloader_widgets", {}).get("download_button")
+        return None
+
+    def _guided_setup_target_menu_entries(
+        self,
+        stage: str,
+    ) -> tuple[tuple[tk.Menu, int], ...]:
+        entries: list[tuple[tk.Menu, int]] = []
+        downloads_menu = getattr(self, "downloads_menu", None)
+        connection_menu = getattr(self, "connection_setup_menu", None)
+        if stage == "connection":
+            connection_index = getattr(
+                self,
+                "connection_setup_menu_index",
+                None,
+            )
+            if downloads_menu is not None and connection_index is not None:
+                entries.append((downloads_menu, int(connection_index)))
+            if connection_menu is not None:
+                entries.extend(
+                    (connection_menu, int(index))
+                    for index in getattr(
+                        self,
+                        "connection_option_menu_indexes",
+                        (),
+                    )
+                )
+        elif stage == "catalog":
+            catalog_index = getattr(self, "smwcentral_catalog_menu_index", None)
+            if downloads_menu is not None and catalog_index is not None:
+                entries.append((downloads_menu, int(catalog_index)))
+        elif stage == "download_missing":
+            download_index = getattr(self, "download_patch_menu_index", None)
+            if downloads_menu is not None and download_index is not None:
+                entries.append((downloads_menu, int(download_index)))
+        return tuple(entries)
+
+    def _guided_setup_stop_flash(self) -> None:
+        if self._guided_setup_flash_after_id is not None:
+            try:
+                self.root.after_cancel(self._guided_setup_flash_after_id)
+            except tk.TclError:
+                pass
+        self._guided_setup_flash_after_id = None
+        widget = self._guided_setup_flash_widget
+        if widget is not None and self._guided_setup_flash_original_bg:
+            try:
+                widget.configure(bg=self._guided_setup_flash_original_bg)
+            except tk.TclError:
+                pass
+        self._guided_setup_flash_widget = None
+        self._guided_setup_flash_original_bg = ""
+        for menu, index, label, foreground in self._guided_setup_flash_menu_entries:
+            try:
+                menu.entryconfigure(
+                    index,
+                    label=label,
+                    foreground=foreground,
+                )
+            except tk.TclError:
+                pass
+        self._guided_setup_flash_menu_entries = []
+        self._guided_setup_flash_on = False
+
+    def _guided_setup_flash_tick(self) -> None:
+        widget = self._guided_setup_flash_widget
+        if widget is None:
+            return
+        try:
+            self._guided_setup_flash_on = not self._guided_setup_flash_on
+            if widget.winfo_exists():
+                widget.configure(
+                    bg=(
+                        THEME["yellow"]
+                        if self._guided_setup_flash_on
+                        else self._guided_setup_flash_original_bg
+                    )
+                )
+            self._guided_setup_flash_after_id = self.root.after(
+                430,
+                self._guided_setup_flash_tick,
+            )
+        except tk.TclError:
+            self._guided_setup_flash_after_id = None
+
+    def _guided_setup_start_flash(
+        self,
+        widget: tk.Widget | None,
+        menu_entries: tuple[tuple[tk.Menu, int], ...] = (),
+    ) -> None:
+        self._guided_setup_stop_flash()
+        if widget is not None:
+            try:
+                self._guided_setup_flash_widget = widget
+                self._guided_setup_flash_original_bg = str(widget.cget("bg"))
+            except (tk.TclError, KeyError):
+                self._guided_setup_flash_widget = None
+        for menu, index in menu_entries:
+            try:
+                label = str(menu.entrycget(index, "label"))
+                foreground = str(menu.entrycget(index, "foreground"))
+                self._guided_setup_flash_menu_entries.append(
+                    (menu, index, label, foreground)
+                )
+                # Reconfiguring a posted native Windows menu on every timer
+                # tick repaints the entire popup and can interrupt clicks.
+                # Apply one steady, entry-specific marker before the menu is
+                # posted instead; only ordinary app buttons use animation.
+                menu.entryconfigure(
+                    index,
+                    label=f"\u2605  {label}",
+                    foreground=THEME["yellow"],
+                )
+            except tk.TclError:
+                continue
+        if self._guided_setup_flash_widget is not None:
+            self._guided_setup_flash_tick()
+
+    def _guided_setup_set_stage(self, stage: str) -> None:
+        self._guided_setup_stage = stage
+        title, detail = self._guided_setup_stage_copy(stage)
+        if hasattr(self, "guided_setup_title_var"):
+            self.guided_setup_title_var.set(title)
+        if hasattr(self, "guided_setup_text_var"):
+            self.guided_setup_text_var.set(detail)
+        if hasattr(self, "guided_setup_action_button"):
+            try:
+                self.guided_setup_action_button.configure(
+                    text=self._setup_guide_text("open_current_step")
+                )
+            except tk.TclError:
+                pass
+        self._guided_setup_start_flash(
+            self._guided_setup_target_widget(stage),
+            self._guided_setup_target_menu_entries(stage),
+        )
+        dialog = self.guided_setup_dialog
+        if dialog is not None:
+            try:
+                dialog.lift()
+            except tk.TclError:
+                pass
+
+    def _guided_setup_post_downloads_menu(self) -> None:
+        if self._guided_setup_stage not in {
+            "connection",
+            "catalog",
+            "download_missing",
+        }:
+            return
+        try:
+            self.downloads_menu_button._post_menu()
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _guided_downloads_menu_button_clicked(self) -> None:
+        stage = self._guided_setup_stage
+        if stage == "downloads":
+            self._guided_setup_stop_flash()
+            self._guided_setup_hide_dialog()
+            self._guided_setup_set_stage("connection")
+        elif stage == "downloads_again":
+            self._guided_setup_set_stage("download_missing")
+        try:
+            self.downloads_menu_button._post_menu()
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _guided_setup_open_current_step(self) -> None:
+        stage = self._guided_setup_stage
+        if stage in {"downloads", "downloads_again"}:
+            self._guided_downloads_menu_button_clicked()
+        elif stage in {"connection", "catalog", "download_missing"}:
+            self._guided_setup_post_downloads_menu()
+        elif stage == "refresh_catalog":
+            widget = self._guided_setup_target_widget(stage)
+            try:
+                widget.invoke() if widget is not None else self.refresh_smwcentral_catalog()
+            except tk.TclError:
+                self.refresh_smwcentral_catalog()
+        elif stage == "download_all":
+            widget = self._guided_setup_target_widget(stage)
+            try:
+                widget.invoke() if widget is not None else self._start_filtered_hack_download()
+            except tk.TclError:
+                self._start_filtered_hack_download()
+
+    def _guided_install_optional_software(self, software: str) -> None:
+        if self._guided_setup_stage == "connection":
+            if software == "qusb2snes" and not self._guided_setup_software_choice:
+                self._guided_setup_software_choice = "qusb2snes"
+            elif software in {"sni", "retroarch"}:
+                self._guided_setup_software_choice = "sni_retroarch"
+        started = self.install_optional_software(software)
+        if self._guided_setup_stage == "connection" and not started:
+            self.root.after(100, self._guided_setup_post_downloads_menu)
+
+    def _guided_optional_software_completed(self, software: str) -> None:
+        if self._guided_setup_stage != "connection":
+            return
+
+        def configured_file(config_key: str, variable: tk.StringVar | None = None) -> bool:
+            value = str(self.config.get(config_key, "")).strip()
+            if variable is not None and variable.get().strip():
+                value = variable.get().strip()
+            return bool(value and Path(value).is_file())
+
+        choice = self._guided_setup_software_choice
+        ready = False
+        if choice == "qusb2snes":
+            ready = configured_file("qusb2snes_path", self.qusb_path_var)
+        elif choice == "sni_retroarch":
+            ready = (
+                configured_file("sni_path", self.sni_path_var)
+                and configured_file("retroarch_executable_path")
+                and configured_file("retroarch_core_path")
+            )
+        if ready:
+            self._guided_setup_set_stage("catalog")
+        self.root.after(150, self._guided_setup_post_downloads_menu)
+
+    def _guided_setup_catalog_refreshed(self) -> None:
+        if self._guided_setup_stage == "refresh_catalog":
+            self._guided_setup_set_stage("downloads_again")
+
+    def _guided_setup_show_catalog_filter_prompt(self) -> None:
+        if self._guided_setup_stage != "refresh_catalog":
+            return
+        self._show_localized_info(
+            self._setup_guide_text("filter_prompt_title"),
+            self._setup_guide_text("filter_prompt"),
+            parent=self.downloader_dialog or self.root,
+        )
+
+    def _guided_setup_downloader_opened(self) -> None:
+        if self._guided_setup_stage != "download_missing":
+            return
+        self._guided_setup_set_stage("download_all")
+        self.root.after(100, self._guided_setup_show_fxpak_prompt)
+
+    def _guided_setup_show_fxpak_prompt(self) -> None:
+        if self._guided_setup_stage != "download_all":
+            return
+        self._show_localized_info(
+            self._setup_guide_text("fxpak_prompt_title"),
+            self._setup_guide_text("fxpak_prompt"),
+            parent=self.downloader_dialog or self.root,
+        )
+
+    def _guided_setup_hacks_downloaded(self) -> None:
+        if self._guided_setup_stage != "download_all":
+            return
+        self._close_guided_app_setup()
+        self.root.after(150, self._prompt_guided_obs_setup)
+
+    def _prompt_guided_obs_setup(self) -> None:
+        palette = self._library_palette()
+        prompt = tk.Toplevel(self.root)
+        prompt.title(self._setup_guide_text("setup_complete_title"))
+        prompt.configure(bg=palette["window"])
+        prompt.transient(self.root)
+        prompt.resizable(False, False)
+        self._size_dialog_for_ui(prompt, 700, 360, 580, 300)
+        prompt.grab_set()
+        tk.Label(
+            prompt,
+            text=self._setup_guide_text("setup_complete_title"),
+            font=("Segoe UI", 18, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            pady=12,
+        ).pack(fill="x")
+        tk.Label(
+            prompt,
+            text=(
+                f'{self._setup_guide_text("setup_complete_message")}\n\n'
+                f'{self._setup_guide_text("obs_prompt")}'
+            ),
+            font=("Segoe UI", 12),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="center",
+            wraplength=self._ui_px(570),
+            padx=28,
+            pady=28,
+        ).pack(fill="both", expand=True, padx=14, pady=14)
+        actions = tk.Frame(prompt, bg=palette["window"])
+        actions.pack(fill="x", padx=14, pady=(0, 14))
+
+        def choose_yes() -> None:
+            try:
+                prompt.grab_release()
+            except tk.TclError:
+                pass
+            prompt.destroy()
+            self.open_guided_obs_text_setup()
+
+        self._make_action_button(
+            actions,
+            self._setup_guide_text("yes_obs"),
+            choose_yes,
+            THEME["green"],
+            THEME["green_dark"],
+            width=25,
+            pad_y=9,
+        ).pack(side="right", padx=(8, 0))
+        self._make_action_button(
+            actions,
+            self._setup_guide_text("no_obs"),
+            prompt.destroy,
+            "#60758D",
+            "#40566E",
+            width=31,
+            pad_y=9,
+        ).pack(side="right")
+        prompt.protocol("WM_DELETE_WINDOW", prompt.destroy)
+        self._apply_widget_appearance(
+            prompt,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+
+    def open_guided_obs_text_setup(self) -> None:
+        if self.guided_obs_dialog is not None:
+            try:
+                if self.guided_obs_dialog.winfo_exists():
+                    self.guided_obs_dialog.lift()
+                    self.guided_obs_dialog.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.guided_obs_dialog = dialog
+        dialog.title(self._setup_guide_text("obs_title"))
+        dialog.configure(bg=palette["window"])
+        dialog.transient(self.root)
+        dialog.resizable(True, True)
+        self._size_dialog_for_ui(dialog, 1040, 720, 780, 580)
+        tk.Label(
+            dialog,
+            text=self._setup_guide_text("obs_title"),
+            font=("Segoe UI", 20, "bold"),
+            fg="white",
+            bg=THEME["purple"],
+            pady=12,
+        ).pack(fill="x")
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(fill="both", expand=True, padx=16, pady=16)
+        tk.Label(
+            body,
+            text=self._setup_guide_text("obs_intro"),
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="center",
+            wraplength=self._ui_px(900),
+            pady=14,
+        ).pack(fill="x", padx=20)
+
+        existing_source_note = tk.Frame(
+            body,
+            bg=palette["panel_alt"],
+            highlightbackground=THEME["yellow"],
+            highlightthickness=1,
+        )
+        existing_source_note.pack(
+            fill="x",
+            padx=28,
+            pady=(0, 8),
+        )
+        tk.Label(
+            existing_source_note,
+            text=(
+                "\u2605  "
+                + self._setup_guide_text("obs_existing_source_note")
+            ),
+            font=("Segoe UI", 10, "bold"),
+            fg=(
+                THEME["yellow"]
+                if self.appearance_var.get() == "dark"
+                else "#7F6000"
+            ),
+            bg=palette["panel_alt"],
+            justify="center",
+            wraplength=self._ui_px(900),
+            padx=18,
+            pady=10,
+        ).pack(fill="x")
+
+        output_folder_text = self.output_folder_var.get().strip()
+        output_folder = Path(output_folder_text) if output_folder_text else None
+        if output_folder is not None:
+            self.config["output_folder"] = str(output_folder)
+            try:
+                ensure_obs_text_files(self.config)
+            except OSError:
+                pass
+
+        files_frame = tk.Frame(body, bg=palette["panel"])
+        files_frame.pack(fill="x", padx=28, pady=8)
+        files_frame.columnconfigure(1, weight=1)
+
+        file_rows = (
+            ("obs_hack_title", "hack_name.txt"),
+            ("obs_creator", "author.txt"),
+            ("obs_exits", "exits.txt"),
+            ("obs_level_deaths", "level_deaths.txt"),
+            ("obs_game_deaths", "total_deaths.txt"),
+        )
+
+        def copy_path(path_text: str, button: tk.Widget) -> None:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(path_text)
+            original = self._setup_guide_text("copy")
+            try:
+                button.configure(text=self._setup_guide_text("copied"))
+                button.after(1300, lambda: button.configure(text=original))
+            except tk.TclError:
+                pass
+
+        if output_folder is None:
+            tk.Label(
+                files_frame,
+                text=self._setup_guide_text("obs_folder_missing"),
+                font=("Segoe UI", 11, "bold"),
+                fg=THEME["red"],
+                bg=palette["panel"],
+                justify="center",
+                wraplength=self._ui_px(850),
+            ).grid(row=0, column=0, columnspan=3, sticky="ew", pady=18)
+        else:
+            for row_index, (label_key, filename) in enumerate(file_rows):
+                path_text = str(output_folder / filename)
+                tk.Label(
+                    files_frame,
+                    text=self._setup_guide_text(label_key) + ":",
+                    font=("Segoe UI", 10, "bold"),
+                    fg=palette["text"],
+                    bg=palette["panel"],
+                    anchor="e",
+                ).grid(row=row_index, column=0, sticky="e", padx=(0, 12), pady=6)
+                path_var = tk.StringVar(value=path_text)
+                tk.Entry(
+                    files_frame,
+                    textvariable=path_var,
+                    state="readonly",
+                    readonlybackground=palette["entry"],
+                    fg=palette["text"],
+                    font=("Segoe UI", 10),
+                    relief="solid",
+                    bd=1,
+                    justify="center",
+                ).grid(row=row_index, column=1, sticky="ew", ipady=7, pady=6)
+                copy_button = self._make_action_button(
+                    files_frame,
+                    self._setup_guide_text("copy"),
+                    lambda: None,
+                    THEME["blue"],
+                    THEME["navy"],
+                    width=9,
+                    pad_y=6,
+                )
+                copy_button.configure(
+                    command=lambda p=path_text, b=copy_button: copy_path(p, b)
+                )
+                copy_button.grid(row=row_index, column=2, padx=(12, 0), pady=6)
+
+        tk.Label(
+            body,
+            text=self._setup_guide_text("obs_instructions"),
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="left",
+            anchor="nw",
+            wraplength=self._ui_px(900),
+            padx=24,
+            pady=16,
+        ).pack(fill="both", expand=True)
+
+        actions = tk.Frame(body, bg=palette["panel"])
+        actions.pack(fill="x", padx=22, pady=(6, 18))
+
+        def close_dialog() -> None:
+            current = self.guided_obs_dialog
+            self.guided_obs_dialog = None
+            if current is not None:
+                try:
+                    current.destroy()
+                except tk.TclError:
+                    pass
+
+        if output_folder is not None:
+            self._make_action_button(
+                actions,
+                self._setup_guide_text("open_obs_folder"),
+                lambda: os.startfile(str(output_folder)),
+                THEME["blue"],
+                THEME["navy"],
+                width=22,
+                pad_y=8,
+            ).pack(side="left")
+        self._make_action_button(
+            actions,
+            self._setup_guide_text("edit_obs_settings"),
+            self.open_obs_settings_dialog,
+            THEME["purple"],
+            "#6037AA",
+            width=22,
+            pad_y=8,
+        ).pack(side="left", padx=(8, 0))
+        self._make_action_button(
+            actions,
+            self._setup_guide_text("done"),
+            close_dialog,
+            THEME["green"],
+            THEME["green_dark"],
+            width=12,
+            pad_y=8,
+        ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        dialog.after_idle(dialog.focus_force)
+
+    @staticmethod
+    def _livesplit_copy_directory(timer_name: str) -> Path:
+        folder_names = {
+            "game": "LiveSplit Game Timer",
+            "level": "LiveSplit Level Timer",
+        }
+        folder_name = folder_names.get(timer_name)
+        if folder_name is None:
+            raise ValueError(f"Unsupported LiveSplit timer: {timer_name}")
+        return APP_DATA_DIR / "Tools" / folder_name
+
+    def _latest_livesplit_release_asset(
+        self,
+        status_variable: tk.StringVar,
+    ) -> dict[str, Any]:
+        cached = getattr(self, "livesplit_release_asset_cache", None)
+        if cached is not None and time.monotonic() - cached[0] < 15 * 60:
+            return dict(cached[1])
+        self._set_optional_install_status(
+            status_variable,
+            self._setup_guide_text("livesplit_checking_release"),
+        )
+        request = Request(
+            LIVESPLIT_RELEASE_API_URL,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": f"SMWStreamTracker/{APP_VERSION}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        with urlopen(request, timeout=30) as response:
+            payload_bytes = response.read(2 * 1024 * 1024 + 1)
+        if len(payload_bytes) > 2 * 1024 * 1024:
+            raise RuntimeError(
+                "The LiveSplit release response exceeded its safety size limit."
+            )
+        try:
+            payload = json.loads(payload_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                "The LiveSplit release response could not be read."
+            ) from error
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                "The LiveSplit release response had an unexpected format."
+            )
+        selected_asset = select_livesplit_release_asset(payload)
+        self.livesplit_release_asset_cache = (
+            time.monotonic(),
+            dict(selected_asset),
+        )
+        return selected_asset
+
+    def install_or_open_livesplit_copy(
+        self,
+        timer_name: str,
+        server_port: str | int,
+    ) -> bool:
+        if timer_name not in {"game", "level"}:
+            return False
+        try:
+            port = int(str(server_port).strip())
+        except (TypeError, ValueError):
+            port = int(DEFAULT_CONFIG[f"{timer_name}_livesplit_port"])
+        if not 1 <= port <= 65535:
+            port = int(DEFAULT_CONFIG[f"{timer_name}_livesplit_port"])
+
+        button_key = (
+            "game_livesplit_button"
+            if timer_name == "game"
+            else "level_livesplit_button"
+        )
+        display_name = self._setup_guide_text(button_key).format(port=port)
+        destination = self._livesplit_copy_directory(timer_name)
+        executable = destination / "LiveSplit.exe"
+
+        if executable.is_file():
+            try:
+                write_livesplit_tracker_settings(
+                    destination / "settings.cfg",
+                    port,
+                )
+                self.config[f"{timer_name}_livesplit_executable_path"] = str(
+                    executable.resolve()
+                )
+                save_config(self.config)
+                os.startfile(str(executable))
+                self.status_var.set(f"Opened {display_name}.")
+                return True
+            except OSError as error:
+                messagebox.showerror(
+                    self._setup_guide_text("livesplit_setup_failed_title"),
+                    self._setup_guide_text(
+                        "livesplit_setup_failed_message"
+                    ).format(name=display_name, error=str(error)),
+                    parent=self.livesplit_obs_guide_dialog or self.root,
+                )
+                return False
+
+        if timer_name in self.livesplit_install_in_progress:
+            return False
+        self.livesplit_install_in_progress.add(timer_name)
+        progress_dialog, status_variable = self._show_optional_install_progress(
+            self._setup_guide_text("livesplit_obs_title"),
+            self._setup_guide_text("livesplit_setup_header"),
+        )
+
+        def worker() -> None:
+            staging_directory: Path | None = None
+            try:
+                asset = self._latest_livesplit_release_asset(status_variable)
+                download_directory = APP_DATA_DIR / "DependencyDownloads"
+                archive_path = download_directory / str(asset["name"])
+                expected_sha256 = str(asset.get("sha256", ""))
+                cached_archive_ready = (
+                    archive_path.is_file()
+                    and archive_path.stat().st_size == int(asset["size"])
+                    and (
+                        not expected_sha256
+                        or file_sha256(archive_path).casefold()
+                        == expected_sha256.casefold()
+                    )
+                )
+                if not cached_archive_ready:
+                    archive_path.unlink(missing_ok=True)
+                    self._download_dependency_file(
+                        str(asset["url"]),
+                        archive_path,
+                        expected_sha256=expected_sha256,
+                        maximum_bytes=LIVESPLIT_RELEASE_MAX_BYTES,
+                        status_variable=status_variable,
+                        description=display_name,
+                    )
+
+                self._set_optional_install_status(
+                    status_variable,
+                    self._setup_guide_text(
+                        "livesplit_installing_copy"
+                    ).format(name=display_name),
+                )
+                tools_directory = APP_DATA_DIR / "Tools"
+                tools_directory.mkdir(parents=True, exist_ok=True)
+                staging_directory = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{timer_name}-livesplit-install-",
+                        dir=tools_directory,
+                    )
+                )
+                self._extract_dependency_zip(
+                    archive_path,
+                    staging_directory,
+                )
+                staged_executable = staging_directory / "LiveSplit.exe"
+                source_root = staging_directory
+                if not staged_executable.is_file():
+                    matches = list(staging_directory.rglob("LiveSplit.exe"))
+                    if len(matches) != 1:
+                        raise FileNotFoundError(
+                            "LiveSplit.exe was not found in the official release."
+                        )
+                    staged_executable = matches[0]
+                    source_root = staged_executable.parent
+
+                shutil.copytree(
+                    source_root,
+                    destination,
+                    dirs_exist_ok=True,
+                )
+                write_livesplit_tracker_settings(
+                    destination / "settings.cfg",
+                    port,
+                )
+                executable = destination / "LiveSplit.exe"
+                if not executable.is_file():
+                    raise FileNotFoundError(
+                        "LiveSplit.exe was not found after setup completed."
+                    )
+                self.root.after(
+                    0,
+                    lambda: self._finish_livesplit_copy_install(
+                        timer_name,
+                        port,
+                        display_name,
+                        executable,
+                        progress_dialog,
+                        "",
+                    ),
+                )
+            except Exception as error:
+                append_error_log(
+                    f"{display_name} setup failed",
+                    traceback.format_exc(),
+                )
+                error_text = str(error)
+                self.root.after(
+                    0,
+                    lambda: self._finish_livesplit_copy_install(
+                        timer_name,
+                        port,
+                        display_name,
+                        None,
+                        progress_dialog,
+                        error_text,
+                    ),
+                )
+            finally:
+                if staging_directory is not None:
+                    try:
+                        shutil.rmtree(staging_directory)
+                    except OSError:
+                        pass
+
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def _finish_livesplit_copy_install(
+        self,
+        timer_name: str,
+        server_port: int,
+        display_name: str,
+        executable: Path | None,
+        progress_dialog: tk.Toplevel,
+        error_text: str,
+    ) -> None:
+        self.livesplit_install_in_progress.discard(timer_name)
+        try:
+            progress_dialog.progress_widget.stop()
+        except (AttributeError, tk.TclError):
+            pass
+        try:
+            progress_dialog.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            progress_dialog.destroy()
+        except tk.TclError:
+            pass
+
+        owner = self.livesplit_obs_guide_dialog or self.root
+        if error_text or executable is None:
+            messagebox.showerror(
+                self._setup_guide_text("livesplit_setup_failed_title"),
+                self._setup_guide_text(
+                    "livesplit_setup_failed_message"
+                ).format(
+                    name=display_name,
+                    error=error_text or "LiveSplit.exe was not found.",
+                ),
+                parent=owner,
+            )
+            return
+
+        self.config[f"{timer_name}_livesplit_executable_path"] = str(
+            executable.resolve()
+        )
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        button = self.livesplit_install_buttons.get(timer_name)
+        if button is not None:
+            try:
+                button.configure(bg=THEME["green"])
+            except tk.TclError:
+                pass
+        try:
+            os.startfile(str(executable))
+        except OSError as error:
+            messagebox.showerror(
+                self._setup_guide_text("livesplit_setup_failed_title"),
+                self._setup_guide_text(
+                    "livesplit_setup_failed_message"
+                ).format(name=display_name, error=str(error)),
+                parent=owner,
+            )
+            return
+
+        self._show_localized_info(
+            self._setup_guide_text("livesplit_ready_title"),
+            self._setup_guide_text("livesplit_ready_message").format(
+                name=display_name,
+                port=server_port,
+                folder=str(executable.parent),
+            ),
+            parent=owner,
+        )
+
+    def open_livesplit_obs_setup_guide(
+        self,
+        game_port: str | None = None,
+        level_port: str | None = None,
+    ) -> None:
+        """Show the two-copy LiveSplit and OBS Window Capture walkthrough."""
+        current = self.livesplit_obs_guide_dialog
+        if current is not None:
+            try:
+                if current.winfo_exists():
+                    current.lift()
+                    current.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        resolved_game_port = str(
+            game_port
+            or self.game_livesplit_port_var.get().strip()
+            or DEFAULT_CONFIG["game_livesplit_port"]
+        )
+        resolved_level_port = str(
+            level_port
+            or self.level_livesplit_port_var.get().strip()
+            or DEFAULT_CONFIG["level_livesplit_port"]
+        )
+        instructions = self._setup_guide_text(
+            "livesplit_obs_instructions"
+        ).format(
+            game_port=resolved_game_port,
+            level_port=resolved_level_port,
+        )
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.livesplit_obs_guide_dialog = dialog
+        dialog.title(self._setup_guide_text("livesplit_obs_title"))
+        dialog.configure(bg=palette["window"])
+        dialog.transient(self.root)
+        dialog.resizable(True, True)
+        self._size_dialog_for_ui(dialog, 960, 760, 760, 580)
+
+        tk.Label(
+            dialog,
+            text=self._setup_guide_text("livesplit_obs_title"),
+            font=("Segoe UI", 20, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            anchor="center",
+            padx=18,
+            pady=13,
+        ).pack(fill="x")
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(fill="both", expand=True, padx=16, pady=16)
+
+        note = tk.Frame(
+            body,
+            bg=palette["panel_alt"],
+            highlightbackground=THEME["yellow"],
+            highlightthickness=1,
+        )
+        note.pack(fill="x", padx=18, pady=(16, 10))
+        tk.Label(
+            note,
+            text="\u2605  " + self._setup_guide_text("livesplit_obs_note"),
+            font=("Segoe UI", 10, "bold"),
+            fg=(
+                THEME["yellow"]
+                if self.appearance_var.get() == "dark"
+                else "#7F6000"
+            ),
+            bg=palette["panel_alt"],
+            justify="center",
+            wraplength=self._ui_px(850),
+            padx=16,
+            pady=10,
+        ).pack(fill="x")
+
+        guide_frame = tk.Frame(body, bg=palette["panel"])
+        guide_frame.pack(fill="both", expand=True, padx=18, pady=(0, 10))
+        guide_frame.rowconfigure(0, weight=1)
+        guide_frame.columnconfigure(0, weight=1)
+        guide_text = tk.Text(
+            guide_frame,
+            wrap="word",
+            bg=palette["entry"],
+            fg=palette["text"],
+            selectbackground=THEME["blue"],
+            selectforeground="white",
+            relief="solid",
+            bd=1,
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=18,
+            pady=14,
+            font=("Segoe UI", 11),
+            spacing1=2,
+            spacing3=2,
+        )
+        guide_scrollbar = ttk.Scrollbar(
+            guide_frame,
+            orient="vertical",
+            command=guide_text.yview,
+            style="Mario.Vertical.TScrollbar",
+        )
+        guide_text.configure(yscrollcommand=guide_scrollbar.set)
+        guide_text.grid(row=0, column=0, sticky="nsew")
+        guide_scrollbar.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+        guide_text.insert("1.0", instructions)
+        guide_text.configure(state="disabled")
+
+        tk.Label(
+            body,
+            text=self._setup_guide_text("livesplit_button_note"),
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="left",
+            anchor="w",
+            wraplength=self._ui_px(850),
+        ).pack(fill="x", padx=20, pady=(0, 8))
+
+        actions = tk.Frame(body, bg=palette["panel"])
+        actions.pack(fill="x", padx=18, pady=(0, 16))
+
+        def close_dialog() -> None:
+            active = self.livesplit_obs_guide_dialog
+            self.livesplit_obs_guide_dialog = None
+            self.livesplit_install_buttons = {}
+            if active is not None:
+                try:
+                    active.grab_release()
+                except tk.TclError:
+                    pass
+                try:
+                    active.destroy()
+                except tk.TclError:
+                    pass
+
+        game_button = self._make_action_button(
+            actions,
+            self._setup_guide_text("game_livesplit_button").format(
+                port=resolved_game_port
+            ),
+            lambda: self.install_or_open_livesplit_copy(
+                "game",
+                resolved_game_port,
+            ),
+            (
+                THEME["green"]
+                if (
+                    self._livesplit_copy_directory("game")
+                    / "LiveSplit.exe"
+                ).is_file()
+                else THEME["blue"]
+            ),
+            THEME["navy"],
+            width=22,
+            pad_y=8,
+        )
+        game_button.pack(side="left")
+        level_button = self._make_action_button(
+            actions,
+            self._setup_guide_text("level_livesplit_button").format(
+                port=resolved_level_port
+            ),
+            lambda: self.install_or_open_livesplit_copy(
+                "level",
+                resolved_level_port,
+            ),
+            (
+                THEME["green"]
+                if (
+                    self._livesplit_copy_directory("level")
+                    / "LiveSplit.exe"
+                ).is_file()
+                else THEME["purple"]
+            ),
+            "#6037AA",
+            width=22,
+            pad_y=8,
+        )
+        level_button.pack(side="left", padx=(8, 0))
+        self.livesplit_install_buttons = {
+            "game": game_button,
+            "level": level_button,
+        }
+        self._make_action_button(
+            actions,
+            self._setup_guide_text("done"),
+            close_dialog,
+            THEME["green"],
+            THEME["green_dark"],
+            width=12,
+            pad_y=8,
+        ).pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        dialog.after_idle(dialog.grab_set)
+        dialog.after_idle(dialog.focus_force)
+
     def open_setup_health_check(self, first_run: bool = False) -> None:
         if self.health_check_dialog is not None:
             try:
@@ -52600,6 +57940,8 @@ class TrackerApp:
                         ),
                     )
         threading.Thread(target=worker, daemon=True).start()
+        return True
+        return True
 
     def _show_update_result(
         self,
@@ -53111,6 +58453,24 @@ class TrackerApp:
                 parent=self.root,
             )
 
+    def open_discord_community(self) -> None:
+        """Open the project Discord invite in the user's default browser."""
+        try:
+            opened = webbrowser.open(DISCORD_COMMUNITY_URL)
+        except (OSError, webbrowser.Error):
+            opened = False
+        if opened:
+            return
+        messagebox.showerror(
+            "Discord Could Not Be Opened",
+            (
+                "The Discord invite could not be opened in your default "
+                "browser. You can copy this address instead:\n\n"
+                + DISCORD_COMMUNITY_URL
+            ),
+            parent=self.root,
+        )
+
     def _localized_about_text(self) -> str:
         texts = {
             "en": (
@@ -53262,6 +58622,14 @@ class TrackerApp:
             THEME["blue"],
             THEME["navy"],
             width=10,
+        ).pack(side="left", padx=(0, 8))
+        self._make_action_button(
+            actions,
+            "Join Discord",
+            self.open_discord_community,
+            "#5865F2",
+            "#4752C4",
+            width=12,
         ).pack(side="left", padx=(0, 8))
 
         def show_about_document(
@@ -53575,7 +58943,7 @@ class TrackerApp:
                 else str(Path.home())
             )
             selected = filedialog.askdirectory(
-                title="Select OBS text-file folder",
+                title=self._translate_ui_text("Select OBS text-file folder"),
                 initialdir=initial_directory,
                 parent=dialog,
             )
@@ -54551,31 +59919,21 @@ class TrackerApp:
 
                 if event_type == "catalog_freshness":
                     available = event.get("available")
+                    waiting_available = max(
+                        0,
+                        int(event.get("waiting_available", 0) or 0),
+                    )
+                    self.catalog_new_waiting_count = waiting_available
+                    self.catalog_freshness_state = "ready"
                     if available is None:
-                        freshness_text = (
-                            self._translate_ui_text(
-                                "New-hack count unavailable"
-                            )
-                        )
+                        self.catalog_new_moderated_count = None
                     else:
-                        available_count = max(
+                        self.catalog_new_moderated_count = max(
                             0,
                             int(available),
                         )
-                        freshness_text = (
-                            f"{available_count:,} "
-                            + (
-                                self._translate_ui_text("new hack")
-                                if available_count == 1
-                                else self._translate_ui_text("new hacks")
-                            )
-                            + " "
-                            + self._translate_ui_text(
-                                "since last refresh"
-                            )
-                        )
                     self.catalog_new_hacks_var.set(
-                        freshness_text
+                        self._catalog_freshness_status_text()
                     )
                     try:
                         self.catalog_new_hacks_label.configure(

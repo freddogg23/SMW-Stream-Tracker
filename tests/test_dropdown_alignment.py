@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 from pathlib import Path
 import types
@@ -100,6 +101,71 @@ class DropdownAlignmentTests(unittest.TestCase):
 
         self.assertEqual(values, ["A", "Four"])
         self.assertEqual(display_values, ["    A", "   Four"])
+
+    def test_searchable_hack_popup_uses_the_app_yellow_scrollbar(self):
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        popup_method = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_post_main_hack_selector_popup"
+        )
+        called_names = {
+            node.func.id
+            for node in ast.walk(popup_method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+        }
+        called_attributes = {
+            (node.func.value.id, node.func.attr)
+            for node in ast.walk(popup_method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+        }
+
+        self.assertIn("YellowCanvasScrollbar", called_names)
+        self.assertNotIn(("tk", "Scrollbar"), called_attributes)
+
+    def test_catalog_and_downloader_dropdown_arrows_use_blue_style(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for method_name in (
+            "_refresh_downloader_window_appearance",
+            "open_hack_downloader",
+        ):
+            method = next(
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef)
+                and node.name == method_name
+            )
+            method_source = ast.get_source_segment(source, method)
+            self.assertIn(
+                'background=THEME["blue"]',
+                method_source,
+            )
+            self.assertNotIn(
+                'background=THEME["yellow"] if dark_mode',
+                method_source,
+            )
+
+    def test_catalog_and_downloader_give_type_column_more_room(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        method = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "open_hack_downloader"
+        )
+        method_source = ast.get_source_segment(source, method)
+
+        self.assertIn('else "Hack Title"', method_source)
+        self.assertIn('{"title": "Hack Title"}', method_source)
+        self.assertIn('width=(260 if catalog_view_only', method_source)
+        self.assertIn('minwidth=(240 if catalog_view_only', method_source)
+        self.assertIn('heading_width("type", 240)', method_source)
 
 
 if __name__ == "__main__":

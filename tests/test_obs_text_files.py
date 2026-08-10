@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 from pathlib import Path
 import sys
 import tempfile
@@ -61,6 +62,12 @@ class ObsTextFileTests(unittest.TestCase):
             ),
             "42",
         )
+
+    def test_obs_setup_dialog_has_no_out_of_scope_chart_scale(self):
+        source = inspect.getsource(
+            self.tracker.TrackerApp.open_guided_obs_text_setup
+        )
+        self.assertNotIn("chart_scale", source)
 
     def test_all_obs_files_are_created_without_overwriting(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
