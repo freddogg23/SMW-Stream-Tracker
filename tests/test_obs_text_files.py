@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = (
@@ -135,6 +136,49 @@ class ObsTextFileTests(unittest.TestCase):
                 ),
                 "0",
             )
+
+    def test_guided_setup_selects_folder_and_immediately_creates_paths(self):
+        class Value:
+            def __init__(self, value=""):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_folder = Path(temporary_directory) / "OBS Text Files"
+            app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+            app.output_folder_var = Value()
+            app.config = {}
+            app.worker = None
+            app.root = object()
+            app._translate_ui_text = lambda text: text
+            app._show_localized_info = lambda *_args, **_kwargs: None
+
+            with (
+                mock.patch.object(
+                    self.tracker.filedialog,
+                    "askdirectory",
+                    return_value=str(output_folder),
+                ),
+                mock.patch.object(self.tracker, "save_config"),
+            ):
+                selected = app._select_guided_obs_text_folder()
+
+            self.assertEqual(selected, output_folder)
+            self.assertEqual(app.output_folder_var.get(), str(output_folder))
+            self.assertEqual(app.config["output_folder"], str(output_folder))
+            for filename in (
+                "hack_name.txt",
+                "author.txt",
+                "exits.txt",
+                "level_deaths.txt",
+                "total_deaths.txt",
+            ):
+                self.assertTrue((output_folder / filename).is_file())
 
 
 if __name__ == "__main__":

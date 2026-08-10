@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - VOLLSTÄNDIGE EINRICHTUNGSANLEITUNG
-Version 1.0.9
+Version 1.0.10
 
 SPRACHEN
 English: README.en.txt
@@ -9,16 +9,28 @@ Français: README.fr.txt
 Deutsch: README.de.txt
 Português (Brasil): README.pt-BR.txt
 
-NEU IN VERSION 1.0.9
+NEU IN VERSION 1.0.10
 
 * Ein neuer Assistent für den ersten Start lässt alle erforderlichen Schritte
   für Downloads, Verbindung, Katalog, Aktualisierung, Patchen, FXPAK und OBS
   nacheinander blinken.
+* Nach der Auswahl von SNI oder RetroArch hören QUsb2Snes und die gewählte
+  Option auf zu blinken; nur die andere erforderliche Option bleibt markiert.
 * SMW-Central-Katalog und Hack-Downloader verwenden blaue Auswahllistenpfeile,
   gelbe Bildlaufleisten, breitere Typfelder und hellblaue Zellrahmen.
-* Beim FXPAK-Pro-USB-Upload werden nicht unterstützte Emojis automatisch aus
-  dem ROM-Dateinamen entfernt. Katalog, Tracker und aktuelle Spielanzeige
-  behalten weiterhin den ursprünglichen Hacktitel.
+* Bei FXPAK-Pro-Übertragungen wird jedes Emoji im ROM-Dateinamen durch seinen
+  lesbaren Unicode-Namen ersetzt, auch bei zukünftigen Hacks. Katalog, Tracker
+  und aktuelle Spielanzeige behalten den Originaltitel; die gespeicherte
+  Zuordnung ruft die umbenannte ROM bei der Auswahl wieder auf.
+* Wenn der USB-Upload aktiviert ist, werden vorhandene lokale ROMs mit Emojis
+  ebenfalls automatisch übertragen und zugeordnet. Frühere Downloads werden so
+  repariert, ohne sie erneut herunterzuladen oder zu patchen.
+* Beim Start eines Hacks mit Emojis findet der Tracker dessen lesbaren FXPAK-Alias
+  oder lädt den fehlenden Alias automatisch hoch. Die dauerhafte Verknüpfung nutzt
+  die SMW-Central-ID, damit im Tracker immer der Originaltitel angezeigt wird.
+* Während einer FXPAK-Übertragung wird die aktive SNI/QUsb2Snes-Verbindung des
+  Trackers vorübergehend angehalten und danach automatisch wiederhergestellt,
+  damit sie den Upload mit dem sicheren Namen ohne Emojis nicht blockiert.
 * Die OBS-Seite erklärt die Wiederverwendung vorhandener Textquellen. Zwei
   Schaltflächen laden getrennte Spiel- und Level-LiveSplit-Kopien herunter und
   richten sie automatisch auf den Ports 16834 und 16835 ein.
@@ -58,7 +70,7 @@ SMW Stream Tracker enthält und lädt kein kommerzielles Basis-ROM herunter.
 
 2. PROGRAMM INSTALLIEREN
 
-1. Starten Sie SMWStreamTracker_Setup_1.0.9.exe.
+1. Starten Sie SMWStreamTracker_Setup_1.0.10.exe.
 2. Wählen Sie auf dem ersten Bildschirm eine Sprache.
 3. Lesen Sie den Hinweis zu optionaler Software und ROMs.
 4. Wählen Sie FXPAK Pro oder RetroArch als erste Plattform.
@@ -68,6 +80,16 @@ SMW Stream Tracker enthält und lädt kein kommerzielles Basis-ROM herunter.
 7. Beenden Sie die Installation und öffnen Sie diese Anleitung.
 
 Vorhandene Tracker-Einstellungen bleiben bei Installation und Updates erhalten.
+Eine vollständige Deinstallation entfernt Tracker-Einstellungen und -Daten,
+LiveSplit-Kopien sowie die vom Tracker erstellten OBS-Textdateien. RetroArch,
+SNI, QUsb2Snes und alle ROM-Dateien und ROM-Ordner bleiben erhalten. Bei einer
+späteren Neuinstallation erscheint der Willkommens- und Einrichtungsbildschirm
+erneut.
+Für das aktuelle Windows-Konto kann nur eine Kopie installiert werden. Beim
+erneuten Start des vollständigen Installers können Sie die aktuelle Kopie
+entfernen und mit einer Neuinstallation fortfahren oder den Tracker vollständig
+deinstallieren und Setup beenden. Beide Optionen erhalten RetroArch, SNI,
+QUsb2Snes und alle ROM-Dateien.
 Die Sprache kann jederzeit über Datei > Sprache geändert werden. Die
 Hauptoberfläche wird sofort neu aufgebaut, ohne Beschriftungen der vorherigen
 Sprache beizubehalten.
@@ -76,8 +98,14 @@ Sprache beizubehalten.
 
 Für FXPAK Pro oder SD2SNES wird nur QUsb2Snes benötigt. SNI ist für FXPAK Pro
 nicht erforderlich. Für RetroArch werden RetroArch und SNI benötigt; SNI
-stellt die Live-Speicherverbindung bereit. Bei Auswahl von RetroArch lädt
-Setup auch den bsnes-mercury Performance-Libretro-Core herunter.
+stellt die Live-Speicherverbindung bereit. In der Anleitung mit blinkenden
+Schaltflächen kann QUsb2Snes allein fortfahren. Wird SNI oder RetroArch gewählt,
+bleibt der Verbindungsschritt aktiv, bis beide abgeschlossen sind. Bei Auswahl
+von RetroArch lädt und
+entpackt das blaue Setup die offizielle portable Version in seinen Tools-Ordner,
+installiert den bsnes-mercury Performance-Core, aktiviert Netzwerkbefehle auf
+Port 55355 und speichert beide Pfade. Ein zweiter RetroArch-Assistent öffnet
+sich nicht.
 
 Wenn Sie ein Werkzeug bei der Installation überspringen, öffnen Sie später
 Downloads > Verbindungs- und Emulator-Einrichtung. Die App kann eine vorhandene
@@ -85,6 +113,8 @@ SNI-, QUsb2Snes- oder RetroArch-Installation finden oder sie in Ihrem
 Benutzerprofil installieren. Bei RetroArch installiert sie außerdem den
 empfohlenen Core, aktiviert Netzwerkbefehle auf Port 55355 und speichert beide
 Dateipfade in den Tracker-Einstellungen.
+Wenn eine Kopie gefunden wird, können Sie sie in einem übersetzten blauen
+Bestätigungsfenster automatisch verwenden oder einen neuen Download auswählen.
 
 4. FXPAK PRO EINRICHTEN
 
@@ -132,6 +162,11 @@ Führen Sie nach Pfadänderungen die Zustandsprüfung aus.
 4. Öffnen Sie Gesamten Katalog anzeigen zum Suchen, Filtern und Sortieren.
 5. Klicken Sie einmal auf Hinzugefügt am für neueste und erneut für älteste.
 
+Mit Katalog zurücksetzen am unteren Rand werden alle lokal gespeicherten
+moderierten und wartenden Einträge entfernt. Zuerst wird eine
+Wiederherstellungssicherung erstellt. Fortschritt, Bewertungen, Notizen, eigene
+Hacks, ROM-Zuordnungen und ROM-Dateien bleiben erhalten.
+
 Nur die Zelle Schwierigkeit verwendet die konfigurierte Schwierigkeitsfarbe.
 
 8. HACKS HERUNTERLADEN UND ERSTELLEN
@@ -176,8 +211,7 @@ kein LiveSplit.
 
 AUTOMATISCHE EINRICHTUNG VON ZWEI KOPIEN (EMPFOHLEN)
 
-1. Öffnen Sie Datei > Einstellungen und wählen Sie Zwei LiveSplit-Timer für
-   OBS einrichten.
+1. Öffnen Sie Hilfe > Einrichtung > LiveSplit-Timer einrichten.
 2. Wählen Sie Spiel-LiveSplit (16834). Der Tracker lädt die aktuelle offizielle
    Version herunter, erstellt einen eigenen Ordner, richtet Port 16834 und den
    automatischen TCP-Serverstart ein und öffnet LiveSplit.

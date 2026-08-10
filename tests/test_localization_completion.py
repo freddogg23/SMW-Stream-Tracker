@@ -699,6 +699,33 @@ class LocalizationCompletionTests(unittest.TestCase):
         self.assertIn("self._show_localized_info(", source)
         self.assertIn('return "ok"', source)
 
+    def test_optional_software_found_prompt_uses_blue_app_dialog(self):
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        methods = {
+            node.name: node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {
+                "install_optional_software",
+                "_ask_localized_yes_no",
+            }
+        }
+        install_source = ast.get_source_segment(
+            MODULE_PATH.read_text(encoding="utf-8"),
+            methods["install_optional_software"],
+        )
+        dialog_source = ast.get_source_segment(
+            MODULE_PATH.read_text(encoding="utf-8"),
+            methods["_ask_localized_yes_no"],
+        )
+
+        self.assertIn(
+            "use_existing = self._ask_localized_yes_no(",
+            install_source,
+        )
+        self.assertIn('bg=THEME["blue"]', dialog_source)
+        self.assertNotIn('bg=THEME["orange"]', dialog_source)
+
     def test_messagebox_info_warning_and_error_route_to_blue_dialog_at_runtime(self):
         app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
         calls = []

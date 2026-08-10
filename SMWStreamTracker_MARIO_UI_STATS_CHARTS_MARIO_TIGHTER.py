@@ -363,7 +363,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 APP_BUILD_DATE = "2026-08-10"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
@@ -2715,8 +2715,37 @@ def github_catalog_integer(
 def catalog_available_new_hack_count(
     local_official_count: object,
     version_payload: dict[str, Any],
+    local_catalog_sequence: object | None = None,
+    local_catalog_source: object = "",
 ) -> int | None:
     """Return the net number of catalog hacks newer than the local copy."""
+    if str(local_catalog_source or "").strip().casefold() == (
+        "smw central live api"
+    ).casefold():
+        # A direct SMW Central refresh is newer and more authoritative than
+        # the GitHub spreadsheet mirror. Their row counts can differ while the
+        # mirror catches up, which must not create a false "new" badge.
+        return 0
+
+    remote_sequence = github_catalog_integer(
+        version_payload.get("sequence"),
+        -1,
+    )
+    if local_catalog_sequence is not None:
+        local_sequence = github_catalog_integer(
+            local_catalog_sequence,
+            -1,
+        )
+        # The repository sequence is the authoritative freshness marker. A
+        # count-only comparison can be temporarily off by one while catalog
+        # assets are published, or when a retained history row is classified
+        # differently. Once this sequence has been applied, nothing is new.
+        if (
+            remote_sequence >= 0
+            and local_sequence >= remote_sequence
+        ):
+            return 0
+
     remote_value = version_payload.get("hack_count")
 
     if remote_value in (None, ""):
@@ -10840,44 +10869,83 @@ def rom_builder_fxpak_safe_title(
     title: object,
     smwc_id: object = "",
 ) -> str:
-    """Return a readable FAT/FXPAK filename stem without emoji glyphs."""
+    """Replace every emoji with a readable name for the FXPAK-only stem."""
     raw_title = unicodedata.normalize(
         "NFC",
         str(title or "").strip(),
     )
-    safe_characters: list[str] = []
+    converted_parts: list[str] = []
+    regional_letters: list[str] = []
+
+    def flush_regional_letters() -> None:
+        if regional_letters:
+            converted_parts.append(
+                " Flag " + "".join(regional_letters) + " "
+            )
+            regional_letters.clear()
+
+    skin_tone_names = {
+        0x1F3FB: "Light Skin Tone",
+        0x1F3FC: "Medium Light Skin Tone",
+        0x1F3FD: "Medium Skin Tone",
+        0x1F3FE: "Medium Dark Skin Tone",
+        0x1F3FF: "Dark Skin Tone",
+    }
+    ignored_codepoints = {
+        0x200D,  # ZERO WIDTH JOINER
+        0xFE0E,  # text presentation selector
+        0xFE0F,  # emoji presentation selector
+        0x20E3,  # COMBINING ENCLOSING KEYCAP
+    }
+    emoji_codepoints = {
+        0x00A9,
+        0x00AE,
+        0x203C,
+        0x2049,
+        0x2122,
+        0x2139,
+        0x3030,
+        0x303D,
+        0x3297,
+        0x3299,
+    }
+
     for character in raw_title:
         codepoint = ord(character)
+        if codepoint in ignored_codepoints:
+            continue
+        if 0xE0020 <= codepoint <= 0xE007F:
+            # Subdivision-flag tag characters are invisible shaping data.
+            continue
+        if 0x1F1E6 <= codepoint <= 0x1F1FF:
+            regional_letters.append(chr(ord("A") + codepoint - 0x1F1E6))
+            continue
+
+        flush_regional_letters()
+        if codepoint in skin_tone_names:
+            converted_parts.append(" " + skin_tone_names[codepoint] + " ")
+            continue
         is_emoji = (
             0x1F000 <= codepoint <= 0x1FFFF
             or 0x2600 <= codepoint <= 0x27FF
             or 0x2B00 <= codepoint <= 0x2BFF
-            or 0x1F1E6 <= codepoint <= 0x1F1FF
-            or 0x1F3FB <= codepoint <= 0x1F3FF
-            or 0xE0020 <= codepoint <= 0xE007F
-            or codepoint
-            in {
-                0x00A9,
-                0x00AE,
-                0x203C,
-                0x2049,
-                0x20E3,
-                0x2122,
-                0x2139,
-                0x3030,
-                0x303D,
-                0x3297,
-                0x3299,
-                0xFE0E,
-                0xFE0F,
-                0x200D,
-            }
+            or codepoint in emoji_codepoints
+            # Several emoji-capable characters, including STOPWATCH (U+23F1),
+            # live outside the familiar emoji blocks. Unicode classifies them
+            # as Other Symbols, so name them too instead of letting a glyph
+            # that the FXPAK cannot represent reach the SD-card path.
+            or unicodedata.category(character) == "So"
         )
-        if not is_emoji:
-            safe_characters.append(character)
+        if is_emoji:
+            unicode_name = unicodedata.name(character, "").strip()
+            if unicode_name:
+                converted_parts.append(" " + unicode_name.title() + " ")
+            continue
+        converted_parts.append(character)
 
+    flush_regional_letters()
     cleaned = rom_builder_sanitize_filename(
-        "".join(safe_characters),
+        "".join(converted_parts),
         "",
     )
     if cleaned:
@@ -10901,6 +10969,24 @@ def rom_builder_fxpak_relative_rom_path(
     return PurePosixPath(
         rom_builder_alpha_folder(safe_title)
     ) / (safe_title + ".sfc")
+
+
+def rom_builder_fxpak_title_requires_alias(
+    game: dict[str, Any],
+) -> bool:
+    """Return whether the FXPAK-only filename must replace emoji text."""
+    original_title = rom_builder_sanitize_filename(
+        unicodedata.normalize(
+            "NFC",
+            str(game.get("title", "")).strip(),
+        ),
+        "",
+    )
+    safe_title = rom_builder_fxpak_safe_title(
+        game.get("title", ""),
+        game.get("smwc_id", ""),
+    )
+    return original_title != safe_title
 
 
 def rom_builder_alpha_folder(
@@ -10938,6 +11024,16 @@ def rom_builder_normalized_name(
     return normalize_title(
         rom_builder_sanitize_filename(name)
     )
+
+
+def rom_builder_exact_filename_key(
+    name: object,
+) -> str:
+    """Keep an exact Unicode key so emoji-only filenames remain discoverable."""
+    return "exact:" + unicodedata.normalize(
+        "NFKC",
+        str(name or ""),
+    ).strip().casefold()
 
 
 def rom_builder_date_text(
@@ -11680,6 +11776,9 @@ def rom_builder_scan_existing_roms(
 
         if key and key not in found:
             found[key] = rom_path
+        exact_key = rom_builder_exact_filename_key(rom_path.stem)
+        if exact_key != "exact:" and exact_key not in found:
+            found[exact_key] = rom_path
 
     return found
 
@@ -11841,6 +11940,7 @@ def rom_builder_existing_game(
     *,
     existing_paths: set[str] | frozenset[str] | None = None,
     probe_filesystem: bool = True,
+    include_fxpak_mapping: bool = True,
 ) -> tuple[bool, str, str]:
     # A saved FXPAK path means this title is already part of the launchable
     # game library, even if the SD card is not mounted as a Windows drive.
@@ -11848,7 +11948,7 @@ def rom_builder_existing_game(
         game.get("rom_path", "")
     ).strip()
 
-    if mapped_path:
+    if include_fxpak_mapping and mapped_path:
         return (
             True,
             "Already mapped on FXPAK",
@@ -11924,6 +12024,7 @@ def rom_builder_existing_game(
 
     possible_keys = {
         title_key,
+        rom_builder_exact_filename_key(game.get("title", "")),
     }
 
     if smwc_id:
@@ -11983,6 +12084,9 @@ def rom_builder_write_reports(
         "sd_copy_status",
         "sd_output_path",
         "fxpak_path",
+        "usb_upload_status",
+        "usb_upload_error",
+        "usb_device",
         "sd_copy_error",
         "message",
     )
@@ -12050,6 +12154,7 @@ ROLLBACK_HASH_FILE = ROLLBACK_DIR / "SMWStreamTracker_previous.sha256"
 UPDATE_DOWNLOAD_DIR = APP_DATA_DIR / "Updates"
 LOG_DIR = APP_DATA_DIR / "Logs"
 CRASH_LOG_FILE = LOG_DIR / "SMWStreamTracker-errors.log"
+UNINSTALL_OBS_PATH_FILE = APP_DATA_DIR / "UninstallObsOutputPath.txt"
 
 
 def application_directory() -> Path:
@@ -12968,6 +13073,7 @@ class TrackerDatabase:
                     COUNT(*) AS total,
                     SUM(CASE WHEN is_waiting = 1 THEN 1 ELSE 0 END) AS waiting
                 FROM catalog_hacks
+                WHERE is_custom = 0
                 """
             ).fetchone()
         total = int(row["total"] or 0)
@@ -14236,6 +14342,85 @@ class TrackerDatabase:
             "official": official_count,
             "version": catalog_version,
             "refreshed_at": refreshed_at,
+        }
+
+    def reset_smwcentral_catalog(self) -> dict[str, int]:
+        """Remove the downloaded SMW Central catalog without losing user data."""
+        self.initialize()
+        deleted = 0
+        preserved = 0
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT catalog_key, smwc_id
+                FROM catalog_hacks
+                WHERE is_custom = 0
+                """
+            ).fetchall()
+
+            for row in rows:
+                catalog_key = str(row["catalog_key"])
+                smwc_id = str(row["smwc_id"] or "")
+                referenced = connection.execute(
+                    """
+                    SELECT 1
+                    FROM tracked_hacks
+                    WHERE catalog_key = ?
+                    UNION
+                    SELECT 1
+                    FROM rom_mappings
+                    WHERE catalog_key = ? OR smwc_id = ?
+                    LIMIT 1
+                    """,
+                    (catalog_key, catalog_key, smwc_id),
+                ).fetchone()
+
+                if referenced is not None:
+                    # The catalog row is the foreign-key owner for tracker
+                    # progress. Reclassify it as a personal record so the
+                    # SMW Central catalog can be emptied without cascading
+                    # into My Tracker or breaking a saved ROM mapping.
+                    connection.execute(
+                        """
+                        UPDATE catalog_hacks
+                        SET
+                            is_custom = 1,
+                            is_waiting = 0,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE catalog_key = ?
+                        """,
+                        (catalog_key,),
+                    )
+                    preserved += 1
+                else:
+                    connection.execute(
+                        "DELETE FROM catalog_hacks WHERE catalog_key = ?",
+                        (catalog_key,),
+                    )
+                    deleted += 1
+
+            connection.execute(
+                """
+                DELETE FROM app_metadata
+                WHERE key IN (
+                    'Catalog Sequence',
+                    'Catalog Version',
+                    'Official Hack Count',
+                    'Catalog Last Refresh',
+                    'Catalog Source',
+                    'Catalog Repository URL',
+                    'Waiting Last Refresh',
+                    'Waiting Count',
+                    'Waiting New Since Last Refresh'
+                )
+                """
+            )
+
+        return {
+            "removed": deleted + preserved,
+            "deleted": deleted,
+            "preserved": preserved,
         }
 
     def refresh_waiting_from_smwcentral(
@@ -15571,13 +15756,15 @@ class TrackerDatabase:
                 title,
             )
         )
-        map_key = str(
-            game.get("mapping_key")
-            or (
-                "SMWC:" + smwc_id
-                if smwc_id
-                else "TITLE:"
-                + title.casefold().strip()
+        # SMW Central IDs are permanent even when the catalog title contains
+        # emoji and the FXPAK-only filename has to use a readable alias.
+        # Always make the ID the canonical mapping key when one is available.
+        map_key = (
+            "SMWC:" + smwc_id
+            if smwc_id
+            else str(
+                game.get("mapping_key")
+                or "TITLE:" + title.casefold().strip()
             )
         )
 
@@ -15618,18 +15805,26 @@ class TrackerDatabase:
                     str(match_method),
                 ),
             )
-            connection.execute(
-                """
-                UPDATE catalog_hacks
-                SET rom_path = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE catalog_key = ?
-                """,
-                (
-                    str(rom_path),
-                    catalog_key,
-                ),
-            )
+            if smwc_id:
+                connection.execute(
+                    """
+                    UPDATE catalog_hacks
+                    SET rom_path = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE smwc_id = ?
+                    """,
+                    (str(rom_path), smwc_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE catalog_hacks
+                    SET rom_path = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE catalog_key = ?
+                    """,
+                    (str(rom_path), catalog_key),
+                )
 
     def clear_remote_rom_paths(
         self,
@@ -17476,6 +17671,70 @@ for (
 
 
 _FULL_UI_LOCALIZATION_ROWS = (
+    (
+        "Ready for FXPAK emoji-name repair",
+        "Ready to give that emoji filename an FXPAK-friendly makeover, mate",
+        "Listo para reparar el nombre con emojis en FXPAK",
+        "Prêt à corriger le nom avec emoji pour le FXPAK",
+        "Bereit zur Reparatur des Emoji-Namens für FXPAK",
+        "Pronto para corrigir o nome com emoji no FXPAK",
+    ),
+    (
+        "Local ROMs with emoji titles will also be uploaded using readable FXPAK-only filenames. Their titles inside the app stay unchanged.",
+        "Local ROMs with emoji titles also head to the FXPAK with readable, emoji-free filenames, mate. Their proper titles stay put in the app.",
+        "Las ROM locales con emojis en el título también se subirán con nombres legibles exclusivos para FXPAK. Sus títulos dentro de la aplicación no cambiarán.",
+        "Les ROM locales dont le titre contient des emojis seront également envoyées avec des noms lisibles réservés au FXPAK. Leurs titres dans l’application resteront inchangés.",
+        "Lokale ROMs mit Emojis im Titel werden ebenfalls mit lesbaren, nur für FXPAK verwendeten Dateinamen hochgeladen. Ihre Titel in der App bleiben unverändert.",
+        "ROMs locais com emojis no título também serão enviadas com nomes legíveis usados somente no FXPAK. Os títulos dentro do aplicativo permanecerão inalterados.",
+    ),
+    (
+        "Download missing hacks and repair FXPAK filenames for {count} matching hack(s)?",
+        "Download the missing hacks and give {count} matching hack(s) FXPAK-friendly filenames, mate?",
+        "¿Descargar los hacks faltantes y reparar los nombres de archivo de FXPAK para {count} hack(s) coincidente(s)?",
+        "Télécharger les hacks manquants et corriger les noms de fichiers FXPAK pour {count} hack(s) correspondant(s) ?",
+        "Fehlende Hacks herunterladen und FXPAK-Dateinamen für {count} passende Hack(s) reparieren?",
+        "Baixar os hacks ausentes e corrigir os nomes de arquivo do FXPAK para {count} hack(s) correspondente(s)?",
+    ),
+    (
+        "Existing local ROMs with emoji titles are included for FXPAK upload. Other existing games are skipped.",
+        "Local ROMs with emoji titles are coming along for the FXPAK upload, mate. The other existing games stay put.",
+        "Las ROM locales existentes con emojis en el título se incluyen para subirlas a FXPAK. Los demás juegos existentes se omiten.",
+        "Les ROM locales existantes dont le titre contient des emojis sont incluses dans l’envoi vers le FXPAK. Les autres jeux existants sont ignorés.",
+        "Vorhandene lokale ROMs mit Emojis im Titel werden für den FXPAK-Upload einbezogen. Andere vorhandene Spiele werden übersprungen.",
+        "ROMs locais existentes com emojis no título são incluídas no envio para o FXPAK. Os outros jogos existentes são ignorados.",
+    ),
+    (
+        "Uploading existing ROM to FXPAK Pro: {title}",
+        "Sending the existing ROM over to the FXPAK Pro, mate: {title}",
+        "Subiendo la ROM existente a FXPAK Pro: {title}",
+        "Envoi de la ROM existante vers le FXPAK Pro : {title}",
+        "Vorhandene ROM wird auf FXPAK Pro hochgeladen: {title}",
+        "Enviando a ROM existente para o FXPAK Pro: {title}",
+    ),
+    (
+        "Uploaded existing ROM: {title}",
+        "Existing ROM sent over, mate: {title}",
+        "ROM existente subida: {title}",
+        "ROM existante envoyée : {title}",
+        "Vorhandene ROM hochgeladen: {title}",
+        "ROM existente enviada: {title}",
+    ),
+    (
+        "FXPAK upload failed: {title}",
+        "Crikey, the FXPAK upload failed, mate: {title}",
+        "Falló la subida a FXPAK: {title}",
+        "Échec de l’envoi vers le FXPAK : {title}",
+        "FXPAK-Upload fehlgeschlagen: {title}",
+        "Falha no envio para o FXPAK: {title}",
+    ),
+    (
+        "The live tracker could not release the FXPAK Pro connection for the SD-card transfer. Select Refresh and try again.",
+        "Crikey, the live tracker couldn't let go of the FXPAK Pro connection for the SD-card transfer. Select Refresh and have another go, mate.",
+        "El seguimiento en vivo no pudo liberar la conexión del FXPAK Pro para la transferencia a la tarjeta SD. Selecciona Actualizar e inténtalo de nuevo.",
+        "Le suivi en direct n’a pas pu libérer la connexion FXPAK Pro pour le transfert vers la carte SD. Sélectionnez Actualiser et réessayez.",
+        "Der Live-Tracker konnte die FXPAK-Pro-Verbindung für die SD-Kartenübertragung nicht freigeben. Wählen Sie Aktualisieren und versuchen Sie es erneut.",
+        "O rastreador ao vivo não conseguiu liberar a conexão do FXPAK Pro para a transferência do cartão SD. Selecione Atualizar e tente novamente.",
+    ),
     ("Never", "Not in a blue moon", "Nunca", "Jamais", "Nie", "Nunca"),
     ("Random Hack", "Mystery hack, mate", "Hack aleatorio", "Hack aléatoire", "Zufälliger Hack", "Hack aleatório"),
     ("SMW Stream Tracker Error", "Crikey! SMW Stream Tracker hit a snag", "Error de SMW Stream Tracker", "Erreur de SMW Stream Tracker", "Fehler in SMW Stream Tracker", "Erro do SMW Stream Tracker"),
@@ -17543,6 +17802,120 @@ for (
     _german_text,
     _portuguese_text,
 ) in _FULL_UI_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
+_FRESH_INSTALL_CATALOG_LOCALIZATION_ROWS = (
+    (
+        "Your SMW Central catalog has not been downloaded yet. Open SMW Central Catalog and select Refresh Moderated Hacks from SMW Central first.",
+        "Crikey, mate — your SMW Central catalogue is still empty. Open SMW Central Catalog and hit Refresh Moderated Hacks from SMW Central first.",
+        "Tu catálogo de SMW Central aún no se ha descargado. Abre Catálogo de SMW Central y selecciona primero Actualizar hacks moderados desde SMW Central.",
+        "Votre catalogue SMW Central n’a pas encore été téléchargé. Ouvrez Catalogue SMW Central, puis sélectionnez d’abord Actualiser les hacks modérés depuis SMW Central.",
+        "Dein SMW-Central-Katalog wurde noch nicht heruntergeladen. Öffne SMW-Central-Katalog und wähle zuerst Moderierte Hacks von SMW Central aktualisieren.",
+        "Seu catálogo do SMW Central ainda não foi baixado. Abra Catálogo do SMW Central e selecione primeiro Atualizar hacks moderados do SMW Central.",
+    ),
+    (
+        "No SMW Central catalog has been downloaded yet. Select Refresh Moderated Hacks from SMW Central below to retrieve it.",
+        "Crikey, mate — this SMW Central catalogue is as empty as an esky after the barbie. Hit Refresh Moderated Hacks from SMW Central below to fetch it.",
+        "Aún no se ha descargado ningún catálogo de SMW Central. Selecciona abajo Actualizar hacks moderados desde SMW Central para obtenerlo.",
+        "Aucun catalogue SMW Central n’a encore été téléchargé. Sélectionnez ci-dessous Actualiser les hacks modérés depuis SMW Central pour le récupérer.",
+        "Es wurde noch kein SMW-Central-Katalog heruntergeladen. Wähle unten Moderierte Hacks von SMW Central aktualisieren, um ihn abzurufen.",
+        "Nenhum catálogo do SMW Central foi baixado ainda. Selecione abaixo Atualizar hacks moderados do SMW Central para obtê-lo.",
+    ),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _FRESH_INSTALL_CATALOG_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
+_CATALOG_RESET_LOCALIZATION_ROWS = (
+    (
+        "Reset Catalog",
+        "Reset the Catalogue, Mate",
+        "Restablecer catálogo",
+        "Réinitialiser le catalogue",
+        "Katalog zurücksetzen",
+        "Redefinir catálogo",
+    ),
+    (
+        "Reset SMW Central Catalog?",
+        "Reset the SMW Central Catalogue, Mate?",
+        "¿Restablecer el catálogo de SMW Central?",
+        "Réinitialiser le catalogue SMW Central ?",
+        "SMW-Central-Katalog zurücksetzen?",
+        "Redefinir o catálogo do SMW Central?",
+    ),
+    (
+        "Remove every moderated and waiting hack from the local SMW Central catalog?\n\nYour tracked progress, ratings, notes, custom hacks, ROM mappings, and ROM files will be preserved. A recovery backup will be created first.\n\nYou can download the catalog again with Refresh Moderated Hacks from SMW Central.",
+        "Clear every moderated and waiting hack out of the local SMW Central catalogue, mate?\n\nNo worries: your tracked progress, ratings, notes, custom hacks, ROM mappings, and ROM files will stay safe. We’ll make a recovery backup first.\n\nYou can fetch the catalogue again with Freshen up moderated hacks from SMW Central.",
+        "¿Quitar todos los hacks moderados y en espera del catálogo local de SMW Central?\n\nSe conservarán el progreso, las puntuaciones, las notas, los hacks personalizados, las asignaciones de ROM y los archivos ROM. Primero se creará una copia de recuperación.\n\nPuedes volver a descargar el catálogo con Actualizar hacks moderados desde SMW Central.",
+        "Supprimer tous les hacks modérés et en attente du catalogue SMW Central local ?\n\nVotre progression, vos notes, vos commentaires, vos hacks personnalisés, vos associations de ROM et vos fichiers ROM seront conservés. Une sauvegarde de récupération sera d’abord créée.\n\nVous pourrez télécharger de nouveau le catalogue avec Actualiser les hacks modérés depuis SMW Central.",
+        "Alle moderierten und wartenden Hacks aus dem lokalen SMW-Central-Katalog entfernen?\n\nFortschritt, Bewertungen, Notizen, eigene Hacks, ROM-Zuordnungen und ROM-Dateien bleiben erhalten. Zuerst wird eine Wiederherstellungssicherung erstellt.\n\nMit Moderierte Hacks von SMW Central aktualisieren kannst du den Katalog erneut herunterladen.",
+        "Remover todos os hacks moderados e em espera do catálogo local do SMW Central?\n\nSeu progresso, avaliações, notas, hacks personalizados, mapeamentos de ROM e arquivos ROM serão preservados. Primeiro será criado um backup de recuperação.\n\nVocê poderá baixar o catálogo novamente com Atualizar hacks moderados do SMW Central.",
+    ),
+    (
+        "Catalog Reset Complete",
+        "Catalogue Reset Done and Dusted",
+        "Catálogo restablecido",
+        "Catalogue réinitialisé",
+        "Katalog zurückgesetzt",
+        "Catálogo redefinido",
+    ),
+    (
+        "The SMW Central catalog was reset. {removed} catalog entries were removed. {preserved} tracked or mapped entries were preserved as personal records.\n\nA recovery backup was created. Select Refresh Moderated Hacks from SMW Central whenever you want to download the catalog again.",
+        "You beauty — the SMW Central catalogue was reset. {removed} catalogue entries got the boot, and {preserved} tracked or mapped entries stayed safe as personal records.\n\nA recovery backup was made. Freshen up moderated hacks from SMW Central whenever you want the catalogue back, mate.",
+        "El catálogo de SMW Central se restableció. Se quitaron {removed} entradas y se conservaron {preserved} entradas seguidas o asignadas como registros personales.\n\nSe creó una copia de recuperación. Selecciona Actualizar hacks moderados desde SMW Central cuando quieras volver a descargar el catálogo.",
+        "Le catalogue SMW Central a été réinitialisé. {removed} entrées ont été supprimées et {preserved} entrées suivies ou associées ont été conservées comme données personnelles.\n\nUne sauvegarde de récupération a été créée. Sélectionnez Actualiser les hacks modérés depuis SMW Central pour télécharger de nouveau le catalogue.",
+        "Der SMW-Central-Katalog wurde zurückgesetzt. {removed} Katalogeinträge wurden entfernt und {preserved} verfolgte oder zugeordnete Einträge als persönliche Datensätze erhalten.\n\nEine Wiederherstellungssicherung wurde erstellt. Wähle Moderierte Hacks von SMW Central aktualisieren, um den Katalog erneut herunterzuladen.",
+        "O catálogo do SMW Central foi redefinido. {removed} entradas foram removidas e {preserved} entradas rastreadas ou mapeadas foram preservadas como registros pessoais.\n\nUm backup de recuperação foi criado. Selecione Atualizar hacks moderados do SMW Central quando quiser baixar o catálogo novamente.",
+    ),
+    (
+        "The catalog could not be reset because a recovery backup could not be created.",
+        "Crikey — the catalogue stayed put because the recovery backup couldn’t be made, mate.",
+        "No se pudo restablecer el catálogo porque no se pudo crear una copia de recuperación.",
+        "Le catalogue n’a pas pu être réinitialisé, car la sauvegarde de récupération n’a pas pu être créée.",
+        "Der Katalog konnte nicht zurückgesetzt werden, weil keine Wiederherstellungssicherung erstellt werden konnte.",
+        "O catálogo não pôde ser redefinido porque não foi possível criar um backup de recuperação.",
+    ),
+    (
+        "Finish or cancel the current catalog refresh before resetting the catalog.",
+        "Finish or pull the pin on the current catalogue refresh before resetting it, mate.",
+        "Finaliza o cancela la actualización actual antes de restablecer el catálogo.",
+        "Terminez ou annulez l’actualisation en cours avant de réinitialiser le catalogue.",
+        "Beende oder brich die aktuelle Katalogaktualisierung ab, bevor du den Katalog zurücksetzt.",
+        "Conclua ou cancele a atualização atual antes de redefinir o catálogo.",
+    ),
+    (
+        "Catalog reset complete.",
+        "Catalogue reset done and dusted, mate.",
+        "Catálogo restablecido.",
+        "Catalogue réinitialisé.",
+        "Katalog wurde zurückgesetzt.",
+        "Catálogo redefinido.",
+    ),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _CATALOG_RESET_LOCALIZATION_ROWS:
     UI_TRANSLATIONS["au"][_english_text] = _australian_text
     UI_TRANSLATIONS["es"][_english_text] = _spanish_text
     UI_TRANSLATIONS["fr"][_english_text] = _french_text
@@ -17907,6 +18280,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "setup_menu": "Setup",
         "app_setup": "App Setup...",
         "obs_setup": "OBS Text Setup...",
+        "livesplit_setup": "LiveSplit Timer Setup...",
         "welcome_title": "Welcome to SMW Stream Tracker",
         "welcome_message": (
             "Thank you for downloading and trying SMW Stream Tracker! "
@@ -18122,6 +18496,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "setup_menu": "Configuración",
         "app_setup": "Configurar la aplicación...",
         "obs_setup": "Configurar textos de OBS...",
+        "livesplit_setup": "Configurar temporizadores LiveSplit...",
         "welcome_title": "Te damos la bienvenida a SMW Stream Tracker",
         "welcome_message": "¡Gracias por descargar y probar SMW Stream Tracker! Creé esta aplicación para facilitar descubrir, jugar, registrar y transmitir hacks de Super Mario World. Aprecio mucho que la pruebes.\n\n— FredDOGG23",
         "start_full_setup": "Iniciar configuración completa",
@@ -18197,7 +18572,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "livesplit_setup_failed_message": "No se pudo configurar {name}:\n\n{error}",
     },
     "fr": {
-        "setup_menu": "Configuration", "app_setup": "Configurer l’application...", "obs_setup": "Configurer les textes OBS...",
+        "setup_menu": "Configuration", "app_setup": "Configurer l’application...", "obs_setup": "Configurer les textes OBS...", "livesplit_setup": "Configurer les chronomètres LiveSplit...",
         "welcome_title": "Bienvenue dans SMW Stream Tracker",
         "welcome_message": "Merci d’avoir téléchargé et essayé SMW Stream Tracker ! Je l’ai créé pour faciliter la découverte, le jeu, le suivi et la diffusion des hacks Super Mario World. Merci sincèrement de l’essayer.\n\n— FredDOGG23",
         "start_full_setup": "Démarrer la configuration complète", "setup_later": "Configurer plus tard",
@@ -18257,7 +18632,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "livesplit_setup_failed_message": "Impossible de configurer {name} :\n\n{error}",
     },
     "de": {
-        "setup_menu": "Einrichtung", "app_setup": "App einrichten...", "obs_setup": "OBS-Texte einrichten...",
+        "setup_menu": "Einrichtung", "app_setup": "App einrichten...", "obs_setup": "OBS-Texte einrichten...", "livesplit_setup": "LiveSplit-Timer einrichten...",
         "welcome_title": "Willkommen bei SMW Stream Tracker", "welcome_message": "Danke, dass du SMW Stream Tracker heruntergeladen hast und ausprobierst! Ich habe die App entwickelt, um das Entdecken, Spielen, Verfolgen und Streamen von Super-Mario-World-Hacks einfacher zu machen. Vielen Dank fürs Ausprobieren.\n\n— FredDOGG23",
         "start_full_setup": "Vollständige Einrichtung starten", "setup_later": "Später einrichten", "guide_title": "SMW Stream Tracker – Einrichtungsassistent", "open_current_step": "Aktuellen Schritt öffnen", "cancel_guide": "Später einrichten",
         "follow_flashing_steps": "Folge den blinkenden Schaltflächen oder den Menüoptionen mit gelbem Stern. Der nächste Schritt erscheint, sobald der aktuelle abgeschlossen ist.",
@@ -18314,7 +18689,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "livesplit_setup_failed_message": "{name} konnte nicht eingerichtet werden:\n\n{error}",
     },
     "pt-BR": {
-        "setup_menu": "Configuração", "app_setup": "Configurar aplicativo...", "obs_setup": "Configurar textos do OBS...",
+        "setup_menu": "Configuração", "app_setup": "Configurar aplicativo...", "obs_setup": "Configurar textos do OBS...", "livesplit_setup": "Configurar cronômetros LiveSplit...",
         "welcome_title": "Boas-vindas ao SMW Stream Tracker", "welcome_message": "Obrigado por baixar e experimentar o SMW Stream Tracker! Criei o aplicativo para facilitar descobrir, jogar, acompanhar e transmitir hacks de Super Mario World. Agradeço muito por experimentar.\n\n— FredDOGG23",
         "start_full_setup": "Iniciar configuração completa", "setup_later": "Configurar depois", "guide_title": "Guia de configuração do SMW Stream Tracker", "open_current_step": "Abrir etapa atual", "cancel_guide": "Configurar depois",
         "follow_flashing_steps": "Siga cada botão piscando ou opção de menu com estrela amarela. A próxima etapa aparecerá quando a etapa atual for concluída.",
@@ -18383,6 +18758,7 @@ SETUP_GUIDE_TRANSLATIONS["au"].update({
     "setup_menu": "Get set up, mate",
     "app_setup": "Set up the whole shebang...",
     "obs_setup": "Sort out OBS text...",
+    "livesplit_setup": "Fire up the LiveSplit timers, mate...",
     "welcome_title": "G'day! Welcome to SMW Stream Tracker",
     "start_full_setup": "Let's get cracking",
     "setup_later": "She'll be right for now",
@@ -18457,6 +18833,149 @@ SETUP_GUIDE_TRANSLATIONS["au"].update({
     "livesplit_ready_title": "LiveSplit is ready to rip",
     "livesplit_setup_failed_title": "Crikey! LiveSplit setup failed",
 })
+
+# The setup-complete OBS flow offers both supported OBS features from one
+# blue chooser. Keep the new wording explicit in every supported language
+# instead of relying on the English fallback.
+_OBS_SETUP_FLOW_TRANSLATIONS = {
+    "en": {
+        "obs_prompt_title": "Set Up OBS Files?",
+        "obs_prompt": (
+            "Would you like to set up OBS files now? You can choose automatic "
+            "text files for hack details and death counters, LiveSplit timers "
+            "for OBS, or both."
+        ),
+        "yes_obs": "Set Up OBS Files",
+        "obs_choice_title": "Set Up OBS Files",
+        "obs_choice_message": (
+            "Choose what you want to set up. After opening either option, "
+            "that screen also lets you open the other."
+        ),
+        "obs_text_files_button": "Set Up OBS Text Files",
+        "livesplit_obs_button": "Set Up LiveSplit Timers for OBS",
+        "choose_obs_folder_button": "Choose or Create OBS Text Folder",
+        "obs_folder_missing": (
+            "Choose or create an OBS text folder below. The tracker will "
+            "create the files automatically and show their paths here."
+        ),
+        "obs_folder_error": (
+            "The OBS text folder could not be created:\n\n{error}"
+        ),
+    },
+    "au": {
+        "obs_prompt_title": "Sort Out Your OBS Files?",
+        "obs_prompt": (
+            "Want to sort out the OBS gear now, mate? Pick automatic text "
+            "files for hack details and death counters, LiveSplit timers for "
+            "OBS, or give both a crack."
+        ),
+        "yes_obs": "Set Up OBS Files, Mate",
+        "obs_choice_title": "Set Up OBS Files, Mate",
+        "obs_choice_message": (
+            "Pick what you want to set up. Whichever one you open first, "
+            "you can jump to the other from that screen. Too easy!"
+        ),
+        "obs_text_files_button": "Set Up OBS Text Files",
+        "livesplit_obs_button": "Set Up LiveSplit Timers for OBS",
+        "choose_obs_folder_button": "Choose or Create the OBS Text Folder",
+        "obs_folder_missing": (
+            "Pick or create an OBS text folder below, mate. The tracker will "
+            "make the files and show every path here."
+        ),
+        "obs_folder_error": "Crikey! The OBS text folder could not be created:\n\n{error}",
+    },
+    "es": {
+        "obs_prompt_title": "¿Configurar archivos de OBS?",
+        "obs_prompt": (
+            "¿Quieres configurar ahora los archivos de OBS? Puedes elegir "
+            "archivos de texto automáticos para los datos del hack y los "
+            "contadores de muertes, temporizadores LiveSplit para OBS o ambos."
+        ),
+        "yes_obs": "Configurar archivos de OBS",
+        "obs_choice_title": "Configurar archivos de OBS",
+        "obs_choice_message": (
+            "Elige lo que quieras configurar. Después de abrir una opción, "
+            "esa pantalla también te permitirá abrir la otra."
+        ),
+        "obs_text_files_button": "Configurar archivos de texto de OBS",
+        "livesplit_obs_button": "Configurar temporizadores LiveSplit para OBS",
+        "choose_obs_folder_button": "Elegir o crear carpeta de textos de OBS",
+        "obs_folder_missing": (
+            "Elige o crea abajo una carpeta para los textos de OBS. El tracker "
+            "creará los archivos automáticamente y mostrará aquí sus rutas."
+        ),
+        "obs_folder_error": "No se pudo crear la carpeta de textos de OBS:\n\n{error}",
+    },
+    "fr": {
+        "obs_prompt_title": "Configurer les fichiers OBS ?",
+        "obs_prompt": (
+            "Voulez-vous configurer les fichiers OBS maintenant ? Vous pouvez "
+            "choisir les fichiers texte automatiques pour les informations du "
+            "hack et les compteurs de morts, les chronomètres LiveSplit pour "
+            "OBS, ou les deux."
+        ),
+        "yes_obs": "Configurer les fichiers OBS",
+        "obs_choice_title": "Configurer les fichiers OBS",
+        "obs_choice_message": (
+            "Choisissez ce que vous souhaitez configurer. Après avoir ouvert "
+            "une option, cet écran vous permettra aussi d’ouvrir l’autre."
+        ),
+        "obs_text_files_button": "Configurer les fichiers texte OBS",
+        "livesplit_obs_button": "Configurer les chronomètres LiveSplit pour OBS",
+        "choose_obs_folder_button": "Choisir ou créer le dossier des textes OBS",
+        "obs_folder_missing": (
+            "Choisissez ou créez ci-dessous un dossier pour les textes OBS. "
+            "Le tracker créera automatiquement les fichiers et affichera leurs chemins ici."
+        ),
+        "obs_folder_error": "Impossible de créer le dossier des textes OBS :\n\n{error}",
+    },
+    "de": {
+        "obs_prompt_title": "OBS-Dateien einrichten?",
+        "obs_prompt": (
+            "Möchtest du jetzt die OBS-Dateien einrichten? Du kannst "
+            "automatische Textdateien für Hackdaten und Todeszähler, "
+            "LiveSplit-Timer für OBS oder beides auswählen."
+        ),
+        "yes_obs": "OBS-Dateien einrichten",
+        "obs_choice_title": "OBS-Dateien einrichten",
+        "obs_choice_message": (
+            "Wähle aus, was du einrichten möchtest. Nachdem du eine Option "
+            "geöffnet hast, kannst du von diesem Bildschirm auch die andere öffnen."
+        ),
+        "obs_text_files_button": "OBS-Textdateien einrichten",
+        "livesplit_obs_button": "LiveSplit-Timer für OBS einrichten",
+        "choose_obs_folder_button": "OBS-Textordner auswählen oder erstellen",
+        "obs_folder_missing": (
+            "Wähle unten einen OBS-Textordner aus oder erstelle ihn. Der "
+            "Tracker erstellt die Dateien automatisch und zeigt ihre Pfade hier an."
+        ),
+        "obs_folder_error": "Der OBS-Textordner konnte nicht erstellt werden:\n\n{error}",
+    },
+    "pt-BR": {
+        "obs_prompt_title": "Configurar arquivos do OBS?",
+        "obs_prompt": (
+            "Deseja configurar os arquivos do OBS agora? Você pode escolher "
+            "arquivos de texto automáticos para os dados do hack e contadores "
+            "de mortes, temporizadores LiveSplit para o OBS ou ambos."
+        ),
+        "yes_obs": "Configurar arquivos do OBS",
+        "obs_choice_title": "Configurar arquivos do OBS",
+        "obs_choice_message": (
+            "Escolha o que deseja configurar. Depois de abrir uma opção, "
+            "essa tela também permitirá abrir a outra."
+        ),
+        "obs_text_files_button": "Configurar arquivos de texto do OBS",
+        "livesplit_obs_button": "Configurar temporizadores LiveSplit para o OBS",
+        "choose_obs_folder_button": "Escolher ou criar pasta de textos do OBS",
+        "obs_folder_missing": (
+            "Escolha ou crie abaixo uma pasta para os textos do OBS. O tracker "
+            "criará os arquivos automaticamente e mostrará os caminhos aqui."
+        ),
+        "obs_folder_error": "Não foi possível criar a pasta de textos do OBS:\n\n{error}",
+    },
+}
+for _language_code, _obs_setup_copy in _OBS_SETUP_FLOW_TRANSLATIONS.items():
+    SETUP_GUIDE_TRANSLATIONS[_language_code].update(_obs_setup_copy)
 
 
 DEFAULT_CONFIG = {
@@ -18796,6 +19315,17 @@ def ensure_obs_text_files(
 
     output_folder = Path(folder_text)
     output_folder.mkdir(parents=True, exist_ok=True)
+    try:
+        APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        UNINSTALL_OBS_PATH_FILE.write_text(
+            str(output_folder.resolve()),
+            encoding="utf-8",
+        )
+    except OSError:
+        # This bookkeeping file lets the Windows uninstaller remove only the
+        # tracker-created OBS files without ever deleting the user's folder.
+        # OBS output must continue working even when bookkeeping is blocked.
+        pass
     defaults = {
         "author.txt": render_obs_text_template(
             config.get("obs_author_text_format"),
@@ -19099,6 +19629,16 @@ def save_config(config: dict[str, Any]) -> None:
         json.dumps(config, indent=2),
         encoding="utf-8",
     )
+    output_folder = str(config.get("output_folder", "")).strip()
+    if output_folder:
+        try:
+            APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            UNINSTALL_OBS_PATH_FILE.write_text(
+                str(Path(output_folder).resolve()),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
 
 def is_transient_connection_error(error: object) -> bool:
@@ -19345,6 +19885,10 @@ class TrackerWorker:
         self.last_connection_error = ""
         self.last_connection_error_logged_at = 0.0
         self.last_successful_connection_sample_at = 0.0
+        self.connection_gate_lock = threading.Lock()
+        self.connection_pause_event = threading.Event()
+        self.connection_released_event = threading.Event()
+        self.connection_released_event.set()
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -19359,6 +19903,16 @@ class TrackerWorker:
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def pause_connection(self, timeout: float = 15.0) -> bool:
+        """Release the SNES bridge while an exclusive SD-file job runs."""
+        with self.connection_gate_lock:
+            self.connection_pause_event.set()
+        return self.connection_released_event.wait(max(0.1, timeout))
+
+    def resume_connection(self) -> None:
+        with self.connection_gate_lock:
+            self.connection_pause_event.clear()
 
     def reset_game_timer(self) -> None:
         self.command_queue.put("reset_game")
@@ -22717,13 +23271,21 @@ finally {
         rom_path: str,
     ) -> None:
         """Make a new SD filename alias available to live tracking at once."""
-        mapping_key = str(game.get("mapping_key", "")).casefold().strip()
         smwc_id = str(game.get("smwc_id", "")).strip()
-        if not mapping_key:
+        if smwc_id:
             mapping_key = self.make_fxpak_mapping_key(
                 str(game.get("title", "")),
                 smwc_id,
             ).casefold()
+        else:
+            mapping_key = str(
+                game.get("mapping_key", "")
+            ).casefold().strip()
+            if not mapping_key:
+                mapping_key = self.make_fxpak_mapping_key(
+                    str(game.get("title", "")),
+                    "",
+                ).casefold()
 
         updated_path_map = dict(self.fxpak_path_map)
         updated_path_map[mapping_key] = rom_path
@@ -22812,13 +23374,6 @@ finally {
 
         catalog = tracker_database.load_catalog()
 
-        if not catalog:
-            raise RuntimeError(
-                "The tracker database is empty. Open My Tracker > "
-                "Import Spreadsheet to import the catalog "
-                "and your tracker history."
-            )
-
         metadata = tracker_database.metadata()
         fxpak_settings = {
             "SDRoot": str(
@@ -22893,6 +23448,7 @@ finally {
         ] = {}
 
         for game in catalog:
+            smwc_id = str(game.get("smwc_id", "")).strip()
             mapping_key = str(
                 game.get(
                     "mapping_key",
@@ -22905,6 +23461,12 @@ finally {
                     "",
                 )
             ).strip()
+
+            if not rom_path and smwc_id:
+                rom_path = fxpak_path_map.get(
+                    ("SMWC:" + smwc_id).casefold(),
+                    "",
+                )
 
             if not rom_path and mapping_key:
                 rom_path = fxpak_path_map.get(
@@ -22944,6 +23506,26 @@ finally {
                     mapped_filename_key,
                     [],
                 ).append(game)
+
+            # The FXPAK-safe alias is deterministic from the catalog record.
+            # Index it even before the first saved launch mapping so a ROM
+            # copied by an older build still resolves to the original title.
+            if rom_builder_fxpak_title_requires_alias(game):
+                safe_filename_key = normalize_title(
+                    rom_builder_fxpak_safe_title(
+                        game.get("title", ""),
+                        game.get("smwc_id", ""),
+                    )
+                )
+                if (
+                    safe_filename_key
+                    and safe_filename_key != key
+                    and safe_filename_key != mapped_filename_key
+                ):
+                    database.setdefault(
+                        safe_filename_key,
+                        [],
+                    ).append(game)
 
         self.hack_catalog = catalog
         self.fxpak_settings = fxpak_settings
@@ -24945,6 +25527,7 @@ finally {
         self.start_qusb2snes_if_needed()
 
         if self.stop_event.is_set():
+            self.connection_released_event.set()
             return
 
         ws, device = self.connect_to_fxpak()
@@ -24962,7 +25545,10 @@ finally {
         last_timer_write = 0.0
 
         try:
-            while not self.stop_event.is_set():
+            while (
+                not self.stop_event.is_set()
+                and not self.connection_pause_event.is_set()
+            ):
                 self.process_commands()
 
                 rom_path = self.get_loaded_rom_path(ws)
@@ -25125,6 +25711,7 @@ finally {
                 ws.close()
             except Exception:
                 pass
+            self.connection_released_event.set()
 
     def _main_loop(self) -> None:
         self.write_no_game_files()
@@ -25165,6 +25752,18 @@ finally {
             )
 
         while not self.stop_event.is_set():
+            with self.connection_gate_lock:
+                connection_paused = self.connection_pause_event.is_set()
+                if connection_paused:
+                    self.connection_released_event.set()
+                else:
+                    # Claim the bridge before releasing the gate. A file job
+                    # that pauses immediately afterward will now wait until
+                    # _run_connection closes this connection in its finally.
+                    self.connection_released_event.clear()
+            if connection_paused:
+                self.stop_event.wait(CHECK_INTERVAL_SECONDS)
+                continue
             try:
                 self._run_connection(self.database)
 
@@ -25484,6 +26083,7 @@ class TrackerApp:
         self.catalog_refresh_cancel_event = threading.Event()
         self.catalog_freshness_thread: threading.Thread | None = None
         self.catalog_freshness_cancel_event = threading.Event()
+        self.catalog_freshness_generation = 0
         self.catalog_menu: tk.Menu | None = None
         self.catalog_version_menu_index: int | None = None
         self.catalog_refresh_menu_index: int | None = None
@@ -25522,6 +26122,7 @@ class TrackerApp:
         self.obs_settings_dialog: tk.Toplevel | None = None
         self.welcome_setup_dialog: tk.Toplevel | None = None
         self.guided_setup_dialog: tk.Toplevel | None = None
+        self.obs_setup_choice_dialog: tk.Toplevel | None = None
         self.guided_obs_dialog: tk.Toplevel | None = None
         self.livesplit_obs_guide_dialog: tk.Toplevel | None = None
         self.livesplit_install_in_progress: set[str] = set()
@@ -25532,6 +26133,8 @@ class TrackerApp:
         ] | None = None
         self._guided_setup_stage = ""
         self._guided_setup_software_choice = ""
+        self._guided_setup_software_selected: set[str] = set()
+        self._guided_setup_software_completed: set[str] = set()
         self._guided_setup_flash_widget: tk.Widget | None = None
         self._guided_setup_flash_after_id: str | None = None
         self._guided_setup_flash_original_bg = ""
@@ -28806,6 +29409,12 @@ class TrackerApp:
             self.open_guided_obs_text_setup,
             "sheet",
         )
+        add_mario_command(
+            setup_guide_menu,
+            self._setup_guide_text("livesplit_setup"),
+            self.open_livesplit_obs_setup_guide,
+            "clock",
+        )
         help_menu.add_cascade(
             label=self._setup_guide_text("setup_menu"),
             menu=setup_guide_menu,
@@ -29285,7 +29894,7 @@ class TrackerApp:
 
         existing = self._find_optional_software_executable(software)
         if existing is not None:
-            use_existing = messagebox.askyesno(
+            use_existing = self._ask_localized_yes_no(
                 f"{name} {self._translate_ui_text('Found')}",
                 (
                     self._format_ui_text(
@@ -29332,7 +29941,7 @@ class TrackerApp:
                 ),
                 parent=self.root,
             ):
-                return
+                return False
 
         dialog, status_variable = self._show_optional_install_progress(
             f"Set Up {name}"
@@ -30971,7 +31580,7 @@ class TrackerApp:
 
         title_bar = tk.Frame(
             dialog,
-            bg=THEME["orange"],
+            bg=THEME["blue"],
             padx=self._ui_px(18),
             pady=self._ui_px(12),
         )
@@ -30981,7 +31590,7 @@ class TrackerApp:
             text=localized_title.upper(),
             font=("Segoe UI", 14, "bold"),
             fg="white",
-            bg=THEME["orange"],
+            bg=THEME["blue"],
             anchor="center",
             justify="center",
         ).pack(fill="x")
@@ -31166,6 +31775,123 @@ class TrackerApp:
         dialog.grab_set()
         ok_button.focus_set()
         owner.wait_window(dialog)
+
+    def reset_smwcentral_catalog(self) -> None:
+        """Reset the downloaded catalog while preserving personal data."""
+        parent = self.downloader_dialog or self.root
+        if (
+            self.catalog_refresh_thread is not None
+            and self.catalog_refresh_thread.is_alive()
+        ):
+            self._show_localized_info(
+                "SMW Central Catalog",
+                (
+                    "Finish or cancel the current catalog refresh before "
+                    "resetting the catalog."
+                ),
+                parent=parent,
+            )
+            return
+
+        confirmed = self._ask_localized_yes_no(
+            "Reset SMW Central Catalog?",
+            (
+                "Remove every moderated and waiting hack from the local "
+                "SMW Central catalog?\n\n"
+                "Your tracked progress, ratings, notes, custom hacks, ROM "
+                "mappings, and ROM files will be preserved. A recovery "
+                "backup will be created first.\n\n"
+                "You can download the catalog again with Refresh Moderated "
+                "Hacks from SMW Central."
+            ),
+            parent=parent,
+        )
+        if not confirmed:
+            return
+
+        backup_path = self._create_recovery_backup(
+            reason="before_catalog_reset",
+        )
+        if backup_path is None:
+            self._show_localized_info(
+                "Backup Failed",
+                (
+                    "The catalog could not be reset because a recovery "
+                    "backup could not be created."
+                ),
+                parent=parent,
+            )
+            return
+
+        try:
+            summary = self.stats_db.reset_smwcentral_catalog()
+        except Exception as error:
+            append_error_log(
+                "SMW Central catalog reset failed",
+                traceback.format_exc(),
+            )
+            self._show_localized_info(
+                "SMW Central Catalog",
+                str(error),
+                parent=parent,
+            )
+            return
+
+        self.hack_catalog = self.stats_db.load_catalog()
+        self._downloader_catalog_metadata_cache = None
+        self._catalog_playable_filter_cache = None
+        self._catalog_direct_file_cache = {}
+        self._refresh_database_status()
+        self._check_catalog_freshness_async(force=True)
+
+        if (
+            self.worker is not None
+            and self.worker.thread is not None
+            and self.worker.thread.is_alive()
+        ):
+            self.worker.reload_spreadsheet(
+                self.spreadsheet_path_var.get().strip()
+            )
+
+        if (
+            self.game_library_dialog is not None
+            and self.game_library_dialog.winfo_exists()
+        ):
+            self._populate_game_library()
+        if (
+            self.tracker_list_dialog is not None
+            and self.tracker_list_dialog.winfo_exists()
+        ):
+            self._refresh_my_tracker()
+        if (
+            self.stats_overview_dialog is not None
+            and self.stats_overview_dialog.winfo_exists()
+        ):
+            self.open_stats_overview()
+        if (
+            self.downloader_dialog is not None
+            and self.downloader_dialog.winfo_exists()
+        ):
+            self._refresh_downloader_preview()
+
+        self.status_var.set(
+            self._translate_ui_text("Catalog reset complete.")
+        )
+        message = self._translate_ui_text(
+            "The SMW Central catalog was reset. {removed} catalog entries "
+            "were removed. {preserved} tracked or mapped entries were "
+            "preserved as personal records.\n\nA recovery backup was "
+            "created. Select Refresh Moderated Hacks from SMW Central "
+            "whenever you want to download the catalog again."
+        ).format(
+            removed=f"{int(summary.get('removed', 0)):,}",
+            preserved=f"{int(summary.get('preserved', 0)):,}",
+        )
+        self._show_localized_info(
+            "Catalog Reset Complete",
+            message,
+            parent=parent,
+        )
 
     def refresh_smwcentral_catalog(
         self,
@@ -31447,7 +32173,7 @@ class TrackerApp:
             self.stats_db.load_catalog()
         )
         self._refresh_database_status()
-        self._check_catalog_freshness_async()
+        self._check_catalog_freshness_async(force=True)
 
         if (
             self.worker is not None
@@ -32174,50 +32900,6 @@ class TrackerApp:
             sticky="w",
             padx=(8, 0),
             pady=7,
-        )
-
-        livesplit_help = tk.Frame(
-            body,
-            bg="#F9F5FF",
-        )
-        livesplit_help.grid(
-            row=15,
-            column=0,
-            columnspan=4,
-            sticky="ew",
-            pady=(8, 2),
-        )
-        livesplit_help.columnconfigure(0, weight=1)
-        tk.Label(
-            livesplit_help,
-            text=self._setup_guide_text("livesplit_obs_note"),
-            font=("Segoe UI", 9, "bold"),
-            fg="#7F6000",
-            bg="#F9F5FF",
-            justify="left",
-            anchor="w",
-            wraplength=760,
-        ).grid(
-            row=0,
-            column=0,
-            sticky="ew",
-            padx=(0, 14),
-        )
-        self._make_action_button(
-            livesplit_help,
-            text=self._setup_guide_text("livesplit_obs_button"),
-            command=lambda: self.open_livesplit_obs_setup_guide(
-                local_game_port.get(),
-                local_level_port.get(),
-            ),
-            bg=THEME["blue"],
-            active_bg=THEME["navy"],
-            width=30,
-            pad_y=6,
-        ).grid(
-            row=0,
-            column=1,
-            sticky="e",
         )
 
         tk.Label(
@@ -36056,7 +36738,7 @@ class TrackerApp:
             waiting=f"{waiting_count:,}",
         )
 
-    def _check_catalog_freshness_async(self) -> None:
+    def _check_catalog_freshness_async(self, *, force: bool = False) -> None:
         if hasattr(self, "catalog_last_refresh_var"):
             self.catalog_last_refresh_var.set(
                 self._catalog_last_refresh_status_text()
@@ -36066,7 +36748,9 @@ class TrackerApp:
             self.catalog_freshness_thread is not None
             and self.catalog_freshness_thread.is_alive()
         ):
-            return
+            if not force:
+                return
+            self.catalog_freshness_cancel_event.set()
 
         if hasattr(self, "catalog_new_hacks_var"):
             self.catalog_freshness_state = "checking"
@@ -36074,14 +36758,24 @@ class TrackerApp:
                 self._catalog_freshness_status_text()
             )
 
-        self.catalog_freshness_cancel_event.clear()
+        self.catalog_freshness_generation = int(
+            getattr(self, "catalog_freshness_generation", 0)
+        ) + 1
+        generation = self.catalog_freshness_generation
+        cancel_event = threading.Event()
+        self.catalog_freshness_cancel_event = cancel_event
         self.catalog_freshness_thread = threading.Thread(
             target=self._catalog_freshness_worker,
+            args=(generation, cancel_event),
             daemon=True,
         )
         self.catalog_freshness_thread.start()
 
-    def _catalog_freshness_worker(self) -> None:
+    def _catalog_freshness_worker(
+        self,
+        generation: int,
+        cancel_event: threading.Event,
+    ) -> None:
         waiting_available = 0
         try:
             metadata = self.stats_db.metadata()
@@ -36101,7 +36795,7 @@ class TrackerApp:
 
             payload = github_catalog_get_json(
                 GITHUB_CATALOG_VERSION_URL,
-                self.catalog_freshness_cancel_event,
+                cancel_event,
             )
             local_count = self.stats_db.catalog_status_counts().get(
                 "moderated", 0
@@ -36109,6 +36803,8 @@ class TrackerApp:
             available = catalog_available_new_hack_count(
                 local_count,
                 payload,
+                metadata.get("Catalog Sequence"),
+                metadata.get("Catalog Source", ""),
             )
 
             if available is None:
@@ -36119,15 +36815,17 @@ class TrackerApp:
             self.event_queue.put(
                 {
                     "type": "catalog_freshness",
+                    "generation": generation,
                     "available": available,
                     "waiting_available": waiting_available,
                 }
             )
         except Exception as error:
-            if not self.catalog_freshness_cancel_event.is_set():
+            if not cancel_event.is_set():
                 self.event_queue.put(
                     {
                         "type": "catalog_freshness",
+                        "generation": generation,
                         "available": None,
                         "waiting_available": waiting_available,
                         "error": str(error),
@@ -45157,17 +45855,17 @@ class TrackerApp:
 
             self._close_hack_downloader()
 
-        if not self.hack_catalog:
+        # A fresh install intentionally starts with an empty per-user database.
+        # The catalog viewer must still open so its SMW Central refresh button
+        # can populate that database.  Only the downloader remains unavailable
+        # until at least one catalog record exists.
+        if not self.hack_catalog and not catalog_view_only:
             messagebox.showinfo(
+                "Hack Downloader",
                 (
-                    "SMW Central Catalog"
-                    if catalog_view_only
-                    else "Hack Downloader"
-                ),
-                (
-                    "The tracker database catalog is still loading. "
-                    "Wait for the Tracker Database status to show Loaded, "
-                    "then open this window again."
+                    "Your SMW Central catalog has not been downloaded yet. "
+                    "Open SMW Central Catalog and select Refresh Moderated "
+                    "Hacks from SMW Central first."
                 ),
                 parent=self.root,
             )
@@ -45743,7 +46441,10 @@ class TrackerApp:
             text=(
                 "Leave the SD card in the FXPAK Pro. Connect its USB data "
                 "cable and keep QUsb2Snes running; this is the folder on "
-                "the card, not a Windows folder."
+                "the card, not a Windows folder.\n"
+                "Local ROMs with emoji titles will also be uploaded using "
+                "readable FXPAK-only filenames. Their titles inside the app "
+                "stay unchanged."
             ),
             font=("Segoe UI", 8),
             fg=palette["muted"],
@@ -46439,6 +47140,15 @@ class TrackerApp:
                 width=33,
                 pad_y=5,
             ).pack(side="left", padx=(8, 0))
+            self._make_action_button(
+                button_panel,
+                text="Reset Catalog",
+                command=self.reset_smwcentral_catalog,
+                bg=THEME["red"],
+                active_bg="#B92824",
+                width=15,
+                pad_y=5,
+            ).pack(side="left", padx=(8, 0))
         else:
             self._make_action_button(
                 button_panel,
@@ -46717,8 +47427,10 @@ class TrackerApp:
             )
         ).strip()
         ws: websocket.WebSocket | None = None
+        paused_worker: TrackerWorker | None = None
 
         try:
+            paused_worker = self._pause_tracker_bridge_for_fxpak_files()
             self._ensure_qusb2snes_running(
                 websocket_url
             )
@@ -46750,6 +47462,7 @@ class TrackerApp:
                     ws.close()
                 except Exception:
                     pass
+            self._resume_tracker_bridge_after_fxpak_files(paused_worker)
 
         self.downloader_widgets[
             "upload_via_usb_var"
@@ -47238,6 +47951,11 @@ class TrackerApp:
         waiting_value = self.downloader_widgets[
             "waiting_var"
         ].get()
+        repair_fxpak_emoji_names = bool(
+            not catalog_view_only
+            and self.downloader_widgets.get("upload_via_usb_var") is not None
+            and self.downloader_widgets["upload_via_usb_var"].get()
+        )
 
         catalog_playable_results: dict[str, bool] = {}
         if catalog_view_only:
@@ -47321,6 +48039,8 @@ class TrackerApp:
         for catalog_entry in metadata_cache["entries"]:
             catalog_index = int(catalog_entry["catalog_index"])
             game = catalog_entry["game"]
+            if catalog_view_only and bool(game.get("is_custom", False)):
+                continue
             if search_text:
                 if search_text not in catalog_entry["search_text"]:
                     continue
@@ -47460,10 +48180,43 @@ class TrackerApp:
                 "download_found_path"
             ] = found_path
 
+            fxpak_alias_repair = False
+            if (
+                repair_fxpak_emoji_names
+                and library_root is not None
+                and rom_builder_fxpak_title_requires_alias(display_game)
+                and not self._catalog_game_has_fxpak_alias_mapping(
+                    display_game
+                )
+            ):
+                (
+                    local_exists,
+                    _local_status,
+                    local_found_path,
+                ) = rom_builder_existing_game(
+                    display_game,
+                    library_root,
+                    existing_by_name,
+                    existing_by_id,
+                    existing_paths=existing_paths,
+                    probe_filesystem=True,
+                    include_fxpak_mapping=False,
+                )
+                if local_exists:
+                    fxpak_alias_repair = True
+                    display_game["download_found_path"] = local_found_path
+                    display_game["download_status"] = self._translate_ui_text(
+                        "Ready for FXPAK emoji-name repair"
+                    )
+            display_game["download_fxpak_alias_repair"] = fxpak_alias_repair
+
             if catalog_view_only:
                 pass
             elif exists:
-                existing_count += 1
+                if fxpak_alias_repair:
+                    missing.append(display_game)
+                else:
+                    existing_count += 1
             elif not str(
                 display_game.get(
                     "download_url",
@@ -47709,7 +48462,13 @@ class TrackerApp:
                 )
             )
 
-        if catalog_view_only:
+        if catalog_view_only and not self.hack_catalog:
+            status_message = self._translate_ui_text(
+                "No SMW Central catalog has been downloaded yet. "
+                "Select Refresh Moderated Hacks from SMW Central below "
+                "to retrieve it."
+            )
+        elif catalog_view_only:
             status_message = self._format_ui_text(
                 "Catalog contains {moderated} moderated and {waiting} waiting "
                 "hack(s); showing {count} matching. "
@@ -48543,7 +49302,9 @@ class TrackerApp:
 
         if upload_via_usb:
             test_ws: websocket.WebSocket | None = None
+            paused_worker: TrackerWorker | None = None
             try:
+                paused_worker = self._pause_tracker_bridge_for_fxpak_files()
                 self._ensure_qusb2snes_running(
                     websocket_url
                 )
@@ -48578,6 +49339,7 @@ class TrackerApp:
                         test_ws.close()
                     except Exception:
                         pass
+                self._resume_tracker_bridge_after_fxpak_files(paused_worker)
 
         if games_override is None:
             self._refresh_downloader_preview()
@@ -48618,7 +49380,15 @@ class TrackerApp:
 
         confirmation_parts = [
             self._translate_ui_text(
-                "Download and patch {count} missing moderated hack(s)?"
+                (
+                    "Download missing hacks and repair FXPAK filenames for "
+                    "{count} matching hack(s)?"
+                    if any(
+                        bool(game.get("download_fxpak_alias_repair", False))
+                        for game in games
+                    )
+                    else "Download and patch {count} missing moderated hack(s)?"
+                )
             ).format(count=f"{len(games):,}"),
             f"{self._translate_ui_text('Base ROM:')}\n{base_rom_path}",
             f"{self._translate_ui_text('Output library:')}\n{library_root}",
@@ -48636,13 +49406,24 @@ class TrackerApp:
                 )
                 + f"\n{usb_root}"
             )
-        confirmation_parts.append(
-            self._translate_ui_text(
-                "Games already found in the local library or mapped in the "
-                "FXPAK game library will be skipped again immediately before "
-                "each download."
+        if any(
+            bool(game.get("download_fxpak_alias_repair", False))
+            for game in games
+        ):
+            confirmation_parts.append(
+                self._translate_ui_text(
+                    "Existing local ROMs with emoji titles are included for "
+                    "FXPAK upload. Other existing games are skipped."
+                )
             )
-        )
+        else:
+            confirmation_parts.append(
+                self._translate_ui_text(
+                    "Games already found in the local library or mapped in the "
+                    "FXPAK game library will be skipped again immediately before "
+                    "each download."
+                )
+            )
         confirmed = self._ask_localized_yes_no(
             self._translate_ui_text("Download Moderated Hacks"),
             "\n\n".join(confirmation_parts),
@@ -48788,6 +49569,8 @@ class TrackerApp:
         fatal_error = ""
         usb_ws: websocket.WebSocket | None = None
         usb_device = ""
+        tracker_bridge_pause_attempted = False
+        paused_worker: TrackerWorker | None = None
 
         try:
             base_rom = base_rom_path.read_bytes()
@@ -48875,12 +49658,92 @@ class TrackerApp:
                 )
 
                 if exists:
+                    (
+                        local_exists,
+                        _local_status,
+                        local_existing_path,
+                    ) = rom_builder_existing_game(
+                        game,
+                        library_root,
+                        existing_by_name,
+                        existing_by_id,
+                        include_fxpak_mapping=False,
+                    )
+                    usb_upload_status = ""
+                    usb_upload_error = ""
+                    fxpak_path = ""
+                    if usb_root and local_exists:
+                        try:
+                            fxpak_upload_title = (
+                                rom_builder_fxpak_safe_title(
+                                    game.get("title", ""),
+                                    game.get("smwc_id", ""),
+                                )
+                            )
+                            self._post_downloader_progress(
+                                current - 1,
+                                total,
+                                (
+                                    f"[{current:,}/{total:,}] "
+                                    + self._translate_ui_text(
+                                        "Uploading existing ROM to FXPAK Pro: "
+                                        "{title}"
+                                    ).format(title=fxpak_upload_title)
+                                ),
+                            )
+                            if usb_ws is None:
+                                if not tracker_bridge_pause_attempted:
+                                    paused_worker = (
+                                        self._pause_tracker_bridge_for_fxpak_files()
+                                    )
+                                    tracker_bridge_pause_attempted = True
+                                (
+                                    usb_ws,
+                                    usb_device,
+                                ) = self._connect_fxpak_for_launch(
+                                    websocket_url,
+                                    preferred_device,
+                                    "FXPAK Pro",
+                                )
+                                usb_ws.settimeout(120)
+                            relative_rom_path = (
+                                rom_builder_fxpak_relative_rom_path(
+                                    game
+                                ).as_posix()
+                            )
+                            fxpak_path = self._normalize_fxpak_sd_path(
+                                usb_root.rstrip("/")
+                                + "/"
+                                + relative_rom_path
+                            )
+                            usb_upload_status = (
+                                self._upload_catalog_rom_to_fxpak_usb(
+                                    usb_ws,
+                                    Path(local_existing_path),
+                                    fxpak_path,
+                                    game,
+                                )
+                            )
+                        except Exception as error:
+                            usb_upload_status = "failed"
+                            usb_upload_error = str(error)
+                            fxpak_path = ""
+                            if usb_ws is not None:
+                                try:
+                                    usb_ws.close()
+                                except Exception:
+                                    pass
+                                usb_ws = None
                     results.append(
                         {
                             "status": "already_exists",
                             "title": title,
                             "smwc_id": smwc_id,
                             "output_path": existing_path,
+                            "fxpak_path": fxpak_path,
+                            "usb_upload_status": usb_upload_status,
+                            "usb_upload_error": usb_upload_error,
+                            "usb_device": usb_device,
                             "message": existing_status,
                         }
                     )
@@ -48889,7 +49752,23 @@ class TrackerApp:
                         total,
                         (
                             f"[{current:,}/{total:,}] "
-                            f"Skipped existing: {title}"
+                            +
+                            (
+                                self._translate_ui_text(
+                                    "Uploaded existing ROM: {title}"
+                                ).format(title=title)
+                                if usb_upload_status in {
+                                    "uploaded",
+                                    "already_on_usb",
+                                }
+                                else (
+                                    self._translate_ui_text(
+                                        "FXPAK upload failed: {title}"
+                                    ).format(title=title)
+                                    if usb_upload_status == "failed"
+                                    else f"Skipped existing: {title}"
+                                )
+                            )
                         ),
                     )
                     continue
@@ -49077,15 +49956,27 @@ class TrackerApp:
 
                             if usb_root:
                                 try:
+                                    fxpak_upload_title = (
+                                        rom_builder_fxpak_safe_title(
+                                            game.get("title", ""),
+                                            game.get("smwc_id", ""),
+                                        )
+                                    )
                                     self._post_downloader_progress(
                                         current - 1,
                                         total,
                                         (
                                             f"[{current:,}/{total:,}] "
-                                            f"Uploading to FXPAK Pro: {title}"
+                                            "Uploading to FXPAK Pro: "
+                                            + fxpak_upload_title
                                         ),
                                     )
                                     if usb_ws is None:
+                                        if not tracker_bridge_pause_attempted:
+                                            paused_worker = (
+                                                self._pause_tracker_bridge_for_fxpak_files()
+                                            )
+                                            tracker_bridge_pause_attempted = True
                                         (
                                             usb_ws,
                                             usb_device,
@@ -49109,10 +50000,11 @@ class TrackerApp:
                                         )
                                     )
                                     usb_upload_status = (
-                                        self._upload_rom_to_fxpak_usb(
+                                        self._upload_catalog_rom_to_fxpak_usb(
                                             usb_ws,
                                             output_path,
                                             usb_fxpak_path,
+                                            game,
                                         )
                                     )
                                     fxpak_path = usb_fxpak_path
@@ -49243,6 +50135,7 @@ class TrackerApp:
                 usb_ws.close()
             except Exception:
                 pass
+        self._resume_tracker_bridge_after_fxpak_files(paused_worker)
 
         self.root.after(
             0,
@@ -50994,6 +51887,45 @@ class TrackerApp:
             return True
         return False
 
+    def _catalog_game_has_fxpak_alias_mapping(
+        self,
+        game: dict[str, Any],
+    ) -> bool:
+        """Recognize a saved readable FXPAK filename for an emoji title."""
+        expected_filename = rom_builder_fxpak_relative_rom_path(
+            game
+        ).name.casefold()
+        mapping_keys = {
+            str(game.get("mapping_key", "")).casefold().strip(),
+            self._catalog_mapping_key(game).casefold().strip(),
+        }
+        smwc_id = str(game.get("smwc_id", "")).strip()
+        if smwc_id:
+            mapping_keys.add(("smwc:" + smwc_id).casefold())
+        title = str(game.get("title", "")).strip()
+        if title:
+            mapping_keys.add(("title:" + title).casefold())
+        mapping_keys.discard("")
+
+        candidate_paths = [str(game.get("rom_path", "")).strip()]
+        for mappings in (
+            self.config.get("fxpak_rom_mappings", {}),
+            getattr(self, "fxpak_path_map", {}),
+        ):
+            if not isinstance(mappings, dict):
+                continue
+            for mapping_key in mapping_keys:
+                candidate_paths.append(
+                    str(mappings.get(mapping_key, "")).strip()
+                )
+
+        return any(
+            candidate.startswith("/")
+            and PurePosixPath(candidate).name.casefold() == expected_filename
+            for candidate in candidate_paths
+            if candidate
+        )
+
     def _catalog_game_exists_in_local_library(
         self,
         game: dict[str, Any],
@@ -51448,9 +52380,9 @@ class TrackerApp:
             messagebox.showinfo(
                 platform_name + " Game Library",
                 (
-                    "The tracker database game list is still loading. "
-                    "Wait for the Tracker Database status to show Loaded, "
-                    "then click the platform icon again."
+                    "Your SMW Central catalog has not been downloaded yet. "
+                    "Open SMW Central Catalog and select Refresh Moderated "
+                    "Hacks from SMW Central first."
                 ),
                 parent=self.root,
             )
@@ -53449,11 +54381,42 @@ class TrackerApp:
         )
         launch_thread.start()
 
+    def _pause_tracker_bridge_for_fxpak_files(
+        self,
+    ) -> TrackerWorker | None:
+        """Temporarily release SNI/QUsb2Snes for exclusive file commands."""
+        worker = getattr(self, "worker", None)
+        if (
+            worker is None
+            or worker.thread is None
+            or not worker.thread.is_alive()
+        ):
+            return None
+        if not worker.pause_connection(timeout=15.0):
+            raise RuntimeError(
+                self._translate_ui_text(
+                    "The live tracker could not release the FXPAK Pro "
+                    "connection for the SD-card transfer. Select Refresh "
+                    "and try again."
+                )
+            )
+        return worker
+
+    @staticmethod
+    def _resume_tracker_bridge_after_fxpak_files(
+        worker: TrackerWorker | None,
+    ) -> None:
+        if worker is not None:
+            worker.resume_connection()
+
     def _launch_catalog_game_thread(
         self,
         game: dict[str, Any],
     ) -> None:
+        paused_worker: TrackerWorker | None = None
         try:
+            if (self.platform_var.get().strip() or "FXPAK Pro") == "FXPAK Pro":
+                paused_worker = self._pause_tracker_bridge_for_fxpak_files()
             result = self._run_fxpak_game_launch(game)
             self.root.after(
                 0,
@@ -53474,6 +54437,8 @@ class TrackerApp:
                     )
                 ),
             )
+        finally:
+            self._resume_tracker_bridge_after_fxpak_files(paused_worker)
 
     def _finish_catalog_game_launch(
         self,
@@ -53593,6 +54558,12 @@ class TrackerApp:
                     mapped = Path(mapped_text)
                     if mapped.is_file():
                         return mapped, "saved local ROM mapping"
+
+        local_text = str(game.get("local_rom_path", "")).strip()
+        if local_text:
+            local_path = Path(local_text)
+            if local_path.is_file():
+                return local_path, "catalog local ROM path"
 
         direct_text = str(game.get("rom_path", "")).strip()
         if direct_text:
@@ -54093,17 +55064,18 @@ class TrackerApp:
         game: dict[str, Any],
         rom_path: str,
     ) -> None:
-        mapping_key = str(
-            game.get("mapping_key", "")
-        ).casefold().strip()
-        if not mapping_key:
-            smwc_id = str(game.get("smwc_id", "")).strip()
-            mapping_key = (
-                "smwc:" + smwc_id
-                if smwc_id
-                else "title:"
-                + str(game.get("title", "")).casefold().strip()
-            )
+        smwc_id = str(game.get("smwc_id", "")).strip()
+        if smwc_id:
+            mapping_key = "smwc:" + smwc_id
+        else:
+            mapping_key = str(
+                game.get("mapping_key", "")
+            ).casefold().strip()
+            if not mapping_key:
+                mapping_key = (
+                    "title:"
+                    + str(game.get("title", "")).casefold().strip()
+                )
 
         mappings = self.config.get(
             "fxpak_rom_mappings",
@@ -54208,7 +55180,13 @@ class TrackerApp:
         python_path = Path(settings["PythonPath"])
         script_path = Path(settings["LauncherScriptPath"])
 
-        if python_path.is_file() and script_path.is_file():
+        # Emoji aliases use the in-app launcher because it can repair a
+        # missing readable filename and save the SMW Central ID relationship.
+        if (
+            not rom_builder_fxpak_title_requires_alias(game)
+            and python_path.is_file()
+            and script_path.is_file()
+        ):
             return self._run_installed_fxpak_launcher(
                 game,
                 settings,
@@ -55367,6 +56345,48 @@ class TrackerApp:
 
         return "uploaded"
 
+    def _upload_catalog_rom_to_fxpak_usb(
+        self,
+        ws: websocket.WebSocket,
+        source_path: Path,
+        remote_path: str,
+        game: dict[str, Any],
+    ) -> str:
+        """Send a catalog ROM with a safe name on both sides of the transfer."""
+        source_path = Path(source_path)
+        safe_filename = PurePosixPath(
+            self._normalize_fxpak_sd_path(remote_path)
+        ).name
+        if not safe_filename:
+            safe_filename = (
+                rom_builder_fxpak_safe_title(
+                    game.get("title", ""),
+                    game.get("smwc_id", ""),
+                )
+                + source_path.suffix
+            )
+
+        # QUsb2Snes only receives the remote path, but staging the source under
+        # the same readable filename guarantees that no emoji filename enters
+        # any part of the FXPAK USB transfer workflow or its diagnostics.
+        if source_path.name == safe_filename:
+            return self._upload_rom_to_fxpak_usb(
+                ws,
+                source_path,
+                remote_path,
+            )
+
+        with tempfile.TemporaryDirectory(
+            prefix="smw_fxpak_upload_"
+        ) as temporary_directory:
+            staged_source = Path(temporary_directory) / safe_filename
+            shutil.copyfile(source_path, staged_source)
+            return self._upload_rom_to_fxpak_usb(
+                ws,
+                staged_source,
+                remote_path,
+            )
+
     def _ensure_qusb2snes_running(
         self,
         websocket_url: str,
@@ -55600,14 +56620,19 @@ class TrackerApp:
     ) -> list[str]:
         root = self._normalize_fxpak_sd_path(sd_root)
         title = str(game.get("title", "")).strip()
-        raw_segment = (
-            title[0].upper()
-            if title and "A" <= title[0].upper() <= "Z"
-            else "#"
+        safe_title = rom_builder_fxpak_safe_title(
+            title,
+            game.get("smwc_id", ""),
         )
-        segments = list(
-            dict.fromkeys((self._alphabet_segment(title), raw_segment, "#"))
-        )
+        raw_segments = []
+        for candidate_title in (title, safe_title):
+            raw_segments.extend(
+                (
+                    self._alphabet_segment(candidate_title),
+                    rom_builder_alpha_folder(candidate_title),
+                )
+            )
+        segments = list(dict.fromkeys((*raw_segments, "#")))
         folders = [
             (("" if root == "/" else root) + "/" + segment)
             for segment in segments
@@ -55629,14 +56654,43 @@ class TrackerApp:
     ) -> tuple[str, str]:
         mapped_path = str(game.get("rom_path", "")).strip()
         if mapped_path:
-            return (
-                self._normalize_fxpak_sd_path(mapped_path),
-                "saved mapping",
+            normalized_mapped_path = self._normalize_fxpak_sd_path(
+                mapped_path
             )
+            if not rom_builder_fxpak_title_requires_alias(game):
+                return normalized_mapped_path, "saved mapping"
 
-        target_key = normalize_title(
-            str(game.get("title", ""))
+            # Validate emoji aliases so a stale ID mapping cannot point to a
+            # file that was never uploaded or was later removed from the card.
+            mapped_parent = str(PurePosixPath(normalized_mapped_path).parent)
+            mapped_name = PurePosixPath(normalized_mapped_path).name.casefold()
+            try:
+                mapped_entries = self._list_fxpak_folder(
+                    ws,
+                    mapped_parent,
+                )
+            except Exception:
+                # Preserve the old fast path when the device cannot list files.
+                return normalized_mapped_path, "saved mapping"
+            if any(
+                PurePosixPath(entry).name.casefold() == mapped_name
+                for entry in mapped_entries
+            ):
+                return normalized_mapped_path, "saved SMW Central ID mapping"
+
+        title = str(game.get("title", ""))
+        safe_title = rom_builder_fxpak_safe_title(
+            title,
+            game.get("smwc_id", ""),
         )
+        target_keys = {
+            key
+            for key in (
+                normalize_title(title),
+                normalize_title(safe_title),
+            )
+            if key
+        }
         best_path = ""
         best_score = 0.0
 
@@ -55660,7 +56714,7 @@ class TrackerApp:
                 if not filename_key:
                     continue
 
-                if filename_key == target_key:
+                if filename_key in target_keys:
                     path = (
                         entry
                         if entry.startswith("/")
@@ -55671,11 +56725,17 @@ class TrackerApp:
                         "exact SD-card title match",
                     )
 
-                score = SequenceMatcher(
-                    None,
-                    target_key,
-                    filename_key,
-                ).ratio()
+                score = max(
+                    (
+                        SequenceMatcher(
+                            None,
+                            target_key,
+                            filename_key,
+                        ).ratio()
+                        for target_key in target_keys
+                    ),
+                    default=0.0,
+                )
                 if score > best_score:
                     best_score = score
                     best_path = (
@@ -55711,11 +56771,42 @@ class TrackerApp:
         )
 
         try:
-            rom_path, method = self._resolve_fxpak_rom_path(
-                ws,
-                game,
-                settings.get("SDRoot", "/All_Hacks"),
-            )
+            try:
+                rom_path, method = self._resolve_fxpak_rom_path(
+                    ws,
+                    game,
+                    settings.get("SDRoot", "/All_Hacks"),
+                )
+            except FileNotFoundError:
+                if not rom_builder_fxpak_title_requires_alias(game):
+                    raise
+
+                # The catalog keeps the real title (and its emoji), but the
+                # FXPAK receives a readable filename. If an older installation
+                # never uploaded that alias, repair it automatically at launch.
+                local_rom, local_method = self._resolve_local_rom_path(
+                    game,
+                    "FXPAK Pro",
+                )
+                relative_path = rom_builder_fxpak_relative_rom_path(
+                    game
+                ).as_posix()
+                sd_root = self._normalize_fxpak_sd_path(
+                    settings.get("SDRoot", "/All_Hacks")
+                )
+                rom_path = self._normalize_fxpak_sd_path(
+                    sd_root.rstrip("/") + "/" + relative_path
+                )
+                upload_status = self._upload_catalog_rom_to_fxpak_usb(
+                    ws,
+                    local_rom,
+                    rom_path,
+                    game,
+                )
+                method = (
+                    "readable FXPAK alias "
+                    f"({upload_status}; {local_method})"
+                )
             self._fxpak_request(
                 ws,
                 "Boot",
@@ -56580,6 +57671,8 @@ class TrackerApp:
             dark=(self.appearance_var.get() == "dark"),
         )
         self._guided_setup_software_choice = ""
+        self._guided_setup_software_selected = set()
+        self._guided_setup_software_completed = set()
         self._guided_setup_set_stage("downloads")
         dialog.after_idle(dialog.lift)
 
@@ -56626,13 +57719,51 @@ class TrackerApp:
             if downloads_menu is not None and connection_index is not None:
                 entries.append((downloads_menu, int(connection_index)))
             if connection_menu is not None:
-                entries.extend(
-                    (connection_menu, int(index))
+                option_names = (
+                    "sni",
+                    "qusb2snes",
+                    "retroarch",
+                )
+                option_indexes = tuple(
+                    int(index)
                     for index in getattr(
                         self,
                         "connection_option_menu_indexes",
                         (),
                     )
+                )
+                option_pairs = tuple(zip(option_names, option_indexes))
+                selected_software = set(
+                    getattr(
+                        self,
+                        "_guided_setup_software_selected",
+                        set(),
+                    )
+                )
+                completed_software = set(
+                    getattr(
+                        self,
+                        "_guided_setup_software_completed",
+                        set(),
+                    )
+                )
+                if (
+                    getattr(self, "_guided_setup_software_choice", "")
+                    == "sni_retroarch"
+                    and (selected_software or completed_software)
+                ):
+                    finished_or_chosen = (
+                        selected_software | completed_software
+                    )
+                    option_pairs = tuple(
+                        (name, index)
+                        for name, index in option_pairs
+                        if name in {"sni", "retroarch"}
+                        and name not in finished_or_chosen
+                    )
+                entries.extend(
+                    (connection_menu, index)
+                    for _name, index in option_pairs
                 )
         elif stage == "catalog":
             catalog_index = getattr(self, "smwcentral_catalog_menu_index", None)
@@ -56725,6 +57856,14 @@ class TrackerApp:
         if self._guided_setup_flash_widget is not None:
             self._guided_setup_flash_tick()
 
+    def _guided_setup_refresh_connection_flash(self) -> None:
+        if self._guided_setup_stage != "connection":
+            return
+        self._guided_setup_start_flash(
+            self._guided_setup_target_widget("connection"),
+            self._guided_setup_target_menu_entries("connection"),
+        )
+
     def _guided_setup_set_stage(self, stage: str) -> None:
         self._guided_setup_stage = stage
         title, detail = self._guided_setup_stage_copy(stage)
@@ -56800,13 +57939,71 @@ class TrackerApp:
                 self._guided_setup_software_choice = "qusb2snes"
             elif software in {"sni", "retroarch"}:
                 self._guided_setup_software_choice = "sni_retroarch"
+                selected_software = set(
+                    getattr(
+                        self,
+                        "_guided_setup_software_selected",
+                        set(),
+                    )
+                )
+                selected_software.add(software)
+                self._guided_setup_software_selected = selected_software
+                self._guided_setup_refresh_connection_flash()
         started = self.install_optional_software(software)
         if self._guided_setup_stage == "connection" and not started:
+            if software in {"sni", "retroarch"}:
+                selected_software = set(
+                    getattr(
+                        self,
+                        "_guided_setup_software_selected",
+                        set(),
+                    )
+                )
+                selected_software.discard(software)
+                self._guided_setup_software_selected = selected_software
+                if not selected_software and not getattr(
+                    self,
+                    "_guided_setup_software_completed",
+                    set(),
+                ):
+                    self._guided_setup_software_choice = ""
+                self._guided_setup_refresh_connection_flash()
             self.root.after(100, self._guided_setup_post_downloads_menu)
+
+    def _guided_optional_software_failed(self, software: str) -> None:
+        if self._guided_setup_stage != "connection":
+            return
+        selected_software = set(
+            getattr(
+                self,
+                "_guided_setup_software_selected",
+                set(),
+            )
+        )
+        selected_software.discard(str(software))
+        self._guided_setup_software_selected = selected_software
+        if not selected_software and not getattr(
+            self,
+            "_guided_setup_software_completed",
+            set(),
+        ):
+            self._guided_setup_software_choice = ""
+        self._guided_setup_refresh_connection_flash()
+        self.root.after(150, self._guided_setup_post_downloads_menu)
 
     def _guided_optional_software_completed(self, software: str) -> None:
         if self._guided_setup_stage != "connection":
             return
+
+        completed_software = set(
+            getattr(
+                self,
+                "_guided_setup_software_completed",
+                set(),
+            )
+        )
+        completed_software.add(str(software))
+        self._guided_setup_software_completed = completed_software
 
         def configured_file(config_key: str, variable: tk.StringVar | None = None) -> bool:
             value = str(self.config.get(config_key, "")).strip()
@@ -56817,15 +58014,22 @@ class TrackerApp:
         choice = self._guided_setup_software_choice
         ready = False
         if choice == "qusb2snes":
-            ready = configured_file("qusb2snes_path", self.qusb_path_var)
+            ready = (
+                "qusb2snes" in completed_software
+                and configured_file("qusb2snes_path", self.qusb_path_var)
+            )
         elif choice == "sni_retroarch":
             ready = (
+                {"sni", "retroarch"}.issubset(completed_software)
+                and
                 configured_file("sni_path", self.sni_path_var)
                 and configured_file("retroarch_executable_path")
                 and configured_file("retroarch_core_path")
             )
         if ready:
             self._guided_setup_set_stage("catalog")
+        else:
+            self._guided_setup_refresh_connection_flash()
         self.root.after(150, self._guided_setup_post_downloads_menu)
 
     def _guided_setup_catalog_refreshed(self) -> None:
@@ -56902,7 +58106,7 @@ class TrackerApp:
             except tk.TclError:
                 pass
             prompt.destroy()
-            self.open_guided_obs_text_setup()
+            self.open_guided_obs_setup_chooser()
 
         self._make_action_button(
             actions,
@@ -56928,6 +58132,157 @@ class TrackerApp:
             dark=(self.appearance_var.get() == "dark"),
         )
 
+    def open_guided_obs_setup_chooser(self) -> None:
+        """Offer OBS text files and LiveSplit timers from one blue screen."""
+        current = self.obs_setup_choice_dialog
+        if current is not None:
+            try:
+                if current.winfo_exists():
+                    current.lift()
+                    current.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.obs_setup_choice_dialog = dialog
+        dialog.title(self._setup_guide_text("obs_choice_title"))
+        dialog.configure(bg=palette["window"])
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        self._size_dialog_for_ui(dialog, 720, 430, 600, 350)
+
+        tk.Label(
+            dialog,
+            text=self._setup_guide_text("obs_choice_title"),
+            font=("Segoe UI", 20, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            pady=13,
+        ).pack(fill="x")
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(fill="both", expand=True, padx=16, pady=16)
+        tk.Label(
+            body,
+            text=self._setup_guide_text("obs_choice_message"),
+            font=("Segoe UI", 12),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="center",
+            wraplength=self._ui_px(600),
+            padx=28,
+            pady=24,
+        ).pack(fill="x")
+
+        def close_dialog() -> None:
+            active = self.obs_setup_choice_dialog
+            self.obs_setup_choice_dialog = None
+            if active is not None:
+                try:
+                    active.grab_release()
+                except tk.TclError:
+                    pass
+                try:
+                    active.destroy()
+                except tk.TclError:
+                    pass
+
+        def open_text_setup() -> None:
+            close_dialog()
+            self.root.after(50, self.open_guided_obs_text_setup)
+
+        def open_livesplit_setup() -> None:
+            close_dialog()
+            self.root.after(50, self.open_livesplit_obs_setup_guide)
+
+        option_buttons = tk.Frame(body, bg=palette["panel"])
+        option_buttons.pack(fill="x", padx=44, pady=(4, 18))
+        self._make_action_button(
+            option_buttons,
+            self._setup_guide_text("obs_text_files_button"),
+            open_text_setup,
+            THEME["blue"],
+            THEME["navy"],
+            width=30,
+            pad_y=10,
+        ).pack(fill="x", pady=(0, 10))
+        self._make_action_button(
+            option_buttons,
+            self._setup_guide_text("livesplit_obs_button"),
+            open_livesplit_setup,
+            THEME["purple"],
+            "#6037AA",
+            width=30,
+            pad_y=10,
+        ).pack(fill="x")
+
+        footer = tk.Frame(dialog, bg=palette["window"])
+        footer.pack(fill="x", padx=16, pady=(0, 16))
+        self._make_action_button(
+            footer,
+            self._setup_guide_text("no_obs"),
+            close_dialog,
+            "#60758D",
+            "#40566E",
+            width=31,
+            pad_y=8,
+        ).pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        dialog.after_idle(dialog.grab_set)
+        dialog.after_idle(dialog.focus_force)
+
+    def _select_guided_obs_text_folder(self) -> Path | None:
+        """Choose, create, save, and initialize the OBS text-file folder."""
+        current_text = self.output_folder_var.get().strip()
+        initial_directory = (
+            Path(current_text)
+            if current_text
+            else Path.home() / "Documents"
+        )
+        if not initial_directory.exists():
+            initial_directory = Path.home()
+        selected = filedialog.askdirectory(
+            title=self._translate_ui_text("Select OBS text-file folder"),
+            initialdir=str(initial_directory),
+            mustexist=False,
+            parent=self.root,
+        )
+        if not selected:
+            return None
+
+        output_folder = Path(selected)
+        try:
+            output_folder.mkdir(parents=True, exist_ok=True)
+            self.output_folder_var.set(str(output_folder))
+            self.config["output_folder"] = str(output_folder)
+            ensure_obs_text_files(self.config)
+            save_config(self.config)
+            worker = getattr(self, "worker", None)
+            if worker is not None:
+                worker.config["output_folder"] = str(output_folder)
+        except OSError as error:
+            self._show_localized_info(
+                self._setup_guide_text("obs_title"),
+                self._setup_guide_text("obs_folder_error").format(
+                    error=str(error)
+                ),
+                parent=self.root,
+            )
+            return None
+        return output_folder
+
     def open_guided_obs_text_setup(self) -> None:
         if self.guided_obs_dialog is not None:
             try:
@@ -56937,6 +58292,9 @@ class TrackerApp:
                     return
             except tk.TclError:
                 pass
+
+        if not self.output_folder_var.get().strip():
+            self._select_guided_obs_text_folder()
 
         palette = self._library_palette()
         dialog = tk.Toplevel(self.root)
@@ -57033,6 +58391,13 @@ class TrackerApp:
             except tk.TclError:
                 pass
 
+        def choose_folder_and_refresh() -> None:
+            selected_folder = self._select_guided_obs_text_folder()
+            if selected_folder is None:
+                return
+            close_dialog()
+            self.root.after(50, self.open_guided_obs_text_setup)
+
         if output_folder is None:
             tk.Label(
                 files_frame,
@@ -57043,6 +58408,15 @@ class TrackerApp:
                 justify="center",
                 wraplength=self._ui_px(850),
             ).grid(row=0, column=0, columnspan=3, sticky="ew", pady=18)
+            self._make_action_button(
+                files_frame,
+                self._setup_guide_text("choose_obs_folder_button"),
+                choose_folder_and_refresh,
+                THEME["blue"],
+                THEME["navy"],
+                width=30,
+                pad_y=8,
+            ).grid(row=1, column=0, columnspan=3, pady=(0, 12))
         else:
             for row_index, (label_key, filename) in enumerate(file_rows):
                 path_text = str(output_folder / filename)
@@ -57105,6 +58479,10 @@ class TrackerApp:
                 except tk.TclError:
                     pass
 
+        def open_livesplit_setup() -> None:
+            close_dialog()
+            self.root.after(50, self.open_livesplit_obs_setup_guide)
+
         if output_folder is not None:
             self._make_action_button(
                 actions,
@@ -57133,6 +58511,15 @@ class TrackerApp:
             width=12,
             pad_y=8,
         ).pack(side="right")
+        self._make_action_button(
+            actions,
+            self._setup_guide_text("livesplit_obs_button"),
+            open_livesplit_setup,
+            THEME["blue"],
+            THEME["navy"],
+            width=28,
+            pad_y=8,
+        ).pack(side="right", padx=(0, 8))
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         self._apply_widget_appearance(
             dialog,
@@ -57572,6 +58959,10 @@ class TrackerApp:
                 except tk.TclError:
                     pass
 
+        def open_obs_text_setup() -> None:
+            close_dialog()
+            self.root.after(50, self.open_guided_obs_text_setup)
+
         game_button = self._make_action_button(
             actions,
             self._setup_guide_text("game_livesplit_button").format(
@@ -57629,6 +59020,15 @@ class TrackerApp:
             width=12,
             pad_y=8,
         ).pack(side="right")
+        self._make_action_button(
+            actions,
+            self._setup_guide_text("obs_text_files_button"),
+            open_obs_text_setup,
+            THEME["blue"],
+            THEME["navy"],
+            width=24,
+            pad_y=8,
+        ).pack(side="right", padx=(0, 8))
 
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         self._apply_widget_appearance(
@@ -59918,6 +61318,10 @@ class TrackerApp:
                 event_type = event.get("type")
 
                 if event_type == "catalog_freshness":
+                    if int(event.get("generation", -1)) != int(
+                        getattr(self, "catalog_freshness_generation", 0)
+                    ):
+                        continue
                     available = event.get("available")
                     waiting_available = max(
                         0,
@@ -59936,8 +61340,19 @@ class TrackerApp:
                         self._catalog_freshness_status_text()
                     )
                     try:
+                        has_new_hacks = (
+                            waiting_available > 0
+                            or (
+                                available is not None
+                                and int(available) > 0
+                            )
+                        )
                         self.catalog_new_hacks_label.configure(
-                            fg=THEME["bad"]
+                            fg=(
+                                THEME["bad"]
+                                if has_new_hacks
+                                else THEME["good"]
+                            )
                         )
                     except tk.TclError:
                         pass

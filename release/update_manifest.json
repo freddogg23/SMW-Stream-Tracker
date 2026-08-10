@@ -1,22 +1,23 @@
 {
   "schema": 1,
-  "version": "1.0.9",
+  "version": "1.0.10",
   "release_date": "2026-08-10",
   "notes": [
-    "Adds a translated guided setup that flashes every required connection, catalog, refresh, patch, FXPAK, and OBS step in order.",
-    "Uses emoji-safe FXPAK Pro ROM filenames while preserving original hack titles throughout the interface.",
-    "Downloads and configures separate Game and Level LiveSplit copies automatically on ports 16834 and 16835.",
-    "Expands OBS instructions for reusing existing text sources with automatically updated tracker files.",
-    "Fixes the OBS Text File Setup dialog so it opens reliably in the packaged Windows app.",
-    "Adds blue app-style popups, blue drop-down arrows, yellow scrollbars, wider table columns, and light-blue cell borders.",
-    "Revises the statistics Overview with larger charts, the requested panel order, and compact difficulty progress.",
-    "Completes the interface and setup-guide catalogs in all six languages, including playful Australian English wording.",
-    "Adds a translated Join Discord button to About & Updates for help and contact.",
-    "Includes all timer, death-counter, catalog, downloader, RetroArch, FXPAK Pro, navigation, and updater reliability improvements completed for this release.",
-    "Refreshes the repository screenshots and every localized Read Me for v1.0.9."
+    "Replaces every emoji in FXPAK Pro ROM filenames with readable Unicode names while preserving official hack titles inside the tracker.",
+    "Links FXPAK aliases to SMW Central IDs, repairs older local emoji ROMs, and recognizes successful uploads instead of reporting them as missing.",
+    "Prevents the live SNI/QUsb2Snes connection from blocking FXPAK transfers and reconnects it automatically afterward.",
+    "Corrects the guided connection gate and leaves only the remaining required SNI or RetroArch option flashing.",
+    "Adds the blue OBS feature chooser and fixes creation and display of OBS text-output folders.",
+    "Moves translated LiveSplit Timer Setup into Help > Setup beside App Setup and OBS Text Setup.",
+    "Adds Reset Catalog with a recovery backup while preserving tracker progress, custom hacks, ROM mappings, and ROM files.",
+    "Prevents a false new-moderated badge when the live SMW Central catalog is ahead of its GitHub mirror.",
+    "Adds the branded dark-blue installer, portable RetroArch option, reusable folder choices, optional OBS output, and single-copy install handling.",
+    "Preserves RetroArch, SNI, QUsb2Snes, and ROM files during fresh reinstall and complete uninstall workflows.",
+    "Completes translations and the latest popup, table, scrollbar, statistics, downloader, catalog, timer, and setup reliability improvements.",
+    "Uses the existing repository screenshots; no new screenshots are included in v1.0.10."
   ],
-  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.9/SMWStreamTracker_Update_1.0.9.exe",
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.10/SMWStreamTracker_Update_1.0.10.exe",
   "verification": "sha256",
-  "sha256": "efc34724b9dd11143ef120df76300314944d785c4faf3bad529ae85d163177fe",
-  "size": 64156637
+  "sha256": "b2d22654269edb361fe6f00fd813b5d34adae5c656925a64c233f8695d39be0f",
+  "size": 64254449
 }

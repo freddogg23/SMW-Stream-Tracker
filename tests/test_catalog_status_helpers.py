@@ -52,6 +52,37 @@ class CatalogStatusHelperTests(unittest.TestCase):
             )
         )
 
+    def test_matching_sequence_clears_a_temporary_count_mismatch(self):
+        self.assertEqual(
+            self.tracker.catalog_available_new_hack_count(
+                2751,
+                {"hack_count": 2752, "sequence": 12},
+                12,
+            ),
+            0,
+        )
+
+    def test_newer_remote_sequence_still_reports_new_count(self):
+        self.assertEqual(
+            self.tracker.catalog_available_new_hack_count(
+                2751,
+                {"hack_count": 2752, "sequence": 13},
+                12,
+            ),
+            1,
+        )
+
+    def test_live_smwcentral_refresh_is_not_marked_stale_by_mirror_count(self):
+        self.assertEqual(
+            self.tracker.catalog_available_new_hack_count(
+                2751,
+                {"hack_count": 2752, "sequence": 13},
+                0,
+                "SMW Central Live API",
+            ),
+            0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

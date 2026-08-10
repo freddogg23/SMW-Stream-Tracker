@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.0.9"
+#define AppVersion "1.0.10"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -28,16 +28,20 @@ AppSupportURL=https://github.com/freddogg23/SMW-Stream-Tracker
 AppUpdatesURL=https://github.com/freddogg23/SMW-Stream-Tracker
 DefaultDirName={localappdata}\Programs\SMW Stream Tracker
 DefaultGroupName=SMW Stream Tracker
+DisableDirPage=yes
 DisableProgramGroupPage=yes
+UsePreviousAppDir=no
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#SetupOutputDir}
 OutputBaseFilename={#SetupOutputBaseFilename}
 SetupIconFile=..\app_assets\smw_stream_tracker_icon.ico
-WizardSmallImageFile=..\app_assets\smw_stream_tracker_icon.png
-WizardSmallImageBackColor=#E02C26
-WizardStyle=modern dynamic
+WizardImageFile=
+WizardSmallImageFile=
+WizardStyle=modern dark polar includetitlebar hidebevels
+WizardBackColor=#19283F
+WizardSizePercent=150
 DisableWelcomePage=no
 UninstallDisplayIcon={app}\{#AppExeName}
 Compression=lzma2/ultra64
@@ -60,7 +64,6 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 english.GuideName=Complete Setup Guide
 english.MarkdownGuideName=Complete Setup README
 english.OpenGuide=Open the complete setup guide
-english.InstallRetroArch=Install official RetroArch 1.22.2
 english.LaunchApp=Launch SMW Stream Tracker
 english.DesktopShortcut=Create a &desktop shortcut
 english.ShortcutGroup=Shortcuts:
@@ -71,15 +74,16 @@ english.FXPAKOption=FXPAK Pro (hardware cartridge)
 english.RetroArchOption=RetroArch (Windows emulator)
 english.DependencyTitle=Optional Dependencies
 english.DependencySubtitle=Select any combination of the tools you want Setup to install.
-english.DependencyDescription=SNI is strongly recommended. Leave RetroArch unchecked if it is already installed or you use FXPAK Pro.
+english.DependencyDescription=SNI is strongly recommended. Select RetroArch to have this blue Setup download and extract the official portable build without opening another installer.
 english.SNIOption=Install SNI v0.0.103 (strongly recommended for live tracking)
 english.QUsbOption=Install QUsb2Snes 2025-10-20 (recommended for FXPAK Pro and SD2SNES users)
-english.RetroArchInstallOption=Install RetroArch 1.22.2 and the bsnes-mercury Performance core (skip if already installed or using FXPAK Pro)
+english.RetroArchInstallOption=Install portable RetroArch 1.22.2 and the bsnes-mercury Performance core (select if you only want a new/clean install)
 english.FolderTitle=Choose Your Tracker Folders
-english.FolderSubtitle=Where should ROM hacks and stream text files be stored?
-english.FolderDescription=Choose folders now, or leave either field blank and configure it later in Settings.
-english.ROMLibrary=Patched ROM library:
-english.OBSFolder=OBS / stream text output:
+english.FolderSubtitle=Create new folders, or use folders you already have.
+english.FolderDescription=Select new or existing folders below. You may leave OBS / stream text output blank and continue without it.
+english.ROMLibrary=Patched ROM library (new or existing folder):
+english.OBSFolder=OBS / stream text output (optional):
+english.OBSFolderNote=OBS stream text files automatically update hack titles, creators, exits, and death counters in OBS or Streamlabs.
 english.ServiceTitle=Existing Connection Service
 english.ServiceSubtitle=Select an existing SNI.exe or QUsb2Snes.exe.
 english.ServiceDescription=Leave this blank only if you plan to configure the connection later.
@@ -95,12 +99,12 @@ english.FXPAKStep1=1. Connect the FXPAK Pro USB port to this PC and power on the
 english.FXPAKStep2=2. Let SNI or QUsb2Snes detect the FXPAK Pro device.
 english.FXPAKStep3=3. In SMW Stream Tracker, select File > FXPAK Pro and click Refresh.
 english.FXPAKStep4=If the device is not listed, verify its USB driver and USB-compatible firmware.
-english.RetroFinalTitle=RetroArch Final Steps
-english.RetroFinalSubtitle=Complete these steps in RetroArch after installation:
-english.RetroStep1=1. Open Online Updater > Core Downloader and install Nintendo - SNES / SFC (bsnes-mercury Performance).
-english.RetroStep2=2. Open Settings > Network and enable Network Commands.
-english.RetroStep3=3. Keep the Network Command port at 55355.
-english.RetroStep4=4. Launch an SMW ROM, then select File > RetroArch in SMW Stream Tracker.
+english.RetroFinalTitle=Portable RetroArch Setup
+english.RetroFinalSubtitle=This blue Setup handles the RetroArch preparation automatically:
+english.RetroStep1=1. The official portable RetroArch build is extracted into SMW Stream Tracker's Tools folder.
+english.RetroStep2=2. The recommended bsnes-mercury Performance core is installed automatically.
+english.RetroStep3=3. Network Commands are enabled automatically on port 55355.
+english.RetroStep4=4. After installation, launch an SMW ROM and select File > RetroArch. No separate RetroArch setup wizard is required.
 english.ExistingTitle=Existing Settings Found
 english.ExistingSubtitle=Your current tracker settings will be preserved.
 english.ExistingDescription=Setup found SMWStreamTrackerConfig.json in your user profile. It will not overwrite that file. New tools are still installed, and their paths can be selected later from Settings.
@@ -109,7 +113,7 @@ english.ErrorRetroExe=The selected RetroArch executable was not found. Select a 
 english.ErrorRetroCore=The selected SNES core was not found. Select a valid Libretro core or clear the field to configure it later.
 english.ReadySNI=SNI v0.0.103 (strongly recommended)
 english.ReadyQUsb=QUsb2Snes 2025-10-20
-english.ReadyRetro=RetroArch 1.22.2 and the bsnes-mercury Performance core
+english.ReadyRetro=Portable RetroArch 1.22.2 and the bsnes-mercury Performance core
 english.ReadyNone=None (configure dependencies later)
 english.ReadyPlatform=Initial platform:
 english.ReadyDependencies=Selected dependencies:
@@ -121,11 +125,17 @@ english.RetroExecutableFilter=RetroArch executable
 english.LibretroCores=Libretro cores
 english.DLLFiles=DLL files
 english.ConfigWriteError=Could not create the configuration file:
+english.ExistingInstallActionTitle=Existing Installation Found
+english.ExistingInstallActionSubtitle=Only one copy of SMW Stream Tracker can be installed for this Windows account.
+english.ExistingInstallActionDescription=Choose what Setup should do. RetroArch, SNI, QUsb2Snes, and all ROM files will be preserved.
+english.ExistingInstallFreshOption=Uninstall the current copy and continue with a fresh installation
+english.ExistingInstallRemoveOption=Completely uninstall SMW Stream Tracker and exit Setup
+english.ExistingInstallRemovalFailed=Setup could not completely remove the existing tracker. Close SMW Stream Tracker and try again.
+english.ExistingInstallRemovalComplete=SMW Stream Tracker was completely uninstalled. RetroArch, SNI, QUsb2Snes, and ROM files were preserved.
 
 australian.GuideName=Fair Dinkum Setup Guide
 australian.MarkdownGuideName=Complete Setup README
 australian.OpenGuide=Open the setup yarn
-australian.InstallRetroArch=Chuck in official RetroArch 1.22.2
 australian.LaunchApp=Fire up SMW Stream Tracker
 australian.DesktopShortcut=Pop a shortcut on the &desktop
 australian.ShortcutGroup=Handy shortcuts:
@@ -136,15 +146,16 @@ australian.FXPAKOption=FXPAK Pro (the hardware cart, you beauty)
 australian.RetroArchOption=RetroArch (emulator on the Windows box)
 australian.DependencyTitle=Optional Bits and Bobs
 australian.DependencySubtitle=Pick any combination of tools you want Setup to chuck in.
-australian.DependencyDescription=SNI is strongly recommended. Leave RetroArch unticked if it is already installed or you use FXPAK Pro.
+australian.DependencyDescription=SNI is strongly recommended. Tick RetroArch and this blue Setup will grab and unpack the official portable build without a second wizard wandering in, mate.
 australian.SNIOption=Install SNI v0.0.103 (strongly recommended for live tracking)
 australian.QUsbOption=Install QUsb2Snes 2025-10-20 (recommended for FXPAK Pro and SD2SNES mates)
-australian.RetroArchInstallOption=Install RetroArch 1.22.2 and the bsnes-mercury Performance core (skip it if sorted already or using FXPAK Pro)
+australian.RetroArchInstallOption=Install portable RetroArch 1.22.2 and the bsnes-mercury Performance core (tick this only for a fresh/clean install, mate)
 australian.FolderTitle=Choose Where the Good Stuff Lives
-australian.FolderSubtitle=Where should ROM hacks and stream text files bunk down?
-australian.FolderDescription=Choose folders now, or leave either field blank and sort it out later in Settings.
-australian.ROMLibrary=Patched ROM library:
-australian.OBSFolder=OBS / stream text output:
+australian.FolderSubtitle=Create new folders, or use folders you already have, mate.
+australian.FolderDescription=Pick new or existing folders below. OBS / stream text output is optional, mate, so leave it blank and carry on if you do not need it.
+australian.ROMLibrary=Patched ROM library (new or existing folder):
+australian.OBSFolder=OBS / stream text output (optional, mate):
+australian.OBSFolderNote=OBS stream text files keep hack titles, creators, exits, and death counters updated automatically in OBS or Streamlabs. Too easy.
 australian.ServiceTitle=Existing Connection Service
 australian.ServiceSubtitle=Point us at an existing SNI.exe or QUsb2Snes.exe.
 australian.ServiceDescription=Leave this blank only if you plan to sort out the connection later.
@@ -160,12 +171,12 @@ australian.FXPAKStep1=1. Connect the FXPAK Pro USB port to this PC and power on 
 australian.FXPAKStep2=2. Let SNI or QUsb2Snes spot the FXPAK Pro device.
 australian.FXPAKStep3=3. In SMW Stream Tracker, select File > FXPAK Pro and give Refresh a burl.
 australian.FXPAKStep4=If the device goes walkabout, check its USB driver and USB-compatible firmware.
-australian.RetroFinalTitle=RetroArch—Nearly There
-australian.RetroFinalSubtitle=Knock over these steps in RetroArch after installation:
-australian.RetroStep1=1. Open Online Updater > Core Downloader and install Nintendo - SNES / SFC (bsnes-mercury Performance).
-australian.RetroStep2=2. Open Settings > Network and switch on Network Commands.
-australian.RetroStep3=3. Leave the Network Command port at 55355.
-australian.RetroStep4=4. Launch an SMW ROM, then select File > RetroArch in SMW Stream Tracker. Too easy.
+australian.RetroFinalTitle=Portable RetroArch—All Sorted
+australian.RetroFinalSubtitle=This blue Setup handles the RetroArch hard yakka automatically:
+australian.RetroStep1=1. The official portable RetroArch build is unpacked into the tracker's Tools folder.
+australian.RetroStep2=2. The recommended bsnes-mercury Performance core is chucked in automatically.
+australian.RetroStep3=3. Network Commands are switched on automatically at port 55355.
+australian.RetroStep4=4. After installation, launch an SMW ROM and select File > RetroArch. No second setup wizard, mate—too easy.
 australian.ExistingTitle=Found Your Existing Settings
 australian.ExistingSubtitle=Your current tracker settings are staying right where they are.
 australian.ExistingDescription=Setup found SMWStreamTrackerConfig.json in your user profile. It will not stomp on that file. New tools still get installed, and you can pick their paths later in Settings.
@@ -174,7 +185,7 @@ australian.ErrorRetroExe=Could not find that RetroArch executable. Pick a valid 
 australian.ErrorRetroCore=Could not find that SNES core. Pick a valid Libretro core or clear the field and sort it later.
 australian.ReadySNI=SNI v0.0.103 (strongly recommended)
 australian.ReadyQUsb=QUsb2Snes 2025-10-20
-australian.ReadyRetro=RetroArch 1.22.2 and the bsnes-mercury Performance core
+australian.ReadyRetro=Portable RetroArch 1.22.2 and the bsnes-mercury Performance core
 australian.ReadyNone=None yet (sort out dependencies later)
 australian.ReadyPlatform=First cab off the rank:
 australian.ReadyDependencies=Selected bits and bobs:
@@ -186,11 +197,17 @@ australian.RetroExecutableFilter=RetroArch executable
 australian.LibretroCores=Libretro cores
 australian.DLLFiles=DLL files
 australian.ConfigWriteError=Could not create the configuration file:
+australian.ExistingInstallActionTitle=Crikey! Found Another Tracker
+australian.ExistingInstallActionSubtitle=Only one SMW Stream Tracker copy can live on this Windows account, mate.
+australian.ExistingInstallActionDescription=Pick what Setup should do. RetroArch, SNI, QUsb2Snes, and every ROM stay safe and sound.
+australian.ExistingInstallFreshOption=Uninstall the old copy and crack on with a fresh install
+australian.ExistingInstallRemoveOption=Completely uninstall SMW Stream Tracker and call it a day
+australian.ExistingInstallRemovalFailed=Crikey! Setup could not clear the old tracker. Close SMW Stream Tracker and have another go, mate.
+australian.ExistingInstallRemovalComplete=Done and dusted! The tracker is completely uninstalled. RetroArch, SNI, QUsb2Snes, and your ROMs are still right where you left them.
 
 spanish.GuideName=Guía completa de configuración
 spanish.MarkdownGuideName=README completo de configuración
 spanish.OpenGuide=Abrir la guía completa de configuración
-spanish.InstallRetroArch=Instalar RetroArch 1.22.2 oficial
 spanish.LaunchApp=Iniciar SMW Stream Tracker
 spanish.DesktopShortcut=Crear un acceso directo en el &escritorio
 spanish.ShortcutGroup=Accesos directos:
@@ -201,15 +218,16 @@ spanish.FXPAKOption=FXPAK Pro (cartucho físico)
 spanish.RetroArchOption=RetroArch (emulador de Windows)
 spanish.DependencyTitle=Dependencias opcionales
 spanish.DependencySubtitle=Seleccione cualquier combinación de herramientas que desee instalar.
-spanish.DependencyDescription=SNI es muy recomendado. No seleccione RetroArch si ya está instalado o si usa FXPAK Pro.
+spanish.DependencyDescription=SNI es muy recomendado. Seleccione RetroArch para que este instalador azul descargue y extraiga la versión portátil oficial sin abrir otro instalador.
 spanish.SNIOption=Instalar SNI v0.0.103 (muy recomendado para el seguimiento en vivo)
 spanish.QUsbOption=Instalar QUsb2Snes 2025-10-20 (recomendado para FXPAK Pro y SD2SNES)
-spanish.RetroArchInstallOption=Instalar RetroArch 1.22.2 y el núcleo bsnes-mercury Performance (omitir si ya está instalado o usa FXPAK Pro)
+spanish.RetroArchInstallOption=Instalar RetroArch portátil 1.22.2 y el núcleo bsnes-mercury Performance (seleccione solo si desea una instalación nueva/limpia)
 spanish.FolderTitle=Elija las carpetas del rastreador
-spanish.FolderSubtitle=¿Dónde se guardarán los ROM hacks y los archivos de texto para streaming?
-spanish.FolderDescription=Elija las carpetas ahora o deje los campos vacíos para configurarlos más tarde.
-spanish.ROMLibrary=Biblioteca de ROM parcheadas:
-spanish.OBSFolder=Salida de texto para OBS / streaming:
+spanish.FolderSubtitle=Cree carpetas nuevas o use las carpetas que ya tiene.
+spanish.FolderDescription=Seleccione carpetas nuevas o existentes. Puede dejar vacía la salida de texto para OBS / streaming y continuar sin ella.
+spanish.ROMLibrary=Biblioteca de ROM parcheadas (carpeta nueva o existente):
+spanish.OBSFolder=Salida de texto para OBS / streaming (opcional):
+spanish.OBSFolderNote=Los archivos de texto para OBS actualizan automáticamente los títulos de los hacks, los creadores, las salidas y los contadores de muertes en OBS o Streamlabs.
 spanish.ServiceTitle=Servicio de conexión existente
 spanish.ServiceSubtitle=Seleccione un SNI.exe o QUsb2Snes.exe existente.
 spanish.ServiceDescription=Déjelo vacío solo si configurará la conexión más tarde.
@@ -225,12 +243,12 @@ spanish.FXPAKStep1=1. Conecte el puerto USB de FXPAK Pro a este PC y encienda la
 spanish.FXPAKStep2=2. Permita que SNI o QUsb2Snes detecte el dispositivo FXPAK Pro.
 spanish.FXPAKStep3=3. En SMW Stream Tracker, seleccione Archivo > FXPAK Pro y pulse Actualizar.
 spanish.FXPAKStep4=Si el dispositivo no aparece, compruebe el controlador USB y el firmware compatible.
-spanish.RetroFinalTitle=Pasos finales de RetroArch
-spanish.RetroFinalSubtitle=Complete estos pasos en RetroArch después de la instalación:
-spanish.RetroStep1=1. Abra Actualizador en línea > Descargador de núcleos e instale Nintendo - SNES / SFC (bsnes-mercury Performance).
-spanish.RetroStep2=2. Abra Ajustes > Red y active Comandos de red.
-spanish.RetroStep3=3. Mantenga el puerto de comandos de red en 55355.
-spanish.RetroStep4=4. Inicie una ROM de SMW y seleccione Archivo > RetroArch en SMW Stream Tracker.
+spanish.RetroFinalTitle=Configuración de RetroArch portátil
+spanish.RetroFinalSubtitle=Este instalador azul prepara RetroArch automáticamente:
+spanish.RetroStep1=1. La versión portátil oficial de RetroArch se extrae en la carpeta Tools de SMW Stream Tracker.
+spanish.RetroStep2=2. El núcleo recomendado bsnes-mercury Performance se instala automáticamente.
+spanish.RetroStep3=3. Los Comandos de red se activan automáticamente en el puerto 55355.
+spanish.RetroStep4=4. Después de instalar, inicie una ROM de SMW y seleccione Archivo > RetroArch. No se necesita otro asistente de instalación.
 spanish.ExistingTitle=Se encontró una configuración existente
 spanish.ExistingSubtitle=Se conservará la configuración actual del rastreador.
 spanish.ExistingDescription=El instalador encontró SMWStreamTrackerConfig.json en su perfil y no lo sobrescribirá. Puede seleccionar las rutas de las nuevas herramientas más tarde.
@@ -239,7 +257,7 @@ spanish.ErrorRetroExe=No se encontró el ejecutable de RetroArch. Seleccione un 
 spanish.ErrorRetroCore=No se encontró el núcleo SNES. Seleccione un núcleo Libretro válido o borre el campo.
 spanish.ReadySNI=SNI v0.0.103 (muy recomendado)
 spanish.ReadyQUsb=QUsb2Snes 2025-10-20
-spanish.ReadyRetro=RetroArch 1.22.2 y el núcleo bsnes-mercury Performance
+spanish.ReadyRetro=RetroArch portátil 1.22.2 y el núcleo bsnes-mercury Performance
 spanish.ReadyNone=Ninguna (configurar las dependencias más tarde)
 spanish.ReadyPlatform=Plataforma inicial:
 spanish.ReadyDependencies=Dependencias seleccionadas:
@@ -251,11 +269,17 @@ spanish.RetroExecutableFilter=Ejecutable de RetroArch
 spanish.LibretroCores=Núcleos Libretro
 spanish.DLLFiles=Archivos DLL
 spanish.ConfigWriteError=No se pudo crear el archivo de configuración:
+spanish.ExistingInstallActionTitle=Se encontró una instalación existente
+spanish.ExistingInstallActionSubtitle=Solo se puede instalar una copia de SMW Stream Tracker en esta cuenta de Windows.
+spanish.ExistingInstallActionDescription=Elija qué debe hacer el instalador. Se conservarán RetroArch, SNI, QUsb2Snes y todos los archivos ROM.
+spanish.ExistingInstallFreshOption=Desinstalar la copia actual y continuar con una instalación nueva
+spanish.ExistingInstallRemoveOption=Desinstalar completamente SMW Stream Tracker y salir del instalador
+spanish.ExistingInstallRemovalFailed=El instalador no pudo eliminar completamente el tracker existente. Cierre SMW Stream Tracker e inténtelo de nuevo.
+spanish.ExistingInstallRemovalComplete=SMW Stream Tracker se desinstaló completamente. Se conservaron RetroArch, SNI, QUsb2Snes y los archivos ROM.
 
 french.GuideName=Guide complet de configuration
 french.MarkdownGuideName=README complet de configuration
 french.OpenGuide=Ouvrir le guide complet de configuration
-french.InstallRetroArch=Installer RetroArch 1.22.2 officiel
 french.LaunchApp=Lancer SMW Stream Tracker
 french.DesktopShortcut=Créer un raccourci sur le &Bureau
 french.ShortcutGroup=Raccourcis :
@@ -266,15 +290,16 @@ french.FXPAKOption=FXPAK Pro (cartouche matérielle)
 french.RetroArchOption=RetroArch (émulateur Windows)
 french.DependencyTitle=Dépendances facultatives
 french.DependencySubtitle=Sélectionnez les outils que le programme d'installation doit installer.
-french.DependencyDescription=SNI est fortement recommandé. Décochez RetroArch s'il est déjà installé ou si vous utilisez FXPAK Pro.
+french.DependencyDescription=SNI est fortement recommandé. Sélectionnez RetroArch pour que ce programme d'installation bleu télécharge et extraie la version portable officielle sans ouvrir un autre installateur.
 french.SNIOption=Installer SNI v0.0.103 (fortement recommandé pour le suivi en direct)
 french.QUsbOption=Installer QUsb2Snes 2025-10-20 (recommandé pour FXPAK Pro et SD2SNES)
-french.RetroArchInstallOption=Installer RetroArch 1.22.2 et le cœur bsnes-mercury Performance (ignorer s'il est déjà installé ou avec FXPAK Pro)
+french.RetroArchInstallOption=Installer RetroArch portable 1.22.2 et le cœur bsnes-mercury Performance (sélectionnez uniquement pour une nouvelle installation propre)
 french.FolderTitle=Choisissez les dossiers du tracker
-french.FolderSubtitle=Où stocker les ROM hacks et les fichiers texte du stream ?
-french.FolderDescription=Choisissez les dossiers maintenant ou laissez les champs vides pour les configurer plus tard.
-french.ROMLibrary=Bibliothèque de ROM patchées :
-french.OBSFolder=Sortie texte OBS / stream :
+french.FolderSubtitle=Créez de nouveaux dossiers ou utilisez les dossiers que vous possédez déjà.
+french.FolderDescription=Sélectionnez des dossiers nouveaux ou existants. Vous pouvez laisser la sortie texte OBS / stream vide et continuer sans elle.
+french.ROMLibrary=Bibliothèque de ROM patchées (dossier nouveau ou existant) :
+french.OBSFolder=Sortie texte OBS / stream (facultative) :
+french.OBSFolderNote=Les fichiers texte OBS mettent automatiquement à jour les titres des hacks, les créateurs, les sorties et les compteurs de morts dans OBS ou Streamlabs.
 french.ServiceTitle=Service de connexion existant
 french.ServiceSubtitle=Sélectionnez un SNI.exe ou QUsb2Snes.exe existant.
 french.ServiceDescription=Laissez ce champ vide uniquement si vous configurerez la connexion plus tard.
@@ -290,12 +315,12 @@ french.FXPAKStep1=1. Connectez le port USB du FXPAK Pro à ce PC et allumez la c
 french.FXPAKStep2=2. Laissez SNI ou QUsb2Snes détecter le FXPAK Pro.
 french.FXPAKStep3=3. Dans SMW Stream Tracker, choisissez Fichier > FXPAK Pro puis Actualiser.
 french.FXPAKStep4=Si l'appareil n'apparaît pas, vérifiez le pilote USB et le micrologiciel compatible.
-french.RetroFinalTitle=Étapes finales RetroArch
-french.RetroFinalSubtitle=Effectuez ces étapes dans RetroArch après l'installation :
-french.RetroStep1=1. Ouvrez Mise à jour en ligne > Téléchargeur de cœurs et installez Nintendo - SNES / SFC (bsnes-mercury Performance).
-french.RetroStep2=2. Ouvrez Paramètres > Réseau et activez les commandes réseau.
-french.RetroStep3=3. Conservez le port des commandes réseau sur 55355.
-french.RetroStep4=4. Lancez une ROM SMW, puis choisissez Fichier > RetroArch dans SMW Stream Tracker.
+french.RetroFinalTitle=Configuration de RetroArch portable
+french.RetroFinalSubtitle=Ce programme d'installation bleu prépare RetroArch automatiquement :
+french.RetroStep1=1. La version portable officielle de RetroArch est extraite dans le dossier Tools de SMW Stream Tracker.
+french.RetroStep2=2. Le cœur bsnes-mercury Performance recommandé est installé automatiquement.
+french.RetroStep3=3. Les commandes réseau sont activées automatiquement sur le port 55355.
+french.RetroStep4=4. Après l'installation, lancez une ROM SMW et choisissez Fichier > RetroArch. Aucun autre assistant d'installation n'est nécessaire.
 french.ExistingTitle=Paramètres existants détectés
 french.ExistingSubtitle=Vos paramètres actuels seront conservés.
 french.ExistingDescription=Le programme a trouvé SMWStreamTrackerConfig.json dans votre profil et ne l'écrasera pas. Les chemins des nouveaux outils pourront être choisis plus tard.
@@ -304,7 +329,7 @@ french.ErrorRetroExe=L'exécutable RetroArch est introuvable. Sélectionnez un r
 french.ErrorRetroCore=Le cœur SNES est introuvable. Sélectionnez un cœur Libretro valide ou videz le champ.
 french.ReadySNI=SNI v0.0.103 (fortement recommandé)
 french.ReadyQUsb=QUsb2Snes 2025-10-20
-french.ReadyRetro=RetroArch 1.22.2 et le cœur bsnes-mercury Performance
+french.ReadyRetro=RetroArch portable 1.22.2 et le cœur bsnes-mercury Performance
 french.ReadyNone=Aucune (configurer les dépendances plus tard)
 french.ReadyPlatform=Plateforme initiale :
 french.ReadyDependencies=Dépendances sélectionnées :
@@ -316,11 +341,17 @@ french.RetroExecutableFilter=Exécutable RetroArch
 french.LibretroCores=Cœurs Libretro
 french.DLLFiles=Fichiers DLL
 french.ConfigWriteError=Impossible de créer le fichier de configuration :
+french.ExistingInstallActionTitle=Installation existante détectée
+french.ExistingInstallActionSubtitle=Une seule copie de SMW Stream Tracker peut être installée pour ce compte Windows.
+french.ExistingInstallActionDescription=Choisissez l'action du programme d'installation. RetroArch, SNI, QUsb2Snes et tous les fichiers ROM seront conservés.
+french.ExistingInstallFreshOption=Désinstaller la copie actuelle et poursuivre avec une nouvelle installation
+french.ExistingInstallRemoveOption=Désinstaller complètement SMW Stream Tracker et quitter l'installation
+french.ExistingInstallRemovalFailed=Le programme n'a pas pu supprimer complètement le tracker existant. Fermez SMW Stream Tracker et réessayez.
+french.ExistingInstallRemovalComplete=SMW Stream Tracker a été complètement désinstallé. RetroArch, SNI, QUsb2Snes et les fichiers ROM ont été conservés.
 
 german.GuideName=Vollständige Einrichtungsanleitung
 german.MarkdownGuideName=Vollständige Setup-README
 german.OpenGuide=Vollständige Einrichtungsanleitung öffnen
-german.InstallRetroArch=Offizielles RetroArch 1.22.2 installieren
 german.LaunchApp=SMW Stream Tracker starten
 german.DesktopShortcut=&Desktop-Verknüpfung erstellen
 german.ShortcutGroup=Verknüpfungen:
@@ -331,15 +362,16 @@ german.FXPAKOption=FXPAK Pro (Hardware-Modul)
 german.RetroArchOption=RetroArch (Windows-Emulator)
 german.DependencyTitle=Optionale Abhängigkeiten
 german.DependencySubtitle=Wählen Sie beliebige Tools aus, die Setup installieren soll.
-german.DependencyDescription=SNI wird dringend empfohlen. Deaktivieren Sie RetroArch, wenn es bereits installiert ist oder Sie FXPAK Pro verwenden.
+german.DependencyDescription=SNI wird dringend empfohlen. Wählen Sie RetroArch, damit dieses blaue Setup die offizielle portable Version herunterlädt und entpackt, ohne ein zweites Installationsprogramm zu öffnen.
 german.SNIOption=SNI v0.0.103 installieren (für Live-Tracking dringend empfohlen)
 german.QUsbOption=QUsb2Snes 2025-10-20 installieren (für FXPAK Pro und SD2SNES empfohlen)
-german.RetroArchInstallOption=RetroArch 1.22.2 und bsnes-mercury Performance-Core installieren (überspringen, wenn bereits installiert oder bei FXPAK Pro)
+german.RetroArchInstallOption=Portables RetroArch 1.22.2 und bsnes-mercury Performance-Core installieren (nur für eine neue/saubere Installation auswählen)
 german.FolderTitle=Tracker-Ordner auswählen
-german.FolderSubtitle=Wo sollen ROM-Hacks und Stream-Textdateien gespeichert werden?
-german.FolderDescription=Wählen Sie jetzt Ordner oder lassen Sie Felder leer, um sie später zu konfigurieren.
-german.ROMLibrary=Bibliothek gepatchter ROMs:
-german.OBSFolder=OBS-/Stream-Textausgabe:
+german.FolderSubtitle=Erstellen Sie neue Ordner oder verwenden Sie bereits vorhandene Ordner.
+german.FolderDescription=Wählen Sie unten neue oder vorhandene Ordner. Die OBS-/Stream-Textausgabe darf leer bleiben; Sie können ohne sie fortfahren.
+german.ROMLibrary=Bibliothek gepatchter ROMs (neuer oder vorhandener Ordner):
+german.OBSFolder=OBS-/Stream-Textausgabe (optional):
+german.OBSFolderNote=OBS-Textdateien aktualisieren Hack-Titel, Ersteller, Ausgänge und Todeszähler in OBS oder Streamlabs automatisch.
 german.ServiceTitle=Vorhandener Verbindungsdienst
 german.ServiceSubtitle=Wählen Sie eine vorhandene SNI.exe oder QUsb2Snes.exe.
 german.ServiceDescription=Lassen Sie das Feld nur leer, wenn Sie die Verbindung später konfigurieren.
@@ -355,12 +387,12 @@ german.FXPAKStep1=1. Verbinden Sie den USB-Port des FXPAK Pro mit diesem PC und 
 german.FXPAKStep2=2. Lassen Sie SNI oder QUsb2Snes das FXPAK-Pro-Gerät erkennen.
 german.FXPAKStep3=3. Wählen Sie in SMW Stream Tracker Datei > FXPAK Pro und klicken Sie auf Aktualisieren.
 german.FXPAKStep4=Wenn das Gerät nicht erscheint, prüfen Sie USB-Treiber und kompatible Firmware.
-german.RetroFinalTitle=Letzte Schritte für RetroArch
-german.RetroFinalSubtitle=Führen Sie nach der Installation diese Schritte in RetroArch aus:
-german.RetroStep1=1. Öffnen Sie Online-Updater > Core-Downloader und installieren Sie Nintendo - SNES / SFC (bsnes-mercury Performance).
-german.RetroStep2=2. Öffnen Sie Einstellungen > Netzwerk und aktivieren Sie Netzwerkbefehle.
-german.RetroStep3=3. Behalten Sie für Netzwerkbefehle Port 55355 bei.
-german.RetroStep4=4. Starten Sie ein SMW-ROM und wählen Sie Datei > RetroArch in SMW Stream Tracker.
+german.RetroFinalTitle=Einrichtung des portablen RetroArch
+german.RetroFinalSubtitle=Dieses blaue Setup bereitet RetroArch automatisch vor:
+german.RetroStep1=1. Die offizielle portable RetroArch-Version wird in den Tools-Ordner von SMW Stream Tracker entpackt.
+german.RetroStep2=2. Der empfohlene bsnes-mercury Performance-Core wird automatisch installiert.
+german.RetroStep3=3. Netzwerkbefehle werden automatisch auf Port 55355 aktiviert.
+german.RetroStep4=4. Starten Sie nach der Installation ein SMW-ROM und wählen Sie Datei > RetroArch. Ein zweiter Installationsassistent ist nicht erforderlich.
 german.ExistingTitle=Vorhandene Einstellungen gefunden
 german.ExistingSubtitle=Ihre aktuellen Tracker-Einstellungen bleiben erhalten.
 german.ExistingDescription=Setup hat SMWStreamTrackerConfig.json in Ihrem Benutzerprofil gefunden und überschreibt die Datei nicht. Neue Tool-Pfade können später ausgewählt werden.
@@ -369,7 +401,7 @@ german.ErrorRetroExe=Die ausgewählte RetroArch-Programmdatei wurde nicht gefund
 german.ErrorRetroCore=Der SNES-Core wurde nicht gefunden. Wählen Sie einen gültigen Libretro-Core oder leeren Sie das Feld.
 german.ReadySNI=SNI v0.0.103 (dringend empfohlen)
 german.ReadyQUsb=QUsb2Snes 2025-10-20
-german.ReadyRetro=RetroArch 1.22.2 und bsnes-mercury Performance-Core
+german.ReadyRetro=Portables RetroArch 1.22.2 und bsnes-mercury Performance-Core
 german.ReadyNone=Keine (Abhängigkeiten später konfigurieren)
 german.ReadyPlatform=Anfängliche Plattform:
 german.ReadyDependencies=Ausgewählte Abhängigkeiten:
@@ -381,11 +413,17 @@ german.RetroExecutableFilter=RetroArch-Programmdatei
 german.LibretroCores=Libretro-Cores
 german.DLLFiles=DLL-Dateien
 german.ConfigWriteError=Die Konfigurationsdatei konnte nicht erstellt werden:
+german.ExistingInstallActionTitle=Vorhandene Installation gefunden
+german.ExistingInstallActionSubtitle=Für dieses Windows-Konto kann nur eine Kopie von SMW Stream Tracker installiert werden.
+german.ExistingInstallActionDescription=Wählen Sie die gewünschte Aktion. RetroArch, SNI, QUsb2Snes und alle ROM-Dateien bleiben erhalten.
+german.ExistingInstallFreshOption=Die aktuelle Kopie deinstallieren und mit einer Neuinstallation fortfahren
+german.ExistingInstallRemoveOption=SMW Stream Tracker vollständig deinstallieren und Setup beenden
+german.ExistingInstallRemovalFailed=Setup konnte den vorhandenen Tracker nicht vollständig entfernen. Schließen Sie SMW Stream Tracker und versuchen Sie es erneut.
+german.ExistingInstallRemovalComplete=SMW Stream Tracker wurde vollständig deinstalliert. RetroArch, SNI, QUsb2Snes und ROM-Dateien blieben erhalten.
 
 brazilianportuguese.GuideName=Guia completo de configuração
 brazilianportuguese.MarkdownGuideName=README completo de configuração
 brazilianportuguese.OpenGuide=Abrir o guia completo de configuração
-brazilianportuguese.InstallRetroArch=Instalar o RetroArch 1.22.2 oficial
 brazilianportuguese.LaunchApp=Iniciar o SMW Stream Tracker
 brazilianportuguese.DesktopShortcut=Criar atalho na área de &trabalho
 brazilianportuguese.ShortcutGroup=Atalhos:
@@ -396,15 +434,16 @@ brazilianportuguese.FXPAKOption=FXPAK Pro (cartucho físico)
 brazilianportuguese.RetroArchOption=RetroArch (emulador do Windows)
 brazilianportuguese.DependencyTitle=Dependências opcionais
 brazilianportuguese.DependencySubtitle=Selecione qualquer combinação de ferramentas para instalar.
-brazilianportuguese.DependencyDescription=SNI é altamente recomendado. Desmarque RetroArch se ele já estiver instalado ou se você usa FXPAK Pro.
+brazilianportuguese.DependencyDescription=SNI é altamente recomendado. Selecione RetroArch para este instalador azul baixar e extrair a versão portátil oficial sem abrir outro instalador.
 brazilianportuguese.SNIOption=Instalar SNI v0.0.103 (altamente recomendado para rastreamento ao vivo)
 brazilianportuguese.QUsbOption=Instalar QUsb2Snes 2025-10-20 (recomendado para FXPAK Pro e SD2SNES)
-brazilianportuguese.RetroArchInstallOption=Instalar RetroArch 1.22.2 e o núcleo bsnes-mercury Performance (ignore se já estiver instalado ou se usar FXPAK Pro)
+brazilianportuguese.RetroArchInstallOption=Instalar RetroArch portátil 1.22.2 e o núcleo bsnes-mercury Performance (selecione somente para uma instalação nova/limpa)
 brazilianportuguese.FolderTitle=Escolha as pastas do tracker
-brazilianportuguese.FolderSubtitle=Onde os ROM hacks e arquivos de texto da transmissão serão armazenados?
-brazilianportuguese.FolderDescription=Escolha as pastas agora ou deixe os campos vazios para configurar depois.
-brazilianportuguese.ROMLibrary=Biblioteca de ROMs com patch:
-brazilianportuguese.OBSFolder=Saída de texto do OBS / transmissão:
+brazilianportuguese.FolderSubtitle=Crie novas pastas ou use as pastas que você já tem.
+brazilianportuguese.FolderDescription=Selecione pastas novas ou existentes. Você pode deixar a saída de texto do OBS / transmissão em branco e continuar sem ela.
+brazilianportuguese.ROMLibrary=Biblioteca de ROMs com patch (pasta nova ou existente):
+brazilianportuguese.OBSFolder=Saída de texto do OBS / transmissão (opcional):
+brazilianportuguese.OBSFolderNote=Os arquivos de texto do OBS atualizam automaticamente os títulos dos hacks, criadores, saídas e contadores de mortes no OBS ou Streamlabs.
 brazilianportuguese.ServiceTitle=Serviço de conexão existente
 brazilianportuguese.ServiceSubtitle=Selecione um SNI.exe ou QUsb2Snes.exe existente.
 brazilianportuguese.ServiceDescription=Deixe vazio somente se pretende configurar a conexão depois.
@@ -420,12 +459,12 @@ brazilianportuguese.FXPAKStep1=1. Conecte a porta USB do FXPAK Pro a este PC e l
 brazilianportuguese.FXPAKStep2=2. Deixe o SNI ou QUsb2Snes detectar o dispositivo FXPAK Pro.
 brazilianportuguese.FXPAKStep3=3. No SMW Stream Tracker, selecione Arquivo > FXPAK Pro e clique em Atualizar.
 brazilianportuguese.FXPAKStep4=Se o dispositivo não aparecer, verifique o driver USB e o firmware compatível.
-brazilianportuguese.RetroFinalTitle=Etapas finais do RetroArch
-brazilianportuguese.RetroFinalSubtitle=Conclua estas etapas no RetroArch depois da instalação:
-brazilianportuguese.RetroStep1=1. Abra Atualizador Online > Baixador de Núcleos e instale Nintendo - SNES / SFC (bsnes-mercury Performance).
-brazilianportuguese.RetroStep2=2. Abra Configurações > Rede e habilite Comandos de Rede.
-brazilianportuguese.RetroStep3=3. Mantenha a porta de comandos de rede em 55355.
-brazilianportuguese.RetroStep4=4. Inicie uma ROM do SMW e selecione Arquivo > RetroArch no SMW Stream Tracker.
+brazilianportuguese.RetroFinalTitle=Configuração do RetroArch portátil
+brazilianportuguese.RetroFinalSubtitle=Este instalador azul prepara o RetroArch automaticamente:
+brazilianportuguese.RetroStep1=1. A versão portátil oficial do RetroArch é extraída na pasta Tools do SMW Stream Tracker.
+brazilianportuguese.RetroStep2=2. O núcleo recomendado bsnes-mercury Performance é instalado automaticamente.
+brazilianportuguese.RetroStep3=3. Os Comandos de Rede são ativados automaticamente na porta 55355.
+brazilianportuguese.RetroStep4=4. Depois da instalação, inicie uma ROM do SMW e selecione Arquivo > RetroArch. Nenhum outro assistente de instalação é necessário.
 brazilianportuguese.ExistingTitle=Configurações existentes encontradas
 brazilianportuguese.ExistingSubtitle=Suas configurações atuais serão preservadas.
 brazilianportuguese.ExistingDescription=O instalador encontrou SMWStreamTrackerConfig.json no seu perfil e não substituirá o arquivo. Os caminhos das novas ferramentas podem ser escolhidos depois.
@@ -434,7 +473,7 @@ brazilianportuguese.ErrorRetroExe=O executável do RetroArch não foi encontrado
 brazilianportuguese.ErrorRetroCore=O núcleo SNES não foi encontrado. Selecione um núcleo Libretro válido ou limpe o campo.
 brazilianportuguese.ReadySNI=SNI v0.0.103 (altamente recomendado)
 brazilianportuguese.ReadyQUsb=QUsb2Snes 2025-10-20
-brazilianportuguese.ReadyRetro=RetroArch 1.22.2 e o núcleo bsnes-mercury Performance
+brazilianportuguese.ReadyRetro=RetroArch portátil 1.22.2 e o núcleo bsnes-mercury Performance
 brazilianportuguese.ReadyNone=Nenhuma (configurar dependências depois)
 brazilianportuguese.ReadyPlatform=Plataforma inicial:
 brazilianportuguese.ReadyDependencies=Dependências selecionadas:
@@ -446,8 +485,19 @@ brazilianportuguese.RetroExecutableFilter=Executável do RetroArch
 brazilianportuguese.LibretroCores=Núcleos Libretro
 brazilianportuguese.DLLFiles=Arquivos DLL
 brazilianportuguese.ConfigWriteError=Não foi possível criar o arquivo de configuração:
+brazilianportuguese.ExistingInstallActionTitle=Instalação existente encontrada
+brazilianportuguese.ExistingInstallActionSubtitle=Apenas uma cópia do SMW Stream Tracker pode ser instalada nesta conta do Windows.
+brazilianportuguese.ExistingInstallActionDescription=Escolha o que o instalador deve fazer. RetroArch, SNI, QUsb2Snes e todos os arquivos de ROM serão preservados.
+brazilianportuguese.ExistingInstallFreshOption=Desinstalar a cópia atual e continuar com uma instalação nova
+brazilianportuguese.ExistingInstallRemoveOption=Desinstalar completamente o SMW Stream Tracker e sair do instalador
+brazilianportuguese.ExistingInstallRemovalFailed=O instalador não conseguiu remover completamente o tracker existente. Feche o SMW Stream Tracker e tente novamente.
+brazilianportuguese.ExistingInstallRemovalComplete=O SMW Stream Tracker foi completamente desinstalado. RetroArch, SNI, QUsb2Snes e os arquivos de ROM foram preservados.
 
 [Files]
+; The installer keeps this full-width SMW banner visible above every wizard
+; page. It is extracted only for the installer's interface and is not copied
+; into the installed application folder.
+Source: "smw_installer_banner.png"; Flags: dontcopy noencryption
 Source: "{#AppExeSource}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
 ; Keep Tcl/Tk scripts outside the one-file temporary extraction directory as a
 ; stable fallback for systems whose security software interrupts _MEI startup.
@@ -476,31 +526,55 @@ Source: "THIRD_PARTY_NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "https://github.com/alttpo/sni/releases/download/v0.0.103/sni-v0.0.103-windows-amd64.zip"; \
   DestName: "sni-v0.0.103-windows-amd64.zip"; DestDir: "{app}\Tools\SNI"; \
   Hash: "4c0885769518c8b6ed7db038a29fdbdaf28b64c3b54689a5b2e0d6dd33074f87"; \
-  ExternalSize: 13307359; Flags: external download extractarchive recursesubdirs ignoreversion; \
+  ExternalSize: 13307359; Flags: external download extractarchive recursesubdirs ignoreversion uninsneveruninstall; \
   Check: ShouldInstallSNI
 
 ; Advanced legacy bridge alternative.
 Source: "https://github.com/usb2snes/usb2snes/releases/download/2025-10-20/QUsb2Snes-bundle-2025-10-20.7z"; \
   DestName: "QUsb2Snes-bundle-2025-10-20.7z"; DestDir: "{app}\Tools\QUsb2Snes"; \
   Hash: "104c4a01454d4a5e46998b0ddecf3f95ece71853c614e9e906c287f77de9806f"; \
-  ExternalSize: 70505572; Flags: external download extractarchive recursesubdirs ignoreversion; \
+  ExternalSize: 70505572; Flags: external download extractarchive recursesubdirs ignoreversion uninsneveruninstall; \
   Check: ShouldInstallQUsb
 
-; The official RetroArch installer is downloaded only when selected. Its own
-; installer remains visible so the user can review and accept its choices.
-Source: "https://buildbot.libretro.com/stable/1.22.2/windows/x86_64/RetroArch-Win64-setup.exe"; \
-  DestName: "RetroArch-Win64-setup.exe"; DestDir: "{tmp}"; ExternalSize: 209037907; \
-  Flags: external download ignoreversion deleteafterinstall; Check: ShouldInstallRetroArch
+; Keep the entire RetroArch experience inside this blue installer. The
+; verified official portable archive is extracted directly into the app's
+; Tools folder, so no second white setup wizard or administrator prompt opens.
+Source: "https://buildbot.libretro.com/stable/1.22.2/windows/x86_64/RetroArch.7z"; \
+  DestName: "RetroArch.7z"; DestDir: "{app}\Tools\RetroArch"; \
+  Hash: "b2139b1d0f9d4526dc6b5ce23cbb3efdc766096fa6f2c3df016818b486ac6372"; \
+  ExternalSize: 202509078; Flags: external download extractarchive recursesubdirs ignoreversion uninsneveruninstall; \
+  Check: ShouldInstallRetroArch
 
 ; The official current bsnes-mercury Performance core is small enough to install directly, which
 ; removes the most common missing-core first-run error.
 Source: "https://buildbot.libretro.com/nightly/windows/x86_64/latest/bsnes_mercury_performance_libretro.dll.zip"; \
   DestName: "bsnes_mercury_performance_libretro.dll.zip"; DestDir: "{code:RetroArchCoreDirectory}"; \
-  ExternalSize: 956416; Flags: external download extractarchive recursesubdirs ignoreversion; \
+  ExternalSize: 956416; Flags: external download extractarchive recursesubdirs ignoreversion uninsneveruninstall; \
   Check: ShouldInstallRetroArchCore
+
+; A full uninstall removes only tracker-owned state. The user's ROM library and
+; OBS output are user-selected external locations and are intentionally never
+; referenced here. Optional SNI, QUsb2Snes, and RetroArch files are protected
+; above and their in-app-download equivalents below are left in place.
+[UninstallDelete]
+Type: files; Name: "{%USERPROFILE}\SMWStreamTrackerConfig.json"
+Type: files; Name: "{%USERPROFILE}\SMWStreamTrackerTimes.json"
+Type: files; Name: "{%USERPROFILE}\SMWStreamTrackerDeaths.json"
+Type: files; Name: "{%USERPROFILE}\SMWStreamTrackerLevelProgress.json"
+Type: files; Name: "{localappdata}\SMWStreamTracker\SMWStreamTracker.db"
+Type: filesandordirs; Name: "{localappdata}\SMWStreamTracker\Backups"
+Type: filesandordirs; Name: "{localappdata}\SMWStreamTracker\AutomaticBackups"
+Type: filesandordirs; Name: "{localappdata}\SMWStreamTracker\Rollback"
+Type: filesandordirs; Name: "{localappdata}\SMWStreamTracker\Updates"
+Type: filesandordirs; Name: "{localappdata}\SMWStreamTracker\Logs"
+Type: filesandordirs; Name: "{localappdata}\SMWStreamTracker\DependencyDownloads"
+Type: filesandordirs; Name: "{localappdata}\SMWStreamTracker\Tools\LiveSplitGameTimer"
+Type: filesandordirs; Name: "{localappdata}\SMWStreamTracker\Tools\LiveSplitLevelTimer"
+Type: files; Name: "{localappdata}\SMWStreamTracker\UninstallObsOutputPath.txt"
 
 [Icons]
 Name: "{group}\SMW Stream Tracker"; Filename: "{app}\{#AppExeName}"
+Name: "{group}\RetroArch"; Filename: "{app}\Tools\RetroArch\RetroArch-Win64\retroarch.exe"; Check: ShouldInstallRetroArch
 Name: "{group}\{cm:GuideName}"; Filename: "{app}\README.txt"
 Name: "{group}\{cm:MarkdownGuideName}"; Filename: "{app}\README.md"
 Name: "{autodesktop}\SMW Stream Tracker"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
@@ -509,8 +583,6 @@ Name: "{autodesktop}\SMW Stream Tracker"; Filename: "{app}\{#AppExeName}"; Tasks
 Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm:ShortcutGroup}"; Flags: unchecked
 
 [Run]
-Filename: "{tmp}\RetroArch-Win64-setup.exe"; Description: "{cm:InstallRetroArch}"; \
-  Verb: "runas"; Flags: shellexec waituntilterminated; Check: ShouldInstallRetroArch
 Filename: "{app}\README.txt"; Description: "{cm:OpenGuide}"; \
   Flags: postinstall shellexec skipifsilent unchecked
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; \
@@ -518,18 +590,289 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; \
 
 [Code]
 var
+  InstallerBanner: TBitmapImage;
   PlatformPage: TInputOptionWizardPage;
   DependencyPage: TInputOptionWizardPage;
   FolderPage: TInputDirWizardPage;
+  FolderOBSLabel: TNewStaticText;
+  FolderOBSEdit: TNewEdit;
+  FolderOBSBrowseButton: TNewButton;
+  FolderOBSNote: TNewStaticText;
   ExistingInterfacePage: TInputFileWizardPage;
   RetroArchPage: TInputFileWizardPage;
   FXPAKStepsPage: TOutputMsgWizardPage;
   RetroArchStepsPage: TOutputMsgWizardPage;
   ExistingConfigPage: TOutputMsgWizardPage;
+  ExistingInstallActionPage: TInputOptionWizardPage;
+  ExistingInstallationDetected: Boolean;
+  ExistingInstallationRemoved: Boolean;
+  ExitAfterCompleteUninstall: Boolean;
+  ExistingInstallDirectory: String;
+
+procedure ConfigureInstallerTheme;
+var
+  BannerFile: String;
+  BannerWidth: Integer;
+  BannerHeight: Integer;
+  MaximumBannerWidth: Integer;
+  ContentTop: Integer;
+  ContentBottom: Integer;
+begin
+  BannerFile := ExpandConstant('{tmp}\smw_installer_banner.png');
+  ExtractTemporaryFile(ExtractFileName(BannerFile));
+
+  InstallerBanner := TBitmapImage.Create(WizardForm);
+  InstallerBanner.Parent := WizardForm;
+  InstallerBanner.BackColor := StrToColor('#19283F');
+  InstallerBanner.Center := True;
+  InstallerBanner.Stretch := True;
+  InstallerBanner.PngImage.LoadFromFile(BannerFile);
+
+  BannerHeight := ScaleY(150);
+  BannerWidth := MulDiv(BannerHeight, 1039, 292);
+  MaximumBannerWidth := WizardForm.ClientWidth - ScaleX(24);
+  if BannerWidth > MaximumBannerWidth then
+  begin
+    BannerWidth := MaximumBannerWidth;
+    BannerHeight := MulDiv(BannerWidth, 292, 1039);
+  end;
+
+  InstallerBanner.Left := (WizardForm.ClientWidth - BannerWidth) div 2;
+  InstallerBanner.Top := ScaleY(10);
+  InstallerBanner.Width := BannerWidth;
+  InstallerBanner.Height := BannerHeight;
+
+  ContentTop := InstallerBanner.Top + InstallerBanner.Height + ScaleY(10);
+  ContentBottom := WizardForm.NextButton.Top - ScaleY(10);
+  WizardForm.OuterNotebook.Left := ScaleX(12);
+  WizardForm.OuterNotebook.Top := ContentTop;
+  WizardForm.OuterNotebook.Width := WizardForm.ClientWidth - ScaleX(24);
+  WizardForm.OuterNotebook.Height := ContentBottom - ContentTop;
+
+  WizardForm.WizardBitmapImage.Visible := False;
+  WizardForm.WizardSmallBitmapImage.Visible := False;
+
+  WizardForm.WelcomeLabel1.AutoSize := False;
+  WizardForm.WelcomeLabel1.Alignment := taCenter;
+  WizardForm.WelcomeLabel1.Left := ScaleX(24);
+  WizardForm.WelcomeLabel1.Width :=
+    WizardForm.WelcomePage.ClientWidth - ScaleX(48);
+  WizardForm.WelcomeLabel1.AdjustHeight;
+  WizardForm.WelcomeLabel2.AutoSize := False;
+  WizardForm.WelcomeLabel2.Alignment := taCenter;
+  WizardForm.WelcomeLabel2.Left := ScaleX(24);
+  WizardForm.WelcomeLabel2.Width :=
+    WizardForm.WelcomePage.ClientWidth - ScaleX(48);
+
+  WizardForm.FinishedHeadingLabel.AutoSize := False;
+  WizardForm.FinishedHeadingLabel.Alignment := taCenter;
+  WizardForm.FinishedHeadingLabel.Left := ScaleX(24);
+  WizardForm.FinishedHeadingLabel.Width :=
+    WizardForm.FinishedPage.ClientWidth - ScaleX(48);
+  WizardForm.FinishedHeadingLabel.AdjustHeight;
+  WizardForm.FinishedLabel.AutoSize := False;
+  WizardForm.FinishedLabel.Alignment := taCenter;
+  WizardForm.FinishedLabel.Left := ScaleX(24);
+  WizardForm.FinishedLabel.Width :=
+    WizardForm.FinishedPage.ClientWidth - ScaleX(48);
+end;
 
 function ConfigFilePath: String;
 begin
   Result := ExpandConstant('{%USERPROFILE}\SMWStreamTrackerConfig.json');
+end;
+
+function UninstallObsPathFile: String;
+begin
+  Result := ExpandConstant(
+    '{localappdata}\SMWStreamTracker\UninstallObsOutputPath.txt'
+  );
+end;
+
+procedure DeleteTrackerObsOutputFiles;
+var
+  OutputFolder: String;
+  OutputFolderLines: TArrayOfString;
+begin
+  if not LoadStringsFromFile(UninstallObsPathFile(), OutputFolderLines) then
+    Exit;
+  if GetArrayLength(OutputFolderLines) = 0 then
+    Exit;
+
+  OutputFolder := OutputFolderLines[0];
+  OutputFolder := Trim(OutputFolder);
+  if (OutputFolder = '') or (Length(OutputFolder) < 4) or
+     (not DirExists(OutputFolder)) then
+    Exit;
+
+  { Delete only filenames owned by SMW Stream Tracker. Never delete the
+    selected OBS folder itself unless it is empty, and never recurse through
+    an external user folder. }
+  DeleteFile(AddBackslash(OutputFolder) + 'author.txt');
+  DeleteFile(AddBackslash(OutputFolder) + 'exits.txt');
+  DeleteFile(AddBackslash(OutputFolder) + 'level_deaths.txt');
+  DeleteFile(AddBackslash(OutputFolder) + 'death_counter.txt');
+  DeleteFile(AddBackslash(OutputFolder) + 'total_deaths.txt');
+  DeleteFile(AddBackslash(OutputFolder) + 'hack_name.txt');
+  DeleteFile(AddBackslash(OutputFolder) + 'level_timer.txt');
+  DeleteFile(AddBackslash(OutputFolder) + 'game_timer.txt');
+  DeleteFile(AddBackslash(OutputFolder) + 'SMWTracker.log');
+  RemoveDir(OutputFolder);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  { usUninstall is reached only after the user confirms removal. Merely opening
+    the uninstaller and cancelling it must never delete OBS output files. }
+  if CurUninstallStep = usUninstall then
+    DeleteTrackerObsOutputFiles;
+end;
+
+function DefaultTrackerInstallDirectory: String;
+begin
+  Result := ExpandConstant('{localappdata}\Programs\SMW Stream Tracker');
+end;
+
+function ExistingUninstallRegistryKey: String;
+begin
+  Result :=
+    'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
+    '{E7C2CB0B-73BC-4DEA-8D78-90B9A3BA9CB6}_is1';
+end;
+
+function RegistryContainsExistingTracker(
+  RootKey: Integer;
+  var InstallDirectory: String
+): Boolean;
+var
+  UninstallCommand: String;
+begin
+  Result := RegQueryStringValue(
+    RootKey,
+    ExistingUninstallRegistryKey(),
+    'UninstallString',
+    UninstallCommand
+  );
+  if Result then
+  begin
+    if not RegQueryStringValue(
+      RootKey,
+      ExistingUninstallRegistryKey(),
+      'InstallLocation',
+      InstallDirectory
+    ) then
+      InstallDirectory := '';
+  end;
+end;
+
+function FindExistingTrackerInstallation(
+  var InstallDirectory: String
+): Boolean;
+begin
+  InstallDirectory := '';
+  Result := RegistryContainsExistingTracker(HKCU, InstallDirectory);
+  if (not Result) and IsWin64 then
+    Result := RegistryContainsExistingTracker(HKLM64, InstallDirectory);
+  if not Result then
+    Result := RegistryContainsExistingTracker(HKLM32, InstallDirectory);
+
+  if Trim(InstallDirectory) = '' then
+    InstallDirectory := DefaultTrackerInstallDirectory();
+
+  if FileExists(
+    AddBackslash(InstallDirectory) + '{#AppExeName}'
+  ) then
+    Result := True;
+end;
+
+procedure DeleteTrackerOwnedState;
+var
+  DataDirectory: String;
+begin
+  DeleteTrackerObsOutputFiles;
+
+  DeleteFile(ConfigFilePath());
+  DeleteFile(ExpandConstant('{%USERPROFILE}\SMWStreamTrackerTimes.json'));
+  DeleteFile(ExpandConstant('{%USERPROFILE}\SMWStreamTrackerDeaths.json'));
+  DeleteFile(ExpandConstant(
+    '{%USERPROFILE}\SMWStreamTrackerLevelProgress.json'
+  ));
+
+  DataDirectory := ExpandConstant('{localappdata}\SMWStreamTracker');
+  DeleteFile(AddBackslash(DataDirectory) + 'SMWStreamTracker.db');
+  DeleteFile(AddBackslash(DataDirectory) + 'UninstallObsOutputPath.txt');
+  DelTree(AddBackslash(DataDirectory) + 'Backups', True, True, True);
+  DelTree(AddBackslash(DataDirectory) + 'AutomaticBackups', True, True, True);
+  DelTree(AddBackslash(DataDirectory) + 'Rollback', True, True, True);
+  DelTree(AddBackslash(DataDirectory) + 'Updates', True, True, True);
+  DelTree(AddBackslash(DataDirectory) + 'Logs', True, True, True);
+  DelTree(AddBackslash(DataDirectory) + 'DependencyDownloads', True, True, True);
+  DelTree(
+    AddBackslash(DataDirectory) + 'Tools\LiveSplit Game Timer',
+    True,
+    True,
+    True
+  );
+  DelTree(
+    AddBackslash(DataDirectory) + 'Tools\LiveSplit Level Timer',
+    True,
+    True,
+    True
+  );
+  DelTree(
+    AddBackslash(DataDirectory) + 'Tools\LiveSplitGameTimer',
+    True,
+    True,
+    True
+  );
+  DelTree(
+    AddBackslash(DataDirectory) + 'Tools\LiveSplitLevelTimer',
+    True,
+    True,
+    True
+  );
+end;
+
+procedure DeleteKnownTrackerApplicationFiles(InstallDirectory: String);
+begin
+  if Trim(InstallDirectory) = '' then
+    InstallDirectory := DefaultTrackerInstallDirectory();
+
+  DeleteFile(AddBackslash(InstallDirectory) + '{#AppExeName}');
+  DelTree(AddBackslash(InstallDirectory) + 'runtime', True, True, True);
+  DelTree(AddBackslash(InstallDirectory) + 'Documentation', True, True, True);
+  DeleteFile(AddBackslash(InstallDirectory) + 'README.md');
+  DeleteFile(AddBackslash(InstallDirectory) + 'README.txt');
+  DeleteFile(AddBackslash(InstallDirectory) + 'rollback_update.ps1');
+  DeleteFile(AddBackslash(InstallDirectory) + 'PRIVACY.txt');
+  DeleteFile(AddBackslash(InstallDirectory) + 'LICENSE.txt');
+  DeleteFile(AddBackslash(InstallDirectory) + 'THIRD_PARTY_NOTICE.txt');
+  DeleteFile(AddBackslash(InstallDirectory) + 'unins000.exe');
+  DeleteFile(AddBackslash(InstallDirectory) + 'unins000.dat');
+
+  DeleteFile(ExpandConstant('{userdesktop}\SMW Stream Tracker.lnk'));
+  DeleteFile(ExpandConstant('{commondesktop}\SMW Stream Tracker.lnk'));
+  DelTree(
+    ExpandConstant('{userprograms}\SMW Stream Tracker'),
+    True,
+    True,
+    True
+  );
+end;
+
+function RemoveExistingTrackerInstallation: Boolean;
+begin
+  DeleteTrackerOwnedState;
+  DeleteKnownTrackerApplicationFiles(ExistingInstallDirectory);
+
+  RegDeleteKeyIncludingSubkeys(HKCU, ExistingUninstallRegistryKey());
+  if IsWin64 then
+    RegDeleteKeyIncludingSubkeys(HKLM64, ExistingUninstallRegistryKey());
+  RegDeleteKeyIncludingSubkeys(HKLM32, ExistingUninstallRegistryKey());
+
+  Result := not FileExists(
+    AddBackslash(ExistingInstallDirectory) + '{#AppExeName}'
+  );
 end;
 
 function PickerInitialDirectory(CurrentValue: String): String;
@@ -565,14 +908,14 @@ procedure BrowseForObsFolder(Sender: TObject);
 var
   SelectedDirectory: String;
 begin
-  SelectedDirectory := FolderPage.Values[1];
+  SelectedDirectory := FolderOBSEdit.Text;
   if Trim(SelectedDirectory) = '' then
     SelectedDirectory := ExpandConstant('{userdocs}');
   if BrowseForFolder(
        ExpandConstant('{cm:OBSFolder}'),
        SelectedDirectory,
        True) then
-    FolderPage.Values[1] := SelectedDirectory;
+    FolderOBSEdit.Text := SelectedDirectory;
 end;
 
 procedure BrowseForConnectionService(Sender: TObject);
@@ -623,9 +966,40 @@ begin
 end;
 
 procedure InitializeWizard;
+var
+  PlatformPreviousPageID: Integer;
 begin
+  ConfigureInstallerTheme;
+
+  ExistingInstallationDetected := FindExistingTrackerInstallation(
+    ExistingInstallDirectory
+  );
+  ExistingInstallationRemoved := False;
+  ExitAfterCompleteUninstall := False;
+  PlatformPreviousPageID := wpSelectDir;
+
+  if ExistingInstallationDetected then
+  begin
+    ExistingInstallActionPage := CreateInputOptionPage(
+      wpWelcome,
+      ExpandConstant('{cm:ExistingInstallActionTitle}'),
+      ExpandConstant('{cm:ExistingInstallActionSubtitle}'),
+      ExpandConstant('{cm:ExistingInstallActionDescription}'),
+      True,
+      False
+    );
+    ExistingInstallActionPage.Add(
+      ExpandConstant('{cm:ExistingInstallFreshOption}')
+    );
+    ExistingInstallActionPage.Add(
+      ExpandConstant('{cm:ExistingInstallRemoveOption}')
+    );
+    ExistingInstallActionPage.SelectedValueIndex := 0;
+    PlatformPreviousPageID := ExistingInstallActionPage.ID;
+  end;
+
   PlatformPage := CreateInputOptionPage(
-    wpSelectDir,
+    PlatformPreviousPageID,
     ExpandConstant('{cm:PlatformTitle}'),
     ExpandConstant('{cm:PlatformSubtitle}'),
     ExpandConstant('{cm:PlatformDescription}'),
@@ -657,11 +1031,51 @@ begin
     False,
     SetupMessage(msgNewFolderName));
   FolderPage.Add(ExpandConstant('{cm:ROMLibrary}'));
-  FolderPage.Add(ExpandConstant('{cm:OBSFolder}'));
   FolderPage.Values[0] := '';
-  FolderPage.Values[1] := '';
   FolderPage.Buttons[0].OnClick := @BrowseForRomLibrary;
-  FolderPage.Buttons[1].OnClick := @BrowseForObsFolder;
+
+  { TInputDirWizardPage requires every field added with Add(). Keep the }
+  { OBS path outside that required list so the user can leave it blank. }
+  FolderOBSLabel := TNewStaticText.Create(FolderPage);
+  FolderOBSLabel.Parent := FolderPage.Surface;
+  FolderOBSLabel.Caption := ExpandConstant('{cm:OBSFolder}');
+  FolderOBSLabel.AutoSize := True;
+  FolderOBSLabel.Left := FolderPage.Edits[0].Left;
+  FolderOBSLabel.Top :=
+    FolderPage.Edits[0].Top + FolderPage.Edits[0].Height + ScaleY(18);
+
+  FolderOBSEdit := TNewEdit.Create(FolderPage);
+  FolderOBSEdit.Parent := FolderPage.Surface;
+  FolderOBSEdit.Left := FolderPage.Edits[0].Left;
+  FolderOBSEdit.Top :=
+    FolderOBSLabel.Top + FolderOBSLabel.Height + ScaleY(4);
+  FolderOBSEdit.Width := FolderPage.Edits[0].Width;
+  FolderOBSEdit.Height := FolderPage.Edits[0].Height;
+  FolderOBSEdit.Text := '';
+  FolderOBSEdit.TabOrder := FolderPage.Edits[0].TabOrder + 1;
+
+  FolderOBSBrowseButton := TNewButton.Create(FolderPage);
+  FolderOBSBrowseButton.Parent := FolderPage.Surface;
+  FolderOBSBrowseButton.Caption := FolderPage.Buttons[0].Caption;
+  FolderOBSBrowseButton.Left := FolderPage.Buttons[0].Left;
+  FolderOBSBrowseButton.Top := FolderOBSEdit.Top;
+  FolderOBSBrowseButton.Width := FolderPage.Buttons[0].Width;
+  FolderOBSBrowseButton.Height := FolderPage.Buttons[0].Height;
+  FolderOBSBrowseButton.TabOrder := FolderOBSEdit.TabOrder + 1;
+  FolderOBSBrowseButton.OnClick := @BrowseForObsFolder;
+
+  FolderOBSNote := TNewStaticText.Create(FolderPage);
+  FolderOBSNote.Parent := FolderPage.Surface;
+  FolderOBSNote.Caption := ExpandConstant('{cm:OBSFolderNote}');
+  FolderOBSNote.AutoSize := False;
+  FolderOBSNote.WordWrap := True;
+  FolderOBSNote.Left := FolderOBSEdit.Left;
+  FolderOBSNote.Top :=
+    FolderOBSEdit.Top + FolderOBSEdit.Height + ScaleY(12);
+  FolderOBSNote.Width :=
+    FolderOBSBrowseButton.Left + FolderOBSBrowseButton.Width -
+    FolderOBSNote.Left;
+  FolderOBSNote.Height := ScaleY(54);
 
   ExistingInterfacePage := CreateInputFilePage(
     FolderPage.ID,
@@ -746,7 +1160,7 @@ end;
 
 function RetroArchCoreDirectory(Param: String): String;
 begin
-  Result := ExpandConstant('{app}\Tools\RetroArch\cores');
+  Result := ExpandConstant('{app}\Tools\RetroArch\RetroArch-Win64\cores');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -774,6 +1188,39 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+
+  if ExistingInstallationDetected then
+  begin
+    if (not ExistingInstallationRemoved) and
+       (CurPageID = ExistingInstallActionPage.ID) then
+    begin
+      if not RemoveExistingTrackerInstallation() then
+      begin
+        MsgBox(
+          ExpandConstant('{cm:ExistingInstallRemovalFailed}'),
+          mbError,
+          MB_OK
+        );
+        Result := False;
+      end
+      else
+      begin
+        ExistingInstallationRemoved := True;
+        if ExistingInstallActionPage.SelectedValueIndex = 1 then
+        begin
+          MsgBox(
+            ExpandConstant('{cm:ExistingInstallRemovalComplete}'),
+            mbInformation,
+            MB_OK
+          );
+          ExitAfterCompleteUninstall := True;
+          Result := False;
+          WizardForm.Close;
+        end;
+      end;
+      Exit;
+    end;
+  end;
 
   if CurPageID = PlatformPage.ID then
   begin
@@ -876,9 +1323,91 @@ end;
 function SelectedRetroArchCorePath: String;
 begin
   if DependencyPage.Values[2] then
-    Result := ExpandConstant('{app}\Tools\RetroArch\cores\bsnes_mercury_performance_libretro.dll')
+    Result := ExpandConstant('{app}\Tools\RetroArch\RetroArch-Win64\cores\bsnes_mercury_performance_libretro.dll')
   else
     Result := RetroArchPage.Values[1];
+end;
+
+function SelectedRetroArchExecutablePath: String;
+begin
+  if DependencyPage.Values[2] then
+    Result := ExpandConstant('{app}\Tools\RetroArch\RetroArch-Win64\retroarch.exe')
+  else
+    Result := RetroArchPage.Values[0];
+end;
+
+procedure SetRetroArchSetting(
+  Settings: TStringList;
+  SettingName, SettingValue: String);
+var
+  I: Integer;
+  EqualsPosition: Integer;
+  CurrentLine: String;
+  CurrentName: String;
+  Found: Boolean;
+begin
+  Found := False;
+  for I := Settings.Count - 1 downto 0 do
+  begin
+    CurrentLine := Trim(Settings[I]);
+    EqualsPosition := Pos('=', CurrentLine);
+    if EqualsPosition > 0 then
+      CurrentName := Trim(Copy(CurrentLine, 1, EqualsPosition - 1))
+    else
+      CurrentName := '';
+
+    if CompareText(CurrentName, SettingName) = 0 then
+    begin
+      if not Found then
+      begin
+        Settings[I] := SettingName + ' = ' + SettingValue;
+        Found := True;
+      end
+      else
+        Settings.Delete(I);
+    end;
+  end;
+
+  if not Found then
+    Settings.Add(SettingName + ' = ' + SettingValue);
+end;
+
+procedure ConfigurePortableRetroArch;
+var
+  ConfigPath: String;
+  Settings: TStringList;
+begin
+  if not ShouldInstallRetroArch then
+    Exit;
+
+  ConfigPath := ExpandConstant(
+    '{app}\Tools\RetroArch\RetroArch-Win64\retroarch.cfg');
+  ForceDirectories(ExtractFileDir(ConfigPath));
+  Settings := TStringList.Create;
+  try
+    if FileExists(ConfigPath) then
+      Settings.LoadFromFile(ConfigPath);
+    SetRetroArchSetting(Settings, 'network_cmd_enable', '"true"');
+    SetRetroArchSetting(Settings, 'network_cmd_port', '"55355"');
+    SetRetroArchSetting(Settings, 'quit_press_twice', '"false"');
+    SetRetroArchSetting(Settings, 'config_save_on_exit', '"true"');
+    Settings.SaveToFile(ConfigPath);
+  finally
+    Settings.Free;
+  end;
+end;
+
+procedure CancelButtonClick(
+  CurPageID: Integer;
+  var Cancel: Boolean;
+  var Confirm: Boolean
+);
+begin
+  if ExitAfterCompleteUninstall then
+  begin
+    Cancel := True;
+    Confirm := False;
+  end;
 end;
 
 procedure WriteInitialConfiguration;
@@ -896,8 +1425,8 @@ begin
 
   if Trim(FolderPage.Values[0]) <> '' then
     ForceDirectories(FolderPage.Values[0]);
-  if Trim(FolderPage.Values[1]) <> '' then
-    ForceDirectories(FolderPage.Values[1]);
+  if Trim(FolderOBSEdit.Text) <> '' then
+    ForceDirectories(FolderOBSEdit.Text);
   SNIPath := SelectedSNIPath;
   QUsb2SnesPath := SelectedQUsb2SnesPath;
   InterfacePath := SelectedInterfacePath;
@@ -913,8 +1442,8 @@ begin
     '  "selected_platform": "' + SelectedPlatformName + '",'#13#10 +
     '  "platform_rom_library_folder": "' + JsonEscape(FolderPage.Values[0]) + '",'#13#10 +
     '  "rom_builder_library_folder": "' + JsonEscape(FolderPage.Values[0]) + '",'#13#10 +
-    '  "output_folder": "' + JsonEscape(FolderPage.Values[1]) + '",'#13#10 +
-    '  "retroarch_executable_path": "' + JsonEscape(RetroArchPage.Values[0]) + '",'#13#10 +
+    '  "output_folder": "' + JsonEscape(FolderOBSEdit.Text) + '",'#13#10 +
+    '  "retroarch_executable_path": "' + JsonEscape(SelectedRetroArchExecutablePath) + '",'#13#10 +
     '  "retroarch_core_path": "' + JsonEscape(SelectedRetroArchCorePath) + '",'#13#10 +
     '  "retroarch_host": "127.0.0.1",'#13#10 +
     '  "retroarch_port": 55355,'#13#10 +
@@ -929,7 +1458,10 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
+    ConfigurePortableRetroArch;
     WriteInitialConfiguration;
+  end;
 end;
 
 function UpdateReadyMemo(
@@ -952,7 +1484,7 @@ begin
     ExpandConstant('{cm:ReadyPlatform}') + NewLine + Space + SelectedPlatformName + NewLine + NewLine +
     ExpandConstant('{cm:ReadyDependencies}') + NewLine + DependencyList + NewLine +
     ExpandConstant('{cm:ReadyROMLibrary}') + NewLine + Space + FolderPage.Values[0] + NewLine + NewLine +
-    ExpandConstant('{cm:ReadyOBS}') + NewLine + Space + FolderPage.Values[1] + NewLine;
+    ExpandConstant('{cm:ReadyOBS}') + NewLine + Space + FolderOBSEdit.Text + NewLine;
 
   if MemoTasksInfo <> '' then
     Result := Result + NewLine + MemoTasksInfo;

@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.0.9**
+**Version 1.0.10**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports two playable platforms:
 
@@ -9,12 +9,24 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
 
-## What’s new in v1.0.9
+## What’s new in v1.0.10
 
 - A guided first-run workflow flashes every required connection, catalog,
   refresh, download, patch, FXPAK, and OBS step in order.
-- FXPAK Pro uploads use emoji-safe ROM filenames while the catalog, tracker,
-  and current-game display preserve the hack’s original title.
+- Choosing SNI or RetroArch during guided setup now clears the markers from
+  QUsb2Snes and the chosen option, leaving only the other required option marked.
+- FXPAK Pro uploads replace every emoji with its readable Unicode name in the
+  ROM filename while the catalog, tracker, and current-game display preserve
+  the hack’s original title.
+- When USB upload is enabled, existing local emoji-named ROMs are now included
+  automatically so an earlier download can be repaired and mapped on the FXPAK
+  without downloading or patching it again.
+- Launching an emoji-titled hack now finds its readable FXPAK alias or uploads
+  the missing alias automatically, then saves the relationship under the SMW
+  Central ID so the tracker always restores the original catalog title.
+- FXPAK file transfers now pause the live SNI/QUsb2Snes tracker connection and
+  reconnect it automatically afterward, preventing the live tracker from
+  blocking emoji-safe uploads.
 - Two buttons download, separate, and configure Game and Level LiveSplit copies
   automatically on ports `16834` and `16835`.
 - OBS setup explains how to reuse existing text sources and links them to the
@@ -34,10 +46,10 @@ The app does **not** include, download, or upload a commercial Super Mario World
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.9 Live Session dashboard with centered controls, platform status, timers, and death counters">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.10 Live Session dashboard with centered controls, platform status, timers, and death counters">
 </p>
 
-The v1.0.9 dashboard places level time and deaths, current-hack details, and game time and deaths in one vertically centered Live Session panel, with compact controls below.
+The v1.0.10 dashboard places level time and deaths, current-hack details, and game time and deaths in one vertically centered Live Session panel, with compact controls below.
 
 <table>
   <tr>
@@ -158,6 +170,16 @@ The setup wizard installs all six text guides in its `Documentation` folder and 
 
 For a first installation, always use the complete installer. Use the smaller updater only when SMW Stream Tracker is already installed.
 
+A full uninstall removes the tracker program, settings, database, backups,
+logs, updates, LiveSplit copies, and tracker-created OBS text files. It keeps
+RetroArch, SNI, QUsb2Snes, and every ROM file or ROM-library folder. A later
+fresh installation shows the branded welcome and setup splash again.
+
+The complete installer allows only one installed copy for the current Windows
+account. Running it again asks whether to remove the current copy and continue
+with a fresh installation, or completely uninstall the tracker and exit Setup.
+Both choices preserve RetroArch, SNI, QUsb2Snes, and all ROM files.
+
 The installer language becomes the app language. You can change it at any time
 from **File → Language**; the main interface is rebuilt immediately so old
 labels from the previous language do not remain on screen.
@@ -166,9 +188,17 @@ labels from the previous language do not remain on screen.
 
 The installer lets you select any combination of these tools.
 
+When the app finds an existing SNI, QUsb2Snes, or RetroArch installation, its
+localized blue confirmation box lets you use that copy automatically or choose
+a fresh download instead.
+
 ### SNI — needed for RetroArch
 
 RetroArch users need both RetroArch and SNI for live-memory tracking. The app can start the installed SNI connection service automatically.
+
+During the flashing setup guide, completing QUsb2Snes advances directly to the
+catalog step. If SNI or RetroArch is selected, the guide stays on the connection
+step until both SNI and RetroArch have each been completed.
 
 Official project: <https://github.com/alttpo/sni>
 
@@ -185,7 +215,7 @@ Select RetroArch when:
 - It is not already installed; and
 - You plan to play through RetroArch.
 
-You may skip it when it is already installed or when you only use FXPAK Pro. The installer can also add the bsnes-mercury Performance core when RetroArch is selected.
+You may skip it when it is already installed or when you only use FXPAK Pro. When RetroArch is selected, the blue SMW Stream Tracker installer downloads and extracts the official portable build into its Tools folder, adds the bsnes-mercury Performance core, enables Network Commands on port `55355`, and saves the correct executable and core paths. No separate RetroArch setup wizard opens.
 
 Official website: <https://www.retroarch.com/>
 
@@ -281,6 +311,12 @@ Select **Save** after changing the settings.
 
 Only moderated catalog entries are used by the downloader.
 
+Use **Reset Catalog** at the bottom of the SMW Central Catalog to remove every
+locally stored moderated and waiting entry. The app creates a recovery backup
+first and preserves My Tracker progress, ratings, notes, custom hacks, ROM
+mappings, and ROM files. Refresh the moderated catalog whenever you want it
+back.
+
 ## 9. Download and build moderated hacks
 
 1. Open **Downloads → Download Missing Hacks**.
@@ -327,9 +363,14 @@ Use this when the SD card remains in the FXPAK Pro.
 9. Download the missing hacks.
 
 The app uploads completed ROMs without overwriting an existing same-named card file.
-FXPAK Pro filenames are made hardware-safe automatically: unsupported emoji and
-characters are removed from the uploaded filename, but the original SMW Central
-title remains visible in the catalog, My Tracker, and current-game display.
+FXPAK Pro filenames are made hardware-safe automatically: every emoji is
+replaced by its readable Unicode name in the uploaded filename, including for
+future catalog additions. The original SMW Central title remains visible in the
+catalog, My Tracker, and current-game display, and the saved FXPAK mapping lets
+the app recall and launch the renamed ROM whenever that hack is selected.
+If an older installation never sent the readable alias to the card, selecting
+the hack automatically uploads the existing local ROM under that alias first.
+The mapping is keyed to the SMW Central ID instead of the displayed filename.
 
 ## 11. Select and play a hack
 
@@ -389,8 +430,8 @@ You can also use both methods at the same time.
 
 ### A. Download and configure both LiveSplit timers
 
-1. Open **File → Settings**.
-2. Select **Set Up Two LiveSplit Timers for OBS**.
+1. Open **Help → Setup → LiveSplit Timer Setup**.
+2. The blue LiveSplit setup screen opens with both timer buttons.
 3. Select **Game LiveSplit (16834)** once. The tracker downloads the current
    official LiveSplit release, extracts its own game-timer copy, sets server
    port `16834`, enables automatic TCP server startup, and opens it.
@@ -411,7 +452,7 @@ to configure the two ports manually. SMW Stream Tracker connects locally on
 
 ### B. Reopen the two LiveSplit timers later
 
-Open **File → Settings → Set Up Two LiveSplit Timers for OBS** and select either
+Open **Help → Setup → LiveSplit Timer Setup** and select either
 green LiveSplit button. Each button reopens its own configured copy. Keep both
 windows open and not minimized while OBS is running.
 
