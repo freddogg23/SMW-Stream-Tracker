@@ -1,22 +1,22 @@
 {
-    "schema":  1,
-    "version":  "1.0.9",
-    "release_date":  "2026-08-10",
-    "notes":  [
-                  "Adds a translated guided setup that flashes every required connection, catalog, refresh, patch, FXPAK, and OBS step in order.",
-                  "Uses emoji-safe FXPAK Pro ROM filenames while preserving original hack titles throughout the interface.",
-                  "Downloads and configures separate Game and Level LiveSplit copies automatically on ports 16834 and 16835.",
-                  "Expands OBS instructions for reusing existing text sources with automatically updated tracker files.",
-                  "Fixes the OBS Text File Setup dialog so it opens reliably in the packaged Windows app.",
-                  "Adds blue app-style popups, blue drop-down arrows, yellow scrollbars, wider table columns, and light-blue cell borders.",
-                  "Revises the statistics Overview with larger charts, the requested panel order, and compact difficulty progress.",
-                  "Completes the interface and setup-guide catalogs in all six languages, including playful Australian English wording.",
-                  "Adds a translated Join Discord button to About \u0026 Updates for help and contact.",
-                  "Includes all timer, death-counter, catalog, downloader, RetroArch, FXPAK Pro, navigation, and updater reliability improvements completed for this release.",
-                  "Refreshes the repository screenshots and every localized Read Me for v1.0.9."
-              ],
-    "updater_url":  "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.9/SMWStreamTracker_Update_1.0.9.exe",
-    "verification":  "sha256",
-    "sha256":  "efc34724b9dd11143ef120df76300314944d785c4faf3bad529ae85d163177fe",
-    "size":  64156637
+  "schema": 1,
+  "version": "1.0.9",
+  "release_date": "2026-08-10",
+  "notes": [
+    "Adds a translated guided setup that flashes every required connection, catalog, refresh, patch, FXPAK, and OBS step in order.",
+    "Uses emoji-safe FXPAK Pro ROM filenames while preserving original hack titles throughout the interface.",
+    "Downloads and configures separate Game and Level LiveSplit copies automatically on ports 16834 and 16835.",
+    "Expands OBS instructions for reusing existing text sources with automatically updated tracker files.",
+    "Fixes the OBS Text File Setup dialog so it opens reliably in the packaged Windows app.",
+    "Adds blue app-style popups, blue drop-down arrows, yellow scrollbars, wider table columns, and light-blue cell borders.",
+    "Revises the statistics Overview with larger charts, the requested panel order, and compact difficulty progress.",
+    "Completes the interface and setup-guide catalogs in all six languages, including playful Australian English wording.",
+    "Adds a translated Join Discord button to About & Updates for help and contact.",
+    "Includes all timer, death-counter, catalog, downloader, RetroArch, FXPAK Pro, navigation, and updater reliability improvements completed for this release.",
+    "Refreshes the repository screenshots and every localized Read Me for v1.0.9."
+  ],
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.9/SMWStreamTracker_Update_1.0.9.exe",
+  "verification": "sha256",
+  "sha256": "6229ab031c8614eacefafb4c317a64edb3bacd1e24862b38f7bc052956f0ffd3",
+  "size": 63857480
 }
