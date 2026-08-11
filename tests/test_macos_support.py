@@ -83,6 +83,9 @@ class MacPlatformSupportTests(unittest.TestCase):
         requirements = (
             project_root / "release" / "requirements-macos.txt"
         ).read_text(encoding="utf-8")
+        launcher = (
+            project_root / "SMWStreamTrackerLauncher.py"
+        ).read_text(encoding="utf-8")
         spec = (
             project_root / "SMWStreamTracker-macOS.spec"
         ).read_text(encoding="utf-8")
@@ -97,6 +100,8 @@ class MacPlatformSupportTests(unittest.TestCase):
         self.assertIn("codesign --verify", build_script)
         self.assertIn("notarytool submit", build_script)
         self.assertIn("pyobjc", requirements)
+        self.assertNotIn("pystray", requirements)
+        self.assertIn("configure_platform_runtime(tracker)", launcher)
         self.assertIn("BUNDLE(", spec)
 
     def test_mac_timer_fallback_is_translated_in_every_language(self):
