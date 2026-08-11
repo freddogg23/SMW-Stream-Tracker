@@ -228,6 +228,10 @@ class ConnectionServiceTests(unittest.TestCase):
         running_check.assert_called_once()
         create_connection.assert_not_called()
 
+    @unittest.skipUnless(
+        sys.platform.startswith("win"),
+        "Classic LiveSplit health checks apply only to Windows.",
+    )
     def test_health_check_lists_livesplit_as_optional_when_not_running(self):
         class Value:
             def get(self):

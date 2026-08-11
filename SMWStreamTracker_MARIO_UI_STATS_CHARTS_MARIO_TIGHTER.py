@@ -54073,7 +54073,7 @@ class TrackerApp:
 
         def direct_file_exists(path_text: str) -> bool:
             candidate = str(path_text).strip()
-            if not candidate or candidate.startswith("/"):
+            if not candidate:
                 return False
             cache_key = os.path.normcase(os.path.normpath(candidate))
             now = time.monotonic()

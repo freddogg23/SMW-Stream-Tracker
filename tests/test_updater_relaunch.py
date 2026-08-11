@@ -24,6 +24,10 @@ def load_tracker_module():
     return module
 
 
+@unittest.skipUnless(
+    sys.platform.startswith("win"),
+    "The EXE updater and bundled Tcl runtime apply only to Windows.",
+)
 class UpdaterRelaunchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -25,6 +25,10 @@ def load_tracker_module():
     return module
 
 
+@unittest.skipUnless(
+    sys.platform.startswith("win"),
+    "Win32 in-place RetroArch loading applies only to Windows.",
+)
 class RetroArchSameWindowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
