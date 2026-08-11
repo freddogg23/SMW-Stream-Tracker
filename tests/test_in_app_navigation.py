@@ -205,6 +205,48 @@ class InAppNavigationTests(unittest.TestCase):
         self.assertIn("Refresh Moderated Hacks from SMW Central", constants)
         self.assertIn("Add Unmoderated Hack", constants)
 
+    def test_downloader_footer_is_reserved_before_the_expandable_table(self):
+        method = self.methods["open_hack_downloader"]
+        assignments = {
+            target.id: node
+            for node in ast.walk(method)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance((target := node.targets[0]), ast.Name)
+            and target.id in {
+                "footer_panel",
+                "list_frame",
+                "progress_panel",
+                "button_panel",
+            }
+        }
+        self.assertLess(
+            assignments["footer_panel"].lineno,
+            assignments["list_frame"].lineno,
+        )
+
+        footer_pack = next(
+            node
+            for node in ast.walk(method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "footer_panel"
+            and node.func.attr == "pack"
+        )
+        footer_pack_options = {
+            keyword.arg: keyword.value
+            for keyword in footer_pack.keywords
+        }
+        self.assertEqual(footer_pack_options["side"].value, "bottom")
+        self.assertEqual(footer_pack_options["fill"].value, "x")
+
+        for panel_name in ("progress_panel", "button_panel"):
+            panel_call = assignments[panel_name].value
+            self.assertIsInstance(panel_call, ast.Call)
+            self.assertIsInstance(panel_call.args[0], ast.Name)
+            self.assertEqual(panel_call.args[0].id, "footer_panel")
+
     def test_fxpak_menu_opens_the_library_without_a_home_submenu(self):
         method = self.methods["_build_menu_bar"]
         constants = {

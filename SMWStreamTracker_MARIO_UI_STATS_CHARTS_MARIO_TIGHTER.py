@@ -48974,6 +48974,19 @@ class TrackerApp:
             lambda *_args: self._queue_downloader_preview_refresh(),
         )
 
+        # Reserve the status and action area before the expandable catalog
+        # table is packed.  On shorter macOS displays the table could
+        # otherwise consume the remaining height and push every bottom
+        # button below the visible page.
+        footer_panel = tk.Frame(
+            dialog,
+            bg=palette["window"],
+        )
+        footer_panel.pack(
+            side="bottom",
+            fill="x",
+        )
+
         list_frame = tk.Frame(
             dialog,
             bg=palette["panel"],
@@ -49342,7 +49355,7 @@ class TrackerApp:
         )
 
         progress_panel = tk.Frame(
-            dialog,
+            footer_panel,
             bg=palette["panel"],
             padx=14,
             pady=9,
@@ -49380,7 +49393,7 @@ class TrackerApp:
         )
 
         button_panel = tk.Frame(
-            dialog,
+            footer_panel,
             bg=palette["window"],
         )
         button_panel.pack(
