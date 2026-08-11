@@ -3,7 +3,7 @@ OPTIONAL SOFTWARE AND ROM NOTICE
 This installer can download and set up optional third-party software:
 
 * SNI from the official alttpo/sni GitHub releases.
-* QUsb2Snes from the official usb2snes GitHub releases.
+* QUsb2Snes from the official usb2snes (Windows) or Skarsnik/QUsb2snes (Mac) GitHub releases.
 * RetroArch from the official Libretro build server.
 
 These programs are separate projects and are governed by their own licenses.
@@ -13,15 +13,17 @@ the options selected by the user.
 Project and license information:
 
 * SNI: https://github.com/alttpo/sni
-* QUsb2Snes: https://github.com/usb2snes/usb2snes
+* QUsb2Snes for Windows: https://github.com/usb2snes/usb2snes
+* QUsb2Snes for Mac: https://github.com/Skarsnik/QUsb2snes
 * RetroArch and Libretro cores: https://www.libretro.com/
 * Pillow: https://python-pillow.org/
 * openpyxl: https://openpyxl.readthedocs.io/
 * websocket-client: https://github.com/websocket-client/websocket-client
 * pystray: https://github.com/moses-palmer/pystray
 * pywebview: https://pywebview.flowrl.com/
-* pythonnet: https://pythonnet.github.io/
-* Microsoft Edge WebView2: https://developer.microsoft.com/microsoft-edge/webview2/
+* pyobjc (Mac): https://pyobjc.readthedocs.io/
+* pythonnet (Windows): https://pythonnet.github.io/
+* Microsoft Edge WebView2 (Windows): https://developer.microsoft.com/microsoft-edge/webview2/
 
 The exact license text distributed with each project controls. SMW Stream
 Tracker does not change or replace those licenses.

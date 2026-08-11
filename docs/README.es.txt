@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUÍA COMPLETA DE CONFIGURACIÓN
-Versión 1.0.10
+Versión 1.0.11
 
 IDIOMAS
 English: README.en.txt
@@ -9,8 +9,34 @@ Français: README.fr.txt
 Deutsch: README.de.txt
 Português (Brasil): README.pt-BR.txt
 
-NOVEDADES DE LA VERSIÓN 1.0.10
+COMPATIBILIDAD CON MACOS
 
+SMW Stream Tracker ahora usa rutas nativas de Mac y dispone de compilaciones
+para Apple Silicon (arm64) e Intel (x86_64). Descarga el DMG correspondiente y
+arrastra la aplicación a Aplicaciones. Los datos del tracker se guardan en:
+~/Library/Application Support/SMWStreamTracker
+
+Configuración de conexión y emulador descarga las versiones oficiales para Mac
+de SNI, QUsb2Snes y RetroArch, incluido el núcleo bsnes-mercury correcto.
+LiveSplit clásico solo funciona en Windows, por lo que la versión para Mac
+incluye ventanas sincronizadas para los temporizadores de juego y nivel,
+además de game_timer.txt y level_timer.txt para OBS. El catálogo, los parches,
+los alias de emojis para FXPAK, la base de datos, los libros y los textos de OBS
+mantienen el mismo funcionamiento en Windows y Mac.
+
+NOVEDADES DE LA VERSIÓN 1.0.11
+
+* El comportamiento nativo para Windows y macOS incluye compilaciones
+  reproducibles para Apple Silicon e Intel y la configuración correcta de SNI,
+  QUsb2Snes y RetroArch para cada plataforma.
+* Mover la ventana y desplazar Mi Tracker es más fluido; el banner se reutiliza,
+  los bordes de las tablas permanecen alineados y una ventana principal más
+  baja puede desplazarse verticalmente hasta los controles inferiores.
+* Un formulario azul y traducido de Añadir al tracker acepta todos los datos del
+  hack y del progreso. Los hacks personalizados no moderados permanecen junto
+  al catálogo y se pueden parchear y enviar al FXPAK Pro.
+* Actualizar puede reiniciar de forma segura una sesión activa del FXPAK Pro
+  antes de reconectarse, y Eliminar de Mi Tracker usa ahora el cuadro azul.
 * Una nueva guía inicial hace parpadear en orden cada paso necesario de
   Descargas, conexión, catálogo, actualización, parcheo, FXPAK y OBS.
 * Al elegir SNI o RetroArch, QUsb2Snes y la opción elegida dejan de parpadear;
@@ -70,7 +96,7 @@ SMW Stream Tracker no incluye ni descarga una ROM base comercial.
 
 2. INSTALAR EL PROGRAMA
 
-1. Ejecuta SMWStreamTracker_Setup_1.0.10.exe.
+1. Ejecuta SMWStreamTracker_Setup_1.0.11.exe.
 2. Elige un idioma en la primera pantalla.
 3. Lee el aviso sobre software opcional y ROMs.
 4. Elige FXPAK Pro o RetroArch como plataforma inicial.

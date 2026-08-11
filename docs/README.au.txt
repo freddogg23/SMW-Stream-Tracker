@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.0.10
+Version 1.0.11
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -13,8 +13,32 @@ Français: README.fr.txt
 Deutsch: README.de.txt
 Português (Brasil): README.pt-BR.txt
 
-WHAT'S NEW IN VERSION 1.0.10, MATE
+MAC SUPPORT — FAIR DINKUM, MATE
 
+SMW Stream Tracker now has proper Mac paths and Mac builds for Apple Silicon
+(arm64) and Intel (x86_64). Grab the matching DMG and drag the app into
+Applications. Your tracker gear lives safely in:
+~/Library/Application Support/SMWStreamTracker
+
+Connection & Emulator Setup grabs the official Mac versions of SNI,
+QUsb2Snes, and RetroArch, including the right bsnes-mercury core. Classic
+desktop LiveSplit is Windows-only, so the Mac app supplies synchronized Game
+Timer and Level Timer windows plus game_timer.txt and level_timer.txt for OBS.
+The catalogue, patching, FXPAK emoji aliases, database, workbooks, and OBS text
+files all work the same way. Crikey, that saves a bit of mucking about!
+
+WHAT'S NEW IN VERSION 1.0.11, MATE
+
+* Windows and Mac are both ready to rip, with Apple Silicon and Intel builds
+  plus the proper SNI, QUsb2Snes, and RetroArch gear for each platform.
+* Moving the window and scrolling My Tracker are much smoother, the banner
+  stays put in memory, table borders behave themselves, and a short window can
+  scroll right down to the bottom, no worries.
+* The blue Add to Tracker form takes all the hack and progress details. Custom
+  unmoderated hacks stay with the full catalogue and can be patched and sent to
+  the FXPAK Pro instead of going walkabout.
+* Refresh can give a running FXPAK Pro session a safe kick before reconnecting,
+  and removing a tracker entry now uses the proper translated blue box, mate.
 * A new first-run guide flashes every Downloads, connection, catalogue,
   refresh, patching, FXPAK, and OBS step in order. Too easy.
 * Pick SNI or RetroArch and the yellow markers clear off QUsb2Snes and your
@@ -77,7 +101,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.0.10.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.0.11.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro or RetroArch as your first cab off the rank.

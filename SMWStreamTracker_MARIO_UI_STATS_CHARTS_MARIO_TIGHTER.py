@@ -1,6 +1,7 @@
 import json
 import ctypes
 from ctypes import wintypes
+from copy import copy as copy_cell_style
 import base64
 import binascii
 import csv
@@ -12,11 +13,14 @@ from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta, timezone
 import os
 import platform as system_platform
+import plistlib
 import queue
 import random
 import re
 import shutil
+import stat
 import tempfile
+import tarfile
 import socket
 import sqlite3
 import subprocess
@@ -336,6 +340,7 @@ _ORIGINAL_MESSAGEBOX_FUNCTIONS = {
 import websocket
 import zipfile
 from openpyxl import Workbook, load_workbook
+from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -363,8 +368,10 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.10"
-APP_BUILD_DATE = "2026-08-10"
+APP_VERSION = "1.0.11"
+APP_BUILD_DATE = "2026-08-11"
+IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
 FEEDBACK_FORM_URLS = {
@@ -445,6 +452,290 @@ LIVESPLIT_RELEASE_PAGE_URL = (
 )
 LIVESPLIT_RELEASE_MAX_BYTES = 64 * 1024 * 1024
 
+MACOS_SNI_DOWNLOAD_URL = (
+    "https://github.com/alttpo/sni/releases/download/v0.0.103/"
+    "sni-v0.0.103-darwin-universal.tar.gz"
+)
+MACOS_SNI_DOWNLOAD_SHA256 = (
+    "436603367c2d1d6efe06832c5772095064730cd685c9ec8aa7ed90c90a9dc064"
+)
+MACOS_QUSB2SNES_DOWNLOAD_URL = (
+    "https://github.com/Skarsnik/QUsb2snes/releases/download/v0.7.35/"
+    "QUsb2Snes-v0.7.35.dmg"
+)
+MACOS_QUSB2SNES_DOWNLOAD_SHA256 = (
+    "9f1fb231ffbe0ce9dc3550a2cdbb5d888bd99170da02437df76f24a8fd065e8c"
+)
+MACOS_RETROARCH_DOWNLOAD_URL = (
+    "https://buildbot.libretro.com/stable/1.22.2/apple/osx/universal/"
+    "RetroArch_Metal.dmg"
+)
+MACOS_RETROARCH_X86_CORE_DOWNLOAD_URL = (
+    "https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest/"
+    "bsnes_mercury_performance_libretro.dylib.zip"
+)
+MACOS_RETROARCH_ARM_CORE_DOWNLOAD_URL = (
+    "https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/"
+    "bsnes_mercury_performance_libretro.dylib.zip"
+)
+
+
+def platform_family(platform_name: str | None = None) -> str:
+    """Return the small platform set used by downloads and local launching."""
+    selected = str(platform_name or sys.platform).casefold()
+    if selected.startswith("win"):
+        return "windows"
+    if selected == "darwin":
+        return "macos"
+    return "linux"
+
+
+def platform_application_data_directory(
+    platform_name: str | None = None,
+    home: Path | None = None,
+    environment: dict[str, str] | None = None,
+) -> Path:
+    """Return the native per-user data folder without requiring admin rights."""
+    family = platform_family(platform_name)
+    selected_home = Path(home) if home is not None else Path.home()
+    selected_environment = os.environ if environment is None else environment
+    if family == "windows":
+        root = str(selected_environment.get("LOCALAPPDATA", "")).strip()
+        return Path(root or selected_home) / "SMWStreamTracker"
+    if family == "macos":
+        return (
+            selected_home
+            / "Library"
+            / "Application Support"
+            / "SMWStreamTracker"
+        )
+    xdg_root = str(selected_environment.get("XDG_DATA_HOME", "")).strip()
+    return Path(xdg_root or selected_home / ".local" / "share") / (
+        "SMWStreamTracker"
+    )
+
+
+def retroarch_core_download_url(machine: str | None = None) -> str:
+    architecture = str(machine or system_platform.machine()).casefold()
+    if architecture in {"arm64", "aarch64"}:
+        return MACOS_RETROARCH_ARM_CORE_DOWNLOAD_URL
+    return MACOS_RETROARCH_X86_CORE_DOWNLOAD_URL
+
+
+def retroarch_core_filename(platform_name: str | None = None) -> str:
+    extension = ".dll" if platform_family(platform_name) == "windows" else (
+        ".dylib" if platform_family(platform_name) == "macos" else ".so"
+    )
+    return "bsnes_mercury_performance_libretro" + extension
+
+
+def normalized_executable_name(path: Path | str) -> str:
+    name = Path(path).name.casefold()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def connection_service_kind(path: Path | str) -> str:
+    name = normalized_executable_name(path)
+    if name == "sni":
+        return "SNI"
+    if name == "qusb2snes":
+        return "QUsb2Snes"
+    return ""
+
+
+def retroarch_bundle_resources(executable: Path) -> Path:
+    bundle = macos_application_bundle(executable)
+    if bundle is not None:
+        return bundle / "Contents" / "Resources"
+    return executable.parent
+
+
+def retroarch_core_directory(executable: Path) -> Path:
+    if IS_MACOS:
+        resources = retroarch_bundle_resources(executable)
+        bundled_cores = resources / "cores"
+        user_cores = (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "RetroArch"
+            / "cores"
+        )
+        # The tracker-managed RetroArch copy is writable, but an app already
+        # installed in /Applications commonly is not. The core can be loaded
+        # from either location, so prefer the bundle only when it is writable.
+        if bundled_cores.is_dir() and os.access(bundled_cores, os.W_OK):
+            return bundled_cores
+        if (
+            not bundled_cores.exists()
+            and resources.is_dir()
+            and os.access(resources, os.W_OK)
+        ):
+            return bundled_cores
+        return user_cores
+    return executable.parent / "cores"
+
+
+def retroarch_config_path(executable: Path) -> Path:
+    if IS_MACOS:
+        return Path.home() / ".config" / "retroarch" / "retroarch.cfg"
+    return executable.parent / "retroarch.cfg"
+
+
+def macos_application_bundle(path: Path) -> Path | None:
+    """Return the enclosing .app for a bundle executable, when applicable."""
+    candidate = Path(path)
+    for parent in (candidate, *candidate.parents):
+        if parent.suffix.casefold() == ".app" and parent.is_dir():
+            return parent
+    return None
+
+
+def open_local_path(path: Path | str) -> None:
+    """Open a document or folder with the operating system's default app."""
+    selected_path = str(path)
+    if IS_WINDOWS:
+        os.startfile(selected_path)
+        return
+    opener = "open" if IS_MACOS else "xdg-open"
+    subprocess.Popen([opener, selected_path])
+
+
+def launch_local_application(
+    executable: Path | str,
+    arguments: list[str] | tuple[str, ...] = (),
+) -> None:
+    """Launch an executable, preserving normal macOS .app behavior."""
+    executable_path = Path(executable)
+    argument_list = [str(value) for value in arguments]
+    if IS_WINDOWS:
+        if argument_list:
+            subprocess.Popen([str(executable_path), *argument_list])
+        else:
+            os.startfile(str(executable_path))
+        return
+    if IS_MACOS:
+        bundle = macos_application_bundle(executable_path)
+        if bundle is not None:
+            command = ["open", "-n", str(bundle)]
+            if argument_list:
+                command.extend(["--args", *argument_list])
+            subprocess.Popen(command)
+            return
+    subprocess.Popen([str(executable_path), *argument_list])
+
+
+def safe_extract_tar_archive(archive_path: Path, destination: Path) -> None:
+    """Extract an official dependency tarball without permitting path escape."""
+    destination.mkdir(parents=True, exist_ok=True)
+    destination_root = destination.resolve()
+    with tarfile.open(archive_path, "r:*") as archive:
+        for member in archive.getmembers():
+            member_target = (destination / member.name).resolve()
+            if (
+                member_target != destination_root
+                and destination_root not in member_target.parents
+            ):
+                raise RuntimeError(
+                    "The downloaded archive contains an unsafe path."
+                )
+        archive.extractall(destination, filter="data")
+
+
+def macos_bundle_executable(bundle: Path) -> Path:
+    """Find the primary executable declared by a macOS application bundle."""
+    info_path = bundle / "Contents" / "Info.plist"
+    try:
+        info = plistlib.loads(info_path.read_bytes())
+    except (OSError, plistlib.InvalidFileException) as error:
+        raise RuntimeError(
+            f"The downloaded Mac app has an unreadable Info.plist: {bundle}"
+        ) from error
+    executable_name = str(info.get("CFBundleExecutable", "")).strip()
+    executable = bundle / "Contents" / "MacOS" / executable_name
+    if not executable_name or not executable.is_file():
+        raise FileNotFoundError(
+            f"The downloaded Mac app has no usable executable: {bundle}"
+        )
+    executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+    return executable
+
+
+def selected_application_executable(path: Path | str) -> Path:
+    """Convert a Finder-selected .app package into its real executable."""
+    selected = Path(path)
+    if IS_MACOS and selected.suffix.casefold() == ".app" and selected.is_dir():
+        return macos_bundle_executable(selected)
+    return selected
+
+
+def install_macos_dmg_application(
+    dmg_path: Path,
+    destination: Path,
+    expected_bundle_name: str,
+) -> Path:
+    """Copy one official .app from a DMG into the user's tracker tools."""
+    if not IS_MACOS:
+        raise RuntimeError("DMG installation is available only on macOS.")
+    attach = subprocess.run(
+        ["hdiutil", "attach", "-nobrowse", "-readonly", "-plist", str(dmg_path)],
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if attach.returncode != 0:
+        raise RuntimeError(
+            "macOS could not mount the downloaded disk image: "
+            + attach.stderr.decode("utf-8", errors="replace").strip()
+        )
+    try:
+        attach_info = plistlib.loads(attach.stdout)
+    except plistlib.InvalidFileException as error:
+        raise RuntimeError(
+            "macOS returned an unreadable disk-image mount response."
+        ) from error
+    mount_points = [
+        Path(str(entity.get("mount-point", "")))
+        for entity in attach_info.get("system-entities", [])
+        if str(entity.get("mount-point", "")).strip()
+    ]
+    if not mount_points:
+        raise RuntimeError("The downloaded disk image did not mount.")
+    mount_point = mount_points[-1]
+    try:
+        bundles = list(mount_point.rglob(expected_bundle_name))
+        if not bundles:
+            bundles = list(mount_point.rglob("*.app"))
+        if len(bundles) != 1:
+            raise FileNotFoundError(
+                f"{expected_bundle_name} was not found in the downloaded disk image."
+            )
+        source_bundle = bundles[0]
+        destination.mkdir(parents=True, exist_ok=True)
+        installed_bundle = destination / source_bundle.name
+        if installed_bundle.exists():
+            shutil.rmtree(installed_bundle)
+        copied = subprocess.run(
+            ["ditto", str(source_bundle), str(installed_bundle)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+        if copied.returncode != 0:
+            raise RuntimeError(
+                "macOS could not copy the downloaded application: "
+                + (copied.stderr or copied.stdout or "unknown error").strip()
+            )
+        return macos_bundle_executable(installed_bundle)
+    finally:
+        subprocess.run(
+            ["hdiutil", "detach", str(mount_point)],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+
 
 def _configure_installed_tcl_tk_runtime() -> bool:
     """Prefer the installer-provided Tcl/Tk scripts when they are available.
@@ -473,7 +764,33 @@ def _configure_installed_tcl_tk_runtime() -> bool:
 
 
 def _show_native_startup_error(message: str) -> None:
-    """Show a Windows error without requiring a working Tk installation."""
+    """Show a native startup error without requiring a working Tk install."""
+    if IS_MACOS:
+        def apple_script_string(value: str) -> str:
+            escaped = (
+                value.replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("\r", "")
+                .replace("\n", "\\n")
+            )
+            return '"' + escaped + '"'
+
+        script = (
+            f"display alert {apple_script_string(APP_NAME)} "
+            f"message {apple_script_string(message)} as critical "
+            'buttons {"OK"} default button "OK"'
+        )
+        try:
+            subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            return
+        except (OSError, subprocess.SubprocessError):
+            print(f"{APP_NAME}: {message}", file=sys.stderr)
+            return
     try:
         ctypes.windll.user32.MessageBoxW(
             None,
@@ -3665,6 +3982,14 @@ def refresh_catalog_from_github_repository(
 
 
 
+ANTIALIASED_TEXT_OUTLINE_OFFSETS = (
+    (-1, 0),
+    (1, 0),
+    (0, -1),
+    (0, 1),
+)
+
+
 def create_outlined_canvas_text(
     canvas: tk.Canvas,
     *coordinates,
@@ -3690,16 +4015,7 @@ def create_outlined_canvas_text(
         remaining = coordinates[2:]
         outline_options = dict(options)
         outline_options["fill"] = "#000000"
-        for offset_x, offset_y in (
-            (-1, -1),
-            (0, -1),
-            (1, -1),
-            (-1, 0),
-            (1, 0),
-            (-1, 1),
-            (0, 1),
-            (1, 1),
-        ):
+        for offset_x, offset_y in ANTIALIASED_TEXT_OUTLINE_OFFSETS:
             canvas.create_text(
                 x + offset_x,
                 y + offset_y,
@@ -3999,16 +4315,7 @@ class OutlinedButton(tk.Canvas):
             "#ffffff",
             "#f2f6ff",
         }:
-            for offset_x, offset_y in (
-                (-1, -1),
-                (0, -1),
-                (1, -1),
-                (-1, 0),
-                (1, 0),
-                (-1, 1),
-                (0, 1),
-                (1, 1),
-            ):
+            for offset_x, offset_y in ANTIALIASED_TEXT_OUTLINE_OFFSETS:
                 self.create_text(
                     x + offset_x,
                     y + offset_y,
@@ -4646,16 +4953,7 @@ class OutlinedLabel(tk.Canvas):
             "justify": self._justify,
         }
         if self._needs_outline():
-            for offset_x, offset_y in (
-                (-1, -1),
-                (0, -1),
-                (1, -1),
-                (-1, 0),
-                (1, 0),
-                (-1, 1),
-                (0, 1),
-                (1, 1),
-            ):
+            for offset_x, offset_y in ANTIALIASED_TEXT_OUTLINE_OFFSETS:
                 self.create_text(
                     x + offset_x,
                     y + offset_y,
@@ -12139,12 +12437,7 @@ def rom_builder_write_reports(
     )
 
 
-APP_DATA_DIR = Path(
-    os.environ.get(
-        "LOCALAPPDATA",
-        str(Path.home()),
-    )
-) / "SMWStreamTracker"
+APP_DATA_DIR = platform_application_data_directory()
 STATS_DB_FILE = APP_DATA_DIR / "SMWStreamTracker.db"
 STATS_BACKUP_DIR = APP_DATA_DIR / "Backups"
 AUTOMATIC_BACKUP_DIR = APP_DATA_DIR / "AutomaticBackups"
@@ -16413,11 +16706,12 @@ def blend_hex_colors(
         for component in mixed
     )
 
-CONFIG_FILE = Path.home() / "SMWStreamTrackerConfig.json"
-TIMER_SAVE_FILE = Path.home() / "SMWStreamTrackerTimes.json"
-DEATH_SAVE_FILE = Path.home() / "SMWStreamTrackerDeaths.json"
+STATE_DATA_DIR = Path.home() if IS_WINDOWS else APP_DATA_DIR
+CONFIG_FILE = STATE_DATA_DIR / "SMWStreamTrackerConfig.json"
+TIMER_SAVE_FILE = STATE_DATA_DIR / "SMWStreamTrackerTimes.json"
+DEATH_SAVE_FILE = STATE_DATA_DIR / "SMWStreamTrackerDeaths.json"
 LEVEL_PROGRESS_SAVE_FILE = (
-    Path.home() / "SMWStreamTrackerLevelProgress.json"
+    STATE_DATA_DIR / "SMWStreamTrackerLevelProgress.json"
 )
 
 # These are first-run defaults only. load_config() replaces each value with
@@ -17670,6 +17964,79 @@ for (
     UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
 
 
+_MAC_UI_LOCALIZATION_ROWS = (
+    (
+        "Select SNI application",
+        "Pick the SNI app, mate",
+        "Seleccionar la aplicación SNI",
+        "Sélectionner l’application SNI",
+        "SNI-Anwendung auswählen",
+        "Selecionar o aplicativo SNI",
+    ),
+    (
+        "Select QUsb2Snes application",
+        "Pick the QUsb2Snes app, mate",
+        "Seleccionar la aplicación QUsb2Snes",
+        "Sélectionner l’application QUsb2Snes",
+        "QUsb2Snes-Anwendung auswählen",
+        "Selecionar o aplicativo QUsb2Snes",
+    ),
+    (
+        "Select RetroArch application",
+        "Pick the RetroArch app, mate",
+        "Seleccionar la aplicación RetroArch",
+        "Sélectionner l’application RetroArch",
+        "RetroArch-Anwendung auswählen",
+        "Selecionar o aplicativo RetroArch",
+    ),
+    (
+        "Application",
+        "App",
+        "Aplicación",
+        "Application",
+        "Anwendung",
+        "Aplicativo",
+    ),
+    (
+        "Installing the official RetroArch Mac app...",
+        "Installing the official RetroArch Mac app, mate...",
+        "Instalando la aplicación oficial de RetroArch para Mac...",
+        "Installation de l’application RetroArch officielle pour Mac...",
+        "Die offizielle RetroArch-Mac-App wird installiert...",
+        "Instalando o aplicativo oficial do RetroArch para Mac...",
+    ),
+    (
+        "Classic LiveSplit is Windows-only.",
+        "Classic LiveSplit is Windows-only, mate.",
+        "LiveSplit clásico solo funciona en Windows.",
+        "LiveSplit classique est réservé à Windows.",
+        "Das klassische LiveSplit läuft nur unter Windows.",
+        "O LiveSplit clássico funciona somente no Windows.",
+    ),
+    (
+        "The Mac version uses tracker-controlled game and level timer windows plus OBS text files instead.",
+        "The Mac version uses tracker-controlled game and level timer windows plus OBS text files instead, mate.",
+        "La versión para Mac usa ventanas de temporizador de juego y nivel controladas por el tracker, además de archivos de texto para OBS.",
+        "La version Mac utilise à la place des fenêtres de chronomètre contrôlées par le tracker et des fichiers texte OBS.",
+        "Die Mac-Version verwendet stattdessen vom Tracker gesteuerte Spiel- und Level-Timer-Fenster sowie OBS-Textdateien.",
+        "A versão para Mac usa janelas de cronômetro de jogo e fase controladas pelo tracker, além de arquivos de texto para o OBS.",
+    ),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _MAC_UI_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
 _FULL_UI_LOCALIZATION_ROWS = (
     (
         "Ready for FXPAK emoji-name repair",
@@ -18034,6 +18401,7 @@ _WINDOW_LOCALIZATION_ROWS = (
     ("Edit Selected", "Editar selección", "Modifier la sélection", "Auswahl bearbeiten", "Editar selecionado"),
     ("Open SMWCentral", "Abrir SMW Central", "Ouvrir SMW Central", "SMW Central öffnen", "Abrir SMW Central"),
     ("Launch Game", "Iniciar juego", "Lancer le jeu", "Spiel starten", "Iniciar jogo"),
+    ("Add to Tracker", "Añadir al tracker", "Ajouter au tracker", "Zum Tracker hinzufügen", "Adicionar ao tracker"),
     ("Remove from Tracker", "Quitar del tracker", "Retirer du tracker", "Aus Tracker entfernen", "Remover do tracker"),
     ("Cancel Download", "Cancelar descarga", "Annuler le téléchargement", "Download abbrechen", "Cancelar download"),
     ("Clean SMW base ROM:", "ROM base limpia de SMW:", "ROM SMW de base propre :", "Saubere SMW-Basis-ROM:", "ROM base limpa de SMW:"),
@@ -18114,6 +18482,7 @@ _AUSTRALIAN_UI_OVERRIDES = {
     "Play Random Hack": "Spin the mystery hack wheel",
     "Replay Recent Hack": "Give that recent hack another burl",
     "Add to My Tracker": "Chuck it in My Tracker",
+    "Add to Tracker": "Chuck it in the tracker, mate",
     "Complete Hack": "Job done, mate",
     "Current Hack": "The hack on the barbie",
     "Live Session": "Live session, you beauty",
@@ -18203,6 +18572,46 @@ for _english_text in _all_ui_translation_keys:
 UI_TRANSLATIONS["au"].update(_AUSTRALIAN_UI_OVERRIDES)
 
 _RUNTIME_LOCALIZATION_ROWS = (
+    ("Remove from My Tracker", "Take it out of My Tracker, mate", "Eliminar de Mi Tracker", "Retirer de Mon Tracker", "Aus Mein Tracker entfernen", "Remover do Meu Tracker"),
+    ('Remove "{title}" from My Tracker?', 'Take "{title}" out of My Tracker, mate?', '¿Eliminar "{title}" de Mi Tracker?', 'Retirer "{title}" de Mon Tracker ?', '"{title}" aus Mein Tracker entfernen?', 'Remover "{title}" do Meu Tracker?'),
+    ("This removes personal progress, rating, playtime, and notes. The game stays in the catalog and game library.", "This clears your progress, score, playtime, and notes, mate. The game stays put in the catalogue and game library.", "Esto elimina el progreso personal, la puntuación, el tiempo de juego y las notas. El juego permanece en el catálogo y en la biblioteca de juegos.", "Cette action supprime la progression personnelle, la note, le temps de jeu et les notes. Le jeu reste dans le catalogue et la bibliothèque de jeux.", "Dadurch werden persönlicher Fortschritt, Bewertung, Spielzeit und Notizen entfernt. Das Spiel bleibt im Katalog und in der Spielebibliothek.", "Isso remove o progresso pessoal, a avaliação, o tempo de jogo e as observações. O jogo permanece no catálogo e na biblioteca de jogos."),
+    ("Add Hack to Tracker", "Chuck a hack in the tracker, mate", "Añadir hack al tracker", "Ajouter un hack au tracker", "Hack zum Tracker hinzufügen", "Adicionar hack ao tracker"),
+    ("Hack Details", "Hack details, mate", "Detalles del hack", "Détails du hack", "Hack-Details", "Detalhes do hack"),
+    ("Tracker Details", "Tracker details, mate", "Detalles del tracker", "Détails du tracker", "Tracker-Details", "Detalhes do tracker"),
+    ("ROM Hack Title:", "ROM hack title, mate:", "Título del hack de ROM:", "Titre du hack ROM :", "ROM-Hack-Titel:", "Título do hack de ROM:"),
+    ("Created By:", "Knocked together by:", "Creado por:", "Créé par :", "Erstellt von:", "Criado por:"),
+    ("Total exits:", "Total exits, mate:", "Salidas totales:", "Sorties totales :", "Ausgänge insgesamt:", "Saídas totais:"),
+    ("Completed exits:", "Completed exits, mate:", "Salidas completadas:", "Sorties terminées :", "Abgeschlossene Ausgänge:", "Saídas concluídas:"),
+    ("Difficulty:", "How rough is it?:", "Dificultad:", "Difficulté :", "Schwierigkeit:", "Dificuldade:"),
+    ("Type:", "Hack type, mate:", "Tipo:", "Type :", "Typ:", "Tipo:"),
+    ("Hack Type:", "Hack type, mate:", "Tipo de hack:", "Type de hack :", "Hack-Typ:", "Tipo de hack:"),
+    ("SMWC ID (optional):", "SMWC ID (if you've got it):", "ID de SMWC (opcional):", "Identifiant SMWC (facultatif) :", "SMWC-ID (optional):", "ID do SMWC (opcional):"),
+    ("Status:", "Where's it at?:", "Estado:", "Statut :", "Status:", "Status:"),
+    ("Total deaths:", "Total mishaps:", "Muertes totales:", "Morts totales :", "Tode insgesamt:", "Mortes totais:"),
+    ("My rating (1–5):", "My score (1–5):", "Mi puntuación (1–5):", "Ma note (1–5) :", "Meine Bewertung (1–5):", "Minha avaliação (1–5):"),
+    ("Playtime:", "Time on the clock:", "Tiempo de juego:", "Temps de jeu :", "Spielzeit:", "Tempo de jogo:"),
+    ("Date started:", "Kicked off on:", "Fecha de inicio:", "Date de début :", "Startdatum:", "Data de início:"),
+    ("Date completed:", "Wrapped up on:", "Fecha de finalización:", "Date de fin :", "Abschlussdatum:", "Data de conclusão:"),
+    ("SMWCentral Rating:", "SMW Central score:", "Puntuación de SMW Central:", "Note SMW Central :", "SMW-Central-Bewertung:", "Avaliação do SMW Central:"),
+    ("Notes:", "Notes, mate:", "Notas:", "Notes :", "Notizen:", "Observações:"),
+    ("Use YYYY-MM-DD for dates and H:MM:SS for playtime. Ratings may be blank or from 1 through 5.", "Use YYYY-MM-DD for dates and H:MM:SS for playtime. Leave scores blank or pick 1 through 5, mate.", "Usa AAAA-MM-DD para las fechas y H:MM:SS para el tiempo de juego. Las puntuaciones pueden quedar en blanco o ser de 1 a 5.", "Utilisez AAAA-MM-JJ pour les dates et H:MM:SS pour le temps de jeu. Les notes peuvent être vides ou comprises entre 1 et 5.", "Verwenden Sie JJJJ-MM-TT für Datumsangaben und H:MM:SS für die Spielzeit. Bewertungen dürfen leer oder zwischen 1 und 5 sein.", "Use AAAA-MM-DD para datas e H:MM:SS para o tempo de jogo. As avaliações podem ficar em branco ou ser de 1 a 5."),
+    ("ROM Hack Title is required.", "Give the hack a title first, mate.", "El título del hack de ROM es obligatorio.", "Le titre du hack ROM est obligatoire.", "Der ROM-Hack-Titel ist erforderlich.", "O título do hack de ROM é obrigatório."),
+    ("Exits and deaths must be whole numbers of 0 or greater.", "Exits and mishaps need to be whole numbers of 0 or more, mate.", "Las salidas y las muertes deben ser números enteros iguales o mayores que 0.", "Les sorties et les morts doivent être des nombres entiers supérieurs ou égaux à 0.", "Ausgänge und Tode müssen ganze Zahlen ab 0 sein.", "Saídas e mortes devem ser números inteiros iguais ou maiores que 0."),
+    ("Check exits, deaths, dates, ratings, and playtime.", "Have another squiz at exits, mishaps, dates, scores, and playtime, mate.", "Revisa las salidas, muertes, fechas, puntuaciones y el tiempo de juego.", "Vérifiez les sorties, les morts, les dates, les notes et le temps de jeu.", "Prüfen Sie Ausgänge, Tode, Datumsangaben, Bewertungen und Spielzeit.", "Verifique as saídas, mortes, datas, avaliações e o tempo de jogo."),
+    ("Added to My Tracker", "Chucked into My Tracker", "Añadido a Mi Tracker", "Ajouté à Mon Tracker", "Zu Mein Tracker hinzugefügt", "Adicionado ao Meu Tracker"),
+    ("Added \"{title}\" to My Tracker.", "Beauty — \"{title}\" is in My Tracker, mate.", "Se añadió \"{title}\" a Mi Tracker.", "\"{title}\" a été ajouté à Mon Tracker.", "\"{title}\" wurde zu Mein Tracker hinzugefügt.", "\"{title}\" foi adicionado ao Meu Tracker."),
+    ("Restarting the running FXPAK Pro game and connection…", "Giving the running FXPAK Pro game and connection a fresh kick, mate…", "Reiniciando el juego en ejecución y la conexión de FXPAK Pro…", "Redémarrage du jeu FXPAK Pro en cours et de la connexion…", "Das laufende FXPAK-Pro-Spiel und die Verbindung werden neu gestartet…", "Reiniciando o jogo em execução e a conexão do FXPAK Pro…"),
+    ("The running FXPAK Pro game was reset. Reconnecting the tracker…", "The FXPAK Pro game got a fresh start. Hooking the tracker back up, mate…", "El juego en ejecución de FXPAK Pro se reinició. Reconectando el tracker…", "Le jeu FXPAK Pro en cours a été réinitialisé. Reconnexion du tracker…", "Das laufende FXPAK-Pro-Spiel wurde zurückgesetzt. Der Tracker wird neu verbunden…", "O jogo em execução no FXPAK Pro foi reiniciado. Reconectando o tracker…"),
+    ("The FXPAK Pro does not allow remote reset. The tracker connection will still restart.", "Yeah, nah — this FXPAK Pro won't take a remote reset. The tracker connection will still get a fresh start, mate.", "El FXPAK Pro no permite el reinicio remoto. La conexión del tracker se reiniciará de todos modos.", "Le FXPAK Pro n’autorise pas la réinitialisation à distance. La connexion du tracker redémarrera quand même.", "Der FXPAK Pro erlaubt keinen Fernreset. Die Tracker-Verbindung wird trotzdem neu gestartet.", "O FXPAK Pro não permite reinicialização remota. A conexão do tracker ainda será reiniciada."),
+    ("Could not reset the running FXPAK Pro game: {error}. The tracker connection will still restart.", "Crikey — couldn't reset the running FXPAK Pro game: {error}. The tracker connection will still get a fresh start, mate.", "No se pudo reiniciar el juego en ejecución de FXPAK Pro: {error}. La conexión del tracker se reiniciará de todos modos.", "Impossible de réinitialiser le jeu FXPAK Pro en cours : {error}. La connexion du tracker redémarrera quand même.", "Das laufende FXPAK-Pro-Spiel konnte nicht zurückgesetzt werden: {error}. Die Tracker-Verbindung wird trotzdem neu gestartet.", "Não foi possível reiniciar o jogo em execução no FXPAK Pro: {error}. A conexão do tracker ainda será reiniciada."),
+    ("A direct download URL is required when adding a hack from Download & Patch Missing Hacks.", "Pop in the direct download URL so the downloader can grab this hack, mate.", "Se requiere una URL de descarga directa al añadir un hack desde Descargar y parchear hacks faltantes.", "Une URL de téléchargement direct est requise lors de l’ajout d’un hack depuis Télécharger et patcher les hacks manquants.", "Beim Hinzufügen eines Hacks über Fehlende Hacks herunterladen und patchen ist eine direkte Download-URL erforderlich.", "Uma URL de download direto é obrigatória ao adicionar um hack em Baixar e aplicar patches aos hacks ausentes."),
+    ("Added \"{title}\" to Download & Patch Missing Hacks. It is selected and ready for Download & Patch All Matching Hacks.", "Beauty! \"{title}\" is in the missing-hacks list and ready for Grab and patch every matching hack, mate.", "Se añadió \"{title}\" a Descargar y parchear hacks faltantes. Está seleccionado y listo para Descargar y parchear todos los hacks coincidentes.", "\"{title}\" a été ajouté à Télécharger et patcher les hacks manquants. Il est sélectionné et prêt pour Télécharger et patcher tous les hacks correspondants.", "\"{title}\" wurde zu Fehlende Hacks herunterladen und patchen hinzugefügt. Der Hack ist ausgewählt und bereit für Alle passenden Hacks herunterladen und patchen.", "\"{title}\" foi adicionado a Baixar e aplicar patches aos hacks ausentes. Ele está selecionado e pronto para Baixar e aplicar patches a todos os hacks correspondentes."),
+    ("Download and patch {count} matching hack(s)?", "Grab and patch {count} matching hack(s), mate?", "¿Descargar y parchear {count} hack(s) coincidente(s)?", "Télécharger et patcher {count} hack(s) correspondant(s) ?", "{count} passende(n) Hack(s) herunterladen und patchen?", "Baixar e aplicar patches a {count} hack(s) correspondente(s)?"),
+    ("Could Not Open Update", "Couldn’t open the update, mate", "No se pudo abrir la actualización", "Impossible d’ouvrir la mise à jour", "Update konnte nicht geöffnet werden", "Não foi possível abrir a atualização"),
+    ("Mac Update Ready", "Mac update is ready to rip", "Actualización para Mac lista", "Mise à jour Mac prête", "Mac-Update bereit", "Atualização para Mac pronta"),
+    ("The verified Mac disk image is open. Drag SMW Stream Tracker to Applications and replace the existing copy, then reopen it. Your catalog, settings, and stats stay in your Library folder.", "The verified Mac disk image is open, mate. Drag SMW Stream Tracker to Applications, replace the old copy, then fire it up again. Your catalogue, settings, and stats stay safe in your Library folder.", "La imagen de disco verificada para Mac está abierta. Arrastra SMW Stream Tracker a Aplicaciones y sustituye la copia existente; después, vuelve a abrirla. El catálogo, los ajustes y las estadísticas permanecen en la carpeta Biblioteca.", "L’image disque Mac vérifiée est ouverte. Faites glisser SMW Stream Tracker dans Applications et remplacez la copie existante, puis rouvrez l’application. Votre catalogue, vos réglages et vos statistiques restent dans le dossier Bibliothèque.", "Das verifizierte Mac-Disk-Image ist geöffnet. Ziehen Sie SMW Stream Tracker in den Ordner Programme, ersetzen Sie die vorhandene Kopie und öffnen Sie die App erneut. Katalog, Einstellungen und Statistiken bleiben im Library-Ordner erhalten.", "A imagem de disco verificada para Mac está aberta. Arraste o SMW Stream Tracker para Aplicativos, substitua a cópia existente e abra-o novamente. O catálogo, as configurações e as estatísticas permanecem na pasta Biblioteca."),
+    ("Rollback on Mac", "Rolling back on Mac, mate", "Restauración en Mac", "Restauration sur Mac", "Wiederherstellung auf dem Mac", "Restauração no Mac"),
+    ("Mac app replacement is handled through the verified DMG. Tracker data is backed up separately and is not removed when the app is replaced.", "Mac app replacement uses the verified DMG, mate. Tracker data has its own backup and won’t go walkabout when the app is replaced.", "La sustitución de la aplicación en Mac se realiza mediante el DMG verificado. Los datos del tracker se guardan por separado y no se eliminan al sustituir la aplicación.", "Le remplacement de l’application sur Mac passe par le DMG vérifié. Les données du tracker sont sauvegardées séparément et ne sont pas supprimées lors du remplacement de l’application.", "Die Mac-App wird über das verifizierte DMG ersetzt. Die Tracker-Daten werden separat gesichert und beim Ersetzen der App nicht entfernt.", "A substituição do aplicativo no Mac é feita pelo DMG verificado. Os dados do tracker têm backup separado e não são removidos quando o aplicativo é substituído."),
     ("The tracker is reconnecting. Try the override again in a moment.", "The tracker’s reconnecting, mate. Give that override another go in a tick.", "El tracker se está reconectando. Vuelve a intentar la corrección en un momento.", "Le tracker se reconnecte. Réessayez la correction dans un instant.", "Der Tracker stellt die Verbindung wieder her. Versuchen Sie die Korrektur gleich noch einmal.", "O tracker está se reconectando. Tente a substituição novamente em instantes."),
     ("Edit deaths, rating, progress, and tracker entry", "Tinker with deaths, rating, progress, and the tracker entry", "Editar muertes, puntuación, progreso y registro del tracker", "Modifier les morts, la note, la progression et l’entrée du tracker", "Tode, Bewertung, Fortschritt und Tracker-Eintrag bearbeiten", "Editar mortes, avaliação, progresso e registro do tracker"),
     ("Solid color for entire table...", "One solid colour for the whole table, mate...", "Color sólido para toda la tabla...", "Couleur unie pour tout le tableau...", "Einfarbige Darstellung für die gesamte Tabelle...", "Cor sólida para toda a tabela..."),
@@ -18977,6 +19386,186 @@ _OBS_SETUP_FLOW_TRANSLATIONS = {
 for _language_code, _obs_setup_copy in _OBS_SETUP_FLOW_TRANSLATIONS.items():
     SETUP_GUIDE_TRANSLATIONS[_language_code].update(_obs_setup_copy)
 
+_MAC_TIMER_SETUP_TRANSLATIONS = {
+    "en": {
+        "mac_timer_obs_button": "Set Up Game & Level Timers for OBS",
+        "mac_timer_obs_title": "Game & Level Timer Windows in OBS",
+        "mac_timer_obs_note": (
+            "Classic LiveSplit is Windows-only. On Mac, the tracker provides "
+            "two timer windows and matching text files that stay synchronized automatically."
+        ),
+        "mac_timer_obs_instructions": (
+            "1. OPEN BOTH TRACKER TIMER WINDOWS\n"
+            "• Select Game Timer Window and Level Timer Window below. Keep both windows open while OBS is running.\n\n"
+            "2. ADD THE GAME TIMER TO OBS\n"
+            "• In OBS, choose Sources > + > Window Capture, name it Game Timer, and select the tracker game-timer window.\n\n"
+            "3. ADD THE LEVEL TIMER TO OBS\n"
+            "• Add another Window Capture named Level Timer and select the tracker level-timer window.\n\n"
+            "4. OPTIONAL TEXT-FILE METHOD\n"
+            "• OBS Text File Setup also lists game_timer.txt and level_timer.txt. Use Text sources with Read from file if you prefer fully transparent, styleable timers."
+        ),
+        "mac_game_timer_button": "Game Timer Window",
+        "mac_level_timer_button": "Level Timer Window",
+        "mac_timer_button_note": (
+            "Open both tracker-controlled timer windows, or use their OBS text files. No separate LiveSplit installation is required on Mac."
+        ),
+        "mac_timer_health_title": "Game & level timer outputs",
+        "mac_timer_health_detail": (
+            "The built-in Mac timer windows and OBS text files are ready. "
+            "No separate LiveSplit server is required."
+        ),
+        "obs_game_timer": "Game Timer",
+        "obs_level_timer": "Level Timer",
+    },
+    "au": {
+        "mac_timer_obs_button": "Set Up Game & Level Timers for OBS, Mate",
+        "mac_timer_obs_title": "Game & Level Timer Windows in OBS",
+        "mac_timer_obs_note": (
+            "Classic LiveSplit is Windows-only, mate. On Mac, the tracker supplies two fair-dinkum timer windows and matching text files that stay in sync."
+        ),
+        "mac_timer_obs_instructions": (
+            "1. OPEN BOTH TRACKER TIMER WINDOWS\n"
+            "• Hit Game Timer Window and Level Timer Window below, mate. Keep both open while OBS is running.\n\n"
+            "2. ADD THE GAME TIMER TO OBS\n"
+            "• In OBS choose Sources > + > Window Capture, call it Game Timer, and pick the tracker game-timer window.\n\n"
+            "3. ADD THE LEVEL TIMER TO OBS\n"
+            "• Add another Window Capture called Level Timer and pick the tracker level-timer window.\n\n"
+            "4. OPTIONAL TEXT-FILE METHOD\n"
+            "• OBS Text File Setup also shows game_timer.txt and level_timer.txt. Use Read from file when you want to style the timers yourself. Too easy!"
+        ),
+        "mac_game_timer_button": "Game Timer Window, Mate",
+        "mac_level_timer_button": "Level Timer Window, Mate",
+        "mac_timer_button_note": (
+            "Open both tracker timer windows, or use their OBS text files. No separate LiveSplit install is needed on Mac—beauty!"
+        ),
+        "mac_timer_health_title": "Game & level timer outputs, mate",
+        "mac_timer_health_detail": (
+            "The built-in Mac timer windows and OBS text files are ready to rip. "
+            "No separate LiveSplit server is needed—too easy!"
+        ),
+        "obs_game_timer": "Game Timer",
+        "obs_level_timer": "Level Timer",
+    },
+    "es": {
+        "mac_timer_obs_button": "Configurar temporizadores de juego y nivel para OBS",
+        "mac_timer_obs_title": "Ventanas de temporizador de juego y nivel en OBS",
+        "mac_timer_obs_note": (
+            "LiveSplit clásico solo funciona en Windows. En Mac, el tracker ofrece dos ventanas de temporizador y archivos de texto sincronizados automáticamente."
+        ),
+        "mac_timer_obs_instructions": (
+            "1. ABRE LAS DOS VENTANAS DE TEMPORIZADOR\n"
+            "• Selecciona Ventana del temporizador de juego y Ventana del temporizador de nivel. Déjalas abiertas mientras uses OBS.\n\n"
+            "2. AÑADE EL TEMPORIZADOR DE JUEGO A OBS\n"
+            "• En OBS, elige Fuentes > + > Captura de ventana, llámala Temporizador de juego y selecciona la ventana correspondiente del tracker.\n\n"
+            "3. AÑADE EL TEMPORIZADOR DE NIVEL A OBS\n"
+            "• Añade otra Captura de ventana llamada Temporizador de nivel y selecciona la ventana de nivel del tracker.\n\n"
+            "4. MÉTODO OPCIONAL CON ARCHIVOS DE TEXTO\n"
+            "• La configuración de textos de OBS también muestra game_timer.txt y level_timer.txt. Usa Leer del archivo si prefieres temporizadores transparentes y personalizables."
+        ),
+        "mac_game_timer_button": "Ventana del temporizador de juego",
+        "mac_level_timer_button": "Ventana del temporizador de nivel",
+        "mac_timer_button_note": (
+            "Abre ambas ventanas controladas por el tracker o usa sus archivos de texto para OBS. En Mac no se necesita instalar LiveSplit por separado."
+        ),
+        "mac_timer_health_title": "Salidas de los temporizadores de juego y nivel",
+        "mac_timer_health_detail": (
+            "Las ventanas de temporizador integradas para Mac y los archivos de texto de OBS están listos. "
+            "No se necesita un servidor LiveSplit independiente."
+        ),
+        "obs_game_timer": "Temporizador de juego",
+        "obs_level_timer": "Temporizador de nivel",
+    },
+    "fr": {
+        "mac_timer_obs_button": "Configurer les chronomètres de partie et de niveau pour OBS",
+        "mac_timer_obs_title": "Fenêtres des chronomètres de partie et de niveau dans OBS",
+        "mac_timer_obs_note": (
+            "LiveSplit classique est réservé à Windows. Sur Mac, le tracker fournit deux fenêtres de chronomètre et des fichiers texte synchronisés automatiquement."
+        ),
+        "mac_timer_obs_instructions": (
+            "1. OUVRIR LES DEUX FENÊTRES DE CHRONOMÈTRE\n"
+            "• Sélectionnez Fenêtre du chronomètre de partie et Fenêtre du chronomètre de niveau. Gardez-les ouvertes pendant l’utilisation d’OBS.\n\n"
+            "2. AJOUTER LE CHRONOMÈTRE DE PARTIE À OBS\n"
+            "• Dans OBS, choisissez Sources > + > Capture de fenêtre, nommez-la Chronomètre de partie et sélectionnez la fenêtre correspondante du tracker.\n\n"
+            "3. AJOUTER LE CHRONOMÈTRE DE NIVEAU À OBS\n"
+            "• Ajoutez une autre Capture de fenêtre appelée Chronomètre de niveau et sélectionnez la fenêtre de niveau du tracker.\n\n"
+            "4. MÉTHODE FACULTATIVE PAR FICHIERS TEXTE\n"
+            "• La configuration des textes OBS affiche aussi game_timer.txt et level_timer.txt. Utilisez Lire depuis un fichier pour des chronomètres transparents et personnalisables."
+        ),
+        "mac_game_timer_button": "Fenêtre du chronomètre de partie",
+        "mac_level_timer_button": "Fenêtre du chronomètre de niveau",
+        "mac_timer_button_note": (
+            "Ouvrez les deux fenêtres contrôlées par le tracker ou utilisez leurs fichiers texte OBS. Aucune installation LiveSplit séparée n’est requise sur Mac."
+        ),
+        "mac_timer_health_title": "Sorties des chronomètres de partie et de niveau",
+        "mac_timer_health_detail": (
+            "Les fenêtres de chronomètre Mac intégrées et les fichiers texte OBS sont prêts. "
+            "Aucun serveur LiveSplit séparé n’est nécessaire."
+        ),
+        "obs_game_timer": "Chronomètre de partie",
+        "obs_level_timer": "Chronomètre de niveau",
+    },
+    "de": {
+        "mac_timer_obs_button": "Spiel- und Level-Timer für OBS einrichten",
+        "mac_timer_obs_title": "Spiel- und Level-Timer-Fenster in OBS",
+        "mac_timer_obs_note": (
+            "Das klassische LiveSplit läuft nur unter Windows. Auf dem Mac stellt der Tracker zwei Timer-Fenster und automatisch synchronisierte Textdateien bereit."
+        ),
+        "mac_timer_obs_instructions": (
+            "1. BEIDE TRACKER-TIMER-FENSTER ÖFFNEN\n"
+            "• Wähle Spiel-Timer-Fenster und Level-Timer-Fenster. Lass beide geöffnet, solange OBS läuft.\n\n"
+            "2. SPIEL-TIMER ZU OBS HINZUFÜGEN\n"
+            "• Wähle in OBS Quellen > + > Fensteraufnahme, nenne sie Spiel-Timer und wähle das Spiel-Timer-Fenster des Trackers.\n\n"
+            "3. LEVEL-TIMER ZU OBS HINZUFÜGEN\n"
+            "• Füge eine weitere Fensteraufnahme namens Level-Timer hinzu und wähle das Level-Timer-Fenster des Trackers.\n\n"
+            "4. OPTIONALE TEXTDATEI-METHODE\n"
+            "• Die OBS-Textdatei-Einrichtung zeigt auch game_timer.txt und level_timer.txt. Nutze Aus Datei lesen für transparente, frei gestaltbare Timer."
+        ),
+        "mac_game_timer_button": "Spiel-Timer-Fenster",
+        "mac_level_timer_button": "Level-Timer-Fenster",
+        "mac_timer_button_note": (
+            "Öffne beide vom Tracker gesteuerten Timer-Fenster oder nutze ihre OBS-Textdateien. Auf dem Mac ist keine separate LiveSplit-Installation erforderlich."
+        ),
+        "mac_timer_health_title": "Ausgaben für Spiel- und Level-Timer",
+        "mac_timer_health_detail": (
+            "Die integrierten Mac-Timer-Fenster und OBS-Textdateien sind bereit. "
+            "Ein separater LiveSplit-Server ist nicht erforderlich."
+        ),
+        "obs_game_timer": "Spiel-Timer",
+        "obs_level_timer": "Level-Timer",
+    },
+    "pt-BR": {
+        "mac_timer_obs_button": "Configurar cronômetros de jogo e fase no OBS",
+        "mac_timer_obs_title": "Janelas dos cronômetros de jogo e fase no OBS",
+        "mac_timer_obs_note": (
+            "O LiveSplit clássico funciona somente no Windows. No Mac, o tracker fornece duas janelas de cronômetro e arquivos de texto sincronizados automaticamente."
+        ),
+        "mac_timer_obs_instructions": (
+            "1. ABRIR AS DUAS JANELAS DE CRONÔMETRO\n"
+            "• Selecione Janela do cronômetro do jogo e Janela do cronômetro da fase. Mantenha ambas abertas enquanto o OBS estiver em execução.\n\n"
+            "2. ADICIONAR O CRONÔMETRO DO JOGO AO OBS\n"
+            "• No OBS, escolha Fontes > + > Captura de janela, chame-a de Cronômetro do jogo e selecione a janela correspondente do tracker.\n\n"
+            "3. ADICIONAR O CRONÔMETRO DA FASE AO OBS\n"
+            "• Adicione outra Captura de janela chamada Cronômetro da fase e selecione a janela da fase do tracker.\n\n"
+            "4. MÉTODO OPCIONAL COM ARQUIVOS DE TEXTO\n"
+            "• A configuração de textos do OBS também mostra game_timer.txt e level_timer.txt. Use Ler do arquivo se preferir cronômetros transparentes e personalizáveis."
+        ),
+        "mac_game_timer_button": "Janela do cronômetro do jogo",
+        "mac_level_timer_button": "Janela do cronômetro da fase",
+        "mac_timer_button_note": (
+            "Abra as duas janelas controladas pelo tracker ou use os arquivos de texto no OBS. No Mac não é preciso instalar o LiveSplit separadamente."
+        ),
+        "mac_timer_health_title": "Saídas dos cronômetros de jogo e fase",
+        "mac_timer_health_detail": (
+            "As janelas de cronômetro integradas do Mac e os arquivos de texto do OBS estão prontos. "
+            "Não é necessário um servidor LiveSplit separado."
+        ),
+        "obs_game_timer": "Cronômetro do jogo",
+        "obs_level_timer": "Cronômetro da fase",
+    },
+}
+for _language_code, _mac_timer_copy in _MAC_TIMER_SETUP_TRANSLATIONS.items():
+    SETUP_GUIDE_TRANSLATIONS[_language_code].update(_mac_timer_copy)
+
 
 DEFAULT_CONFIG = {
     "app_language": "en",
@@ -19453,21 +20042,21 @@ def load_config() -> dict[str, Any]:
     ).strip()
     saved_sni_text = str(config.get("sni_path", "")).strip()
     saved_qusb_text = str(config.get("qusb2snes_path", "")).strip()
-    if Path(saved_qusb_text).name.casefold() == "sni.exe":
+    if connection_service_kind(saved_qusb_text) == "SNI":
         if not saved_sni_text:
             saved_sni_text = saved_qusb_text
         saved_qusb_text = ""
-    legacy_name = Path(legacy_interface_text).name.casefold()
-    if legacy_name == "sni.exe" and not saved_sni_text:
+    legacy_service = connection_service_kind(legacy_interface_text)
+    if legacy_service == "SNI" and not saved_sni_text:
         saved_sni_text = legacy_interface_text
-    elif legacy_name == "qusb2snes.exe" and not saved_qusb_text:
+    elif legacy_service == "QUsb2Snes" and not saved_qusb_text:
         saved_qusb_text = legacy_interface_text
 
     local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
 
     def discover_connection_service(
         configured_text: str,
-        executable_name: str,
+        executable_names: tuple[str, ...],
         candidates: tuple[Path, ...],
         search_roots: tuple[Path, ...],
     ) -> str:
@@ -19476,7 +20065,7 @@ def load_config() -> dict[str, Any]:
             configured_text
             and configured_path.is_file()
             and configured_path.name.casefold()
-            == executable_name.casefold()
+            in {name.casefold() for name in executable_names}
         ):
             return str(configured_path)
         for candidate in candidates:
@@ -19486,24 +20075,39 @@ def load_config() -> dict[str, Any]:
             if not search_root.is_dir():
                 continue
             try:
-                return str(
-                    next(
-                        candidate
-                        for candidate in search_root.rglob(executable_name)
-                        if candidate.is_file()
+                for executable_name in executable_names:
+                    match = next(
+                        (
+                            candidate
+                            for candidate in search_root.rglob(executable_name)
+                            if candidate.is_file()
+                        ),
+                        None,
                     )
-                )
+                    if match is not None:
+                        return str(match)
             except StopIteration:
                 continue
         return configured_text
 
+    user_applications = Path.home() / "Applications"
+    system_applications = Path("/Applications")
+    sni_names = ("sni.exe",) if IS_WINDOWS else ("sni",)
+    qusb_names = (
+        ("QUsb2Snes.exe",)
+        if IS_WINDOWS
+        else ("QUsb2Snes", "qusb2snes")
+    )
+
     sni_text = discover_connection_service(
         saved_sni_text,
-        "sni.exe",
+        sni_names,
         (
             application_directory / "Tools" / "SNI" / "sni.exe",
             APP_DATA_DIR / "Tools" / "SNI" / "sni.exe",
             local_app_data / "Programs" / "SNI" / "sni.exe",
+            application_directory / "Tools" / "SNI" / "sni",
+            APP_DATA_DIR / "Tools" / "SNI" / "sni",
         ),
         (
             application_directory / "Tools" / "SNI",
@@ -19512,7 +20116,7 @@ def load_config() -> dict[str, Any]:
     )
     qusb_text = discover_connection_service(
         saved_qusb_text,
-        "QUsb2Snes.exe",
+        qusb_names,
         (
             application_directory
             / "Tools"
@@ -19523,6 +20127,23 @@ def load_config() -> dict[str, Any]:
             / "Programs"
             / "QUsb2Snes"
             / "QUsb2Snes.exe",
+            APP_DATA_DIR
+            / "Tools"
+            / "QUsb2Snes"
+            / "QUsb2Snes.app"
+            / "Contents"
+            / "MacOS"
+            / "QUsb2Snes",
+            user_applications
+            / "QUsb2Snes.app"
+            / "Contents"
+            / "MacOS"
+            / "QUsb2Snes",
+            system_applications
+            / "QUsb2Snes.app"
+            / "Contents"
+            / "MacOS"
+            / "QUsb2Snes",
         ),
         (
             application_directory / "Tools" / "QUsb2Snes",
@@ -19562,6 +20183,23 @@ def load_config() -> dict[str, Any]:
             Path(os.environ.get("APPDATA", ""))
             / "RetroArch"
             / "retroarch.exe",
+            APP_DATA_DIR
+            / "Tools"
+            / "RetroArch"
+            / "RetroArch.app"
+            / "Contents"
+            / "MacOS"
+            / "RetroArch",
+            user_applications
+            / "RetroArch.app"
+            / "Contents"
+            / "MacOS"
+            / "RetroArch",
+            system_applications
+            / "RetroArch.app"
+            / "Contents"
+            / "MacOS"
+            / "RetroArch",
         ]
         path_retroarch = shutil.which("retroarch")
         if path_retroarch:
@@ -19579,14 +20217,20 @@ def load_config() -> dict[str, Any]:
         retroarch_text
         and (not core_text or not Path(core_text).is_file())
     ):
-        core_directory = Path(retroarch_text).parent / "cores"
-        core_candidates = (
-            core_directory / "bsnes_mercury_performance_libretro.dll",
-            core_directory / "bsnes_mercury_balanced_libretro.dll",
-            core_directory / "bsnes_mercury_accuracy_libretro.dll",
-            core_directory / "snes9x_libretro.dll",
-            core_directory / "snes9x2010_libretro.dll",
-            core_directory / "bsnes_libretro.dll",
+        core_directory = retroarch_core_directory(Path(retroarch_text))
+        core_extension = (
+            ".dll" if IS_WINDOWS else ".dylib" if IS_MACOS else ".so"
+        )
+        core_candidates = tuple(
+            core_directory / (core_name + core_extension)
+            for core_name in (
+                "bsnes_mercury_performance_libretro",
+                "bsnes_mercury_balanced_libretro",
+                "bsnes_mercury_accuracy_libretro",
+                "snes9x_libretro",
+                "snes9x2010_libretro",
+                "bsnes_libretro",
+            )
         )
         for core_candidate in core_candidates:
             if core_candidate.is_file():
@@ -19600,9 +20244,9 @@ def load_config() -> dict[str, Any]:
     selected_platform = str(
         config.get("selected_platform", "FXPAK Pro")
     ).strip()
-    interface_name = Path(
+    interface_name = normalized_executable_name(
         str(config.get("platform_interface_path", ""))
-    ).name.casefold()
+    )
     configured_core_name = Path(
         str(config.get("retroarch_core_path", ""))
     ).name.casefold()
@@ -19611,11 +20255,11 @@ def load_config() -> dict[str, Any]:
         / "Tools"
         / "RetroArch"
         / "cores"
-        / "bsnes_mercury_performance_libretro.dll"
+        / retroarch_core_filename()
     )
     if (
         selected_platform == "RetroArch"
-        and interface_name == "sni.exe"
+        and interface_name == "sni"
         and configured_core_name.startswith("snes9x")
         and bundled_mercury_core.is_file()
     ):
@@ -19696,14 +20340,7 @@ def connection_service_candidates(
         config.get("platform_interface_path", "")
     ).strip()
     if legacy_path:
-        legacy_name = Path(legacy_path).name.casefold()
-        legacy_service = (
-            "SNI"
-            if legacy_name == "sni.exe"
-            else "QUsb2Snes"
-            if legacy_name == "qusb2snes.exe"
-            else ""
-        )
+        legacy_service = connection_service_kind(legacy_path)
         if legacy_service and all(
             Path(path).resolve() != Path(legacy_path).resolve()
             for _, path in configured
@@ -19903,6 +20540,10 @@ class TrackerWorker:
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def request_console_refresh(self) -> None:
+        """Reset a controllable FXPAK session, then stop for reconnection."""
+        self.command_queue.put("refresh_console")
 
     def pause_connection(self, timeout: float = 15.0) -> bool:
         """Release the SNES bridge while an exclusive SD-file job runs."""
@@ -20782,11 +21423,78 @@ class TrackerWorker:
                     error=error_text,
                 )
 
-    def process_commands(self) -> None:
+    def _reset_attached_console(
+        self,
+        ws: websocket.WebSocket,
+    ) -> None:
+        """Issue usb2snes Reset only when the attached device allows it."""
+        self.save_current_level_progress()
+        self.save_current_game_time()
+        self.save_current_death_count()
+        self.send_request(ws, "Info")
+        response = json.loads(ws.recv())
+        info_flags = {
+            str(item).strip().upper()
+            for item in response.get("Results", [])
+        }
+        if "NO_CONTROL_CMD" in info_flags:
+            raise RuntimeError(
+                "The FXPAK Pro does not allow remote reset. "
+                "The tracker connection will still restart."
+            )
+        # Reset does not return a response. Reading after it can consume an
+        # unrelated frame or stall while the Super Nt reinitializes, so the
+        # worker closes this bridge session immediately and reconnects fresh.
+        self.send_request(ws, "Reset")
+
+    def process_commands(
+        self,
+        ws: websocket.WebSocket | None = None,
+    ) -> None:
         while True:
             try:
                 command = self.command_queue.get_nowait()
             except queue.Empty:
+                return
+
+            if command == "refresh_console":
+                try:
+                    if ws is None:
+                        raise RuntimeError(
+                            "The FXPAK Pro connection is not ready for reset"
+                        )
+                    self._reset_attached_console(ws)
+                    message = (
+                        "The running FXPAK Pro game was reset. "
+                        "Reconnecting the tracker…"
+                    )
+                    self.log(message)
+                    self.send_event(
+                        "console_reset",
+                        success=True,
+                        message=message,
+                    )
+                except Exception as error:
+                    error_text = str(error)
+                    if (
+                        "does not allow remote reset"
+                        in error_text
+                    ):
+                        message = error_text
+                    else:
+                        message = (
+                            "Could not reset the running FXPAK Pro game: "
+                            f"{error_text}. The tracker connection will "
+                            "still restart."
+                        )
+                    self.log(message)
+                    self.send_event(
+                        "console_reset",
+                        success=False,
+                        message=message,
+                    )
+                finally:
+                    self.stop_event.set()
                 return
 
             if command == "reload_spreadsheet":
@@ -22954,6 +23662,185 @@ finally {
         shutil.copy2(spreadsheet_path, backup_path)
         return backup_path
 
+    def _update_tracker_spreadsheet_portable(
+        self,
+        spreadsheet_path: Path,
+        action_key: str,
+        selected_title: str,
+        selected_completed: int,
+        selected_total: int,
+        game_seconds: int,
+        rating: float,
+        notes: str,
+    ) -> dict[str, Any]:
+        """Update a closed workbook on macOS without Microsoft Excel COM."""
+        keep_vba = spreadsheet_path.suffix.casefold() == ".xlsm"
+        workbook = load_workbook(
+            spreadsheet_path,
+            keep_vba=keep_vba,
+            keep_links=True,
+        )
+        temporary_path = spreadsheet_path.with_name(
+            spreadsheet_path.stem
+            + f".{os.getpid()}.saving"
+            + spreadsheet_path.suffix
+        )
+        try:
+            if TRACKER_SHEET not in workbook.sheetnames:
+                raise RuntimeError(
+                    f'The workbook does not contain a "{TRACKER_SHEET}" sheet.'
+                )
+            sheet = workbook[TRACKER_SHEET]
+            headers = {
+                normalize_title(cell.value): cell.column
+                for cell in sheet[1]
+                if cell.value not in (None, "")
+            }
+
+            def require_header(*names: str) -> int:
+                for name in names:
+                    column = headers.get(normalize_title(name))
+                    if column is not None:
+                        return int(column)
+                raise RuntimeError(
+                    'Could not find the required Tracker header "'
+                    + names[0]
+                    + '".'
+                )
+
+            select_column = require_header("Select ROM Hack")
+            started_column = require_header("Date Started")
+            exits_column = require_header("Completed Exits")
+            status_column = require_header("Status")
+            selected_normalized = normalize_title(selected_title)
+            tracker_row = 0
+            first_blank_row = 0
+            for row_number in range(2, 502):
+                cell_text = str(
+                    sheet.cell(row=row_number, column=select_column).value or ""
+                ).strip()
+                if not cell_text:
+                    if first_blank_row == 0:
+                        first_blank_row = row_number
+                    continue
+                if normalize_title(cell_text) == selected_normalized:
+                    tracker_row = row_number
+                    break
+
+            if action_key == "progress" and tracker_row == 0:
+                return {
+                    "row": 0,
+                    "created": False,
+                    "found": False,
+                    "percentage": None,
+                    "saved": True,
+                    "verified": True,
+                    "portable": True,
+                }
+            created = tracker_row == 0
+            if created:
+                if first_blank_row == 0:
+                    raise RuntimeError("There are no blank Tracker rows remaining.")
+                tracker_row = first_blank_row
+                template_row = tracker_row + 1 if tracker_row < 501 else tracker_row - 1
+                for column in range(1, max(19, sheet.max_column) + 1):
+                    source = sheet.cell(row=template_row, column=column)
+                    target = sheet.cell(row=tracker_row, column=column)
+                    if source.has_style:
+                        target._style = copy_cell_style(source._style)
+                    if source.number_format:
+                        target.number_format = source.number_format
+                    if source.alignment:
+                        target.alignment = copy_cell_style(source.alignment)
+                    if source.protection:
+                        target.protection = copy_cell_style(source.protection)
+                    if isinstance(source.value, str) and source.value.startswith("="):
+                        try:
+                            target.value = Translator(
+                                source.value,
+                                origin=source.coordinate,
+                            ).translate_formula(target.coordinate)
+                        except Exception:
+                            target.value = source.value
+                sheet.row_dimensions[tracker_row].height = (
+                    sheet.row_dimensions[template_row].height
+                )
+
+            sheet.cell(row=tracker_row, column=select_column).value = selected_title
+            started_cell = sheet.cell(row=tracker_row, column=started_column)
+            if started_cell.value in (None, ""):
+                started_cell.value = date.today()
+            safe_completed = min(selected_total, max(0, selected_completed))
+            percentage = min(100, round((safe_completed / selected_total) * 100))
+            sheet.cell(row=tracker_row, column=exits_column).value = (
+                f"{safe_completed}/{selected_total}"
+            )
+            status_cell = sheet.cell(row=tracker_row, column=status_column)
+            exits_reference = sheet.cell(
+                row=tracker_row,
+                column=exits_column,
+            ).coordinate
+            select_reference = sheet.cell(
+                row=tracker_row,
+                column=select_column,
+            ).coordinate
+            if not (
+                isinstance(status_cell.value, str)
+                and status_cell.value.startswith("=")
+            ):
+                status_cell.value = (
+                    f'=IF({select_reference}="","",IFERROR(MIN(1,MAX(0,'
+                    f'VALUE(LEFT({exits_reference},FIND("/",{exits_reference})-1))/'
+                    f'VALUE(MID({exits_reference},FIND("/",{exits_reference})+1,99)))),0))'
+                )
+            status_cell.number_format = (
+                '[=1]"100% Complete";[=0]"In Progress";0% "Complete"'
+            )
+
+            if action_key == "finish":
+                completed_column = require_header("Date Completed")
+                rating_column = require_header(
+                    "Rating (1-5)",
+                    "Rating (1 to 5)",
+                    "Rating",
+                )
+                playtime_column = require_header("Playtime")
+                notes_column = require_header("Notes")
+                sheet.cell(row=tracker_row, column=completed_column).value = date.today()
+                sheet.cell(row=tracker_row, column=rating_column).value = float(rating)
+                hours, remainder = divmod(game_seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                sheet.cell(row=tracker_row, column=playtime_column).value = (
+                    f"{hours} {'Hour' if hours == 1 else 'Hours'}"
+                )
+                sheet.cell(row=tracker_row, column=playtime_column + 1).value = (
+                    f"{minutes} {'Minute' if minutes == 1 else 'Minutes'}"
+                )
+                sheet.cell(row=tracker_row, column=playtime_column + 2).value = (
+                    f"{seconds} {'Second' if seconds == 1 else 'Seconds'}"
+                )
+                sheet.cell(row=tracker_row, column=notes_column).value = notes
+
+            try:
+                workbook.calculation.fullCalcOnLoad = True
+                workbook.calculation.forceFullCalc = True
+            except AttributeError:
+                pass
+            workbook.save(temporary_path)
+            os.replace(temporary_path, spreadsheet_path)
+            return {
+                "row": tracker_row,
+                "created": created,
+                "found": True,
+                "percentage": percentage,
+                "saved": True,
+                "verified": True,
+                "portable": True,
+            }
+        finally:
+            temporary_path.unlink(missing_ok=True)
+            workbook.close()
+
     def update_tracker_spreadsheet(
         self,
         action: str,
@@ -23028,6 +23915,23 @@ finally {
             if rating < 1 or rating > 5:
                 raise RuntimeError(
                     "Rating must be a number from 1 through 5."
+                )
+
+        if not IS_WINDOWS:
+            if action_key == "progress":
+                self.progress_backup_path(spreadsheet_path)
+            else:
+                self.create_spreadsheet_backup(spreadsheet_path)
+            with self.spreadsheet_update_lock:
+                return self._update_tracker_spreadsheet_portable(
+                    spreadsheet_path,
+                    action_key,
+                    selected_title,
+                    selected_completed,
+                    selected_total,
+                    game_seconds,
+                    rating,
+                    notes,
                 )
 
         original_vba_hash = self.workbook_vba_hash(
@@ -23786,13 +24690,13 @@ finally {
         if not candidates:
             raise FileNotFoundError(
                 "No SNES connection service is running. In Settings, "
-                "configure SNI.exe, QUsb2Snes.exe, or both."
+                "configure SNI, QUsb2Snes, or both."
             )
 
         startup_errors: list[str] = []
         for service_name, executable_path in candidates:
             try:
-                os.startfile(str(executable_path))
+                launch_local_application(executable_path)
                 self.log(
                     f"Started {service_name}: {executable_path.name}."
                 )
@@ -25549,7 +26453,9 @@ finally {
                 not self.stop_event.is_set()
                 and not self.connection_pause_event.is_set()
             ):
-                self.process_commands()
+                self.process_commands(ws)
+                if self.stop_event.is_set():
+                    break
 
                 rom_path = self.get_loaded_rom_path(ws)
 
@@ -25815,6 +26721,13 @@ class TrackerApp:
         self.main_ui_scale = 1.0
         self.responsive_ui_after_id: str | None = None
         self.responsive_ui_rebuilding = False
+        self._last_root_configure_size: tuple[int, int] | None = None
+        self._last_root_configure_at: float | None = None
+        self.responsive_ui_waiting_for_quiet = False
+        self.main_canvas_layout_after_id: str | None = None
+        self.main_canvas_window_size: tuple[int, int] | None = None
+        self.main_scrollbar_visible = False
+        self.main_mousewheel_bind_ids: dict[str, str] = {}
         self._dialog_scale_windows: set[str] = set()
         self._dialog_scale_original: float | None = None
         try:
@@ -25829,6 +26742,7 @@ class TrackerApp:
         # 768p displays. The responsive layout scales the controls while the
         # banner keeps its intended visual height.
         self.root.minsize(900, 640)
+        self._configure_antialiased_text()
         if not self.startup_check:
             try:
                 self.root.state("zoomed")
@@ -26092,6 +27006,8 @@ class TrackerApp:
         self.tracker_list_widgets: dict[str, Any] = {}
         self.tracker_list_records: dict[str, dict[str, Any]] = {}
         self.tracker_overlay_after_id: str | None = None
+        self.tracker_overlay_retry_count = 0
+        self.tracker_paint_cover_after_id: str | None = None
         self.custom_hacks_dialog: tk.Toplevel | None = None
         self.custom_hacks_widgets: dict[str, Any] = {}
         self.custom_hacks_records: dict[str, dict[str, Any]] = {}
@@ -26101,6 +27017,10 @@ class TrackerApp:
         self.google_sync_pending_show_dialog = False
         self.banner_resize_after_id: str | None = None
         self.banner_render_size: tuple[int, int] | None = None
+        self.banner_pending_render_size: tuple[int, int] | None = None
+        self.banner_photo_cache: dict[tuple[int, int], object] = {}
+        self.banner_last_cache_key: tuple[int, int] | None = None
+        self.brand_asset_cache: dict[float, dict[str, object]] = {}
         self.diagnostics_dialog: tk.Toplevel | None = None
         self.health_check_dialog: tk.Toplevel | None = None
         self.about_dialog: tk.Toplevel | None = None
@@ -26228,6 +27148,18 @@ class TrackerApp:
             self._dismiss_main_hack_selector_popup,
             add="+",
         )
+        for wheel_sequence in (
+            "<MouseWheel>",
+            "<Button-4>",
+            "<Button-5>",
+        ):
+            bind_id = self.root.bind(
+                wheel_sequence,
+                self._scroll_main_dashboard,
+                add="+",
+            )
+            if bind_id:
+                self.main_mousewheel_bind_ids[wheel_sequence] = bind_id
         self.root.bind_class(
             "Toplevel",
             "<Map>",
@@ -26280,7 +27212,11 @@ class TrackerApp:
             return 0
         return max(
             minimum,
-            round(float(value) * self.main_ui_scale),
+            # Keep every border, gap, and control edge on a physical pixel.
+            # Python's round-to-even can turn equivalent half-pixel values
+            # into alternating dimensions; half-up snapping is visually more
+            # consistent for a dense Tk interface.
+            int(float(value) * self.main_ui_scale + 0.5),
         )
 
     def _queue_current_hack_title_font_refresh(
@@ -26852,18 +27788,165 @@ class TrackerApp:
         except tk.TclError:
             pass
 
+    def _configure_antialiased_text(self) -> None:
+        """Use ClearType-compatible TrueType fonts for every Tk fallback."""
+        named_font_families = {
+            "TkDefaultFont": "Segoe UI",
+            "TkTextFont": "Segoe UI",
+            "TkMenuFont": "Segoe UI",
+            "TkHeadingFont": "Segoe UI",
+            "TkCaptionFont": "Segoe UI",
+            "TkSmallCaptionFont": "Segoe UI",
+            "TkIconFont": "Segoe UI Symbol",
+            "TkTooltipFont": "Segoe UI",
+            "TkFixedFont": "Consolas",
+        }
+        try:
+            available_named_fonts = set(tkfont.names(self.root))
+        except tk.TclError:
+            available_named_fonts = set()
+        for font_name, family in named_font_families.items():
+            if font_name not in available_named_fonts:
+                continue
+            try:
+                tkfont.nametofont(
+                    font_name,
+                    root=self.root,
+                ).configure(family=family)
+            except tk.TclError:
+                pass
+
+        # Explicit widgets already use Segoe UI, Segoe UI Symbol, or
+        # Consolas. These defaults cover native dialogs, menus, listboxes,
+        # Text widgets, Treeviews, and third-party ttk controls that do not
+        # provide their own font tuple.
+        self.root.option_add("*Font", ("Segoe UI", 10))
+        self.root.option_add("*Menu.font", ("Segoe UI", 10))
+        self.root.option_add("*Listbox.font", ("Segoe UI", 10))
+        self.root.option_add("*Text.font", ("Segoe UI", 10))
+        try:
+            ttk.Style(self.root).configure(
+                ".",
+                font=("Segoe UI", 10),
+            )
+        except tk.TclError:
+            pass
+
+    def _queue_main_canvas_layout(self, _event=None) -> None:
+        """Coalesce dashboard size changes into one canvas layout pass."""
+        if self.main_canvas_layout_after_id is not None:
+            return
+        try:
+            self.main_canvas_layout_after_id = self.root.after_idle(
+                self._sync_main_canvas_layout
+            )
+        except tk.TclError:
+            self.main_canvas_layout_after_id = None
+
+    def _sync_main_canvas_layout(self) -> None:
+        """Fit the dashboard to the window or expose vertical scrolling."""
+        self.main_canvas_layout_after_id = None
+        canvas = getattr(self, "main_canvas", None)
+        content = getattr(self, "content_frame", None)
+        window_id = getattr(self, "main_canvas_window", None)
+        scrollbar = getattr(self, "main_scrollbar", None)
+        if (
+            canvas is None
+            or content is None
+            or window_id is None
+            or scrollbar is None
+        ):
+            return
+        try:
+            if not canvas.winfo_exists() or not content.winfo_exists():
+                return
+            viewport_width = max(1, int(canvas.winfo_width()))
+            viewport_height = max(1, int(canvas.winfo_height()))
+            requested_height = max(1, int(content.winfo_reqheight()))
+            content_height = max(viewport_height, requested_height)
+            target_size = (viewport_width, content_height)
+            if target_size != self.main_canvas_window_size:
+                canvas.itemconfigure(
+                    window_id,
+                    width=viewport_width,
+                    height=content_height,
+                )
+                self.main_canvas_window_size = target_size
+            canvas.configure(
+                scrollregion=(0, 0, viewport_width, content_height),
+                yscrollincrement=max(12, self._ui_px(24)),
+            )
+
+            needs_scrollbar = requested_height > viewport_height + 2
+            if needs_scrollbar and not self.main_scrollbar_visible:
+                scrollbar.grid()
+                self.main_scrollbar_visible = True
+            elif not needs_scrollbar and self.main_scrollbar_visible:
+                scrollbar.grid_remove()
+                self.main_scrollbar_visible = False
+                canvas.yview_moveto(0.0)
+        except (tk.TclError, TypeError, ValueError):
+            return
+
+    def _scroll_main_dashboard(self, event) -> str | None:
+        """Scroll the restored main page without stealing page/table wheels."""
+        if getattr(self, "active_in_app_page", None) is not None:
+            return None
+        canvas = getattr(self, "main_canvas", None)
+        if canvas is None:
+            return None
+        try:
+            if not canvas.winfo_exists() or not canvas.winfo_ismapped():
+                return None
+            pointer_x = int(getattr(event, "x_root", self.root.winfo_pointerx()))
+            pointer_y = int(getattr(event, "y_root", self.root.winfo_pointery()))
+            canvas_x = canvas.winfo_rootx()
+            canvas_y = canvas.winfo_rooty()
+            if not (
+                canvas_x <= pointer_x < canvas_x + canvas.winfo_width()
+                and canvas_y <= pointer_y < canvas_y + canvas.winfo_height()
+            ):
+                return None
+            first, last = canvas.yview()
+            if first <= 0.0 and last >= 1.0:
+                return None
+            units = self._fast_scroll_units(event, rows_per_notch=2)
+            if not units:
+                return None
+            canvas.yview_scroll(units, "units")
+            return "break"
+        except (tk.TclError, TypeError, ValueError):
+            return None
+
     def _target_main_ui_scale(self) -> float:
         width = max(1, self.root.winfo_width())
         height = max(1, self.root.winfo_height())
-        target = min(
+        raw_target = min(
             width / 1920,
             height / 1080,
         )
         # Compact the controls when the app is restored or placed on a
         # smaller display. The banner keeps its own fixed visual height, so
-        # the scene no longer collapses while the rest of the page fits.
-        target = max(0.70, min(2.0, target))
-        return round(target * 20) / 20
+        # the scene no longer collapses while the rest of the page fits. Use
+        # standard quarter-step scales instead of arbitrary 70%/95% values;
+        # those fractional values make Windows rasterize otherwise sharp Tk
+        # text and images between physical pixels.
+        raw_target = max(0.75, min(2.0, raw_target))
+        pixel_friendly_scales = (
+            0.75,
+            1.0,
+            1.25,
+            1.5,
+            1.75,
+            2.0,
+        )
+        return min(
+            pixel_friendly_scales,
+            key=lambda scale: (
+                abs(scale - raw_target),
+                scale,
+            ),
+        )
 
     def _queue_responsive_ui_scale(self, event=None) -> None:
         if (
@@ -26873,6 +27956,36 @@ class TrackerApp:
             return
         if self.responsive_ui_rebuilding:
             return
+        if event is not None:
+            self._last_root_configure_at = time.monotonic()
+            try:
+                configured_size = (int(event.width), int(event.height))
+            except (AttributeError, TypeError, ValueError):
+                configured_size = None
+            if configured_size == self._last_root_configure_size:
+                # A maximize/restore operation changes the size once and is
+                # then followed by many same-size Configure events while the
+                # user drags the window.  Do not let the rebuild queued by
+                # that first event fire in the middle of the drag.  Postpone
+                # an already-pending rebuild until window motion is quiet,
+                # while pure moves with no pending resize still do no work.
+                if self.responsive_ui_after_id is None:
+                    return
+            else:
+                self._last_root_configure_size = configured_size
+            # One timer is enough. Configure events only update the timestamp;
+            # the quiet-period callback checks that value before rebuilding.
+            # This avoids canceling and recreating a Tcl timer dozens of times
+            # per second while the window crosses several monitors.
+            if self.responsive_ui_after_id is not None:
+                return
+            self.responsive_ui_waiting_for_quiet = True
+            self.responsive_ui_after_id = self.root.after(
+                650,
+                self._apply_responsive_ui_scale_when_quiet,
+            )
+            return
+
         if self.responsive_ui_after_id is not None:
             try:
                 self.root.after_cancel(
@@ -26880,10 +27993,30 @@ class TrackerApp:
                 )
             except tk.TclError:
                 pass
+        self.responsive_ui_waiting_for_quiet = False
         self.responsive_ui_after_id = self.root.after(
-            180,
+            260,
             self._apply_responsive_ui_scale,
         )
+
+    def _apply_responsive_ui_scale_when_quiet(self) -> None:
+        """Apply one resize only after native window movement has stopped."""
+        self.responsive_ui_after_id = None
+        last_configure_at = self._last_root_configure_at
+        quiet_seconds = (
+            time.monotonic() - last_configure_at
+            if last_configure_at is not None
+            else 0.65
+        )
+        remaining_seconds = 0.65 - quiet_seconds
+        if remaining_seconds > 0:
+            self.responsive_ui_after_id = self.root.after(
+                max(40, round(remaining_seconds * 1000)),
+                self._apply_responsive_ui_scale_when_quiet,
+            )
+            return
+        self.responsive_ui_waiting_for_quiet = False
+        self._apply_responsive_ui_scale()
 
     def _capture_main_ui_state(self) -> dict[str, dict[str, object]]:
         captured: dict[str, dict[str, object]] = {}
@@ -26950,6 +28083,7 @@ class TrackerApp:
 
     def _apply_responsive_ui_scale(self) -> None:
         self.responsive_ui_after_id = None
+        self.responsive_ui_waiting_for_quiet = False
         if self.responsive_ui_rebuilding:
             return
 
@@ -26961,7 +28095,12 @@ class TrackerApp:
             pass
 
         target_scale = self._target_main_ui_scale()
-        if abs(target_scale - self.main_ui_scale) < 0.04:
+        # Five- and ten-percent changes are common when Windows transfers a
+        # per-monitor-DPI-aware Tk window between displays. They are too small
+        # to justify destroying and rebuilding the dashboard. The scrolling
+        # viewport already handles the minor fit difference, so retain the
+        # current layout until the requested scale differs materially.
+        if abs(target_scale - self.main_ui_scale) < 0.11:
             return
 
         # Avoid invalidating images owned by an open child window. The main
@@ -27000,7 +28139,7 @@ class TrackerApp:
                 pass
 
             self.banner_render_size = None
-            self._build_ui()
+            self._build_ui(defer_mapping=True)
             self._restore_main_ui_state(captured)
             self.root.after_idle(
                 lambda: self._localize_widget_tree(self.root)
@@ -27120,7 +28259,7 @@ class TrackerApp:
                 if widget is not None and widget.winfo_exists():
                     widget.destroy()
             self.banner_render_size = None
-            self._build_ui()
+            self._build_ui(defer_mapping=True)
             self._restore_main_ui_state(captured)
             self.root.after_idle(
                 lambda: self._localize_widget_tree(self.root)
@@ -27336,7 +28475,7 @@ class TrackerApp:
                 pass
         self.root.after_idle(self._queue_responsive_ui_scale)
 
-    def _build_ui(self) -> None:
+    def _build_ui(self, *, defer_mapping: bool = False) -> None:
         # Keep every vertical scrollbar consistent with the app's yellow
         # scrolling accent, including the custom hack-selector popup.
         try:
@@ -27362,7 +28501,10 @@ class TrackerApp:
             )
         except (tk.TclError, AttributeError):
             pass
-        self.root.configure(bg=THEME["sky_dark"])
+        build_dark = self.appearance_var.get() == "dark"
+        self.root.configure(
+            bg="#0C1220" if build_dark else THEME["sky_dark"]
+        )
         self.root.option_add("*Font", ("Segoe UI", 10))
 
         # Center every single-line input by default. These option defaults
@@ -27462,15 +28604,65 @@ class TrackerApp:
             bg=THEME["sky_dark"],
         )
         self.main_shell = shell
-        shell.pack(fill="both", expand=True)
+        if not defer_mapping:
+            shell.pack(fill="both", expand=True)
 
-        self.content_frame = tk.Frame(
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
+        self.main_canvas_layout_after_id = None
+        self.main_canvas_window_size = None
+        self.main_scrollbar_visible = False
+
+        self.main_canvas = tk.Canvas(
             shell,
             bg="#54BDF2",
+            bd=0,
+            highlightthickness=0,
+            takefocus=False,
         )
-        self.content_frame.pack(
-            fill="both",
-            expand=True,
+        self.main_canvas.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+        )
+        self.main_scrollbar = YellowCanvasScrollbar(
+            shell,
+            command=self.main_canvas.yview,
+            orient=tk.VERTICAL,
+            width=16,
+            troughcolor=THEME["sky_dark"],
+            bg=THEME["yellow"],
+            activebackground="#FFE56B",
+        )
+        self.main_scrollbar.grid(
+            row=0,
+            column=1,
+            sticky="ns",
+        )
+        self.main_scrollbar.grid_remove()
+        self.main_canvas.configure(
+            yscrollcommand=self.main_scrollbar.set,
+        )
+
+        self.content_frame = tk.Frame(
+            self.main_canvas,
+            bg="#54BDF2",
+        )
+        self.main_canvas_window = self.main_canvas.create_window(
+            0,
+            0,
+            window=self.content_frame,
+            anchor="nw",
+        )
+        self.main_canvas.bind(
+            "<Configure>",
+            self._queue_main_canvas_layout,
+            add="+",
+        )
+        self.content_frame.bind(
+            "<Configure>",
+            self._queue_main_canvas_layout,
+            add="+",
         )
 
         # Full-width responsive cast banner. Its title is anchored to the
@@ -27522,6 +28714,16 @@ class TrackerApp:
             self.banner_label.pack(
                 fill="both",
                 expand=True,
+            )
+            # A responsive rebuild replaces the Label, not the artwork. Show
+            # the last completed banner immediately so the header never looks
+            # as though it is loading while the new geometry settles.
+            self._restore_cached_banner_photo(
+                (
+                    max(1, int(self.root.winfo_width())),
+                    self.banner_height,
+                ),
+                allow_fallback=True,
             )
             self.banner_frame.bind(
                 "<Configure>",
@@ -28826,7 +30028,23 @@ class TrackerApp:
         self._set_appearance(
             self.appearance_var.get(),
             persist=False,
+            # Rebuilding responsive content does not change the selected
+            # theme. Reapplying the Windows non-client frame here forces a
+            # visible caption repaint (and can briefly show the OS fallback
+            # light frame) while the window is being moved between displays.
+            refresh_native_titlebar=not defer_mapping,
         )
+        if defer_mapping:
+            # Responsive and language rebuilds are assembled and themed while
+            # unmapped. Mapping the finished menu and dashboard together
+            # prevents the default light widget colors from flashing through
+            # a saved dark theme (and vice versa) while the window is moved.
+            self.custom_menu_bar.pack(
+                side="top",
+                fill="x",
+            )
+            shell.pack(fill="both", expand=True)
+        self.root.after_idle(self._queue_main_canvas_layout)
 
     def _build_menu_bar(self) -> None:
         colors = self._menu_colors()
@@ -28838,10 +30056,11 @@ class TrackerApp:
             highlightthickness=0,
             bd=0,
         )
-        self.custom_menu_bar.pack(
-            side="top",
-            fill="x",
-        )
+        if not getattr(self, "responsive_ui_rebuilding", False):
+            self.custom_menu_bar.pack(
+                side="top",
+                fill="x",
+            )
         self.custom_menu_bar.pack_propagate(False)
 
         self.menu_buttons: list[RoundedMenuButton] = []
@@ -29409,9 +30628,14 @@ class TrackerApp:
             self.open_guided_obs_text_setup,
             "sheet",
         )
+        timer_setup_label = self._setup_guide_text("livesplit_setup")
+        if IS_MACOS:
+            timer_setup_label = self._setup_guide_text(
+                "mac_timer_obs_button"
+            )
         add_mario_command(
             setup_guide_menu,
-            self._setup_guide_text("livesplit_setup"),
+            timer_setup_label,
             self.open_livesplit_obs_setup_guide,
             "clock",
         )
@@ -29594,40 +30818,63 @@ class TrackerApp:
         )
         user_tools = APP_DATA_DIR / "Tools"
         app_tools = application_directory() / "Tools"
+        user_applications = Path.home() / "Applications"
+        system_applications = Path("/Applications")
 
         if software == "sni":
-            executable_name = "sni.exe"
+            executable_names = ("sni.exe",) if IS_WINDOWS else ("sni",)
             candidates = [
                 Path(str(self.config.get("sni_path", ""))),
                 Path(str(self.config.get("platform_interface_path", ""))),
-                user_tools / "SNI" / executable_name,
-                app_tools / "SNI" / executable_name,
-                local_app_data / "Programs" / "SNI" / executable_name,
-                program_files / "SNI" / executable_name,
+                user_tools / "SNI" / executable_names[0],
+                app_tools / "SNI" / executable_names[0],
+                local_app_data / "Programs" / "SNI" / executable_names[0],
+                program_files / "SNI" / executable_names[0],
             ]
             search_roots = (
                 user_tools / "SNI",
                 app_tools / "SNI",
             )
         elif software == "qusb2snes":
-            executable_name = "QUsb2Snes.exe"
+            executable_names = (
+                ("QUsb2Snes.exe",)
+                if IS_WINDOWS
+                else ("QUsb2Snes", "qusb2snes")
+            )
             candidates = [
                 Path(str(self.config.get("platform_interface_path", ""))),
                 Path(str(self.config.get("qusb2snes_path", ""))),
-                user_tools / "QUsb2Snes" / executable_name,
-                app_tools / "QUsb2Snes" / executable_name,
-                local_app_data
-                / "Programs"
+                user_tools / "QUsb2Snes" / executable_names[0],
+                app_tools / "QUsb2Snes" / executable_names[0],
+                user_tools
                 / "QUsb2Snes"
-                / executable_name,
-                program_files / "QUsb2Snes" / executable_name,
+                / "QUsb2Snes.app"
+                / "Contents"
+                / "MacOS"
+                / "QUsb2Snes",
+                user_applications
+                / "QUsb2Snes.app"
+                / "Contents"
+                / "MacOS"
+                / "QUsb2Snes",
+                system_applications
+                / "QUsb2Snes.app"
+                / "Contents"
+                / "MacOS"
+                / "QUsb2Snes",
+                local_app_data / "Programs" / "QUsb2Snes" / executable_names[0],
+                program_files / "QUsb2Snes" / executable_names[0],
             ]
             search_roots = (
                 user_tools / "QUsb2Snes",
                 app_tools / "QUsb2Snes",
             )
         else:
-            executable_name = "retroarch.exe"
+            executable_names = (
+                ("retroarch.exe",)
+                if IS_WINDOWS
+                else ("RetroArch", "retroarch")
+            )
             candidates = [
                 Path(
                     str(
@@ -29638,15 +30885,31 @@ class TrackerApp:
                     )
                 ),
                 Path("C:/RetroArch-Win64/retroarch.exe"),
-                user_tools / "RetroArch" / executable_name,
-                app_tools / "RetroArch" / executable_name,
+                user_tools / "RetroArch" / executable_names[0],
+                app_tools / "RetroArch" / executable_names[0],
+                user_tools
+                / "RetroArch"
+                / "RetroArch.app"
+                / "Contents"
+                / "MacOS"
+                / "RetroArch",
+                user_applications
+                / "RetroArch.app"
+                / "Contents"
+                / "MacOS"
+                / "RetroArch",
+                system_applications
+                / "RetroArch.app"
+                / "Contents"
+                / "MacOS"
+                / "RetroArch",
                 program_files
                 / "RetroArch-Win64"
-                / executable_name,
+                / executable_names[0],
                 local_app_data
                 / "Programs"
                 / "RetroArch"
-                / executable_name,
+                / executable_names[0],
             ]
             path_candidate = shutil.which("retroarch")
             if path_candidate:
@@ -29659,21 +30922,24 @@ class TrackerApp:
         for candidate in candidates:
             if candidate.is_file() and (
                 candidate.name.casefold()
-                == executable_name.casefold()
+                in {name.casefold() for name in executable_names}
             ):
                 return candidate.resolve()
 
         for search_root in search_roots:
             if not search_root.is_dir():
                 continue
-            try:
-                return next(
-                    candidate.resolve()
-                    for candidate in search_root.rglob(executable_name)
-                    if candidate.is_file()
+            for executable_name in executable_names:
+                match = next(
+                    (
+                        candidate.resolve()
+                        for candidate in search_root.rglob(executable_name)
+                        if candidate.is_file()
+                    ),
+                    None,
                 )
-            except StopIteration:
-                continue
+                if match is not None:
+                    return match
         return None
 
     def _show_optional_install_progress(
@@ -29809,11 +31075,11 @@ class TrackerApp:
 
     def _save_discovered_interface(self, executable: Path) -> None:
         executable_text = str(executable.resolve())
-        executable_name = executable.name.casefold()
-        if executable_name == "sni.exe":
+        interface_kind = connection_service_kind(executable)
+        if interface_kind == "SNI":
             config_key = "sni_path"
             path_variable = self.sni_path_var
-        elif executable_name == "qusb2snes.exe":
+        elif interface_kind == "QUsb2Snes":
             config_key = "qusb2snes_path"
             path_variable = self.qusb_path_var
         else:
@@ -29834,18 +31100,21 @@ class TrackerApp:
         executable: Path,
         status_variable: tk.StringVar,
     ) -> Path:
-        core_directory = executable.parent / "cores"
-        core_path = (
-            core_directory / "bsnes_mercury_performance_libretro.dll"
-        )
+        core_directory = retroarch_core_directory(executable)
+        core_filename = retroarch_core_filename()
+        core_path = core_directory / core_filename
         if not core_path.is_file():
             archive_path = (
                 APP_DATA_DIR
                 / "DependencyDownloads"
-                / "bsnes_mercury_performance_libretro.dll.zip"
+                / (core_filename + ".zip")
             )
             self._download_dependency_file(
-                RETROARCH_CORE_DOWNLOAD_URL,
+                (
+                    RETROARCH_CORE_DOWNLOAD_URL
+                    if IS_WINDOWS
+                    else retroarch_core_download_url()
+                ),
                 archive_path,
                 maximum_bytes=25 * 1024 * 1024,
                 status_variable=status_variable,
@@ -29862,9 +31131,7 @@ class TrackerApp:
             archive_path.unlink(missing_ok=True)
         if not core_path.is_file():
             matches = list(
-                core_directory.rglob(
-                    "bsnes_mercury_performance_libretro.dll"
-                )
+                core_directory.rglob(core_filename)
             )
             if matches:
                 core_path = matches[0]
@@ -29878,7 +31145,7 @@ class TrackerApp:
             "Enabling RetroArch network commands and one-press game switching...",
         )
         write_retroarch_tracker_settings(
-            executable.parent / "retroarch.cfg"
+            retroarch_config_path(executable)
         )
         return core_path.resolve()
 
@@ -29954,11 +31221,19 @@ class TrackerApp:
                 tools_directory = APP_DATA_DIR / "Tools"
 
                 if software == "sni" and executable is None:
-                    archive_path = download_directory / "sni-v0.0.103.zip"
+                    archive_path = download_directory / (
+                        "sni-v0.0.103-darwin-universal.tar.gz"
+                        if IS_MACOS
+                        else "sni-v0.0.103.zip"
+                    )
                     self._download_dependency_file(
-                        SNI_DOWNLOAD_URL,
+                        MACOS_SNI_DOWNLOAD_URL if IS_MACOS else SNI_DOWNLOAD_URL,
                         archive_path,
-                        expected_sha256=SNI_DOWNLOAD_SHA256,
+                        expected_sha256=(
+                            MACOS_SNI_DOWNLOAD_SHA256
+                            if IS_MACOS
+                            else SNI_DOWNLOAD_SHA256
+                        ),
                         maximum_bytes=40 * 1024 * 1024,
                         status_variable=status_variable,
                         description="SNI",
@@ -29967,23 +31242,43 @@ class TrackerApp:
                         status_variable,
                         "Extracting SNI...",
                     )
-                    self._extract_dependency_zip(
-                        archive_path,
-                        tools_directory / "SNI",
-                    )
+                    if IS_MACOS:
+                        safe_extract_tar_archive(
+                            archive_path,
+                            tools_directory / "SNI",
+                        )
+                    else:
+                        self._extract_dependency_zip(
+                            archive_path,
+                            tools_directory / "SNI",
+                        )
                     archive_path.unlink(missing_ok=True)
                     executable = self._find_optional_software_executable(
                         "sni"
                     )
+                    if executable is not None and IS_MACOS:
+                        executable.chmod(
+                            executable.stat().st_mode | stat.S_IXUSR
+                        )
 
                 elif software == "qusb2snes" and executable is None:
-                    archive_path = (
-                        download_directory / "QUsb2Snes-bundle.7z"
+                    archive_path = download_directory / (
+                        "QUsb2Snes-v0.7.35.dmg"
+                        if IS_MACOS
+                        else "QUsb2Snes-bundle.7z"
                     )
                     self._download_dependency_file(
-                        QUSB2SNES_DOWNLOAD_URL,
+                        (
+                            MACOS_QUSB2SNES_DOWNLOAD_URL
+                            if IS_MACOS
+                            else QUSB2SNES_DOWNLOAD_URL
+                        ),
                         archive_path,
-                        expected_sha256=QUSB2SNES_DOWNLOAD_SHA256,
+                        expected_sha256=(
+                            MACOS_QUSB2SNES_DOWNLOAD_SHA256
+                            if IS_MACOS
+                            else QUSB2SNES_DOWNLOAD_SHA256
+                        ),
                         maximum_bytes=140 * 1024 * 1024,
                         status_variable=status_variable,
                         description="QUsb2Snes",
@@ -29992,52 +31287,78 @@ class TrackerApp:
                         status_variable,
                         "Extracting QUsb2Snes...",
                     )
-                    extract_7z_archive(
-                        archive_path,
-                        tools_directory / "QUsb2Snes",
-                    )
+                    if IS_MACOS:
+                        executable = install_macos_dmg_application(
+                            archive_path,
+                            tools_directory / "QUsb2Snes",
+                            "QUsb2Snes.app",
+                        )
+                    else:
+                        extract_7z_archive(
+                            archive_path,
+                            tools_directory / "QUsb2Snes",
+                        )
                     archive_path.unlink(missing_ok=True)
-                    executable = self._find_optional_software_executable(
-                        "qusb2snes"
-                    )
+                    if executable is None:
+                        executable = self._find_optional_software_executable(
+                            "qusb2snes"
+                        )
 
                 elif software == "retroarch" and executable is None:
-                    installer_path = (
-                        download_directory / "RetroArch-Win64-setup.exe"
+                    installer_path = download_directory / (
+                        "RetroArch_Metal.dmg"
+                        if IS_MACOS
+                        else "RetroArch-Win64-setup.exe"
                     )
                     self._download_dependency_file(
-                        RETROARCH_DOWNLOAD_URL,
+                        (
+                            MACOS_RETROARCH_DOWNLOAD_URL
+                            if IS_MACOS
+                            else RETROARCH_DOWNLOAD_URL
+                        ),
                         installer_path,
                         maximum_bytes=350 * 1024 * 1024,
                         status_variable=status_variable,
                         description="RetroArch",
                     )
-                    self._set_optional_install_status(
-                        status_variable,
-                        "Installing RetroArch. Approve the Windows prompt if it appears...",
-                    )
-                    powershell_command = (
-                        "Start-Process -FilePath $args[0] "
-                        "-ArgumentList '/S' -Verb RunAs -Wait"
-                    )
-                    completed = subprocess.run(
-                        [
-                            "powershell.exe",
-                            "-NoProfile",
-                            "-Command",
-                            powershell_command,
-                            str(installer_path),
-                        ],
-                        timeout=900,
-                    )
-                    if completed.returncode != 0:
-                        raise RuntimeError(
-                            "The RetroArch installer did not complete."
+                    if IS_MACOS:
+                        self._set_optional_install_status(
+                            status_variable,
+                            "Installing the official RetroArch Mac app...",
                         )
+                        executable = install_macos_dmg_application(
+                            installer_path,
+                            tools_directory / "RetroArch",
+                            "RetroArch.app",
+                        )
+                    else:
+                        self._set_optional_install_status(
+                            status_variable,
+                            "Installing RetroArch. Approve the Windows prompt if it appears...",
+                        )
+                        powershell_command = (
+                            "Start-Process -FilePath $args[0] "
+                            "-ArgumentList '/S' -Verb RunAs -Wait"
+                        )
+                        completed = subprocess.run(
+                            [
+                                "powershell.exe",
+                                "-NoProfile",
+                                "-Command",
+                                powershell_command,
+                                str(installer_path),
+                            ],
+                            timeout=900,
+                        )
+                        if completed.returncode != 0:
+                            raise RuntimeError(
+                                "The RetroArch installer did not complete."
+                            )
                     installer_path.unlink(missing_ok=True)
-                    executable = self._find_optional_software_executable(
-                        "retroarch"
-                    )
+                    if executable is None:
+                        executable = self._find_optional_software_executable(
+                            "retroarch"
+                        )
 
                 if executable is None or not executable.is_file():
                     raise FileNotFoundError(
@@ -30546,6 +31867,7 @@ class TrackerApp:
         self,
         mode: str,
         persist: bool = True,
+        refresh_native_titlebar: bool = True,
     ) -> None:
         normalized = mode.casefold()
         if normalized not in {"light", "dark"}:
@@ -30559,17 +31881,18 @@ class TrackerApp:
         previous_appearance = str(previous_appearance).strip().casefold()
 
         self.appearance_var.set(normalized)
-        self._set_windows_titlebar_theme(
-            normalized == "dark"
-        )
-        self.root.after(
-            100,
-            lambda selected=(
+        if refresh_native_titlebar:
+            self._set_windows_titlebar_theme(
                 normalized == "dark"
-            ): self._set_windows_titlebar_theme(
-                selected
-            ),
-        )
+            )
+            self.root.after(
+                100,
+                lambda selected=(
+                    normalized == "dark"
+                ): self._set_windows_titlebar_theme(
+                    selected
+                ),
+            )
         self._apply_widget_appearance(
             self.root,
             dark=normalized == "dark",
@@ -32475,20 +33798,30 @@ class TrackerApp:
         def choose_sni() -> None:
             selected = filedialog.askopenfilename(
                 parent=dialog,
-                title=self._translate_ui_text("Select SNI.exe"),
-                filetypes=[(self._translate_ui_text("Executable"), "*.exe")],
+                title=self._translate_ui_text("Select SNI application"),
+                filetypes=[
+                    (
+                        self._translate_ui_text("Application"),
+                        "*.exe" if IS_WINDOWS else "*",
+                    )
+                ],
             )
             if selected:
-                local_sni.set(selected)
+                local_sni.set(str(selected_application_executable(selected)))
 
         def choose_qusb() -> None:
             selected = filedialog.askopenfilename(
                 parent=dialog,
-                title=self._translate_ui_text("Select QUsb2Snes.exe"),
-                filetypes=[(self._translate_ui_text("Executable"), "*.exe")],
+                title=self._translate_ui_text("Select QUsb2Snes application"),
+                filetypes=[
+                    (
+                        self._translate_ui_text("Application"),
+                        "*.exe" if IS_WINDOWS else "*",
+                    )
+                ],
             )
             if selected:
-                local_qusb.set(selected)
+                local_qusb.set(str(selected_application_executable(selected)))
 
         def choose_spreadsheet() -> None:
             selected = filedialog.askopenfilename(
@@ -32526,12 +33859,15 @@ class TrackerApp:
                 parent=dialog,
                 title=self._translate_ui_text(title),
                 filetypes=[
-                    (self._translate_ui_text("Executable"), "*.exe"),
+                    (
+                        self._translate_ui_text("Application"),
+                        "*.exe" if IS_WINDOWS else "*",
+                    ),
                     (self._translate_ui_text("All files"), "*.*"),
                 ],
             )
             if selected:
-                target.set(selected)
+                target.set(str(selected_application_executable(selected)))
 
         def choose_retroarch_core() -> None:
             selected = filedialog.askopenfilename(
@@ -32621,7 +33957,7 @@ class TrackerApp:
             "RetroArch",
             local_retroarch,
             lambda: choose_emulator(
-                "Select retroarch.exe",
+                "Select RetroArch application",
                 local_retroarch,
             ),
         )
@@ -33176,6 +34512,45 @@ class TrackerApp:
         self.root.wait_window(dialog)
 
     def _load_brand_assets(self) -> None:
+        scale_key = round(float(self.main_ui_scale), 2)
+        cache_attributes = (
+            "banner_source_image",
+            "banner_background_source",
+            "banner_repeat_background_source",
+            "banner_foreground_source",
+            "banner_title_source",
+            "app_icon_photo",
+            "app_icon_idle_image",
+            "app_icon_tracking_image",
+            "app_icon_idle_photo",
+            "app_icon_tracking_photo",
+            "fxpak_icon_photo",
+            "platform_icon_photos",
+            "spreadsheet_icon_photo",
+            "coin_block_photo",
+            "mario_timer_photo",
+            "piranha_pipe_photo",
+            "mario_death_photo",
+            "background_photo",
+            "footer_sprite_photos",
+            "mario_menu_photos",
+            "mario_card_photos",
+            "extra_banner_character_sources",
+            "user_banner_character_sources",
+            "banner_element_sources",
+        )
+        cached_assets = self.brand_asset_cache.get(scale_key)
+        if cached_assets is not None:
+            self.banner_photo = None
+            for attribute_name in cache_attributes:
+                setattr(
+                    self,
+                    attribute_name,
+                    cached_assets[attribute_name],
+                )
+            self._set_tracking_icon(self.tracking_icon_active)
+            return
+
         self.banner_photo = None
         self.banner_source_image = None
         self.banner_background_source = None
@@ -33955,6 +35330,22 @@ class TrackerApp:
             self._set_tracking_icon(
                 self.tracking_icon_active
             )
+            self.brand_asset_cache[scale_key] = {
+                attribute_name: getattr(self, attribute_name)
+                for attribute_name in cache_attributes
+            }
+            # A typical session uses only restored and maximized scales. Keep
+            # a few additional monitor-DPI variants without retaining every
+            # theoretical five-percent scale step forever.
+            while len(self.brand_asset_cache) > 4:
+                oldest_scale = next(iter(self.brand_asset_cache))
+                if oldest_scale == scale_key and len(self.brand_asset_cache) > 1:
+                    oldest_scale = next(
+                        key
+                        for key in self.brand_asset_cache
+                        if key != scale_key
+                    )
+                self.brand_asset_cache.pop(oldest_scale, None)
 
         except Exception:
             # Keep any assets that loaded successfully. One optional image
@@ -34014,6 +35405,23 @@ class TrackerApp:
         self,
         event=None,
     ) -> None:
+        if event is not None:
+            try:
+                requested_size = (
+                    max(1, int(event.width)),
+                    max(1, int(event.height)),
+                )
+            except (AttributeError, TypeError, ValueError):
+                requested_size = None
+            if (
+                requested_size is not None
+                and requested_size in {
+                    self.banner_render_size,
+                    self.banner_pending_render_size,
+                }
+            ):
+                return
+            self.banner_pending_render_size = requested_size
         if self.banner_resize_after_id is not None:
             try:
                 self.root.after_cancel(
@@ -34023,7 +35431,7 @@ class TrackerApp:
                 pass
 
         self.banner_resize_after_id = self.root.after(
-            60,
+            140,
             self._render_responsive_banner,
         )
 
@@ -35618,6 +37026,7 @@ class TrackerApp:
 
     def _render_responsive_banner(self) -> None:
         self.banner_resize_after_id = None
+        self.banner_pending_render_size = None
 
         if (
             self.banner_source_image is None
@@ -35642,6 +37051,9 @@ class TrackerApp:
         if requested_size == self.banner_render_size:
             return
 
+        if self._restore_cached_banner_photo(requested_size):
+            return
+
         # Keep the cast, scenery, and logo at their designed proportions in a
         # restored/narrow window. Rendering every position against the narrow
         # width squeezed the characters together around the title. Instead,
@@ -35664,6 +37076,10 @@ class TrackerApp:
                 image=self.banner_photo,
             )
             self.banner_render_size = requested_size
+            self._remember_banner_photo(
+                requested_size,
+                self.banner_photo,
+            )
             return
 
         separated_foreground = getattr(
@@ -35762,6 +37178,57 @@ class TrackerApp:
         self.banner_render_size = (
             requested_size
         )
+        self._remember_banner_photo(
+            requested_size,
+            self.banner_photo,
+        )
+
+    def _remember_banner_photo(
+        self,
+        size: tuple[int, int],
+        photo,
+    ) -> None:
+        """Keep a few completed banner sizes alive for instant reuse."""
+        normalized_size = (
+            max(1, int(size[0])),
+            max(1, int(size[1])),
+        )
+        self.banner_photo_cache.pop(normalized_size, None)
+        self.banner_photo_cache[normalized_size] = photo
+        self.banner_last_cache_key = normalized_size
+        while len(self.banner_photo_cache) > 6:
+            oldest_size = next(iter(self.banner_photo_cache))
+            self.banner_photo_cache.pop(oldest_size, None)
+
+    def _restore_cached_banner_photo(
+        self,
+        preferred_size: tuple[int, int],
+        *,
+        allow_fallback: bool = False,
+    ) -> bool:
+        """Attach a cached banner without doing any Pillow rendering."""
+        normalized_size = (
+            max(1, int(preferred_size[0])),
+            max(1, int(preferred_size[1])),
+        )
+        cache_key = normalized_size
+        photo = self.banner_photo_cache.get(cache_key)
+        exact_match = photo is not None
+        if photo is None and allow_fallback:
+            fallback_key = self.banner_last_cache_key
+            if fallback_key is not None:
+                cache_key = fallback_key
+                photo = self.banner_photo_cache.get(fallback_key)
+        if photo is None:
+            return False
+        try:
+            self.banner_label.configure(image=photo)
+        except (AttributeError, tk.TclError):
+            return False
+        self.banner_photo = photo
+        self.banner_render_size = normalized_size if exact_match else None
+        self.banner_last_cache_key = cache_key
+        return exact_match
 
     def _make_card(
         self,
@@ -36623,11 +38090,16 @@ class TrackerApp:
 
     def browse_qusb(self) -> None:
         selected = filedialog.askopenfilename(
-            title=self._translate_ui_text("Select QUsb2Snes.exe"),
-            filetypes=[(self._translate_ui_text("Executable"), "*.exe")],
+            title=self._translate_ui_text("Select QUsb2Snes application"),
+            filetypes=[
+                (
+                    self._translate_ui_text("Application"),
+                    "*.exe" if IS_WINDOWS else "*",
+                )
+            ],
         )
         if selected:
-            self.qusb_path_var.set(selected)
+            self.qusb_path_var.set(str(selected_application_executable(selected)))
 
             if self.save_settings():
                 self.status_var.set(
@@ -36863,6 +38335,14 @@ class TrackerApp:
     def _reload_database_catalog(self) -> None:
         self.spreadsheet_var.set("Reloading database…")
 
+        # Make catalog edits visible to every catalog-backed page immediately.
+        # The worker reload below still updates live ROM detection, but the UI
+        # must not wait for its next command cycle before showing a saved hack.
+        self.hack_catalog = self.stats_db.load_catalog()
+        self._downloader_catalog_metadata_cache = None
+        self._catalog_playable_filter_cache = None
+        self._refresh_database_status()
+
         if (
             self.worker
             and self.worker.thread
@@ -36871,15 +38351,20 @@ class TrackerApp:
             self.worker.reload_spreadsheet(
                 self.spreadsheet_path_var.get().strip()
             )
-        else:
-            self.hack_catalog = self.stats_db.load_catalog()
-            self._refresh_database_status()
 
         if (
             self.game_library_dialog is not None
             and self.game_library_dialog.winfo_exists()
         ):
             self._populate_game_library()
+
+        if (
+            self.downloader_dialog is not None
+            and self.downloader_dialog.winfo_exists()
+        ):
+            self._refresh_downloader_preview(
+                force_library_scan=True
+            )
 
 
     @staticmethod
@@ -37431,12 +38916,20 @@ class TrackerApp:
         self,
         tree: ttk.Treeview,
         delay_ms: int = 20,
+        *,
+        restart: bool = False,
     ) -> None:
         try:
             if not tree.winfo_exists():
                 return
-            if getattr(tree, "_smw_cell_grid_after_id", None) is not None:
-                return
+            pending = getattr(tree, "_smw_cell_grid_after_id", None)
+            if pending is not None:
+                if not restart:
+                    return
+                try:
+                    tree.after_cancel(pending)
+                except tk.TclError:
+                    pass
             tree._smw_cell_grid_after_id = tree.after(
                 max(0, int(delay_ms)),
                 lambda: self._render_treeview_cell_grid(tree),
@@ -37453,6 +38946,17 @@ class TrackerApp:
         tree._smw_cell_grid_after_id = None
         tree._smw_cell_grid_vertical_lines = []
         tree._smw_cell_grid_horizontal_lines = []
+
+        # My Tracker paints complete bordered cells into its synchronized
+        # data canvas. A second set of floating Treeview divider widgets can
+        # drift above that canvas during wheel scrolling, creating doubled or
+        # broken-looking lines. Its own cell borders are the shared grid.
+        try:
+            if str(tree.cget("style")) == "MyTracker.Treeview":
+                tree._smw_cell_grid_uses_tracker_canvas = True
+                return
+        except tk.TclError:
+            pass
 
         for sequence in (
             "<Configure>",
@@ -37471,13 +38975,37 @@ class TrackerApp:
                 add="+",
             )
 
-        def preserve_scroll_command(command_name: str, first, last) -> None:
+        def hide_lines(attribute_name: str) -> None:
+            for line in getattr(tree, attribute_name, []):
+                try:
+                    line.place_forget()
+                except tk.TclError:
+                    pass
+
+        def preserve_scroll_command(
+            command_name: str,
+            first,
+            last,
+            *,
+            vertical_scroll: bool,
+        ) -> None:
             if command_name:
                 try:
                     tree.tk.call(command_name, first, last)
                 except tk.TclError:
                     pass
-            self._schedule_treeview_cell_grid(tree)
+            hide_lines(
+                "_smw_cell_grid_horizontal_lines"
+                if vertical_scroll
+                else "_smw_cell_grid_vertical_lines"
+            )
+            # Redraw once the native Treeview has settled. Restarting this
+            # short timer avoids showing stale dividers between wheel ticks.
+            self._schedule_treeview_cell_grid(
+                tree,
+                34,
+                restart=True,
+            )
 
         try:
             original_y_scroll = str(tree.cget("yscrollcommand") or "").strip()
@@ -37487,11 +39015,13 @@ class TrackerApp:
                     original_y_scroll,
                     first,
                     last,
+                    vertical_scroll=True,
                 ),
                 xscrollcommand=lambda first, last: preserve_scroll_command(
                     original_x_scroll,
                     first,
                     last,
+                    vertical_scroll=False,
                 ),
             )
         except tk.TclError:
@@ -37532,7 +39062,25 @@ class TrackerApp:
 
         visible_iids: list[str] = []
         previous_iid = ""
-        sample_step = max(3, self._ui_px(4))
+        try:
+            tree_style = str(tree.cget("style") or "Treeview")
+            configured_row_height = int(
+                tree.tk.call(
+                    "ttk::style",
+                    "lookup",
+                    tree_style,
+                    "-rowheight",
+                )
+                or 0
+            )
+        except (tk.TclError, TypeError, ValueError):
+            configured_row_height = 0
+        # Half a row is enough to find every visible item and is far cheaper
+        # than asking Tcl to identify a row every four pixels.
+        sample_step = max(
+            8,
+            (configured_row_height or self._ui_px(24)) // 2,
+        )
         for y_position in range(0, tree_height, sample_step):
             try:
                 iid = str(tree.identify_row(y_position) or "")
@@ -37545,7 +39093,7 @@ class TrackerApp:
         row_edges: set[int] = set()
         for iid in visible_iids:
             try:
-                row_box = tree.bbox(iid, "#0")
+                row_box = tree.bbox(iid)
             except tk.TclError:
                 continue
             if row_box:
@@ -40130,6 +41678,13 @@ class TrackerApp:
             fill="both",
             expand=True,
         )
+        tracker_paint_cover = tk.Frame(
+            tree,
+            bg=palette["tree"],
+            bd=0,
+            highlightthickness=0,
+            takefocus=0,
+        )
         tracker_right_edge_border = tk.Frame(
             tree,
             bg=self._tracker_grid_border_color(),
@@ -40201,6 +41756,7 @@ class TrackerApp:
             "horizontal_scrollbar"
         ] = horizontal_scrollbar
         self.tracker_list_widgets["cell_overlays"] = {}
+        self.tracker_list_widgets["paint_cover"] = tracker_paint_cover
         self.tracker_list_records = {}
 
         legacy_note_frame = tk.Frame(
@@ -40310,6 +41866,17 @@ class TrackerApp:
             command=self._launch_selected_tracker_game,
             bg=THEME["purple"],
             active_bg="#6037AA",
+            width=18,
+            pad_y=5,
+            font_size=tracker_action_font_size,
+            fixed_pixel_width=tracker_action_button_width,
+        ).pack(side="left", padx=(8, 0))
+        self._make_action_button(
+            button_bar,
+            text="Add to Tracker",
+            command=self._add_tracker_record,
+            bg=THEME["green"],
+            active_bg=THEME["green_dark"],
             width=18,
             pad_y=5,
             font_size=tracker_action_font_size,
@@ -40559,8 +42126,11 @@ class TrackerApp:
         tree = self.tracker_list_widgets.get("tree")
 
         if tree is None:
+            self._hide_tracker_paint_cover()
             return
 
+        self._show_tracker_paint_cover()
+        self.tracker_overlay_retry_count = 0
         self._clear_tracker_cell_overlays()
         tree.delete(*tree.get_children(""))
         self.tracker_list_records = {}
@@ -40760,6 +42330,46 @@ class TrackerApp:
         )
         self._reapply_treeview_sorting(tree)
         self._schedule_tracker_cell_overlays()
+
+    def _show_tracker_paint_cover(self) -> None:
+        """Keep raw Treeview row colors hidden until its cell canvas is ready."""
+        cover = self.tracker_list_widgets.get("paint_cover")
+        tree = self.tracker_list_widgets.get("tree")
+        if cover is None or tree is None:
+            return
+        if self.tracker_paint_cover_after_id is not None:
+            try:
+                self.root.after_cancel(self.tracker_paint_cover_after_id)
+            except tk.TclError:
+                pass
+            self.tracker_paint_cover_after_id = None
+        try:
+            cover.configure(bg=self._library_palette()["tree"])
+            cover.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+            cover.lift()
+            # Never leave the table covered if a destroyed window or unusual
+            # theme callback interrupts its normal overlay render.
+            self.tracker_paint_cover_after_id = self.root.after(
+                1500,
+                self._hide_tracker_paint_cover,
+            )
+        except tk.TclError:
+            self.tracker_paint_cover_after_id = None
+
+    def _hide_tracker_paint_cover(self) -> None:
+        pending = self.tracker_paint_cover_after_id
+        self.tracker_paint_cover_after_id = None
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except tk.TclError:
+                pass
+        cover = self.tracker_list_widgets.get("paint_cover")
+        if cover is not None:
+            try:
+                cover.place_forget()
+            except tk.TclError:
+                pass
 
     def _clear_tracker_cell_overlays(self) -> None:
         overlays = self.tracker_list_widgets.get(
@@ -42206,12 +43816,33 @@ class TrackerApp:
         self,
         event=None,
     ) -> None:
+        event_type = getattr(event, "type", None)
+        configure_event = (
+            getattr(event_type, "name", "") == "Configure"
+            or str(event_type) in {
+                "22",
+                "Configure",
+                "EventType.Configure",
+            }
+        )
         if self.tracker_overlay_after_id is not None:
-            return
+            if not configure_event:
+                return
+            try:
+                self.root.after_cancel(
+                    self.tracker_overlay_after_id
+                )
+            except tk.TclError:
+                pass
+            self.tracker_overlay_after_id = None
 
         self.tracker_overlay_after_id = (
             self.root.after(
-                16,
+                # Repainting the full colored table for every intermediate
+                # resize event creates hundreds of gradients and text items.
+                # Debounce Configure events, but retain the fast path for
+                # scrolling, selection, and data updates.
+                110 if configure_event else 16,
                 self._render_tracker_cell_overlays,
             )
         )
@@ -42239,12 +43870,15 @@ class TrackerApp:
         )
 
         if tree is None:
+            self._hide_tracker_paint_cover()
             return
 
         try:
             if not tree.winfo_exists():
+                self._hide_tracker_paint_cover()
                 return
         except tk.TclError:
+            self._hide_tracker_paint_cover()
             return
 
         palette = self._library_palette()
@@ -42305,6 +43939,19 @@ class TrackerApp:
                     canvas.place_forget()
                 except tk.TclError:
                     pass
+            if self.tracker_list_records:
+                retry_count = int(self.tracker_overlay_retry_count) + 1
+                self.tracker_overlay_retry_count = retry_count
+                if retry_count <= 8:
+                    try:
+                        self.tracker_overlay_after_id = self.root.after(
+                            24 * retry_count,
+                            self._render_tracker_cell_overlays,
+                        )
+                        return
+                    except tk.TclError:
+                        self.tracker_overlay_after_id = None
+            self._hide_tracker_paint_cover()
             return
 
         ordered_iids = [
@@ -42313,9 +43960,11 @@ class TrackerApp:
             if iid in self.tracker_list_records
         ]
         if not ordered_iids:
+            self._hide_tracker_paint_cover()
             return
 
         reference_iid = next(iter(visible_row_boxes))
+        self.tracker_overlay_retry_count = 0
         reference_row_box = visible_row_boxes[reference_iid]
         overlay_origin_y = min(
             box[1]
@@ -42402,6 +44051,7 @@ class TrackerApp:
             width=overlay_width,
             height=overlay_height,
             bg=palette["tree"],
+            yscrollincrement=row_height,
             scrollregion=(
                 0,
                 0,
@@ -42813,6 +44463,7 @@ class TrackerApp:
                 )
 
         self._sync_tracker_overlay_scroll()
+        self._hide_tracker_paint_cover()
 
         right_edge_border = self.tracker_list_widgets.get(
             "right_edge_border"
@@ -43308,6 +44959,574 @@ class TrackerApp:
             selection[0]
         )
 
+    def _add_tracker_record(self) -> None:
+        """Open the blue manual-entry form and add a real My Tracker row."""
+        owner = self.tracker_list_dialog or self.root
+        palette = self._library_palette()
+        dialog = tk.Toplevel(owner)
+        dialog.title(
+            self._translate_ui_text("Add Hack to Tracker")
+        )
+        self._size_dialog_for_ui(
+            dialog,
+            1080,
+            760,
+            900,
+            650,
+        )
+        dialog.transient(owner)
+        dialog.resizable(True, True)
+        dialog.grab_set()
+        dialog.configure(bg=palette["window"])
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["blue"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(11),
+        )
+        title_bar.pack(fill="x")
+        self._add_dialog_window_controls(
+            title_bar,
+            dialog,
+            THEME["blue"],
+        )
+        OutlinedLabel(
+            title_bar,
+            text=self._translate_ui_text(
+                "Add Hack to Tracker"
+            ).upper(),
+            font=("Segoe UI", 15, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+        ).pack(side="left", anchor="w")
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=self._ui_px(20),
+            pady=self._ui_px(18),
+        )
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(12),
+            pady=self._ui_px(12),
+        )
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        details_panel = tk.Frame(
+            body,
+            bg=palette["panel_alt"],
+            highlightbackground=palette["border"],
+            highlightcolor=palette["border"],
+            highlightthickness=1,
+            padx=self._ui_px(16),
+            pady=self._ui_px(14),
+        )
+        details_panel.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, self._ui_px(7)),
+        )
+        tracker_panel = tk.Frame(
+            body,
+            bg=palette["panel_alt"],
+            highlightbackground=palette["border"],
+            highlightcolor=palette["border"],
+            highlightthickness=1,
+            padx=self._ui_px(16),
+            pady=self._ui_px(14),
+        )
+        tracker_panel.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+            padx=(self._ui_px(7), 0),
+        )
+        for panel in (details_panel, tracker_panel):
+            panel.columnconfigure(1, weight=1)
+
+        OutlinedLabel(
+            details_panel,
+            text=self._translate_ui_text("Hack Details").upper(),
+            font=("Segoe UI", 12, "bold"),
+            fg=THEME["blue"],
+            bg=palette["panel_alt"],
+        ).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(0, self._ui_px(10)),
+        )
+        OutlinedLabel(
+            tracker_panel,
+            text=self._translate_ui_text("Tracker Details").upper(),
+            font=("Segoe UI", 12, "bold"),
+            fg=THEME["blue"],
+            bg=palette["panel_alt"],
+        ).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(0, self._ui_px(10)),
+        )
+
+        values = {
+            "title": tk.StringVar(),
+            "author": tk.StringVar(),
+            "total_exits": tk.StringVar(value="0"),
+            "completed_exits": tk.StringVar(value="0"),
+            "difficulty": tk.StringVar(value="Unknown"),
+            "hack_type": tk.StringVar(value="Unknown"),
+            "smwc_id": tk.StringVar(),
+            "total_deaths": tk.StringVar(),
+            "personal_rating": tk.StringVar(),
+            "playtime": tk.StringVar(value="00:00"),
+            "date_started": tk.StringVar(),
+            "date_completed": tk.StringVar(),
+            "smwc_rating": tk.StringVar(),
+        }
+        canonical_statuses = (
+            "Planned",
+            "In Progress",
+            "Completed",
+        )
+        localized_statuses = {
+            self._translate_ui_text(status): status
+            for status in canonical_statuses
+        }
+        status_var = tk.StringVar(
+            value=self._translate_ui_text("Planned")
+        )
+
+        def add_label(
+            panel: tk.Frame,
+            row: int,
+            text: str,
+        ) -> None:
+            OutlinedLabel(
+                panel,
+                text=self._translate_ui_text(text),
+                font=("Segoe UI", 9, "bold"),
+                fg=palette["text"],
+                bg=palette["panel_alt"],
+                anchor="w",
+            ).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                padx=(0, self._ui_px(10)),
+                pady=self._ui_px(5),
+            )
+
+        def add_entry(
+            panel: tk.Frame,
+            row: int,
+            label: str,
+            key: str,
+        ) -> tk.Entry:
+            add_label(panel, row, label)
+            entry = tk.Entry(
+                panel,
+                textvariable=values[key],
+                font=("Segoe UI", 10),
+                fg=palette["text"],
+                bg=palette["entry"],
+                insertbackground=palette["text"],
+                relief="flat",
+                highlightbackground=palette["border"],
+                highlightcolor=THEME["blue"],
+                highlightthickness=1,
+            )
+            entry.grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                pady=self._ui_px(5),
+                ipady=self._ui_px(3),
+            )
+            self._bind_editable_clipboard_menu(entry)
+            return entry
+
+        title_entry = add_entry(
+            details_panel,
+            1,
+            "ROM Hack Title:",
+            "title",
+        )
+        add_entry(
+            details_panel,
+            2,
+            "Created By:",
+            "author",
+        )
+        add_entry(
+            details_panel,
+            3,
+            "Total exits:",
+            "total_exits",
+        )
+        add_entry(
+            details_panel,
+            4,
+            "Completed exits:",
+            "completed_exits",
+        )
+        add_label(details_panel, 5, "Difficulty:")
+        difficulty_box = ttk.Combobox(
+            details_panel,
+            textvariable=values["difficulty"],
+            values=(
+                *self._difficulty_values(),
+                "Unknown",
+            ),
+            state="normal",
+            style="MyTracker.TCombobox",
+            font=("Segoe UI", 10),
+        )
+        difficulty_box.grid(
+            row=5,
+            column=1,
+            sticky="ew",
+            pady=self._ui_px(5),
+            ipady=self._ui_px(3),
+        )
+        self._bind_editable_clipboard_menu(difficulty_box)
+        add_entry(
+            details_panel,
+            6,
+            "Type:",
+            "hack_type",
+        )
+        add_entry(
+            details_panel,
+            7,
+            "SMWC ID (optional):",
+            "smwc_id",
+        )
+
+        add_label(tracker_panel, 1, "Status:")
+        status_box = ttk.Combobox(
+            tracker_panel,
+            textvariable=status_var,
+            values=tuple(localized_statuses),
+            state="readonly",
+            style="MyTracker.TCombobox",
+            font=("Segoe UI", 10),
+        )
+        status_box.grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            pady=self._ui_px(5),
+            ipady=self._ui_px(3),
+        )
+        add_entry(
+            tracker_panel,
+            2,
+            "Total deaths:",
+            "total_deaths",
+        )
+        add_entry(
+            tracker_panel,
+            3,
+            "My rating (1–5):",
+            "personal_rating",
+        )
+        add_entry(
+            tracker_panel,
+            4,
+            "Playtime:",
+            "playtime",
+        )
+        add_entry(
+            tracker_panel,
+            5,
+            "Date started:",
+            "date_started",
+        )
+        add_entry(
+            tracker_panel,
+            6,
+            "Date completed:",
+            "date_completed",
+        )
+        add_entry(
+            tracker_panel,
+            7,
+            "SMWCentral Rating:",
+            "smwc_rating",
+        )
+
+        help_text = tk.Label(
+            body,
+            text=self._translate_ui_text(
+                "Use YYYY-MM-DD for dates and H:MM:SS for playtime. "
+                "Ratings may be blank or from 1 through 5."
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            justify="left",
+            anchor="w",
+            wraplength=self._ui_px(980),
+        )
+        help_text.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(self._ui_px(10), self._ui_px(6)),
+        )
+
+        notes_frame = tk.Frame(
+            body,
+            bg=palette["panel"],
+        )
+        notes_frame.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="nsew",
+            pady=(0, self._ui_px(8)),
+        )
+        notes_frame.columnconfigure(0, weight=1)
+        OutlinedLabel(
+            notes_frame,
+            text=self._translate_ui_text("Notes:"),
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+        ).grid(row=0, column=0, sticky="w")
+        notes_box = tk.Text(
+            notes_frame,
+            height=5,
+            wrap="word",
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["entry"],
+            insertbackground=palette["text"],
+            relief="flat",
+            highlightbackground=palette["border"],
+            highlightcolor=THEME["blue"],
+            highlightthickness=1,
+        )
+        notes_box.grid(
+            row=1,
+            column=0,
+            sticky="nsew",
+            pady=(self._ui_px(4), 0),
+        )
+        self._bind_editable_clipboard_menu(notes_box)
+
+        button_bar = tk.Frame(
+            body,
+            bg=palette["panel"],
+        )
+        button_bar.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="e",
+        )
+
+        def save_record() -> None:
+            title = values["title"].get().strip()
+            if not title:
+                messagebox.showerror(
+                    "Invalid Tracker Data",
+                    "ROM Hack Title is required.",
+                    parent=dialog,
+                )
+                title_entry.focus_set()
+                return
+
+            try:
+                total_exits = int(
+                    values["total_exits"].get().strip()
+                    or "0"
+                )
+                completed_exits = int(
+                    values["completed_exits"].get().strip()
+                    or "0"
+                )
+                total_deaths_text = values[
+                    "total_deaths"
+                ].get().strip()
+                total_deaths = (
+                    int(total_deaths_text)
+                    if total_deaths_text
+                    else None
+                )
+                if (
+                    total_exits < 0
+                    or completed_exits < 0
+                    or (
+                        total_deaths is not None
+                        and total_deaths < 0
+                    )
+                ):
+                    raise ValueError(
+                        "Exits and deaths must be whole numbers of 0 or greater."
+                    )
+
+                personal_rating_text = values[
+                    "personal_rating"
+                ].get().strip()
+                personal_rating = (
+                    float(personal_rating_text)
+                    if personal_rating_text
+                    else None
+                )
+                smwc_rating_text = values[
+                    "smwc_rating"
+                ].get().strip()
+                smwc_rating = (
+                    float(smwc_rating_text)
+                    if smwc_rating_text
+                    else None
+                )
+                for rating in (
+                    personal_rating,
+                    smwc_rating,
+                ):
+                    if rating is not None and not 1.0 <= rating <= 5.0:
+                        raise ValueError
+
+                playtime_text = values["playtime"].get().strip()
+                playtime_seconds = (
+                    self.parse_timer_override(playtime_text)
+                    if playtime_text
+                    else 0
+                )
+                started = values["date_started"].get().strip()
+                completed_date = values[
+                    "date_completed"
+                ].get().strip()
+                for date_text in (started, completed_date):
+                    if date_text:
+                        date.fromisoformat(date_text)
+
+                status = localized_statuses.get(
+                    status_var.get(),
+                    status_var.get(),
+                )
+                result = self.stats_db.add_to_tracker(
+                    {
+                        "title": title,
+                        "author": (
+                            values["author"].get().strip()
+                            or "Unknown"
+                        ),
+                        "total_exits": total_exits,
+                        "difficulty": (
+                            values["difficulty"].get().strip()
+                            or "Unknown"
+                        ),
+                        "hack_type": (
+                            values["hack_type"].get().strip()
+                            or "Unknown"
+                        ),
+                        "smwc_id": values["smwc_id"].get().strip(),
+                        "rating": smwc_rating,
+                    },
+                    completed_exits=completed_exits,
+                    playtime_seconds=int(playtime_seconds),
+                )
+                self.stats_db.save_tracked(
+                    int(result["id"]),
+                    completed_exits,
+                    status,
+                    personal_rating,
+                    int(playtime_seconds),
+                    started,
+                    completed_date,
+                    notes_box.get("1.0", "end-1c"),
+                    total_deaths=total_deaths,
+                )
+            except (TypeError, ValueError):
+                messagebox.showerror(
+                    "Invalid Tracker Data",
+                    "Check exits, deaths, dates, ratings, and playtime.",
+                    parent=dialog,
+                )
+                return
+            except (OSError, RuntimeError, sqlite3.Error) as error:
+                messagebox.showerror(
+                    "Tracker Database Update Failed",
+                    str(error),
+                    parent=dialog,
+                )
+                return
+
+            dialog.destroy()
+            self._reload_database_catalog()
+            for filter_key, default_value in (
+                ("search_var", ""),
+                ("status_filter", "Any"),
+                ("difficulty_filter", "Any"),
+                ("type_filter", "Any"),
+                ("letter_filter", "All"),
+            ):
+                filter_variable = self.tracker_list_widgets.get(filter_key)
+                if filter_variable is not None:
+                    filter_variable.set(default_value)
+            self._refresh_my_tracker()
+            self._refresh_database_status()
+            self._queue_google_sheets_sync()
+
+            tracker_tree = self.tracker_list_widgets.get("tree")
+            tracker_iid = "tracked::" + str(result["id"])
+            if tracker_tree is not None and tracker_tree.exists(tracker_iid):
+                tracker_tree.selection_set(tracker_iid)
+                tracker_tree.focus(tracker_iid)
+                tracker_tree.see(tracker_iid)
+            self.status_var.set(
+                f'Added "{title}" to My Tracker.'
+            )
+            self._show_localized_info(
+                "Added to My Tracker",
+                f'Added "{title}" to My Tracker.',
+                parent=owner,
+            )
+
+        self._make_action_button(
+            button_bar,
+            text="Cancel",
+            command=dialog.destroy,
+            bg=THEME["muted"],
+            active_bg="#384D65",
+            width=11,
+            pad_y=5,
+        ).pack(side="right")
+        self._make_action_button(
+            button_bar,
+            text="Save Changes",
+            command=save_record,
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=15,
+            pad_y=5,
+        ).pack(side="right", padx=(0, self._ui_px(8)))
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        dialog.after_idle(
+            lambda: self._localize_widget_tree(dialog)
+        )
+        title_entry.focus_set()
+        owner.wait_window(dialog)
+
     def _edit_tracker_record(self) -> None:
         record = self._selected_tracker_record()
 
@@ -43675,13 +45894,20 @@ class TrackerApp:
         if record is None:
             return
 
-        confirmed = messagebox.askyesno(
-            "Remove from My Tracker",
-            (
-                f'Remove "{record["title"]}" from My Tracker?\n\n'
+        hack_title = str(record["title"])
+        confirmation_message = (
+            self._translate_ui_text(
+                'Remove "{title}" from My Tracker?'
+            ).format(title=hack_title)
+            + "\n\n"
+            + self._translate_ui_text(
                 "This removes personal progress, rating, playtime, and notes. "
                 "The game stays in the catalog and game library."
-            ),
+            )
+        )
+        confirmed = self._ask_localized_yes_no(
+            "Remove from My Tracker",
+            confirmation_message,
             parent=self.tracker_list_dialog or self.root,
         )
 
@@ -44161,6 +46387,15 @@ class TrackerApp:
         new_record: bool = False,
     ) -> None:
         record: dict[str, Any]
+        return_to_downloader = bool(
+            new_record
+            and self.downloader_dialog is not None
+            and self.downloader_dialog.winfo_exists()
+            and not self.downloader_widgets.get(
+                "catalog_view_only",
+                False,
+            )
+        )
 
         if new_record:
             record = {}
@@ -44293,7 +46528,7 @@ class TrackerApp:
             ("Created By:", "author"),
             ("Exits:", "exits"),
             ("Difficulty:", "difficulty"),
-            ("Type:", "type"),
+            ("Hack Type:", "type"),
             ("Released:", "added"),
             ("SMWC ID (optional):", "smwc_id"),
             ("SMWCentral Rating:", "rating"),
@@ -44623,6 +46858,22 @@ class TrackerApp:
                 )
                 return
 
+            download_url = values["download_url"].get().strip()
+            if (
+                return_to_downloader
+                and urlparse(download_url).scheme.casefold()
+                not in {"http", "https"}
+            ):
+                messagebox.showerror(
+                    "Unmoderated Hacks",
+                    (
+                        "A direct download URL is required when adding a hack "
+                        "from Download & Patch Missing Hacks."
+                    ),
+                    parent=dialog,
+                )
+                return
+
             try:
                 exits = int(values["exits"].get().strip() or "0")
 
@@ -44659,7 +46910,7 @@ class TrackerApp:
                 )
                 return
 
-            self.stats_db.save_custom(
+            saved_catalog_key = self.stats_db.save_custom(
                 {
                     "catalog_key": record.get(
                         "catalog_key",
@@ -44686,10 +46937,54 @@ class TrackerApp:
                 }
             )
             dialog.destroy()
-            self._refresh_custom_hacks()
+            if (
+                self.custom_hacks_dialog is not None
+                and self.custom_hacks_dialog.winfo_exists()
+            ):
+                self._refresh_custom_hacks()
             self._reload_database_catalog()
             self._refresh_database_status()
             self._queue_google_sheets_sync()
+
+            if return_to_downloader:
+                self.open_hack_downloader()
+                if self.downloader_widgets:
+                    self._reset_downloader_filters()
+                    self._refresh_downloader_preview(
+                        force_library_scan=True
+                    )
+                    downloader_tree = self.downloader_widgets.get(
+                        "tree"
+                    )
+                    games_by_iid = self.downloader_widgets.get(
+                        "games_by_iid",
+                        {},
+                    )
+                    saved_iid = next(
+                        (
+                            iid
+                            for iid, game in games_by_iid.items()
+                            if str(game.get("catalog_key", ""))
+                            == str(saved_catalog_key)
+                        ),
+                        "",
+                    )
+                    if downloader_tree is not None and saved_iid:
+                        downloader_tree.selection_set(saved_iid)
+                        downloader_tree.focus(saved_iid)
+                        downloader_tree.see(saved_iid)
+                        self._schedule_downloader_difficulty_overlays()
+                    status_var = self.downloader_widgets.get(
+                        "status_var"
+                    )
+                    if status_var is not None:
+                        status_var.set(
+                            self._translate_ui_text(
+                                "Added \"{title}\" to Download & Patch "
+                                "Missing Hacks. It is selected and ready for "
+                                "Download & Patch All Matching Hacks."
+                            ).format(title=title)
+                        )
 
         self._make_action_button(
             button_bar,
@@ -45033,12 +47328,7 @@ class TrackerApp:
             exist_ok=True,
         )
 
-        if os.name == "nt":
-            os.startfile(str(APP_DATA_DIR))
-        else:
-            subprocess.Popen(
-                ["xdg-open", str(APP_DATA_DIR)]
-            )
+        open_local_path(APP_DATA_DIR)
 
 
     def _google_sheets_is_configured(self) -> bool:
@@ -49378,6 +51668,10 @@ class TrackerApp:
                 guided_setup_complete()
             return
 
+        contains_unmoderated = any(
+            bool(game.get("is_custom", False))
+            for game in games
+        )
         confirmation_parts = [
             self._translate_ui_text(
                 (
@@ -49387,7 +51681,11 @@ class TrackerApp:
                         bool(game.get("download_fxpak_alias_repair", False))
                         for game in games
                     )
-                    else "Download and patch {count} missing moderated hack(s)?"
+                    else (
+                        "Download and patch {count} matching hack(s)?"
+                        if contains_unmoderated
+                        else "Download and patch {count} missing moderated hack(s)?"
+                    )
                 )
             ).format(count=f"{len(games):,}"),
             f"{self._translate_ui_text('Base ROM:')}\n{base_rom_path}",
@@ -55006,49 +57304,55 @@ class TrackerApp:
         command.append(str(rom_path))
 
         if platform == "RetroArch":
-            loaded_in_place, saved_previous_state = (
-                self._load_retroarch_content_in_place(
-                    core_path,
-                    rom_path,
+            saved_previous_state = False
+            if IS_WINDOWS:
+                loaded_in_place, saved_previous_state = (
+                    self._load_retroarch_content_in_place(
+                        core_path,
+                        rom_path,
+                    )
                 )
-            )
-            if loaded_in_place:
-                return {
-                    "path": str(rom_path),
-                    "device": platform,
-                    "method": (
-                        match_method
-                        + "; saved previous state and loaded in the "
-                        "existing RetroArch window"
-                        if saved_previous_state
-                        else match_method
-                        + "; loaded in the existing RetroArch window"
-                    ),
-                }
-            if self._retroarch_status(timeout=0.35) is not None:
-                raise RuntimeError(
-                    "RetroArch is still running, but it did not accept the "
-                    "new ROM in its existing window. Keep RetroArch's main "
-                    "game window open and try again. The tracker left the "
-                    "current game running instead of opening a duplicate "
-                    "RetroArch window."
-                )
+                if loaded_in_place:
+                    return {
+                        "path": str(rom_path),
+                        "device": platform,
+                        "method": (
+                            match_method
+                            + "; saved previous state and loaded in the "
+                            "existing RetroArch window"
+                            if saved_previous_state
+                            else match_method
+                            + "; loaded in the existing RetroArch window"
+                        ),
+                    }
+                if self._retroarch_status(timeout=0.35) is not None:
+                    raise RuntimeError(
+                        "RetroArch is still running, but it did not accept the "
+                        "new ROM in its existing window. Keep RetroArch's main "
+                        "game window open and try again. The tracker left the "
+                        "current game running instead of opening a duplicate "
+                        "RetroArch window."
+                    )
             switch_method = self._prepare_retroarch_game_switch(
                 already_saved=saved_previous_state,
             )
 
-        creation_flags = 0
-        if os.name == "nt":
+        if IS_WINDOWS:
             creation_flags = getattr(
                 subprocess,
                 "CREATE_NEW_PROCESS_GROUP",
                 0,
             )
-        subprocess.Popen(
-            command,
-            cwd=str(executable.parent),
-            creationflags=creation_flags,
-        )
+            subprocess.Popen(
+                command,
+                cwd=str(executable.parent),
+                creationflags=creation_flags,
+            )
+        else:
+            launch_local_application(
+                executable,
+                command[1:],
+            )
         return {
             "path": str(rom_path),
             "device": platform,
@@ -56407,15 +58711,9 @@ class TrackerApp:
         if not qusb_path.is_file():
             raise FileNotFoundError(
                 "QUsb2Snes is not running and the configured "
-                "QUsb2Snes.exe path is invalid."
+                "QUsb2Snes application path is invalid."
             )
-
-        if os.name != "nt":
-            raise RuntimeError(
-                "Automatic QUsb2Snes startup is available on Windows."
-            )
-
-        os.startfile(str(qusb_path))
+        launch_local_application(qusb_path)
         deadline = time.time() + 12
         while time.time() < deadline:
             try:
@@ -56856,17 +59154,7 @@ class TrackerApp:
             return
 
         try:
-            if os.name == "nt":
-                os.startfile(
-                    str(spreadsheet_path)
-                )
-            else:
-                subprocess.Popen(
-                    [
-                        "xdg-open",
-                        str(spreadsheet_path),
-                    ]
-                )
+            open_local_path(spreadsheet_path)
 
             self.status_var.set(
                 "Opening spreadsheet…"
@@ -56970,10 +59258,7 @@ class TrackerApp:
 
     def _open_local_folder(self, folder: Path) -> None:
         folder.mkdir(parents=True, exist_ok=True)
-        if os.name == "nt":
-            os.startfile(str(folder))
-        else:
-            subprocess.Popen(["xdg-open", str(folder)])
+        open_local_path(folder)
 
     def _redact_diagnostic_text(self, value: object) -> str:
         text = str(value or "")
@@ -57341,49 +59626,69 @@ class TrackerApp:
             )
         results.append((retro_state, "RetroArch", retro_detail))
 
-        try:
-            _, game_livesplit_port = livesplit_endpoint(self.config, "game")
-            _, level_livesplit_port = livesplit_endpoint(self.config, "level")
-            game_livesplit_ready = livesplit_server_is_running(
-                self.config,
-                "game",
+        if IS_MACOS:
+            livesplit_state = "Ready"
+            livesplit_title = self._setup_guide_text(
+                "mac_timer_health_title"
             )
-            level_livesplit_ready = livesplit_server_is_running(
-                self.config,
-                "level",
+            livesplit_detail = self._setup_guide_text(
+                "mac_timer_health_detail"
             )
-            if game_livesplit_ready and level_livesplit_ready:
-                livesplit_state = "Ready"
-                livesplit_detail = (
-                    "LiveSplit is running on the game and level timer ports "
-                    f"({game_livesplit_port} and {level_livesplit_port})."
+        else:
+            livesplit_title = "LiveSplit timer servers"
+            try:
+                _, game_livesplit_port = livesplit_endpoint(
+                    self.config,
+                    "game",
                 )
-            elif game_livesplit_ready or level_livesplit_ready:
+                _, level_livesplit_port = livesplit_endpoint(
+                    self.config,
+                    "level",
+                )
+                game_livesplit_ready = livesplit_server_is_running(
+                    self.config,
+                    "game",
+                )
+                level_livesplit_ready = livesplit_server_is_running(
+                    self.config,
+                    "level",
+                )
+                if game_livesplit_ready and level_livesplit_ready:
+                    livesplit_state = "Ready"
+                    livesplit_detail = (
+                        "LiveSplit is running on the game and level timer ports "
+                        f"({game_livesplit_port} and {level_livesplit_port})."
+                    )
+                elif game_livesplit_ready or level_livesplit_ready:
+                    livesplit_state = "Needs Attention"
+                    running_name = (
+                        "game" if game_livesplit_ready else "level"
+                    )
+                    missing_name = (
+                        "level" if game_livesplit_ready else "game"
+                    )
+                    livesplit_detail = (
+                        f"The {running_name} timer server is running, but the "
+                        f"{missing_name} timer server is not. Commands for the "
+                        "missing server are disabled."
+                    )
+                else:
+                    livesplit_state = "Optional"
+                    livesplit_detail = (
+                        "LiveSplit is not running (it is optional) on the configured timer ports "
+                        f"({game_livesplit_port} and {level_livesplit_port}). "
+                        "LiveSplit commands are disabled; built-in timers and "
+                        "OBS text files continue to work normally."
+                    )
+            except (TypeError, ValueError):
                 livesplit_state = "Needs Attention"
-                running_name = "game" if game_livesplit_ready else "level"
-                missing_name = "level" if game_livesplit_ready else "game"
                 livesplit_detail = (
-                    f"The {running_name} timer server is running, but the "
-                    f"{missing_name} timer server is not. Commands for the "
-                    "missing server are disabled."
+                    "The LiveSplit timer ports are invalid. LiveSplit commands "
+                    "are disabled until the ports are corrected in Settings."
                 )
-            else:
-                livesplit_state = "Optional"
-                livesplit_detail = (
-                    "LiveSplit is not running (it is optional) on the configured timer ports "
-                    f"({game_livesplit_port} and {level_livesplit_port}). "
-                    "LiveSplit commands are disabled; built-in timers and "
-                    "OBS text files continue to work normally."
-                )
-        except (TypeError, ValueError):
-            livesplit_state = "Needs Attention"
-            livesplit_detail = (
-                "The LiveSplit timer ports are invalid. LiveSplit commands "
-                "are disabled until the ports are corrected in Settings."
-            )
         results.append((
             livesplit_state,
-            "LiveSplit timer servers",
+            livesplit_title,
             livesplit_detail,
         ))
 
@@ -58379,6 +60684,8 @@ class TrackerApp:
             ("obs_exits", "exits.txt"),
             ("obs_level_deaths", "level_deaths.txt"),
             ("obs_game_deaths", "total_deaths.txt"),
+            ("obs_game_timer", "game_timer.txt"),
+            ("obs_level_timer", "level_timer.txt"),
         )
 
         def copy_path(path_text: str, button: tk.Widget) -> None:
@@ -58487,7 +60794,7 @@ class TrackerApp:
             self._make_action_button(
                 actions,
                 self._setup_guide_text("open_obs_folder"),
-                lambda: os.startfile(str(output_folder)),
+                lambda: open_local_path(output_folder),
                 THEME["blue"],
                 THEME["navy"],
                 width=22,
@@ -58513,7 +60820,9 @@ class TrackerApp:
         ).pack(side="right")
         self._make_action_button(
             actions,
-            self._setup_guide_text("livesplit_obs_button"),
+            self._setup_guide_text(
+                "mac_timer_obs_button" if IS_MACOS else "livesplit_obs_button"
+            ),
             open_livesplit_setup,
             THEME["blue"],
             THEME["navy"],
@@ -58580,6 +60889,73 @@ class TrackerApp:
         )
         return selected_asset
 
+    def open_native_obs_timer_window(self, timer_name: str) -> bool:
+        """Open a tracker-controlled timer that OBS can capture on macOS."""
+        if timer_name not in {"game", "level"}:
+            return False
+        attribute_name = f"native_obs_{timer_name}_timer_window"
+        existing = getattr(self, attribute_name, None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.deiconify()
+                    existing.lift()
+                    existing.focus_force()
+                    return True
+            except tk.TclError:
+                pass
+
+        label_key = (
+            "mac_game_timer_button"
+            if timer_name == "game"
+            else "mac_level_timer_button"
+        )
+        timer_variable = (
+            self.game_timer_var
+            if timer_name == "game"
+            else self.level_timer_var
+        )
+        palette = self._library_palette()
+        window = tk.Toplevel(self.root)
+        setattr(self, attribute_name, window)
+        window.title(self._setup_guide_text(label_key))
+        window.configure(bg=palette["window"])
+        window.resizable(True, True)
+        self._size_dialog_for_ui(window, 560, 230, 420, 180)
+        tk.Label(
+            window,
+            text=self._setup_guide_text(label_key),
+            font=("Segoe UI", 15, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            pady=10,
+        ).pack(fill="x")
+        tk.Label(
+            window,
+            textvariable=timer_variable,
+            font=("Segoe UI", 52, "bold"),
+            fg="white",
+            bg=palette["panel"],
+            anchor="center",
+            padx=24,
+            pady=24,
+        ).pack(fill="both", expand=True, padx=8, pady=8)
+
+        def close_window() -> None:
+            setattr(self, attribute_name, None)
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass
+
+        window.protocol("WM_DELETE_WINDOW", close_window)
+        self._apply_widget_appearance(
+            window,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        window.after_idle(window.focus_force)
+        return True
+
     def install_or_open_livesplit_copy(
         self,
         timer_name: str,
@@ -58587,6 +60963,8 @@ class TrackerApp:
     ) -> bool:
         if timer_name not in {"game", "level"}:
             return False
+        if IS_MACOS:
+            return self.open_native_obs_timer_window(timer_name)
         try:
             port = int(str(server_port).strip())
         except (TypeError, ValueError):
@@ -58613,7 +60991,7 @@ class TrackerApp:
                     executable.resolve()
                 )
                 save_config(self.config)
-                os.startfile(str(executable))
+                launch_local_application(executable)
                 self.status_var.set(f"Opened {display_name}.")
                 return True
             except OSError as error:
@@ -58793,7 +61171,7 @@ class TrackerApp:
             except tk.TclError:
                 pass
         try:
-            os.startfile(str(executable))
+            launch_local_application(executable)
         except OSError as error:
             messagebox.showerror(
                 self._setup_guide_text("livesplit_setup_failed_title"),
@@ -58841,7 +61219,9 @@ class TrackerApp:
             or DEFAULT_CONFIG["level_livesplit_port"]
         )
         instructions = self._setup_guide_text(
-            "livesplit_obs_instructions"
+            "mac_timer_obs_instructions"
+            if IS_MACOS
+            else "livesplit_obs_instructions"
         ).format(
             game_port=resolved_game_port,
             level_port=resolved_level_port,
@@ -58850,7 +61230,10 @@ class TrackerApp:
         palette = self._library_palette()
         dialog = tk.Toplevel(self.root)
         self.livesplit_obs_guide_dialog = dialog
-        dialog.title(self._setup_guide_text("livesplit_obs_title"))
+        guide_title_key = (
+            "mac_timer_obs_title" if IS_MACOS else "livesplit_obs_title"
+        )
+        dialog.title(self._setup_guide_text(guide_title_key))
         dialog.configure(bg=palette["window"])
         dialog.transient(self.root)
         dialog.resizable(True, True)
@@ -58858,7 +61241,7 @@ class TrackerApp:
 
         tk.Label(
             dialog,
-            text=self._setup_guide_text("livesplit_obs_title"),
+            text=self._setup_guide_text(guide_title_key),
             font=("Segoe UI", 20, "bold"),
             fg="white",
             bg=THEME["blue"],
@@ -58884,7 +61267,9 @@ class TrackerApp:
         note.pack(fill="x", padx=18, pady=(16, 10))
         tk.Label(
             note,
-            text="\u2605  " + self._setup_guide_text("livesplit_obs_note"),
+            text="\u2605  " + self._setup_guide_text(
+                "mac_timer_obs_note" if IS_MACOS else "livesplit_obs_note"
+            ),
             font=("Segoe UI", 10, "bold"),
             fg=(
                 THEME["yellow"]
@@ -58933,7 +61318,9 @@ class TrackerApp:
 
         tk.Label(
             body,
-            text=self._setup_guide_text("livesplit_button_note"),
+            text=self._setup_guide_text(
+                "mac_timer_button_note" if IS_MACOS else "livesplit_button_note"
+            ),
             font=("Segoe UI", 10, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
@@ -58965,15 +61352,19 @@ class TrackerApp:
 
         game_button = self._make_action_button(
             actions,
-            self._setup_guide_text("game_livesplit_button").format(
-                port=resolved_game_port
-            ),
+            self._setup_guide_text(
+                "mac_game_timer_button"
+                if IS_MACOS
+                else "game_livesplit_button"
+            ).format(port=resolved_game_port),
             lambda: self.install_or_open_livesplit_copy(
                 "game",
                 resolved_game_port,
             ),
             (
-                THEME["green"]
+                THEME["blue"]
+                if IS_MACOS
+                else THEME["green"]
                 if (
                     self._livesplit_copy_directory("game")
                     / "LiveSplit.exe"
@@ -58987,15 +61378,19 @@ class TrackerApp:
         game_button.pack(side="left")
         level_button = self._make_action_button(
             actions,
-            self._setup_guide_text("level_livesplit_button").format(
-                port=resolved_level_port
-            ),
+            self._setup_guide_text(
+                "mac_level_timer_button"
+                if IS_MACOS
+                else "level_livesplit_button"
+            ).format(port=resolved_level_port),
             lambda: self.install_or_open_livesplit_copy(
                 "level",
                 resolved_level_port,
             ),
             (
-                THEME["green"]
+                THEME["purple"]
+                if IS_MACOS
+                else THEME["green"]
                 if (
                     self._livesplit_copy_directory("level")
                     / "LiveSplit.exe"
@@ -59284,6 +61679,21 @@ class TrackerApp:
         manifest = json.loads(payload.decode("utf-8-sig"))
         if not isinstance(manifest, dict):
             raise RuntimeError("The update manifest is not valid.")
+        if IS_MACOS:
+            architecture = system_platform.machine().casefold()
+            package_key = (
+                "macos_arm64"
+                if architecture in {"arm64", "aarch64"}
+                else "macos_x86_64"
+            )
+            mac_package = manifest.get(package_key, manifest.get("macos"))
+            if not isinstance(mac_package, dict):
+                manifest["platform_package_missing"] = True
+                return manifest
+            manifest = {**manifest, **mac_package}
+            manifest["package_type"] = str(
+                mac_package.get("package_type", "dmg")
+            ).casefold()
         for field in ("version", "updater_url", "sha256"):
             if not str(manifest.get(field, "")).strip():
                 raise RuntimeError("The update manifest is missing " + field + ".")
@@ -59322,7 +61732,11 @@ class TrackerApp:
         def worker() -> None:
             try:
                 manifest = self._fetch_update_manifest()
-                available = self._version_tuple(manifest.get("version")) > self._version_tuple(APP_VERSION)
+                available = (
+                    not bool(manifest.get("platform_package_missing", False))
+                    and self._version_tuple(manifest.get("version"))
+                    > self._version_tuple(APP_VERSION)
+                )
                 self.root.after(
                     0,
                     lambda: self._show_update_result(manifest, available, silent),
@@ -59340,7 +61754,6 @@ class TrackerApp:
                         ),
                     )
         threading.Thread(target=worker, daemon=True).start()
-        return True
         return True
 
     def _show_update_result(
@@ -59466,8 +61879,17 @@ class TrackerApp:
             updater_path: Path | None = None
             try:
                 UPDATE_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                package_extension = (
+                    ".dmg"
+                    if IS_MACOS
+                    and str(manifest.get("package_type", "dmg")).casefold()
+                    == "dmg"
+                    else ".exe"
+                )
                 updater_path = UPDATE_DOWNLOAD_DIR / (
-                    "SMWStreamTracker_Update_" + str(manifest["version"]) + ".exe"
+                    "SMWStreamTracker_Update_"
+                    + str(manifest["version"])
+                    + package_extension
                 )
                 digest = hashlib.sha256()
                 request = Request(
@@ -59491,7 +61913,8 @@ class TrackerApp:
                 backup = self._create_recovery_backup("before_update")
                 if backup is None:
                     raise RuntimeError("A safety backup could not be created, so the update was stopped.")
-                self._preserve_current_app_for_rollback()
+                if IS_WINDOWS:
+                    self._preserve_current_app_for_rollback()
                 self.root.after(0, lambda: self._launch_update_package(updater_path))
             except Exception as error:
                 if updater_path is not None:
@@ -59512,6 +61935,27 @@ class TrackerApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _launch_update_package(self, updater_path: Path) -> None:
+        if IS_MACOS:
+            try:
+                open_local_path(updater_path)
+            except OSError as error:
+                messagebox.showerror(
+                    "Could Not Open Update",
+                    str(error),
+                    parent=self.root,
+                )
+                return
+            self._show_localized_info(
+                "Mac Update Ready",
+                (
+                    "The verified Mac disk image is open. Drag SMW Stream "
+                    "Tracker to Applications and replace the existing copy, "
+                    "then reopen it. Your catalog, settings, and stats stay "
+                    "in your Library folder."
+                ),
+                parent=self.root,
+            )
+            return
         updater_environment = os.environ.copy()
         # A PyInstaller one-file app records its private extraction folder in
         # _PYI_* variables.  The updater inherits those variables and can pass
@@ -59534,6 +61978,17 @@ class TrackerApp:
         self.shutdown()
 
     def restore_previous_app_version(self) -> None:
+        if not IS_WINDOWS:
+            messagebox.showinfo(
+                "Rollback on Mac",
+                (
+                    "Mac app replacement is handled through the verified DMG. "
+                    "Tracker data is backed up separately and is not removed "
+                    "when the app is replaced."
+                ),
+                parent=self.root,
+            )
+            return
         previous_executable = ROLLBACK_EXECUTABLE
         previous_hash_file = ROLLBACK_HASH_FILE
         rollback_script = application_directory() / "rollback_update.ps1"
@@ -59621,10 +62076,7 @@ class TrackerApp:
                 parent=self.root,
             )
             return
-        if os.name == "nt":
-            os.startfile(str(document))
-        else:
-            subprocess.Popen(["xdg-open", str(document)])
+        open_local_path(document)
 
     def _selected_readme_path(self) -> Path:
         """Return only the guide selected by Setup, with an English fallback."""
@@ -60694,7 +63146,7 @@ class TrackerApp:
                 return
             try:
                 Path(folder_text).mkdir(parents=True, exist_ok=True)
-                os.startfile(folder_text)
+                open_local_path(folder_text)
             except OSError as error:
                 messagebox.showerror(
                     "OBS Text Settings",
@@ -60756,7 +63208,7 @@ class TrackerApp:
             return
         if folder is None:
             return
-        os.startfile(str(folder))
+        open_local_path(folder)
 
     def _test_selected_platform(self) -> None:
         if not self.save_settings():
@@ -60935,18 +63387,44 @@ class TrackerApp:
         if self._tracker_is_running():
             self.restart_after_stop = True
             self.connection_var.set("Refreshing…")
-            self.status_var.set(
-                "Refreshing the FXPAK Pro connection…"
-            )
-            self.status_var.set(
-                "Refreshing the "
-                + self.platform_var.get()
-                + " connection..."
-            )
             self.refresh_tracker_button.configure(
                 state="disabled",
             )
-            self.worker.stop()
+            worker = self.worker
+            if (
+                self.platform_var.get().strip() == "FXPAK Pro"
+                and self.connection_is_connected
+            ):
+                self.status_var.set(
+                    self._translate_ui_text(
+                        "Restarting the running FXPAK Pro game and "
+                        "connection…"
+                    )
+                )
+                worker.request_console_refresh()
+                # If the bridge stopped responding before it could process
+                # Reset, do not leave Refresh disabled indefinitely. The
+                # ordinary connection restart still runs as a safe fallback.
+                self.root.after(
+                    2500,
+                    lambda pending_worker=worker: (
+                        pending_worker.stop()
+                        if (
+                            self.restart_after_stop
+                            and self.worker is pending_worker
+                            and pending_worker.thread is not None
+                            and pending_worker.thread.is_alive()
+                        )
+                        else None
+                    ),
+                )
+            else:
+                self.status_var.set(
+                    "Refreshing the "
+                    + self.platform_var.get()
+                    + " connection..."
+                )
+                worker.stop()
             return
 
         self.worker = None
@@ -61864,6 +64342,17 @@ class TrackerApp:
                             f"{timer_name} LiveSplit: {command}"
                         )
 
+                elif event_type == "console_reset":
+                    reset_message = str(
+                        event.get("message", "")
+                    )
+                    if reset_message:
+                        self.status_var.set(
+                            self._translate_dialog_text(
+                                reset_message
+                            )
+                        )
+
                 elif event_type == "log":
                     self.status_var.set(
                         str(event.get("message", ""))
@@ -61933,10 +64422,14 @@ class TrackerApp:
         self._dismiss_main_hack_selector_popup()
         self.catalog_freshness_cancel_event.set()
         self.fxpak_sd_cancel_event.set()
-        try:
-            self.main_canvas.unbind_all("<MouseWheel>")
-        except Exception:
-            pass
+        for sequence, bind_id in tuple(
+            self.main_mousewheel_bind_ids.items()
+        ):
+            try:
+                self.root.unbind(sequence, bind_id)
+            except tk.TclError:
+                pass
+        self.main_mousewheel_bind_ids.clear()
 
         if self.worker:
             self.worker.save_current_level_progress()

@@ -10,7 +10,7 @@ downloads opcionais do SNI, QUsb2Snes, RetroArch e núcleos Libretro, comunicaç
 local com essas ferramentas e o formulário opcional do Microsoft Forms.
 
 Comentários e sugestões abre um formulário público do Microsoft Forms em uma
-janela WebView2 dedicada do SMW Stream Tracker. Se o WebView2 não estiver
+janela web integrada do SMW Stream Tracker. Se essa visualização web não estiver
 disponível, o mesmo formulário será aberto no navegador padrão. O formulário
 não solicita nome nem e-mail. O aplicativo não anexa configurações,
 diagnósticos, caminhos de arquivos, informações de ROM ou dados do tracker.

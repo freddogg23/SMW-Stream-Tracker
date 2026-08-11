@@ -11,8 +11,8 @@ comunicación local con esas herramientas y el formulario opcional de Microsoft
 Forms.
 
 Comentarios y sugerencias abre un formulario público de Microsoft Forms dentro
-de una ventana WebView2 de SMW Stream Tracker. Si WebView2 no está disponible,
-se abre el mismo formulario en el navegador predeterminado. El formulario no
+de una ventana web integrada de SMW Stream Tracker. Si la vista web integrada
+no está disponible, se abre el mismo formulario en el navegador predeterminado. El formulario no
 solicita el nombre ni el correo electrónico. La aplicación no adjunta ajustes,
 diagnósticos, rutas de archivos, información de ROM ni datos del tracker. Solo
 se envían las respuestas que el usuario escribe.

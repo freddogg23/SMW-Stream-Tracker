@@ -11,7 +11,7 @@ téléchargements facultatifs de SNI, QUsb2Snes, RetroArch et des cœurs Libretr
 communication locale avec ces outils et formulaire Microsoft Forms facultatif.
 
 Commentaires et suggestions ouvre un formulaire Microsoft Forms public dans
-une fenêtre WebView2 dédiée de SMW Stream Tracker. Si WebView2 est indisponible,
+une fenêtre web intégrée de SMW Stream Tracker. Si cette vue web est indisponible,
 le même formulaire s’ouvre dans le navigateur par défaut. Le formulaire ne
 demande ni nom ni adresse électronique. L’application ne joint jamais les
 paramètres, diagnostics, chemins de fichiers, informations de ROM ou données du

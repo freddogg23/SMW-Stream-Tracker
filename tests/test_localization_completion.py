@@ -316,6 +316,7 @@ class LocalizationCompletionTests(unittest.TestCase):
             "Edit Selected",
             "Open SMWCentral",
             "Launch Game",
+            "Add to Tracker",
             "Remove from Tracker",
             "Clean SMW base ROM:",
             "Copy new ROMs to a mounted SD folder:",

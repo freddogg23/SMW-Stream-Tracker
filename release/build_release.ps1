@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.10',
+    [string]$Version = '1.0.11',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -232,8 +232,10 @@ $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
 
 $sourceItems = @(
     '.gitignore',
+    '.github',
     'LICENSE.txt',
     'README.md',
+    'SMWStreamTracker-macOS.spec',
     'SMWStreamTracker.spec',
     'SMWStreamTrackerLauncher.py',
     'SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py',

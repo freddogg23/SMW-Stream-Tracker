@@ -11,7 +11,7 @@ optionale Downloads von SNI, QUsb2Snes, RetroArch und Libretro-Cores, die lokale
 Kommunikation mit diesen Werkzeugen und das optionale Microsoft-Forms-Formular.
 
 Feedback und Vorschläge öffnet ein öffentliches Microsoft-Forms-Formular in
-einem eigenen WebView2-Fenster von SMW Stream Tracker. Ist WebView2 nicht
+einem integrierten Webfenster von SMW Stream Tracker. Ist diese Webansicht nicht
 verfügbar, wird dasselbe Formular im Standardbrowser geöffnet. Das Formular
 fragt weder Name noch E-Mail-Adresse ab. Die App fügt keine Einstellungen,
 Diagnosen, Dateipfade, ROM-Informationen oder Tracker-Daten an. Übermittelt

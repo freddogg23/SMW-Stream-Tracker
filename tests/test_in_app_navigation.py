@@ -110,7 +110,33 @@ class InAppNavigationTests(unittest.TestCase):
             and isinstance(keyword.value, ast.Name)
             and keyword.value.id == "tracker_action_button_width"
         ]
-        self.assertEqual(len(fixed_width_uses), 5)
+        self.assertEqual(len(fixed_width_uses), 6)
+
+    def test_tracker_has_add_action_beside_remove_action(self):
+        method = self.methods["open_my_tracker"]
+        action_buttons = []
+        for node in ast.walk(method):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_make_action_button"
+            ):
+                continue
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            text_node = keywords.get("text")
+            command_node = keywords.get("command")
+            if isinstance(text_node, ast.Constant) and isinstance(
+                command_node, ast.Attribute
+            ):
+                action_buttons.append((text_node.value, command_node.attr))
+
+        add_index = action_buttons.index(
+            ("Add to Tracker", "_add_tracker_record")
+        )
+        remove_index = action_buttons.index(
+            ("Remove from Tracker", "_remove_tracker_record")
+        )
+        self.assertEqual(remove_index, add_index + 1)
 
     def test_page_host_has_a_home_action(self):
         method = self.methods["_open_in_app_page"]
