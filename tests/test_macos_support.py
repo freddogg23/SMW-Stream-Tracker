@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,6 +54,47 @@ class MacPlatformSupportTests(unittest.TestCase):
         self.assertTrue(
             tracker.retroarch_core_filename("darwin").endswith(".dylib")
         )
+
+    def test_mac_retroarch_core_uses_the_explicit_config_tree(self):
+        executable = Path(
+            "/Users/mario/Applications/RetroArch.app/Contents/MacOS/RetroArch"
+        )
+        with (
+            mock.patch.object(tracker, "IS_MACOS", True),
+            mock.patch.object(
+                tracker.Path,
+                "home",
+                return_value=Path("/Users/mario"),
+            ),
+        ):
+            self.assertEqual(
+                tracker.retroarch_core_directory(executable),
+                Path("/Users/mario/.config/retroarch/cores"),
+            )
+
+    def test_retroarch_tracker_config_exposes_core_and_network_settings(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config_path = root / "retroarch.cfg"
+            core_directory = root / "cores"
+            tracker.write_retroarch_tracker_settings(
+                config_path,
+                core_directory=core_directory,
+            )
+            text = config_path.read_text(encoding="utf-8")
+
+        self.assertIn('network_cmd_enable = "true"', text)
+        self.assertIn('network_cmd_port = "55355"', text)
+        self.assertIn(
+            "libretro_directory = " + json.dumps(str(core_directory.resolve())),
+            text,
+        )
+        self.assertIn(
+            "libretro_info_path = " + json.dumps(str(core_directory.resolve())),
+            text,
+        )
+        self.assertIn('menu_show_load_core = "true"', text)
+        self.assertIn('menu_show_advanced_settings = "true"', text)
 
     def test_every_optional_companion_has_an_official_mac_package(self):
         self.assertTrue(
@@ -166,6 +208,9 @@ class MacPlatformSupportTests(unittest.TestCase):
                     "launch_local_application",
                 ) as launch,
             ):
+                expected_config_path = tracker.retroarch_config_path(
+                    executable
+                )
                 result = app._run_local_emulator_launcher(
                     {"title": "Test Hack"},
                     "RetroArch",
@@ -177,9 +222,54 @@ class MacPlatformSupportTests(unittest.TestCase):
             )
             launch.assert_called_once_with(
                 executable,
-                ["-L", str(core), str(rom)],
+                [
+                    "--config",
+                    str(expected_config_path),
+                    "-L",
+                    str(core),
+                    str(rom),
+                ],
             )
             self.assertIn("restarted RetroArch", result["method"])
+
+    def test_mac_retroarch_setup_opens_the_configured_menu(self):
+        app = tracker.TrackerApp.__new__(tracker.TrackerApp)
+        app.config = {}
+        app.root = mock.Mock()
+        app.status_var = mock.Mock()
+        app._guided_optional_software_completed = mock.Mock()
+        dialog = mock.Mock()
+        executable = Path(
+            "/Users/mario/Applications/RetroArch.app/Contents/MacOS/RetroArch"
+        )
+        core = Path(
+            "/Users/mario/.config/retroarch/cores/"
+            "bsnes_mercury_performance_libretro.dylib"
+        )
+
+        with (
+            mock.patch.object(tracker, "IS_MACOS", True),
+            mock.patch.object(tracker, "save_config"),
+            mock.patch.object(tracker.messagebox, "showinfo"),
+            mock.patch.object(tracker, "launch_local_application") as launch,
+        ):
+            expected_config_path = tracker.retroarch_config_path(executable)
+            app._finish_optional_software_install(
+                "retroarch",
+                executable,
+                core,
+                dialog,
+                "",
+            )
+
+        launch.assert_called_once_with(
+            executable,
+            [
+                "--config",
+                str(expected_config_path),
+                "--menu",
+            ],
+        )
 
     def test_portable_workbook_writer_updates_tracker_sheet(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -478,6 +478,10 @@ MACOS_RETROARCH_ARM_CORE_DOWNLOAD_URL = (
     "https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/"
     "bsnes_mercury_performance_libretro.dylib.zip"
 )
+RETROARCH_BSNES_MERCURY_INFO_DOWNLOAD_URL = (
+    "https://raw.githubusercontent.com/libretro/libretro-super/master/"
+    "dist/info/bsnes_mercury_performance_libretro.info"
+)
 
 
 def platform_family(platform_name: str | None = None) -> str:
@@ -552,27 +556,11 @@ def retroarch_bundle_resources(executable: Path) -> Path:
 
 def retroarch_core_directory(executable: Path) -> Path:
     if IS_MACOS:
-        resources = retroarch_bundle_resources(executable)
-        bundled_cores = resources / "cores"
-        user_cores = (
-            Path.home()
-            / "Library"
-            / "Application Support"
-            / "RetroArch"
-            / "cores"
-        )
-        # The tracker-managed RetroArch copy is writable, but an app already
-        # installed in /Applications commonly is not. The core can be loaded
-        # from either location, so prefer the bundle only when it is writable.
-        if bundled_cores.is_dir() and os.access(bundled_cores, os.W_OK):
-            return bundled_cores
-        if (
-            not bundled_cores.exists()
-            and resources.is_dir()
-            and os.access(resources, os.W_OK)
-        ):
-            return bundled_cores
-        return user_cores
+        # Keep downloaded cores beside the configuration that the tracker
+        # explicitly passes to RetroArch.  Storing a core inside the .app or
+        # in a different Application Support tree made it loadable by an
+        # absolute path, but invisible in RetroArch's Load Core screen.
+        return retroarch_config_path(executable).parent / "cores"
     return executable.parent / "cores"
 
 
@@ -12620,7 +12608,11 @@ def write_livesplit_tracker_settings(
         temporary_path.unlink(missing_ok=True)
 
 
-def write_retroarch_tracker_settings(config_path: Path) -> None:
+def write_retroarch_tracker_settings(
+    config_path: Path,
+    *,
+    core_directory: Path | None = None,
+) -> None:
     """Enable the network controls required by live RetroArch tracking."""
     required_settings = {
         "network_cmd_enable": '"true"',
@@ -12630,6 +12622,21 @@ def write_retroarch_tracker_settings(config_path: Path) -> None:
         "quit_press_twice": '"false"',
         "config_save_on_exit": '"true"',
     }
+    if core_directory is not None:
+        resolved_core_directory = core_directory.expanduser().resolve()
+        quoted_core_directory = json.dumps(str(resolved_core_directory))
+        required_settings.update(
+            {
+                # These make the tracker-installed core visible from Load
+                # Core as well as available to direct tracker launches.
+                "libretro_directory": quoted_core_directory,
+                "libretro_info_path": quoted_core_directory,
+                "menu_show_load_core": '"true"',
+                "menu_show_online_updater": '"true"',
+                "menu_show_core_updater": '"true"',
+                "menu_show_advanced_settings": '"true"',
+            }
+        )
     try:
         existing_text = config_path.read_text(
             encoding="utf-8-sig",
@@ -20264,6 +20271,27 @@ def load_config() -> dict[str, Any]:
         and bundled_mercury_core.is_file()
     ):
         config["retroarch_core_path"] = str(bundled_mercury_core)
+
+    # Repair Mac installs created by earlier builds.  The old installer could
+    # save a working absolute core path without making that folder visible to
+    # RetroArch or ensuring that the same config was used during launch.
+    repaired_core_text = str(
+        config.get("retroarch_core_path", "")
+    ).strip()
+    if (
+        IS_MACOS
+        and retroarch_text
+        and Path(retroarch_text).is_file()
+        and repaired_core_text
+        and Path(repaired_core_text).is_file()
+    ):
+        try:
+            write_retroarch_tracker_settings(
+                retroarch_config_path(Path(retroarch_text)),
+                core_directory=Path(repaired_core_text).parent,
+            )
+        except OSError:
+            pass
 
     return config
 
@@ -31140,12 +31168,25 @@ class TrackerApp:
                 "The recommended RetroArch core could not be installed."
             )
 
+        core_info_path = core_directory / (
+            "bsnes_mercury_performance_libretro.info"
+        )
+        if not core_info_path.is_file():
+            self._download_dependency_file(
+                RETROARCH_BSNES_MERCURY_INFO_DOWNLOAD_URL,
+                core_info_path,
+                maximum_bytes=1024 * 1024,
+                status_variable=status_variable,
+                description="RetroArch core",
+            )
+
         self._set_optional_install_status(
             status_variable,
             "Enabling RetroArch network commands and one-press game switching...",
         )
         write_retroarch_tracker_settings(
-            retroarch_config_path(executable)
+            retroarch_config_path(executable),
+            core_directory=core_directory,
         )
         return core_path.resolve()
 
@@ -31466,6 +31507,21 @@ class TrackerApp:
             ),
             parent=self.root,
         )
+        if software == "retroarch" and IS_MACOS:
+            try:
+                launch_local_application(
+                    executable,
+                    [
+                        "--config",
+                        str(retroarch_config_path(executable)),
+                        "--menu",
+                    ],
+                )
+            except OSError as error:
+                append_error_log(
+                    "RetroArch could not be opened after setup",
+                    str(error),
+                )
         self.status_var.set(f"{name} setup is complete.")
         if software != "retroarch" and self._tracker_is_running():
             self.refresh_tracker()
@@ -57305,6 +57361,13 @@ class TrackerApp:
         command = [str(executable)]
         switch_method = ""
         if platform == "RetroArch":
+            if IS_MACOS:
+                command.extend(
+                    [
+                        "--config",
+                        str(retroarch_config_path(executable)),
+                    ]
+                )
             core_text = str(
                 self.config.get("retroarch_core_path", "")
             ).strip()
