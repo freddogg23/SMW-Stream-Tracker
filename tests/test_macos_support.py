@@ -100,8 +100,13 @@ class MacPlatformSupportTests(unittest.TestCase):
         self.assertIn("codesign --verify", build_script)
         self.assertIn("notarytool submit", build_script)
         self.assertIn("pyobjc", requirements)
+        self.assertIn("certifi==2026.7.22", requirements)
         self.assertNotIn("pystray", requirements)
         self.assertIn("configure_platform_runtime(tracker)", launcher)
+        self.assertIn("configure_secure_networking()", launcher)
+        self.assertIn("run_macos_network_check()", launcher)
+        self.assertIn("--network-check", build_script)
+        self.assertIn('collect_all("certifi")', spec)
         self.assertIn("BUNDLE(", spec)
 
     def test_mac_timer_fallback_is_translated_in_every_language(self):

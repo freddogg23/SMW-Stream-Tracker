@@ -13,6 +13,7 @@ source_text = (project_root / "SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGH
 version_match = re.search(r'^APP_VERSION = "([^"]+)"', source_text, flags=re.MULTILINE)
 app_version = version_match.group(1) if version_match else "0.0.0"
 webview_datas, webview_binaries, webview_hiddenimports = collect_all("webview")
+certifi_datas, certifi_binaries, certifi_hiddenimports = collect_all("certifi")
 
 localized_notices = []
 for notice_name in ("PRIVACY", "LICENSE", "THIRD_PARTY_NOTICE"):
@@ -27,7 +28,7 @@ for notice_name in ("PRIVACY", "LICENSE", "THIRD_PARTY_NOTICE"):
 a = Analysis(
     [str(project_root / "SMWStreamTrackerLauncher.py")],
     pathex=[str(project_root)],
-    binaries=webview_binaries,
+    binaries=webview_binaries + certifi_binaries,
     datas=[
         (str(project_root / "banner_background_assets"), "banner_background_assets"),
         (str(project_root / "banner_character_assets"), "banner_character_assets"),
@@ -38,8 +39,8 @@ a = Analysis(
         (str(project_root / "platform_assets"), "platform_assets"),
         (str(project_root / "app_assets"), "app_assets"),
         (str(project_root / "docs"), "docs"),
-    ] + localized_notices + webview_datas,
-    hiddenimports=webview_hiddenimports,
+    ] + localized_notices + webview_datas + certifi_datas,
+    hiddenimports=webview_hiddenimports + certifi_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

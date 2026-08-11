@@ -39,6 +39,7 @@ fi
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 "$APP_PATH/Contents/MacOS/SMWStreamTracker" --startup-check
+"$APP_PATH/Contents/MacOS/SMWStreamTracker" --network-check
 
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 

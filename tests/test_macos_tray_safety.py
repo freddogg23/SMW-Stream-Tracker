@@ -1,4 +1,6 @@
 import importlib
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -30,6 +32,35 @@ class MacOSTraySafetyTests(unittest.TestCase):
 
         self.assertIsNone(tracker.pystray)
         self.assertIsNone(app.tray_icon)
+
+    def test_macos_uses_bundled_certificate_authorities_for_https(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            ca_bundle = Path(temporary_directory) / "cacert.pem"
+            ca_bundle.write_text("TEST CERTIFICATES", encoding="utf-8")
+            environment = {
+                "SSL_CERT_FILE": str(Path(temporary_directory) / "missing.pem")
+            }
+            certifi_module = SimpleNamespace(where=lambda: str(ca_bundle))
+
+            selected = self.launcher.configure_secure_networking(
+                "darwin",
+                environment,
+                certifi_module,
+            )
+
+            self.assertEqual(selected, str(ca_bundle.resolve()))
+            self.assertEqual(environment["SSL_CERT_FILE"], selected)
+            self.assertEqual(environment["REQUESTS_CA_BUNDLE"], selected)
+
+    def test_windows_does_not_replace_https_certificate_settings(self):
+        environment = {"SSL_CERT_FILE": "C:/company/ca.pem"}
+        selected = self.launcher.configure_secure_networking(
+            "win32",
+            environment,
+            SimpleNamespace(where=lambda: "unused"),
+        )
+        self.assertEqual(selected, "")
+        self.assertEqual(environment, {"SSL_CERT_FILE": "C:/company/ca.pem"})
 
     def test_macos_close_button_quits_instead_of_hiding(self):
         tracker = SimpleNamespace(
