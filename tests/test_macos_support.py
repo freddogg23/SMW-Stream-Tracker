@@ -232,7 +232,7 @@ class MacPlatformSupportTests(unittest.TestCase):
             )
             self.assertIn("restarted RetroArch", result["method"])
 
-    def test_mac_retroarch_setup_opens_the_configured_menu(self):
+    def test_mac_retroarch_setup_waits_for_a_game_before_launching(self):
         app = tracker.TrackerApp.__new__(tracker.TrackerApp)
         app.config = {}
         app.root = mock.Mock()
@@ -253,7 +253,6 @@ class MacPlatformSupportTests(unittest.TestCase):
             mock.patch.object(tracker.messagebox, "showinfo"),
             mock.patch.object(tracker, "launch_local_application") as launch,
         ):
-            expected_config_path = tracker.retroarch_config_path(executable)
             app._finish_optional_software_install(
                 "retroarch",
                 executable,
@@ -261,15 +260,7 @@ class MacPlatformSupportTests(unittest.TestCase):
                 dialog,
                 "",
             )
-
-        launch.assert_called_once_with(
-            executable,
-            [
-                "--config",
-                str(expected_config_path),
-                "--menu",
-            ],
-        )
+        launch.assert_not_called()
 
     def test_portable_workbook_writer_updates_tracker_sheet(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

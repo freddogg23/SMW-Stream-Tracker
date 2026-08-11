@@ -31507,21 +31507,6 @@ class TrackerApp:
             ),
             parent=self.root,
         )
-        if software == "retroarch" and IS_MACOS:
-            try:
-                launch_local_application(
-                    executable,
-                    [
-                        "--config",
-                        str(retroarch_config_path(executable)),
-                        "--menu",
-                    ],
-                )
-            except OSError as error:
-                append_error_log(
-                    "RetroArch could not be opened after setup",
-                    str(error),
-                )
         self.status_var.set(f"{name} setup is complete.")
         if software != "retroarch" and self._tracker_is_running():
             self.refresh_tracker()
