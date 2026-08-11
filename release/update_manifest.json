@@ -18,6 +18,6 @@
   ],
   "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.0.11/SMWStreamTracker_Update_1.0.11.exe",
   "verification": "sha256",
-  "sha256": "ac066d8576de3c3dc1c312913585fae88f070f0fed6bf59765512fe2e17315b7",
-  "size": 63945724
+  "sha256": "2df8796543c68cdb05c40419dd9eed074b81fe122aa3abf244a5d149bfa7c508",
+  "size": 63945071
 }
