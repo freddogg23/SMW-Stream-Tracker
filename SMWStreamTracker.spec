@@ -1,6 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_all
+
+
+# Development builds keep optional dependencies in local package folders.
+# Add them after the selected Python runtime's site-packages so an incomplete
+# vendored package cannot shadow a complete native installation (Pillow's
+# PIL._imaging extension is especially important for every branded image in
+# the tracker).
+for _package_folder_name in (
+    ".build-packages",
+):
+    _build_packages = Path(SPECPATH) / _package_folder_name
+    if _build_packages.is_dir():
+        _build_packages_text = str(_build_packages)
+        if _build_packages_text not in sys.path:
+            sys.path.append(_build_packages_text)
 
 
 # Keep this validation in the spec itself so quick/manual test builds receive
@@ -24,12 +42,13 @@ except Exception as error:
 
 
 webview_datas, webview_binaries, webview_hiddenimports = collect_all('webview')
+paramiko_datas, paramiko_binaries, paramiko_hiddenimports = collect_all('paramiko')
 
 
 a = Analysis(
     ['SMWStreamTrackerLauncher.py'],
     pathex=[],
-    binaries=webview_binaries,
+    binaries=webview_binaries + paramiko_binaries,
     datas=[
         ('banner_background_assets', 'banner_background_assets'),
         ('banner_character_assets', 'banner_character_assets'),
@@ -58,8 +77,8 @@ a = Analysis(
         ('installer\\THIRD_PARTY_NOTICE.fr.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.de.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.pt-BR.txt', 'installer'),
-    ] + webview_datas,
-    hiddenimports=webview_hiddenimports,
+    ] + webview_datas + paramiko_datas,
+    hiddenimports=webview_hiddenimports + paramiko_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['release_tools\\pyi_rth_tcl_find_executable.py'],

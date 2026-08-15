@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +61,10 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
             "qusb2snes_path": str(qusb_path),
             "retroarch_executable_path": str(retroarch_path),
             "retroarch_core_path": str(core_path),
+            "selected_platform": "FXPAK Pro",
+            "mister_host": "MiSTer",
+            "mister_ssh_fingerprint": "",
+            "first_launch_mister_setup_requested": False,
         }
         app.sni_path_var = DummyVariable(sni_path)
         app.qusb_path_var = DummyVariable(qusb_path)
@@ -108,7 +113,7 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
         app.downloads_menu = downloads_menu
         app.connection_setup_menu = connection_menu
         app.connection_setup_menu_index = 5
-        app.connection_option_menu_indexes = (10, 11, 12)
+        app.connection_option_menu_indexes = (10, 11, 12, 13)
         app._guided_setup_software_choice = "sni_retroarch"
         app._guided_setup_software_selected = {"sni"}
         app._guided_setup_software_completed = set()
@@ -125,7 +130,7 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
         app.downloads_menu = downloads_menu
         app.connection_setup_menu = connection_menu
         app.connection_setup_menu_index = 5
-        app.connection_option_menu_indexes = (10, 11, 12)
+        app.connection_option_menu_indexes = (10, 11, 12, 13)
         app._guided_setup_software_choice = "sni_retroarch"
         app._guided_setup_software_selected = {"retroarch"}
         app._guided_setup_software_completed = set()
@@ -147,6 +152,43 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
                 app._guided_setup_software_completed,
                 {"qusb2snes"},
             )
+
+    def test_mister_selection_highlights_only_mister(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        downloads_menu = object()
+        connection_menu = object()
+        app.downloads_menu = downloads_menu
+        app.connection_setup_menu = connection_menu
+        app.connection_setup_menu_index = 5
+        app.connection_option_menu_indexes = (10, 11, 12, 13)
+        app._guided_setup_software_choice = "mister"
+        app._guided_setup_software_selected = set()
+        app._guided_setup_software_completed = set()
+
+        self.assertEqual(
+            app._guided_setup_target_menu_entries("connection"),
+            ((downloads_menu, 5), (connection_menu, 13)),
+        )
+
+    def test_mister_advances_only_after_verified_one_click_setup(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            app = self.make_app(Path(temporary_directory), "mister")
+            app.config.update(
+                {
+                    "selected_platform": "MiSTer",
+                    "mister_host": "192.168.50.229",
+                    "mister_ssh_fingerprint": "SHA256:test",
+                    "first_launch_mister_setup_requested": True,
+                }
+            )
+            with mock.patch.object(self.tracker, "save_config") as save:
+                app._guided_optional_software_completed("mister")
+
+            self.assertEqual(app.advanced_stages, ["catalog"])
+            self.assertFalse(
+                app.config["first_launch_mister_setup_requested"]
+            )
+            save.assert_called_once_with(app.config)
 
 
 if __name__ == "__main__":

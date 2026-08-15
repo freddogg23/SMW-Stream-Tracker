@@ -13,7 +13,8 @@ SOURCE_FILE = (
 class InAppNavigationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tree = ast.parse(SOURCE_FILE.read_text(encoding="utf-8"))
+        cls.source = SOURCE_FILE.read_text(encoding="utf-8")
+        cls.tree = ast.parse(cls.source)
         cls.methods = {
             node.name: node
             for node in ast.walk(cls.tree)
@@ -60,83 +61,62 @@ class InAppNavigationTests(unittest.TestCase):
             with self.subTest(method=method_name):
                 self.assertNotIn(removed_caption, constants)
 
-    def test_tracker_action_buttons_use_one_fixed_size(self):
+    def test_tracker_bottom_actions_use_one_equal_grid(self):
         method = self.methods["open_my_tracker"]
-        assignments = {
-            target.id: node.value
+        source = ast.get_source_segment(
+            self.source,
+            method,
+        )
+        self.assertIn('uniform="tracker_bottom_actions"', source)
+        self.assertIn("weight=1", source)
+        for caption in (
+            "Spreadsheet Settings",
+            "Google Sheets Settings",
+            "Open SMW Central",
+            "Launch Game",
+        ):
+            with self.subTest(caption=caption):
+                self.assertIn(f'"{caption}"', source)
+        self.assertNotIn('text="Edit Selected"', source)
+
+        action_assignment = next(
+            node
             for node in ast.walk(method)
             if isinstance(node, ast.Assign)
             and len(node.targets) == 1
-            and isinstance((target := node.targets[0]), ast.Name)
-        }
-        fixed_width = assignments.get("tracker_action_button_width")
-        self.assertIsInstance(fixed_width, ast.Call)
-        self.assertEqual(fixed_width.func.attr, "_ui_px")
-        self.assertEqual(fixed_width.args[0].value, 190)
-        self.assertEqual(
-            assignments.get("tracker_action_font_size").value,
-            8,
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "tracker_bottom_actions"
         )
+        self.assertIsInstance(action_assignment.value, ast.Tuple)
+        self.assertEqual(len(action_assignment.value.elts), 4)
 
-        spreadsheet_loop = next(
+    def test_tracker_has_adjacent_add_and_remove_circles(self):
+        method = self.methods["open_my_tracker"]
+        source = ast.get_source_segment(self.source, method)
+        self.assertIn('uniform="tracker_filter_controls"', source)
+        self.assertIn("minsize=self._ui_px(300)", source)
+        self.assertIn("Image.Resampling.LANCZOS", source)
+        self.assertIn("ImageTk.PhotoImage", source)
+        self.assertIn("supersample = 6", source)
+        circle_calls = [
             node
             for node in ast.walk(method)
-            if isinstance(node, ast.For)
-            and isinstance(node.target, ast.Tuple)
-            and any(
-                isinstance(item, ast.Name)
-                and item.id == "action_text"
-                for item in node.target.elts
-            )
-        )
-        shared_widths = {
-            keyword.value.id
-            for node in ast.walk(spreadsheet_loop)
             if isinstance(node, ast.Call)
-            for keyword in node.keywords
-            if keyword.arg == "fixed_pixel_width"
-            and isinstance(keyword.value, ast.Name)
-        }
-        self.assertEqual(shared_widths, {"tracker_action_button_width"})
-
-        fixed_width_uses = [
-            keyword.value.id
-            for node in ast.walk(method)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_make_action_button"
-            for keyword in node.keywords
-            if keyword.arg == "fixed_pixel_width"
-            and isinstance(keyword.value, ast.Name)
-            and keyword.value.id == "tracker_action_button_width"
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "make_tracker_circle_action"
         ]
-        self.assertEqual(len(fixed_width_uses), 6)
-
-    def test_tracker_has_add_action_beside_remove_action(self):
-        method = self.methods["open_my_tracker"]
-        action_buttons = []
-        for node in ast.walk(method):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "_make_action_button"
-            ):
-                continue
-            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
-            text_node = keywords.get("text")
-            command_node = keywords.get("command")
-            if isinstance(text_node, ast.Constant) and isinstance(
-                command_node, ast.Attribute
-            ):
-                action_buttons.append((text_node.value, command_node.attr))
-
-        add_index = action_buttons.index(
-            ("Add to Tracker", "_add_tracker_record")
-        )
-        remove_index = action_buttons.index(
-            ("Remove from Tracker", "_remove_tracker_record")
-        )
-        self.assertEqual(remove_index, add_index + 1)
+        controls = {
+            (
+                node.args[0].value,
+                node.args[3].attr,
+            )
+            for node in circle_calls
+            if len(node.args) >= 4
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[3], ast.Attribute)
+        }
+        self.assertIn(("+", "_add_tracker_record"), controls)
+        self.assertIn(("−", "_remove_tracker_record"), controls)
 
     def test_page_host_has_a_home_action(self):
         method = self.methods["_open_in_app_page"]
@@ -185,6 +165,7 @@ class InAppNavigationTests(unittest.TestCase):
 
     def test_callback_errors_copy_a_redacted_report_without_diagnostics(self):
         method = self.methods["_report_tk_callback_exception"]
+        source = ast.get_source_segment(self.source, method)
         attributes = {
             node.attr
             for node in ast.walk(method)
@@ -194,6 +175,43 @@ class InAppNavigationTests(unittest.TestCase):
         self.assertIn("clipboard_append", attributes)
         self.assertIn("_show_localized_info", attributes)
         self.assertNotIn("showerror", attributes)
+        self.assertNotIn("master=dialog", source)
+        self.assertIn("except Exception", source)
+
+    def test_closed_tracker_tables_are_never_refreshed(self):
+        refresh_source = ast.get_source_segment(
+            self.source,
+            self.methods["_refresh_my_tracker"],
+        )
+        import_source = ast.get_source_segment(
+            self.source,
+            self.methods["import_existing_spreadsheet"],
+        )
+        close_source = ast.get_source_segment(
+            self.source,
+            self.methods["_close_in_app_page"],
+        )
+        self.assertIn("_tracker_list_ui_is_alive", refresh_source)
+        self.assertIn("_tracker_list_ui_is_alive", import_source)
+        self.assertIn("_dispose_tracker_list_ui", close_source)
+
+    def test_stats_backup_commands_are_grouped_into_submenus(self):
+        source = ast.get_source_segment(
+            self.source,
+            self.methods["_build_menu_bar"],
+        )
+        self.assertIn('label="Database Tools"', source)
+        self.assertIn('label="Automatic Backups"', source)
+        self.assertIn("database_tools_menu", source)
+        self.assertIn("automatic_backups_menu", source)
+
+    def test_shutdown_creates_a_new_exit_recovery_backup(self):
+        source = ast.get_source_segment(
+            self.source,
+            self.methods["shutdown"],
+        )
+        self.assertIn('self._create_recovery_backup("exit")', source)
+        self.assertIn("shutdown_in_progress", source)
 
     def test_related_catalog_and_downloader_actions_are_on_their_pages(self):
         method = self.methods["open_hack_downloader"]

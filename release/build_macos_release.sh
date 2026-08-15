@@ -24,10 +24,15 @@ ZIP_PATH="$PROJECT_DIR/dist/SMWStreamTracker_macOS_${ARCHITECTURE}_${VERSION}.zi
 DMG_PATH="$PROJECT_DIR/dist/SMWStreamTracker_macOS_${ARCHITECTURE}_${VERSION}.dmg"
 CHECKSUM_PATH="$PROJECT_DIR/dist/SHA256SUMS_macOS_${ARCHITECTURE}_${VERSION}.txt"
 
+python3 -c "import paramiko" || {
+  echo "Paramiko is required for MiSTer support. Install release/requirements-macos.txt first."
+  exit 4
+}
+
 python3 -m PyInstaller --noconfirm --clean SMWStreamTracker-macOS.spec
 if [[ ! -d "$APP_PATH" ]]; then
   echo "PyInstaller did not create the Mac app bundle."
-  exit 4
+  exit 5
 fi
 
 SIGN_IDENTITY="${MACOS_CODESIGN_IDENTITY:--}"

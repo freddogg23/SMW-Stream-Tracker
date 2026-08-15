@@ -6,6 +6,7 @@ herunterladen und einrichten:
 * SNI aus den offiziellen alttpo/sni-Veröffentlichungen auf GitHub.
 * QUsb2Snes aus den offiziellen usb2snes- (Windows) oder Skarsnik/QUsb2snes-Veröffentlichungen (Mac) auf GitHub.
 * RetroArch vom offiziellen Libretro-Buildserver.
+* snid aus den offiziellen NobodyNada/snid-Veröffentlichungen für die optionale MiSTer-Unterstützung.
 
 Diese Programme sind eigenständige Projekte mit eigenen Lizenzen. Sie sind
 nicht in SMW Stream Tracker eingebettet. Der Assistent lädt nur die Optionen
@@ -17,6 +18,8 @@ Projekt- und Lizenzinformationen:
 * QUsb2Snes für Windows: https://github.com/usb2snes/usb2snes
 * QUsb2Snes für Mac: https://github.com/Skarsnik/QUsb2snes
 * RetroArch und Libretro-Cores: https://www.libretro.com/
+* snid für MiSTer: https://github.com/NobodyNada/snid
+* Paramiko: https://www.paramiko.org/
 * Pillow: https://python-pillow.org/
 * openpyxl: https://openpyxl.readthedocs.io/
 * websocket-client: https://github.com/websocket-client/websocket-client

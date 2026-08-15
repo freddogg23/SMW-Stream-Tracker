@@ -1,38 +1,51 @@
 # SMW Stream Tracker Desktop v1.1.0
 
-Version 1.1.0 is the first feature release after the initial 1.0 series. It
-improves timing reliability, catalog navigation, installer setup, in-app help,
-feedback, and appearance handling while preserving existing user settings.
+Version 1.1.0 makes MiSTer FPGA a complete supported platform, adds six new
+Game Modes, improves tracker import and recovery, and keeps every new screen
+fully translated across all six supported languages.
 
 ## Highlights
 
-- Level timing now survives older-hack death-to-overworld transitions. It
-  resets only after the goal tape/orb is confirmed or a different level is
-  selected.
-- Catalog and tracker lists gain search and click-to-sort column headers.
-- Download Missing Hacks supports combined difficulty, type, and rating
-  filters.
-- My Tracker and Add Unmoderated Hack support standard cut, copy, and paste
-  actions.
-- First-time tracker colors match the new default palette, while updates keep
-  every saved user color and appearance choice.
-- Help now opens the installed-language setup guide inside the app and includes
-  SMW Central links, community credits, About and Updates, and anonymous
-  feedback.
-- The embedded feedback form follows the app's light or dark appearance.
-- Appearance is now located inside File > Settings.
-- Update, download, and installer windows automatically fit their controls and
-  use clearer native file-selection dialogs.
-- The multilingual guides now include step-by-step LiveSplit, OBS Studio, and
-  Streamlabs Desktop setup.
+- Adds one-click MiSTer discovery and setup over the local network, remote ROM
+  upload and launch, live tracking, and controller restoration after switching
+  games. The same flow supports standard MiSTer and MiSTer Multisystem² systems.
+- Adds a Game Modes page containing Play Random Hack, Hack Draft, Difficulty
+  Ladder, Creator Spotlight, Time Capsule, and Hall of Fame Tour. Every mode has
+  a translated blue window and a hover description.
+- Adds smart Excel import and two-way Google Sheets synchronization, with
+  clearer Spreadsheet Settings and Google Sheets Settings screens.
+- Creates a new automatic tracker and database recovery backup on every clean
+  exit, outside the normal fresh-install cleanup path.
+- Reworks My Tracker with crisp compact add/remove controls, multi-row removal,
+  automatic Hack # renumbering, and simplified action menus.
+- Hides settings and setup commands that belong to a different platform, so
+  FXPAK Pro, RetroArch, and MiSTer users see only relevant controls.
+- Makes optional Windows RetroArch setup faster and waits to open RetroArch
+  until the user launches a game.
+- Adds Streamer.bot level-event output plus translated setup guides for optional
+  Twitch prediction and payout automation.
+- Uses the new transparent, pink-accent MiSTer cat art throughout the app.
+- Completes every new menu, button, status, popup, and setup instruction in
+  English, Australian, Spanish, French, German, and Brazilian Portuguese.
 
 ## Downloads
 
-- `SMWStreamTracker.exe` - portable single-file application.
-- `SMWStreamTracker_Setup_1.1.0.exe` - complete unsigned installer.
-- `SMWStreamTracker_Update_1.1.0.exe` - checksum-verified in-app updater.
-- `SMWStreamTracker_Desktop_1.1.0_Source.zip` - complete release source.
-- `SHA256SUMS_1.1.0.txt` - SHA-256 checksums for every release artifact.
+- `SMWStreamTracker_Setup_1.1.0.exe` - complete Windows installer and repair package.
+- `SMWStreamTracker_Update_1.1.0.exe` - updater for a working Windows installation.
+- `SMWStreamTracker_macOS_arm64_1.1.0.dmg` - Apple Silicon drag-to-Applications installer.
+- `SMWStreamTracker_macOS_x86_64_1.1.0.dmg` - Intel Mac drag-to-Applications installer.
+- Matching Mac ZIP and SHA-256 files for both architectures.
+- `SMWStreamTracker_Desktop_1.1.0_Source.zip` - source, tests, documentation,
+  packaging definitions, screenshots, and required assets.
+- `SHA256SUMS_1.1.0.txt` - SHA-256 checksums for the Windows release downloads.
 
-The application and installers are intentionally unsigned. Windows may show a
-SmartScreen warning until the project develops reputation with Microsoft.
+Windows files are intentionally unsigned. On Windows, SmartScreen may require
+**More info > Run anyway**. Mac builds are signed with the configured Developer
+ID when release secrets are available; otherwise macOS users must open
+**System Settings > Privacy & Security** and choose **Open Anyway** after the
+first blocked launch. This Privacy & Security step is important for unsigned or
+ad-hoc-signed test builds.
+
+SMW Stream Tracker never includes or downloads a commercial Super Mario World
+base ROM. Users must provide their own legally obtained clean ROM when applying
+moderated patches.

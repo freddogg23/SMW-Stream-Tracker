@@ -1,14 +1,17 @@
 PRIVACIDAD DE SMW STREAM TRACKER
 ================================
 
-SMW Stream Tracker no recopila telemetría ni sube archivos ROM.
+SMW Stream Tracker no recopila telemetría ni sube ROM a servicios de Internet.
+Puede transferir una ROM parcheada al MiSTer del usuario por la red local al
+iniciarla.
 
 La aplicación solo usa la red para las funciones que el usuario solicita o
 activa: el catálogo y los parches moderados de SMW Central, las comprobaciones
 de versiones de GitHub, la sincronización opcional con Google Sheets, las
 descargas opcionales de SNI, QUsb2Snes, RetroArch y núcleos de Libretro, la
-comunicación local con esas herramientas y el formulario opcional de Microsoft
-Forms.
+comunicación local con esas herramientas o MiSTer, la descarga verificada de
+snid y la configuración SSH/SFTP de MiSTer, y el formulario opcional de
+Microsoft Forms.
 
 Comentarios y sugerencias abre un formulario público de Microsoft Forms dentro
 de una ventana web integrada de SMW Stream Tracker. Si la vista web integrada
@@ -20,6 +23,9 @@ se envían las respuestas que el usuario escribe.
 Microsoft puede procesar datos normales del servicio según su política de
 privacidad cuando se abre o envía el formulario. SMW Stream Tracker no recibe
 ni almacena esos datos del servicio.
+
+La contraseña SSH de MiSTer solo se conserva en memoria durante la sesión y
+nunca se guarda. Una clave de host guardada permite reconocer ese MiSTer.
 
 Los datos del tracker, ajustes, temporizadores, asignaciones, copias de
 recuperación y registros de errores se guardan localmente. Copiar diagnósticos

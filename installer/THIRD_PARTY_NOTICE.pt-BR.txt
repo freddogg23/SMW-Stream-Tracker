@@ -5,6 +5,7 @@ Este instalador pode baixar e configurar software opcional de terceiros:
 * SNI pelas versões oficiais de alttpo/sni no GitHub.
 * QUsb2Snes pelas versões oficiais de usb2snes (Windows) ou Skarsnik/QUsb2snes (Mac) no GitHub.
 * RetroArch pelo servidor oficial de compilações do Libretro.
+* snid pelas versões oficiais de NobodyNada/snid para o suporte opcional ao MiSTer.
 
 Esses programas são projetos separados e seguem suas próprias licenças. Eles
 não são incorporados ao SMW Stream Tracker. O assistente baixa somente as
@@ -16,6 +17,8 @@ Informações dos projetos e licenças:
 * QUsb2Snes para Windows: https://github.com/usb2snes/usb2snes
 * QUsb2Snes para Mac: https://github.com/Skarsnik/QUsb2snes
 * RetroArch e núcleos Libretro: https://www.libretro.com/
+* snid para MiSTer: https://github.com/NobodyNada/snid
+* Paramiko: https://www.paramiko.org/
 * Pillow: https://python-pillow.org/
 * openpyxl: https://openpyxl.readthedocs.io/
 * websocket-client: https://github.com/websocket-client/websocket-client

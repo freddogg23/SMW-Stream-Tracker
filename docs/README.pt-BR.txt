@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUIA COMPLETO DE CONFIGURAÇÃO
-Versão 1.0.11
+Versão 1.1.0
 
 IDIOMAS
 English: README.en.txt
@@ -24,7 +24,27 @@ game_timer.txt e level_timer.txt para o OBS. Catálogo, patches, aliases de
 emojis no FXPAK, banco de dados, planilhas e textos do OBS mantêm o mesmo
 funcionamento no Windows e no Mac.
 
-NOVIDADES DA VERSÃO 1.0.11
+NOVIDADES DA VERSÃO 1.1.0
+
+* O MiSTer FPGA agora é uma plataforma de jogo completa. A configuração com um
+  clique encontra o console na rede local, prepara a inicialização remota e o
+  acompanhamento ao vivo, e funciona com MiSTer e MiSTer Multisystem².
+* Modos de Jogo inclui Jogar Hack Aleatório, Draft de Hacks, Escada de
+  Dificuldade, Destaque do Criador, Cápsula do Tempo e Tour do Hall da Fama,
+  com janelas azuis traduzidas e descrições ao passar o mouse.
+* Configurações de Planilha oferece importação inteligente de Excel. O Google
+  Sheets sincroniza nos dois sentidos e um novo backup de recuperação do tracker
+  e do banco de dados é salvo em cada encerramento normal.
+* Meu Tracker tem controles compactos para adicionar/remover, remoção de várias
+  linhas, renumeração automática de Hack # e submenus de planilha mais limpos.
+* Menus e configurações ocultam opções que não pertencem à plataforma FXPAK Pro,
+  RetroArch ou MiSTer selecionada.
+* A instalação opcional do RetroArch no Windows ficou mais rápida e o RetroArch
+  permanece fechado até o usuário iniciar um jogo.
+* A saída de eventos de fase para o Streamer.bot e os guias traduzidos permitem
+  automação opcional das previsões da Twitch.
+* Todos os novos menus, botões, status, avisos e instruções de configuração estão
+  traduzidos nos seis idiomas compatíveis.
 
 * O funcionamento nativo no Windows e macOS inclui compilações reproduzíveis
   para Apple Silicon e Intel e a configuração correta de SNI, QUsb2Snes e
@@ -85,10 +105,10 @@ NOVIDADES DA VERSÃO 1.0.11
 
 1. O QUE VOCÊ PRECISA
 
-* Um PC de 64 bits com Windows 10 ou Windows 11.
+* Um PC de 64 bits com Windows 10/11 ou um Mac Intel/Apple Silicon compatível.
 * Uma pasta para ROMs com patch.
 * Internet para o catálogo e downloads opcionais.
-* Um FXPAK Pro/SD2SNES ou RetroArch no Windows.
+* Um FXPAK Pro/SD2SNES, RetroArch ou um MiSTer FPGA conectado à rede local.
 * Sua própria ROM limpa de Super Mario World obtida legalmente para criar ROMs
   jogáveis com patches moderados.
 
@@ -96,10 +116,10 @@ O SMW Stream Tracker não inclui nem baixa uma ROM-base comercial.
 
 2. INSTALAR O PROGRAMA
 
-1. Execute SMWStreamTracker_Setup_1.0.11.exe.
+1. Execute SMWStreamTracker_Setup_1.1.0.exe.
 2. Escolha um idioma na primeira tela.
 3. Leia o aviso sobre software opcional e ROMs.
-4. Escolha FXPAK Pro ou RetroArch como plataforma inicial.
+4. Escolha FXPAK Pro, RetroArch ou MiSTer como plataforma inicial.
 5. Marque as ferramentas opcionais que deseja instalar.
 6. Escolha as pastas de ROMs e saída do OBS, ou deixe os campos vazios para
    configurar depois.
@@ -210,10 +230,11 @@ permanente em massa geralmente é necessário um leitor de cartões.
 10. JOGAR E ACOMPANHAR UM HACK
 
 Digite em Pesquisar ou selecionar um hack, escolha um resultado e clique em
-Jogar. Jogar hack aleatório escolhe somente hacks já baixados que podem ser
-abertos na plataforma selecionada; itens que existem apenas no catálogo nunca
-são escolhidos. Adicionar ao Meu Tracker cria
-uma entrada e Concluir hack registra a conclusão. Clicar fora fecha a lista.
+Jogar. Modos de jogo na tela principal abre uma página em tela cheia com um
+botão Início. Escolha Jogar hack aleatório para iniciar um jogo baixado
+aleatório de acordo com os filtros selecionados.
+Adicionar ao Meu Tracker cria uma entrada e Concluir hack registra a conclusão.
+Clicar fora fecha a lista.
 
 11. CRONÔMETROS, MEU TRACKER E ESTATÍSTICAS
 
@@ -307,6 +328,18 @@ Servidor LiveSplit: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
 Texto no OBS: https://obsproject.com/kb/text-sources
 Captura no Streamlabs: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
+IMPORTAÇÃO, GOOGLE SHEETS E BACKUP PERMANENTE DO EXCEL
+
+Estatísticas > Importar planilha existente restaura as exportações atuais do
+Meu Tracker com progresso, tempo de jogo, mortes, avaliações, datas e notas.
+Para importar diretamente, abra Meu Tracker > Sincronizar a partir do Google
+Sheets, cole o link normal de compartilhamento e selecione Importar agora.
+Compartilhe a planilha como Leitor com Qualquer pessoa com o link; ela deve ter
+uma guia Tracker ou My Tracker. O Apps Script continua disponível para a
+sincronização automática.
+Documents > SMW Stream Tracker Backups >
+SMW_Stream_Tracker_Automatic_Backup.xlsx não é removido na desinstalação.
+
 13. ATUALIZAÇÕES, BACKUP E REVERSÃO
 
 Use SMWStreamTracker_Update_VERSION.exe para versões pequenas depois de uma
@@ -328,3 +361,18 @@ importantes no Windows ou armazenamento.
 Os dados e caminhos do tracker são processados localmente. Catálogo,
 dependências, atualizações e sincronização só se conectam quando usados. Leia
 PRIVACY.txt e THIRD_PARTY_NOTICE.txt para os avisos completos.
+
+CONFIGURAÇÃO RÁPIDA DO MISTER
+
+Em uma nova instalação do Windows, escolha MiSTer FPGA e mantenha selecionada a
+opção Configurar o MiSTer na primeira abertura. O guia piscando levará você ao
+botão de configuração automática.
+
+Conecte o MiSTer e este computador ao mesmo roteador e abra Downloads >
+Configuração de conexão e emulador > Configurar o MiSTer e selecione Encontrar e
+configurar o MiSTer. O tracker encontra e verifica o aparelho, instala ou repara
+o rastreamento ao vivo, cria as pastas de jogos, seleciona o MiSTer, configura
+um login automático exclusivo para o aplicativo e testa a conexão final. Se for
+solicitado, o login SSH de fábrica é root, porta 22, senha 1; a senha nunca é
+salva. Os hacks são copiados com nomes seguros sem alterar seus títulos reais no
+catálogo.

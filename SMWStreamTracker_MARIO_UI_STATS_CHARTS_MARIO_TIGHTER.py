@@ -6,6 +6,7 @@ import base64
 import binascii
 import csv
 import hashlib
+import ipaddress
 import io
 from html import unescape
 from html.parser import HTMLParser
@@ -17,6 +18,7 @@ import plistlib
 import queue
 import random
 import re
+import shlex
 import shutil
 import stat
 import tempfile
@@ -31,14 +33,20 @@ import traceback
 import webbrowser
 import unicodedata
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from string import Formatter
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 import tkinter as tk
+
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
 
 
 class HackSelectorYellowScrollbar(tk.Canvas):
@@ -368,7 +376,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.0.11"
+APP_VERSION = "1.1.0"
 APP_BUILD_DATE = "2026-08-11"
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -482,6 +490,21 @@ RETROARCH_BSNES_MERCURY_INFO_DOWNLOAD_URL = (
     "https://raw.githubusercontent.com/libretro/libretro-super/master/"
     "dist/info/bsnes_mercury_performance_libretro.info"
 )
+MISTER_SNID_DOWNLOAD_URL = (
+    "https://github.com/NobodyNada/snid/releases/download/20260607_1/snid"
+)
+MISTER_SNID_DOWNLOAD_SHA256 = (
+    "71b4a76ccb3e1728253a801e05bb6d91970589e9c2fd44813a281fb7b1b89b93"
+)
+MISTER_SNID_MAX_BYTES = 16 * 1024 * 1024
+MISTER_UARTMODE_DOWNLOAD_URL = (
+    "https://raw.githubusercontent.com/MiSTer-devel/MidiLink_MiSTer/"
+    "d4469d2a3d/uartmode"
+)
+MISTER_UARTMODE_DOWNLOAD_SHA256 = (
+    "25f4580d82bed9a902e929776d5c2435e0b9c4cb6485cd33e787bffcd5b539c8"
+)
+MISTER_UARTMODE_MAX_BYTES = 128 * 1024
 
 
 def platform_family(platform_name: str | None = None) -> str:
@@ -12429,6 +12452,13 @@ APP_DATA_DIR = platform_application_data_directory()
 STATS_DB_FILE = APP_DATA_DIR / "SMWStreamTracker.db"
 STATS_BACKUP_DIR = APP_DATA_DIR / "Backups"
 AUTOMATIC_BACKUP_DIR = APP_DATA_DIR / "AutomaticBackups"
+PERSISTENT_TRACKER_BACKUP_DIR = (
+    Path.home() / "Documents" / "SMW Stream Tracker Backups"
+)
+PERSISTENT_TRACKER_BACKUP_FILE = (
+    PERSISTENT_TRACKER_BACKUP_DIR
+    / "SMW_Stream_Tracker_Automatic_Backup.xlsx"
+)
 ROLLBACK_DIR = APP_DATA_DIR / "Rollback"
 ROLLBACK_EXECUTABLE = ROLLBACK_DIR / "SMWStreamTracker_previous.exe"
 ROLLBACK_HASH_FILE = ROLLBACK_DIR / "SMWStreamTracker_previous.sha256"
@@ -13107,12 +13137,407 @@ class TrackerDatabase:
         return max(0, total)
 
     @staticmethod
-    def _header_map(sheet) -> dict[str, int]:
+    def _single_playtime_seconds(value: object) -> int:
+        """Read a current export/Google Sheets playtime value safely."""
+        if value in (None, ""):
+            return 0
+        if isinstance(value, timedelta):
+            return max(0, int(round(value.total_seconds())))
+        if isinstance(value, (int, float)):
+            number = float(value)
+            # Spreadsheet time cells are stored as a fraction of one day.
+            if 0 <= number < 1:
+                return int(round(number * 86400))
+            return max(0, int(round(number)))
+
+        text_value = str(value).strip()
+        if not text_value:
+            return 0
+        parts = text_value.split(":")
+        try:
+            if len(parts) == 3:
+                hours, minutes, seconds = parts
+                return max(
+                    0,
+                    int(hours) * 3600
+                    + int(minutes) * 60
+                    + int(float(seconds)),
+                )
+            if len(parts) == 2:
+                minutes, seconds = parts
+                return max(
+                    0,
+                    int(minutes) * 60 + int(float(seconds)),
+                )
+            return max(0, int(round(float(text_value))))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _spreadsheet_import_aliases() -> dict[str, tuple[str, ...]]:
+        """Names commonly used for tracker fields in Excel and Sheets."""
         return {
-            normalize_title(cell.value): cell.column
-            for cell in sheet[1]
-            if cell.value not in (None, "")
+            "title": (
+                "ROM Hack Title",
+                "Hack Title",
+                "Hack Name",
+                "Game Title",
+                "Game Name",
+                "ROM Name",
+                "Title",
+                "Game",
+                "Select ROM Hack",
+                "Dropdown Selection",
+            ),
+            "author": (
+                "Created By",
+                "Creator",
+                "Author",
+                "Made By",
+            ),
+            "total_exits": (
+                "Total Exits",
+                "Exits",
+                "Exit Count",
+                "Number of Exits",
+            ),
+            "completed_exits": (
+                "Completed Exits",
+                "Exits Completed",
+                "Cleared Exits",
+                "Exits Cleared",
+            ),
+            "difficulty": (
+                "Difficulty",
+                "Difficulty Level",
+            ),
+            "hack_type": (
+                "Type",
+                "Hack Type",
+                "Hack Category",
+                "Category",
+            ),
+            "smwc_id": (
+                "SMWC ID",
+                "SMWCentral ID",
+                "SMW Central ID",
+            ),
+            "smwc_rating": (
+                "SMWCentral Rating",
+                "SMW Central Rating",
+                "SMWC Rating",
+                "Official Rating",
+            ),
+            "personal_rating": (
+                "Rating (1-5)",
+                "Rating (1–5)",
+                "My Rating",
+                "Personal Rating",
+                "My Score",
+            ),
+            "date_started": (
+                "Date Started",
+                "Started",
+                "Start Date",
+            ),
+            "date_completed": (
+                "Date Completed",
+                "Completed Date",
+                "Completion Date",
+                "Finished",
+                "Finish Date",
+            ),
+            "status": (
+                "Status",
+                "Progress Status",
+                "Progress",
+            ),
+            "playtime_seconds": (
+                "Playtime Seconds",
+                "Time Seconds",
+            ),
+            "playtime": (
+                "Playtime",
+                "Time Played",
+                "Play Time",
+                "Duration",
+            ),
+            "total_deaths": (
+                "Total Deaths",
+                "Deaths",
+                "Death Count",
+            ),
+            "notes": (
+                "Notes",
+                "Comments",
+                "Comment",
+            ),
+            "display_order": (
+                "Hack #",
+                "Hack Number",
+                "Order",
+                "Number",
+            ),
+            "page_url": (
+                "SMWCentral Page",
+                "SMW Central Page",
+                "SMWCentral Page URL",
+                "Page URL",
+                "Open Page",
+            ),
+            "download_url": (
+                "Direct Download URL",
+                "Download Patch",
+                "Download URL",
+                "Download",
+            ),
+            "added_date": (
+                "Added Date",
+                "Date Added",
+            ),
         }
+
+    @classmethod
+    def _smart_header_map(
+        cls,
+        sheet,
+    ) -> tuple[dict[str, int], int, dict[str, int]]:
+        """Find and interpret a header row instead of assuming it is row 1.
+
+        Exact aliases are preferred. Close wording is accepted only at a high
+        confidence, and a few unambiguous fields can be inferred from the
+        values below the heading row. This keeps imports private and usable
+        offline while still handling renamed Excel and Google Sheets columns.
+        """
+        aliases = cls._spreadsheet_import_aliases()
+        normalized_aliases = {
+            field: tuple(
+                normalize_title(alias)
+                for alias in field_aliases
+            )
+            for field, field_aliases in aliases.items()
+        }
+        maximum_row = max(1, int(sheet.max_row or 1))
+        maximum_column = max(1, int(sheet.max_column or 1))
+        row_limit = min(maximum_row, 40)
+        column_limit = min(maximum_column, 80)
+        best_headers: dict[str, int] = {}
+        best_matches: dict[str, int] = {}
+        best_row = 1
+        best_score = -1.0
+
+        for row_number in range(1, row_limit + 1):
+            raw_headers = {
+                normalize_title(
+                    sheet.cell(
+                        row=row_number,
+                        column=column,
+                    ).value
+                ): column
+                for column in range(1, column_limit + 1)
+                if sheet.cell(
+                    row=row_number,
+                    column=column,
+                ).value not in (None, "")
+            }
+            raw_headers.pop("", None)
+            if not raw_headers:
+                continue
+
+            matches: dict[str, int] = {}
+            match_quality: dict[str, float] = {}
+            for header_text, column in raw_headers.items():
+                for field, field_aliases in normalized_aliases.items():
+                    quality = 0.0
+                    if header_text in field_aliases:
+                        quality = 1.0
+                    elif len(header_text) >= 4:
+                        quality = max(
+                            SequenceMatcher(
+                                None,
+                                header_text,
+                                alias,
+                            ).ratio()
+                            for alias in field_aliases
+                        )
+                    if quality < 0.82:
+                        continue
+                    if quality > match_quality.get(field, 0.0):
+                        matches[field] = column
+                        match_quality[field] = quality
+
+            score = sum(match_quality.values())
+            if "title" in matches:
+                score += 12.0
+            score += 2.0 * len(
+                set(matches)
+                & {
+                    "completed_exits",
+                    "date_started",
+                    "date_completed",
+                    "status",
+                    "personal_rating",
+                    "playtime",
+                    "playtime_seconds",
+                    "total_deaths",
+                    "notes",
+                }
+            )
+            if score > best_score:
+                best_headers = raw_headers
+                best_matches = matches
+                best_row = row_number
+                best_score = score
+
+        if not best_headers:
+            return {}, 1, {}
+
+        # Content-aware recognition for categories that have a small,
+        # distinctive vocabulary. Numeric columns are deliberately not
+        # guessed because an exit count, death count, order, and rating can
+        # otherwise look alike.
+        used_columns = set(best_matches.values())
+        sample_end = min(maximum_row, best_row + 50)
+        difficulties = {
+            "newcomer",
+            "casual",
+            "intermediate",
+            "advanced",
+            "expert",
+            "master",
+            "grandmaster",
+            "unranked",
+            "unknown",
+        }
+        hack_types = {
+            "standard",
+            "kaizo",
+            "toolassisted",
+            "tas",
+            "puzzle",
+            "pit",
+            "troll",
+        }
+        statuses = {
+            "completed",
+            "complete",
+            "inprogress",
+            "playing",
+            "planned",
+            "plan",
+        }
+        for column in range(1, column_limit + 1):
+            if column in used_columns:
+                continue
+            values = [
+                sheet.cell(row=row_number, column=column).value
+                for row_number in range(best_row + 1, sample_end + 1)
+            ]
+            values = [
+                value for value in values
+                if value not in (None, "")
+            ]
+            if not values:
+                continue
+            normalized_values = [
+                normalize_title(value)
+                for value in values
+            ]
+
+            def vocabulary_ratio(options: set[str]) -> float:
+                return sum(
+                    value in options
+                    for value in normalized_values
+                ) / len(normalized_values)
+
+            inferred_field = ""
+            if (
+                "difficulty" not in best_matches
+                and vocabulary_ratio(difficulties) >= 0.70
+            ):
+                inferred_field = "difficulty"
+            elif (
+                "hack_type" not in best_matches
+                and vocabulary_ratio(hack_types) >= 0.70
+            ):
+                inferred_field = "hack_type"
+            elif (
+                "status" not in best_matches
+                and vocabulary_ratio(statuses) >= 0.70
+            ):
+                inferred_field = "status"
+            elif "playtime" not in best_matches:
+                time_like = sum(
+                    isinstance(value, timedelta)
+                    or bool(
+                        re.fullmatch(
+                            r"\s*(?:\d+\s+day[s]?,\s*)?\d{1,4}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*",
+                            str(value),
+                            flags=re.IGNORECASE,
+                        )
+                    )
+                    for value in values
+                )
+                if time_like / len(values) >= 0.70:
+                    inferred_field = "playtime"
+            if inferred_field:
+                best_matches[inferred_field] = column
+                used_columns.add(column)
+
+        expanded_headers = dict(best_headers)
+        for field, column in best_matches.items():
+            for alias in aliases[field]:
+                expanded_headers[
+                    normalize_title(alias)
+                ] = column
+        return expanded_headers, best_row, best_matches
+
+    @classmethod
+    def _header_map(cls, sheet) -> dict[str, int]:
+        headers, _row_number, _matches = cls._smart_header_map(sheet)
+        return headers
+
+    @classmethod
+    def _tracker_sheet_name(cls, workbook) -> str | None:
+        """Choose the most likely personal tracker worksheet."""
+        for preferred in (TRACKER_SHEET, "My Tracker"):
+            for sheet_name in workbook.sheetnames:
+                if sheet_name.casefold() == preferred.casefold():
+                    return sheet_name
+        for sheet_name in workbook.sheetnames:
+            normalized_name = sheet_name.strip().casefold()
+            if normalized_name.endswith(" - tracker"):
+                return sheet_name
+
+        best_name: str | None = None
+        best_score = -1
+        tracking_fields = {
+            "completed_exits",
+            "date_started",
+            "date_completed",
+            "status",
+            "personal_rating",
+            "playtime",
+            "playtime_seconds",
+            "total_deaths",
+            "notes",
+        }
+        for sheet_name in workbook.sheetnames:
+            _headers, _row, matches = cls._smart_header_map(
+                workbook[sheet_name]
+            )
+            if "title" not in matches:
+                continue
+            score = 10 + 3 * len(
+                set(matches) & tracking_fields
+            ) + len(matches)
+            normalized_name = normalize_title(sheet_name)
+            if "tracker" in normalized_name or "progress" in normalized_name:
+                score += 5
+            if score > best_score:
+                best_name = sheet_name
+                best_score = score
+        return best_name
 
     @staticmethod
     def _column(
@@ -13149,6 +13574,40 @@ class TrackerDatabase:
             return str(int(float(text_value)))
         except (TypeError, ValueError):
             return text_value
+
+    @classmethod
+    def _smwc_id_from_page_url(
+        cls,
+        value: object,
+    ) -> str:
+        """Recover an SMW Central ID embedded in a details-page link."""
+        text_value = str(value or "").strip()
+        if not text_value:
+            return ""
+        try:
+            query_values = parse_qs(
+                urlparse(text_value).query
+            )
+            for key in ("id", "game", "hack"):
+                values = query_values.get(key, [])
+                if values:
+                    normalized = cls._normalize_smwc_id(
+                        values[0]
+                    )
+                    if normalized:
+                        return normalized
+        except (TypeError, ValueError):
+            pass
+        match = re.search(
+            r"(?:[?&]|\b)id=(\d+)",
+            text_value,
+            flags=re.IGNORECASE,
+        )
+        return (
+            cls._normalize_smwc_id(match.group(1))
+            if match
+            else ""
+        )
 
     def catalog_key(
         self,
@@ -13441,7 +13900,16 @@ class TrackerDatabase:
                     catalog_by_title: dict[
                         str,
                         str,
-                    ] = {}
+                    ] = {
+                        str(row["normalized_title"]): str(row["catalog_key"])
+                        for row in connection.execute(
+                            """
+                            SELECT catalog_key, normalized_title
+                            FROM catalog_hacks
+                            WHERE normalized_title <> ''
+                            """
+                        ).fetchall()
+                    }
 
                     def import_catalog_sheet(
                         sheet_name: str,
@@ -13451,7 +13919,11 @@ class TrackerDatabase:
                             return
 
                         sheet = workbook[sheet_name]
-                        headers = self._header_map(sheet)
+                        (
+                            headers,
+                            header_row,
+                            _matched_fields,
+                        ) = self._smart_header_map(sheet)
                         title_column = self._column(
                             headers,
                             "ROM Hack Title",
@@ -13468,6 +13940,7 @@ class TrackerDatabase:
                         exits_column = self._column(
                             headers,
                             "Exits",
+                            "Total Exits",
                         )
                         difficulty_column = self._column(
                             headers,
@@ -13504,7 +13977,7 @@ class TrackerDatabase:
                         )
 
                         for row_number in range(
-                            2,
+                            header_row + 1,
                             sheet.max_row + 1,
                         ):
                             title_value = sheet.cell(
@@ -13640,7 +14113,11 @@ class TrackerDatabase:
                         map_sheet = workbook[
                             FXPAK_MAP_SHEET
                         ]
-                        headers = self._header_map(
+                        (
+                            headers,
+                            map_header_row,
+                            _matched_fields,
+                        ) = self._smart_header_map(
                             map_sheet
                         )
                         map_key_column = self._column(
@@ -13673,7 +14150,7 @@ class TrackerDatabase:
                         ) or 7
 
                         for row_number in range(
-                            2,
+                            map_header_row + 1,
                             map_sheet.max_row + 1,
                         ):
                             rom_path = str(
@@ -13791,11 +14268,16 @@ class TrackerDatabase:
 
                             summary["mappings"] += 1
 
-                    if TRACKER_SHEET in workbook.sheetnames:
-                        tracker_sheet = workbook[
-                            TRACKER_SHEET
-                        ]
-                        headers = self._header_map(
+                    tracker_sheet_name = self._tracker_sheet_name(
+                        workbook
+                    )
+                    if tracker_sheet_name is not None:
+                        tracker_sheet = workbook[tracker_sheet_name]
+                        (
+                            headers,
+                            tracker_header_row,
+                            _matched_fields,
+                        ) = self._smart_header_map(
                             tracker_sheet
                         )
                         title_column = self._column(
@@ -13816,6 +14298,7 @@ class TrackerDatabase:
                             exits_column = self._column(
                                 headers,
                                 "Exits",
+                                "Total Exits",
                             )
                             difficulty_column = self._column(
                                 headers,
@@ -13850,10 +14333,29 @@ class TrackerDatabase:
                                 headers,
                                 "Rating (1–5)",
                                 "Rating (1-5)",
+                                "My Rating",
+                            )
+                            status_column = self._column(
+                                headers,
+                                "Status",
+                            )
+                            playtime_seconds_column = self._column(
+                                headers,
+                                "Playtime Seconds",
+                            )
+                            playtime_column = self._column(
+                                headers,
+                                "Playtime",
                             )
                             notes_column = self._column(
                                 headers,
                                 "Notes",
+                            )
+                            id_column = self._column(
+                                headers,
+                                "SMWC ID",
+                                "SMWCentral ID",
+                                "SMW Central ID",
                             )
                             page_column = self._column(
                                 headers,
@@ -13865,7 +14367,7 @@ class TrackerDatabase:
                             )
 
                             for row_number in range(
-                                2,
+                                tracker_header_row + 1,
                                 tracker_sheet.max_row + 1,
                             ):
                                 title = str(
@@ -13889,6 +14391,28 @@ class TrackerDatabase:
                                 )
 
                                 if not catalog_key:
+                                    page_url = (
+                                        self._cell_url(
+                                            tracker_sheet.cell(
+                                                row=row_number,
+                                                column=page_column,
+                                            )
+                                        )
+                                        if page_column
+                                        else ""
+                                    )
+                                    smwc_id = self._normalize_smwc_id(
+                                        tracker_sheet.cell(
+                                            row=row_number,
+                                            column=id_column,
+                                        ).value
+                                        if id_column
+                                        else ""
+                                    )
+                                    if not smwc_id:
+                                        smwc_id = self._smwc_id_from_page_url(
+                                            page_url
+                                        )
                                     fallback_record = {
                                         "title": title,
                                         "author": (
@@ -13931,16 +14455,8 @@ class TrackerDatabase:
                                             if official_rating_column
                                             else None
                                         ),
-                                        "page_url": (
-                                            self._cell_url(
-                                                tracker_sheet.cell(
-                                                    row=row_number,
-                                                    column=page_column,
-                                                )
-                                            )
-                                            if page_column
-                                            else ""
-                                        ),
+                                        "smwc_id": smwc_id,
+                                        "page_url": page_url,
                                         "download_url": (
                                             self._cell_url(
                                                 tracker_sheet.cell(
@@ -13951,7 +14467,7 @@ class TrackerDatabase:
                                             if download_column
                                             else ""
                                         ),
-                                        "is_custom": True,
+                                        "is_custom": not bool(smwc_id),
                                     }
                                     catalog_key = self._upsert_catalog(
                                         connection,
@@ -14014,7 +14530,31 @@ class TrackerDatabase:
                                     else ""
                                 )
 
-                                if (
+                                explicit_status = str(
+                                    tracker_sheet.cell(
+                                        row=row_number,
+                                        column=status_column,
+                                    ).value
+                                    if status_column
+                                    else ""
+                                ).strip().casefold()
+                                if explicit_status in {
+                                    "completed",
+                                    "complete",
+                                }:
+                                    status = "Completed"
+                                elif explicit_status in {
+                                    "in progress",
+                                    "in-progress",
+                                    "playing",
+                                }:
+                                    status = "In Progress"
+                                elif explicit_status in {
+                                    "planned",
+                                    "plan",
+                                }:
+                                    status = "Planned"
+                                elif (
                                     date_completed
                                     or (
                                         total_exits > 0
@@ -14063,20 +14603,43 @@ class TrackerDatabase:
                                     if personal_rating_column
                                     else None
                                 )
-                                playtime_seconds = self._playtime_seconds(
-                                    tracker_sheet.cell(
-                                        row=row_number,
-                                        column=14,
-                                    ).value,
-                                    tracker_sheet.cell(
-                                        row=row_number,
-                                        column=15,
-                                    ).value,
-                                    tracker_sheet.cell(
-                                        row=row_number,
-                                        column=16,
-                                    ).value,
-                                )
+                                if playtime_seconds_column is not None:
+                                    playtime_seconds = max(
+                                        0,
+                                        self._integer(
+                                            tracker_sheet.cell(
+                                                row=row_number,
+                                                column=playtime_seconds_column,
+                                            ).value
+                                        ),
+                                    )
+                                elif playtime_column is not None:
+                                    playtime_seconds = (
+                                        self._single_playtime_seconds(
+                                            tracker_sheet.cell(
+                                                row=row_number,
+                                                column=playtime_column,
+                                            ).value
+                                        )
+                                    )
+                                else:
+                                    # Compatibility with the original tracker
+                                    # workbook's Hours / Minutes / Seconds
+                                    # columns at N:P.
+                                    playtime_seconds = self._playtime_seconds(
+                                        tracker_sheet.cell(
+                                            row=row_number,
+                                            column=14,
+                                        ).value,
+                                        tracker_sheet.cell(
+                                            row=row_number,
+                                            column=15,
+                                        ).value,
+                                        tracker_sheet.cell(
+                                            row=row_number,
+                                            column=16,
+                                        ).value,
+                                    )
                                 notes = (
                                     str(
                                         tracker_sheet.cell(
@@ -15906,6 +16469,30 @@ class TrackerDatabase:
                 "DELETE FROM tracked_hacks WHERE id = ?",
                 (int(record_id),),
             )
+            remaining_rows = connection.execute(
+                """
+                SELECT id
+                FROM tracked_hacks
+                ORDER BY
+                    COALESCE(display_order, id),
+                    title COLLATE NOCASE,
+                    id
+                """
+            ).fetchall()
+            connection.executemany(
+                """
+                UPDATE tracked_hacks
+                SET display_order = ?
+                WHERE id = ?
+                """,
+                (
+                    (display_order, int(row["id"]))
+                    for display_order, row in enumerate(
+                        remaining_rows,
+                        start=1,
+                    )
+                ),
+            )
 
     def list_custom(self) -> list[dict[str, Any]]:
         self.initialize()
@@ -16509,6 +17096,42 @@ GOOGLE_SHEETS_APPS_SCRIPT = r"""function doPost(e) {
   }
 }
 
+function doGet(e) {
+  try {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    if (!spreadsheet) {
+      throw new Error('This Apps Script must be bound to a Google Sheet.');
+    }
+    const parameters = (e && e.parameter) || {};
+    if (String(parameters.action || '') !== 'read') {
+      throw new Error('Unsupported Google Sheets request.');
+    }
+    const baseName = String(
+      parameters.sheet_base_name || 'SMW Stream Tracker'
+    ).trim();
+    const sheet = spreadsheet.getSheetByName(baseName + ' - Tracker');
+    if (!sheet) {
+      throw new Error('The synchronized tracker tab was not found.');
+    }
+    const values = sheet.getDataRange().getValues();
+    const headers = values.length ? values[0].map(String) : [];
+    const rows = values.length > 1
+      ? values.slice(1).map(row => row.map(value =>
+          value instanceof Date
+            ? Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+            : value
+        ))
+      : [];
+    return ContentService
+      .createTextOutput(JSON.stringify({ok: true, headers: headers, rows: rows}))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (error) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ok: false, error: String(error)}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
 function getOrCreateSheet_(spreadsheet, name) {
   return spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
 }
@@ -16525,9 +17148,10 @@ function writeTrackerSheet_(spreadsheet, name, tracker) {
 
   const headers = [
     'Hack #', 'ROM Hack Title', 'Created By', 'Total Exits',
-    'Completed Exits', 'Percentage Complete', 'Status', 'Difficulty',
-    'Type', 'SMWCentral Rating', 'My Rating', 'Playtime',
-    'Date Started', 'Date Completed', 'Notes', 'SMWCentral Page'
+    'Completed Exits', 'Total Deaths', 'Percentage Complete', 'Status',
+    'Difficulty', 'Type', 'SMWCentral Rating', 'My Rating',
+    'Playtime Seconds', 'Playtime', 'Date Started', 'Date Completed',
+    'Notes', 'SMWCentral Page'
   ];
 
   const rows = tracker.map((item, index) => [
@@ -16536,12 +17160,16 @@ function writeTrackerSheet_(spreadsheet, name, tracker) {
     item.author || '',
     Number(item.total_exits || 0),
     Number(item.completed_exits || 0),
+    item.death_count_legacy && (item.total_deaths === null || item.total_deaths === undefined)
+      ? '*'
+      : (item.total_deaths === null || item.total_deaths === undefined ? '' : Number(item.total_deaths)),
     Number(item.percentage_complete || 0) / 100,
     item.status || '',
     item.difficulty || '',
     item.hack_type || '',
     item.smwc_rating === null || item.smwc_rating === undefined ? '' : Number(item.smwc_rating),
     item.personal_rating === null || item.personal_rating === undefined ? '' : Number(item.personal_rating),
+    Number(item.playtime_seconds || 0),
     item.playtime || '',
     item.date_started || '',
     item.date_completed || '',
@@ -16552,8 +17180,8 @@ function writeTrackerSheet_(spreadsheet, name, tracker) {
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   if (rows.length) {
     sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
-    sheet.getRange(2, 6, rows.length, 1).setNumberFormat('0%');
-    sheet.getRange(2, 10, rows.length, 2).setNumberFormat('0.00');
+    sheet.getRange(2, 7, rows.length, 1).setNumberFormat('0%');
+    sheet.getRange(2, 11, rows.length, 2).setNumberFormat('0.00');
     applyDifficultyColors_(sheet, rows);
   }
 
@@ -16583,9 +17211,9 @@ function applyDifficultyColors_(sheet, rows) {
   };
 
   rows.forEach((row, index) => {
-    const difficulty = String(row[7] || 'Unknown');
+    const difficulty = String(row[8] || 'Unknown');
     const style = colors[difficulty] || colors.Unknown;
-    sheet.getRange(index + 2, 8).setBackground(style[0]).setFontColor(style[1]).setFontWeight('bold');
+    sheet.getRange(index + 2, 9).setBackground(style[0]).setFontColor(style[1]).setFontWeight('bold');
   });
 }
 
@@ -17603,6 +18231,119 @@ _TRACKER_WORKFLOW_TRANSLATIONS: dict[str, dict[str, str]] = {
 for _language_code, _translations in _TRACKER_WORKFLOW_TRANSLATIONS.items():
     UI_TRANSLATIONS[_language_code].update(_translations)
 
+_TRACKER_CONTROL_LOCALIZATION_ROWS = (
+    # English, Australian, Spanish, French, German, Portuguese (Brazil)
+    (
+        "Spreadsheet Settings",
+        "Spreadsheet Settings, Mate",
+        "Configuración de hojas de cálculo",
+        "Paramètres des feuilles de calcul",
+        "Tabelleneinstellungen",
+        "Configurações de planilhas",
+    ),
+    (
+        "Google Sheets Settings",
+        "Google Sheets Settings, Mate",
+        "Configuración de Google Sheets",
+        "Paramètres Google Sheets",
+        "Google-Sheets-Einstellungen",
+        "Configurações do Google Sheets",
+    ),
+    (
+        "Open SMW Central",
+        "Open SMW Central, Mate",
+        "Abrir SMW Central",
+        "Ouvrir SMW Central",
+        "SMW Central öffnen",
+        "Abrir SMW Central",
+    ),
+    (
+        "Import or export your tracker using an Excel workbook.",
+        "Bring an Excel tracker in or send one out, mate.",
+        "Importa o exporta tu tracker mediante un libro de Excel.",
+        "Importez ou exportez votre tracker avec un classeur Excel.",
+        "Importiere oder exportiere deinen Tracker mit einer Excel-Arbeitsmappe.",
+        "Importe ou exporte seu tracker usando uma pasta de trabalho do Excel.",
+    ),
+    (
+        "Google Sheets sharing link (import):",
+        "Google Sheets sharing link for bringing it back in, mate:",
+        "Enlace compartido de Google Sheets (importar):",
+        "Lien de partage Google Sheets (importation) :",
+        "Google-Sheets-Freigabelink (Import):",
+        "Link de compartilhamento do Google Sheets (importar):",
+    ),
+    (
+        "Select the hacks you want to remove, then choose Remove Selected.",
+        "Tick the hacks you want gone, mate, then choose Remove Selected.",
+        "Selecciona los hacks que quieras quitar y luego elige Eliminar seleccionados.",
+        "Sélectionnez les hacks à retirer, puis choisissez Supprimer la sélection.",
+        "Wähle die Hacks aus, die du entfernen möchtest, und klicke dann auf Auswahl entfernen.",
+        "Selecione os hacks que deseja remover e escolha Remover selecionados.",
+    ),
+    (
+        "{count} hack(s) selected",
+        "{count} hack(s) ticked, mate",
+        "{count} hack(s) seleccionado(s)",
+        "{count} hack(s) sélectionné(s)",
+        "{count} Hack(s) ausgewählt",
+        "{count} hack(s) selecionado(s)",
+    ),
+    (
+        "Remove Selected",
+        "Remove the Ticked Ones, Mate",
+        "Eliminar seleccionados",
+        "Supprimer la sélection",
+        "Auswahl entfernen",
+        "Remover selecionados",
+    ),
+    (
+        "Cancel Selection",
+        "Never Mind, Mate",
+        "Cancelar selección",
+        "Annuler la sélection",
+        "Auswahl abbrechen",
+        "Cancelar seleção",
+    ),
+    (
+        "Remove {count} selected hack(s) from My Tracker?",
+        "Remove {count} ticked hack(s) from My Tracker, mate?",
+        "¿Quitar {count} hack(s) seleccionado(s) de Mi tracker?",
+        "Retirer {count} hack(s) sélectionné(s) de Mon tracker ?",
+        "{count} ausgewählte(n) Hack(s) aus Mein Tracker entfernen?",
+        "Remover {count} hack(s) selecionado(s) do Meu tracker?",
+    ),
+    (
+        "This removes personal progress, ratings, playtime, and notes for the selected hacks. The games stay in the catalog and game library.",
+        "This clears your progress, ratings, playtime, and notes for the ticked hacks, mate. The games stay safely in the catalog and library.",
+        "Esto elimina el progreso personal, las puntuaciones, el tiempo de juego y las notas de los hacks seleccionados. Los juegos permanecen en el catálogo y la biblioteca.",
+        "Cela supprime la progression personnelle, les notes, le temps de jeu et les commentaires des hacks sélectionnés. Les jeux restent dans le catalogue et la bibliothèque.",
+        "Dadurch werden persönlicher Fortschritt, Bewertungen, Spielzeit und Notizen der ausgewählten Hacks entfernt. Die Spiele bleiben im Katalog und in der Spielebibliothek.",
+        "Isso remove o progresso pessoal, as avaliações, o tempo de jogo e as notas dos hacks selecionados. Os jogos permanecem no catálogo e na biblioteca.",
+    ),
+    (
+        "Removed {count} hack(s) from My Tracker.",
+        "Removed {count} hack(s) from My Tracker. Too easy, mate!",
+        "Se eliminaron {count} hack(s) de Mi tracker.",
+        "{count} hack(s) ont été retirés de Mon tracker.",
+        "{count} Hack(s) wurden aus Mein Tracker entfernt.",
+        "{count} hack(s) foram removidos do Meu tracker.",
+    ),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _TRACKER_CONTROL_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
 # Text shared by the browser-style pages, setup tools, and system dialogs.
 # Keeping these rows together guarantees that every supported non-English
 # language receives the same interface coverage when new pages are added.
@@ -17918,6 +18659,67 @@ for (
     _german_text,
     _portuguese_text,
 ) in _LOCALIZATION_COMPLETION_ROWS:
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
+_MISTER_LOCALIZATION_ROWS = (
+    # English, Australian, Spanish, French, German, Portuguese (Brazil)
+    ("MiSTer", "MiSTer", "MiSTer", "MiSTer", "MiSTer", "MiSTer"),
+    ("Set Up MiSTer...", "Sort out the MiSTer, mate...", "Configurar MiSTer...", "Configurer MiSTer...", "MiSTer einrichten...", "Configurar o MiSTer..."),
+    ("MiSTer Setup", "MiSTer wrangling", "Configuración de MiSTer", "Configuration de MiSTer", "MiSTer-Einrichtung", "Configuração do MiSTer"),
+    ("MISTER SETUP", "MISTER WRANGLING", "CONFIGURACIÓN DE MISTER", "CONFIGURATION DE MISTER", "MISTER-EINRICHTUNG", "CONFIGURAÇÃO DO MISTER"),
+    ("MiSTer Login", "MiSTer login, mate", "Acceso a MiSTer", "Connexion MiSTer", "MiSTer-Anmeldung", "Login do MiSTer"),
+    ("MISTER LOGIN", "MISTER LOGIN, MATE", "ACCESO A MISTER", "CONNEXION MISTER", "MISTER-ANMELDUNG", "LOGIN DO MISTER"),
+    ("MiSTer host or IP:", "MiSTer name or IP, mate:", "Nombre o IP de MiSTer:", "Nom ou IP du MiSTer :", "MiSTer-Name oder IP:", "Nome ou IP do MiSTer:"),
+    ("MiSTer host:", "MiSTer host, mate:", "Host de MiSTer:", "Hôte MiSTer :", "MiSTer-Host:", "Host do MiSTer:"),
+    ("MiSTer SSH:", "MiSTer SSH, mate:", "SSH de MiSTer:", "SSH MiSTer :", "MiSTer-SSH:", "SSH do MiSTer:"),
+    ("MiSTer live tracking:", "MiSTer live tracking, you beauty:", "Seguimiento en vivo de MiSTer:", "Suivi en direct MiSTer :", "MiSTer-Live-Verfolgung:", "Rastreamento ao vivo do MiSTer:"),
+    ("SSH user:", "SSH user, mate:", "Usuario SSH:", "Utilisateur SSH :", "SSH-Benutzer:", "Usuário SSH:"),
+    ("SSH port:", "SSH port:", "Puerto SSH:", "Port SSH :", "SSH-Port:", "Porta SSH:"),
+    ("SSH password:", "SSH password, mate:", "Contraseña SSH:", "Mot de passe SSH :", "SSH-Passwort:", "Senha SSH:"),
+    ("Test Connection", "Give the connection a burl", "Probar conexión", "Tester la connexion", "Verbindung testen", "Testar conexão"),
+    ("Find & Set Up MiSTer", "Find and sort out the MiSTer, mate", "Buscar y configurar MiSTer", "Rechercher et configurer le MiSTer", "MiSTer suchen und einrichten", "Encontrar e configurar o MiSTer"),
+    ("Install / Repair Support", "Install or patch her up", "Instalar / reparar soporte", "Installer / réparer la prise en charge", "Unterstützung installieren / reparieren", "Instalar / reparar suporte"),
+    ("Save & Select MiSTer", "Save it and pick MiSTer", "Guardar y seleccionar MiSTer", "Enregistrer et choisir MiSTer", "Speichern und MiSTer wählen", "Salvar e selecionar MiSTer"),
+    ("Ready for MiSTer setup.", "Ready to sort out the MiSTer, mate.", "Listo para configurar MiSTer.", "Prêt pour la configuration du MiSTer.", "Bereit zur MiSTer-Einrichtung.", "Pronto para configurar o MiSTer."),
+    ("Testing MiSTer connection...", "Giving the MiSTer connection a burl...", "Probando la conexión de MiSTer...", "Test de la connexion MiSTer...", "MiSTer-Verbindung wird getestet...", "Testando a conexão do MiSTer..."),
+    ("Looking for MiSTer on your network...", "Hunting for the MiSTer on your network, mate...", "Buscando MiSTer en tu red...", "Recherche du MiSTer sur votre réseau...", "MiSTer wird im Netzwerk gesucht...", "Procurando o MiSTer na sua rede..."),
+    ("MiSTer was not found by name. Scanning the local network...", "Couldn’t spot MiSTer by name, mate. Having a squiz around the local network...", "No se encontró MiSTer por nombre. Analizando la red local...", "Le MiSTer n’a pas été trouvé par son nom. Analyse du réseau local...", "MiSTer wurde nicht über den Namen gefunden. Das lokale Netzwerk wird durchsucht...", "O MiSTer não foi encontrado pelo nome. Verificando a rede local..."),
+    ("MiSTer found. Installing and testing everything...", "Found the MiSTer! Sorting and testing the whole lot, mate...", "MiSTer encontrado. Instalando y probando todo...", "MiSTer trouvé. Installation et vérification de tous les éléments...", "MiSTer gefunden. Alles wird installiert und getestet...", "MiSTer encontrado. Instalando e testando tudo..."),
+    ("Preparing MiSTer support...", "Getting the MiSTer gear ready, mate...", "Preparando la compatibilidad con MiSTer...", "Préparation de la prise en charge MiSTer...", "MiSTer-Unterstützung wird vorbereitet...", "Preparando o suporte ao MiSTer..."),
+    ("Connecting securely to MiSTer...", "Connecting securely to the MiSTer, mate...", "Conectando de forma segura a MiSTer...", "Connexion sécurisée au MiSTer...", "Sichere Verbindung mit MiSTer wird hergestellt...", "Conectando com segurança ao MiSTer..."),
+    ("Installing MiSTer SNES live tracking...", "Installing MiSTer SNES live tracking, you beauty...", "Instalando el seguimiento en vivo de SNES para MiSTer...", "Installation du suivi en direct SNES pour MiSTer...", "MiSTer-SNES-Live-Verfolgung wird installiert...", "Instalando o rastreamento ao vivo do SNES no MiSTer..."),
+    ("Enabling automatic MiSTer login for this app...", "Giving this app its own automatic MiSTer login, mate...", "Habilitando el acceso automático a MiSTer para esta aplicación...", "Activation de la connexion automatique au MiSTer pour cette application...", "Automatische MiSTer-Anmeldung für diese App wird aktiviert...", "Ativando o login automático no MiSTer para este aplicativo..."),
+    ("MiSTer settings saved.", "MiSTer settings saved, you beauty.", "Configuración de MiSTer guardada.", "Paramètres MiSTer enregistrés.", "MiSTer-Einstellungen gespeichert.", "Configurações do MiSTer salvas."),
+    ("MiSTer is fully set up. The tracker found it, installed live tracking, created the game folders, enabled automatic login for this app, selected MiSTer, and verified the connection.", "MiSTer is fully sorted, mate. The tracker found it, installed live tracking, made the game folders, set up its own automatic login, picked MiSTer, and gave the connection a burl. You beauty!", "MiSTer está completamente configurado. El tracker lo encontró, instaló el seguimiento en vivo, creó las carpetas de juegos, habilitó el acceso automático para esta aplicación, seleccionó MiSTer y verificó la conexión.", "Le MiSTer est entièrement configuré. Le tracker l’a trouvé, a installé le suivi en direct, créé les dossiers de jeux, activé la connexion automatique pour cette application, sélectionné MiSTer et vérifié la connexion.", "MiSTer ist vollständig eingerichtet. Der Tracker hat ihn gefunden, die Live-Verfolgung installiert, die Spieleordner erstellt, die automatische Anmeldung für diese App aktiviert, MiSTer ausgewählt und die Verbindung geprüft.", "O MiSTer está totalmente configurado. O tracker o encontrou, instalou o rastreamento ao vivo, criou as pastas de jogos, ativou o login automático para este aplicativo, selecionou o MiSTer e verificou a conexão."),
+    ("MiSTer Ready", "MiSTer is ready, you beauty", "MiSTer listo", "MiSTer prêt", "MiSTer bereit", "MiSTer pronto"),
+    ("MiSTer Setup Failed", "MiSTer setup came a cropper", "Falló la configuración de MiSTer", "Échec de la configuration MiSTer", "MiSTer-Einrichtung fehlgeschlagen", "Falha na configuração do MiSTer"),
+    ("Setup failed:", "Setup came a cropper:", "Error de configuración:", "Échec de la configuration :", "Einrichtung fehlgeschlagen:", "Falha na configuração:"),
+    ("Not responding", "Not answering, mate", "No responde", "Ne répond pas", "Keine Antwort", "Não está respondendo"),
+    ("Game launching: ready", "Game launching is ready to rip", "Inicio de juegos: listo", "Lancement des jeux : prêt", "Spielstart: bereit", "Inicialização de jogos: pronta"),
+    ("Live tracking is connected, but MiSTer game launching still needs MiSTer Setup and a local ROM library.", "Live tracking is connected, but launching still needs the MiSTer sorted and a local ROM stash, mate.", "El seguimiento en vivo está conectado, pero iniciar juegos en MiSTer aún requiere configurar MiSTer y una biblioteca local de ROM.", "Le suivi en direct est connecté, mais le lancement sur MiSTer nécessite encore sa configuration et une bibliothèque ROM locale.", "Live-Verfolgung ist verbunden, aber zum Spielstart fehlen noch die MiSTer-Einrichtung und eine lokale ROM-Bibliothek.", "O rastreamento ao vivo está conectado, mas iniciar jogos no MiSTer ainda requer a configuração do MiSTer e uma biblioteca local de ROMs."),
+    ("Enter the MiSTer SSH password. The factory default is 1. Leave it blank if you use an SSH key. The password is kept only until the tracker closes.", "Pop in the MiSTer SSH password, mate. The factory default is 1. Leave it blank for an SSH key. We only hang onto it until the tracker closes.", "Introduce la contraseña SSH de MiSTer. El valor de fábrica es 1. Déjala vacía si usas una clave SSH. Solo se conserva hasta cerrar el tracker.", "Saisissez le mot de passe SSH du MiSTer. La valeur d’usine est 1. Laissez vide si vous utilisez une clé SSH. Il est conservé uniquement jusqu’à la fermeture du tracker.", "Gib das MiSTer-SSH-Passwort ein. Die Werkseinstellung ist 1. Bei Nutzung eines SSH-Schlüssels leer lassen. Es wird nur bis zum Schließen des Trackers behalten.", "Digite a senha SSH do MiSTer. O padrão de fábrica é 1. Deixe em branco se usar uma chave SSH. Ela é mantida somente até o tracker fechar."),
+    ("The password is used only for this tracker session and is never saved. Leave it blank if your MiSTer uses an SSH key.", "The password only sticks around for this tracker session, mate, and is never saved. Leave it blank if you use an SSH key.", "La contraseña solo se usa durante esta sesión del tracker y nunca se guarda. Déjala vacía si tu MiSTer usa una clave SSH.", "Le mot de passe est utilisé uniquement pendant cette session et n’est jamais enregistré. Laissez vide si votre MiSTer utilise une clé SSH.", "Das Passwort wird nur für diese Tracker-Sitzung verwendet und nie gespeichert. Bei einem SSH-Schlüssel leer lassen.", "A senha é usada somente nesta sessão do tracker e nunca é salva. Deixe em branco se o MiSTer usar uma chave SSH."),
+    ("1. Connect MiSTer to your router with Ethernet or Wi-Fi and power it on.\n2. Keep this computer on the same network.\n3. Select Find & Set Up MiSTer. The tracker will find its address, install live tracking, create its game folders, enable automatic login for this app, select MiSTer, and test everything.\n4. The fields and smaller buttons below are only needed for manual setup.", "1. Hook MiSTer to your router by Ethernet or Wi-Fi and fire it up, mate.\n2. Keep this computer on the same network.\n3. Pick Find & Set Up MiSTer. The tracker will hunt it down, sort live tracking, make the game folders, set up its own automatic login, pick MiSTer, and test the whole lot.\n4. The fields and little buttons below are only for doing it the hard way. Crikey, easy as.", "1. Conecta MiSTer al router por Ethernet o Wi-Fi y enciéndelo.\n2. Mantén este equipo en la misma red.\n3. Selecciona Buscar y configurar MiSTer. El tracker encontrará su dirección, instalará el seguimiento en vivo, creará sus carpetas de juegos, habilitará el acceso automático para esta aplicación, seleccionará MiSTer y probará todo.\n4. Los campos y botones pequeños de abajo solo son necesarios para la configuración manual.", "1. Connectez le MiSTer au routeur par Ethernet ou Wi-Fi et allumez-le.\n2. Gardez cet ordinateur sur le même réseau.\n3. Choisissez Rechercher et configurer le MiSTer. Le tracker trouvera son adresse, installera le suivi en direct, créera les dossiers de jeux, activera la connexion automatique pour cette application, sélectionnera MiSTer et vérifiera l’ensemble.\n4. Les champs et les petits boutons ci-dessous servent uniquement à la configuration manuelle.", "1. Verbinde MiSTer per Ethernet oder WLAN mit dem Router und schalte ihn ein.\n2. Dieser Computer muss im selben Netzwerk sein.\n3. Wähle MiSTer suchen und einrichten. Der Tracker findet seine Adresse, installiert die Live-Verfolgung, erstellt die Spieleordner, aktiviert die automatische Anmeldung für diese App, wählt MiSTer aus und testet alles.\n4. Die Felder und kleineren Schaltflächen unten werden nur für die manuelle Einrichtung benötigt.", "1. Conecte o MiSTer ao roteador por Ethernet ou Wi-Fi e ligue-o.\n2. Mantenha este computador na mesma rede.\n3. Selecione Encontrar e configurar o MiSTer. O tracker encontrará o endereço, instalará o rastreamento ao vivo, criará as pastas de jogos, ativará o login automático para este aplicativo, selecionará o MiSTer e testará tudo.\n4. Os campos e botões menores abaixo são necessários somente para a configuração manual."),
+    ("Manual setup options", "Manual setup bits, mate", "Opciones de configuración manual", "Options de configuration manuelle", "Optionen für die manuelle Einrichtung", "Opções de configuração manual"),
+    ("MiSTer was found, but the SSH login was not accepted. Use the MiSTer SSH password shown above (the factory default is 1), then try again.", "Found the MiSTer, mate, but the SSH login was knocked back. Use the password shown above (factory default is 1) and have another go.", "Se encontró MiSTer, pero no se aceptó el acceso SSH. Usa la contraseña SSH de MiSTer que aparece arriba (el valor de fábrica es 1) y vuelve a intentarlo.", "Le MiSTer a été trouvé, mais la connexion SSH a été refusée. Utilisez le mot de passe SSH indiqué ci-dessus (la valeur d’usine est 1), puis réessayez.", "MiSTer wurde gefunden, aber die SSH-Anmeldung wurde abgelehnt. Verwende das oben angezeigte MiSTer-SSH-Passwort (Werkseinstellung 1) und versuche es erneut.", "O MiSTer foi encontrado, mas o login SSH não foi aceito. Use a senha SSH do MiSTer mostrada acima (o padrão de fábrica é 1) e tente novamente."),
+    ("MiSTer could not be found on this local network. Make sure it is powered on, connected to the same router, and SSH is enabled, then try again.", "Couldn’t find the MiSTer on this network, mate. Make sure it’s switched on, on the same router, and SSH is enabled, then give it another burl.", "No se pudo encontrar MiSTer en esta red local. Asegúrate de que esté encendido, conectado al mismo router y que SSH esté habilitado; luego inténtalo de nuevo.", "Le MiSTer est introuvable sur ce réseau local. Vérifiez qu’il est allumé, connecté au même routeur et que SSH est activé, puis réessayez.", "MiSTer wurde in diesem lokalen Netzwerk nicht gefunden. Stelle sicher, dass er eingeschaltet, mit demselben Router verbunden und SSH aktiviert ist, und versuche es erneut.", "O MiSTer não foi encontrado nesta rede local. Verifique se ele está ligado, conectado ao mesmo roteador e com o SSH ativado; depois tente novamente."),
+    ("The MiSTer SD card would not accept the live-tracking file. Make sure the SD card is inserted and is not write-protected, then try again.", "The MiSTer SD card wouldn’t take the live-tracking file, mate. Make sure it’s in, not write-protected, and give it another burl.", "La tarjeta SD de MiSTer no aceptó el archivo de seguimiento en vivo. Asegúrate de que esté insertada y no protegida contra escritura; luego inténtalo de nuevo.", "La carte SD du MiSTer n’a pas accepté le fichier de suivi en direct. Vérifiez qu’elle est insérée et non protégée en écriture, puis réessayez.", "Die MiSTer-SD-Karte hat die Live-Verfolgungsdatei nicht angenommen. Stelle sicher, dass sie eingesetzt und nicht schreibgeschützt ist, und versuche es erneut.", "O cartão SD do MiSTer não aceitou o arquivo de rastreamento ao vivo. Verifique se ele está inserido e sem proteção contra gravação; depois tente novamente."),
+    ("MiSTer temporary storage would not accept the live-tracking launcher. Restart MiSTer and try again.", "MiSTer’s temporary storage wouldn’t take the live-tracking launcher, mate. Restart the MiSTer and have another go.", "El almacenamiento temporal de MiSTer no aceptó el iniciador de seguimiento en vivo. Reinicia MiSTer e inténtalo de nuevo.", "Le stockage temporaire du MiSTer n’a pas accepté le lanceur de suivi en direct. Redémarrez le MiSTer et réessayez.", "Der temporäre MiSTer-Speicher hat das Live-Verfolgungsprogramm nicht angenommen. Starte MiSTer neu und versuche es erneut.", "O armazenamento temporário do MiSTer não aceitou o iniciador de rastreamento ao vivo. Reinicie o MiSTer e tente novamente."),
+    ("1. Connect MiSTer to your router with Ethernet or Wi-Fi and power it on.\n2. Keep this computer on the same network.\n3. Enter MiSTer or its IP address below. The factory SSH login is root with password 1.\n4. Select Install / Repair Support. The tracker will install live tracking, create its SNES ROM folder, and select MiSTer as the platform.", "1. Hook MiSTer to your router by Ethernet or Wi-Fi and fire it up, mate.\n2. Keep this computer on the same network.\n3. Enter MiSTer or its IP below. The factory SSH login is root with password 1.\n4. Pick Install / Repair Support. The tracker will sort live tracking, make the SNES ROM folder, and pick MiSTer. Crikey, easy as.", "1. Conecta MiSTer al router por Ethernet o Wi-Fi y enciéndelo.\n2. Mantén este equipo en la misma red.\n3. Escribe MiSTer o su IP. El acceso SSH de fábrica es root con contraseña 1.\n4. Selecciona Instalar / reparar soporte. El tracker instalará el seguimiento en vivo, creará la carpeta de ROM de SNES y seleccionará MiSTer.", "1. Connectez le MiSTer au routeur par Ethernet ou Wi-Fi et allumez-le.\n2. Gardez cet ordinateur sur le même réseau.\n3. Saisissez MiSTer ou son adresse IP. L’accès SSH d’usine est root avec le mot de passe 1.\n4. Choisissez Installer / réparer. Le tracker installera le suivi en direct, créera le dossier ROM SNES et sélectionnera MiSTer.", "1. Verbinde MiSTer per Ethernet oder WLAN mit dem Router und schalte ihn ein.\n2. Dieser Computer muss im selben Netzwerk sein.\n3. Gib MiSTer oder seine IP ein. Die SSH-Werksanmeldung lautet root mit Passwort 1.\n4. Wähle Unterstützung installieren / reparieren. Der Tracker installiert Live-Verfolgung, erstellt den SNES-ROM-Ordner und wählt MiSTer aus.", "1. Conecte o MiSTer ao roteador por Ethernet ou Wi-Fi e ligue-o.\n2. Mantenha este computador na mesma rede.\n3. Digite MiSTer ou o IP. O login SSH de fábrica é root com senha 1.\n4. Selecione Instalar / reparar suporte. O tracker instalará o rastreamento ao vivo, criará a pasta de ROMs do SNES e selecionará o MiSTer."),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _MISTER_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
     UI_TRANSLATIONS["es"][_english_text] = _spanish_text
     UI_TRANSLATIONS["fr"][_english_text] = _french_text
     UI_TRANSLATIONS["de"][_english_text] = _german_text
@@ -18579,6 +19381,11 @@ for _english_text in _all_ui_translation_keys:
 UI_TRANSLATIONS["au"].update(_AUSTRALIAN_UI_OVERRIDES)
 
 _RUNTIME_LOCALIZATION_ROWS = (
+    ("Database Tools", "Database gear, mate", "Herramientas de base de datos", "Outils de base de données", "Datenbankwerkzeuge", "Ferramentas do banco de dados"),
+    ("Automatic Backups", "Automatic backups, mate", "Copias de seguridad automáticas", "Sauvegardes automatiques", "Automatische Sicherungen", "Backups automáticos"),
+    ("FXPAK Pro uses QUsb2Snes for live memory tracking. The workbook remains optional after import.", "FXPAK Pro uses QUsb2Snes for live tracking, mate. The workbook is still optional after import.", "FXPAK Pro usa QUsb2Snes para el seguimiento de memoria en vivo. El libro sigue siendo opcional después de importarlo.", "FXPAK Pro utilise QUsb2Snes pour le suivi mémoire en direct. Le classeur reste facultatif après l’importation.", "FXPAK Pro verwendet QUsb2Snes für die Live-Speicherverfolgung. Die Arbeitsmappe bleibt nach dem Import optional.", "O FXPAK Pro usa o QUsb2Snes para rastreamento de memória ao vivo. A pasta de trabalho continua opcional após a importação."),
+    ("RetroArch uses SNI for live memory tracking and also needs Network Commands enabled. The workbook remains optional after import.", "RetroArch uses SNI for live tracking and needs Network Commands switched on, mate. The workbook is still optional after import.", "RetroArch usa SNI para el seguimiento de memoria en vivo y también necesita los comandos de red activados. El libro sigue siendo opcional después de importarlo.", "RetroArch utilise SNI pour le suivi mémoire en direct et nécessite aussi l’activation des commandes réseau. Le classeur reste facultatif après l’importation.", "RetroArch verwendet SNI für die Live-Speicherverfolgung und benötigt außerdem aktivierte Netzwerkbefehle. Die Arbeitsmappe bleibt nach dem Import optional.", "O RetroArch usa o SNI para rastreamento de memória ao vivo e também precisa dos Comandos de Rede ativados. A pasta de trabalho continua opcional após a importação."),
+    ("MiSTer uses its local network connection for live memory tracking. The workbook remains optional after import.", "MiSTer uses your local network for live tracking, mate. The workbook is still optional after import. Too easy!", "MiSTer usa la conexión de red local para el seguimiento de memoria en vivo. El libro sigue siendo opcional después de importarlo.", "MiSTer utilise la connexion au réseau local pour le suivi mémoire en direct. Le classeur reste facultatif après l’importation.", "MiSTer verwendet die lokale Netzwerkverbindung für die Live-Speicherverfolgung. Die Arbeitsmappe bleibt nach dem Import optional.", "O MiSTer usa a conexão de rede local para rastreamento de memória ao vivo. A pasta de trabalho continua opcional após a importação."),
     ("Remove from My Tracker", "Take it out of My Tracker, mate", "Eliminar de Mi Tracker", "Retirer de Mon Tracker", "Aus Mein Tracker entfernen", "Remover do Meu Tracker"),
     ('Remove "{title}" from My Tracker?', 'Take "{title}" out of My Tracker, mate?', '¿Eliminar "{title}" de Mi Tracker?', 'Retirer "{title}" de Mon Tracker ?', '"{title}" aus Mein Tracker entfernen?', 'Remover "{title}" do Meu Tracker?'),
     ("This removes personal progress, rating, playtime, and notes. The game stays in the catalog and game library.", "This clears your progress, score, playtime, and notes, mate. The game stays put in the catalogue and game library.", "Esto elimina el progreso personal, la puntuación, el tiempo de juego y las notas. El juego permanece en el catálogo y en la biblioteca de juegos.", "Cette action supprime la progression personnelle, la note, le temps de jeu et les notes. Le jeu reste dans le catalogue et la bibliothèque de jeux.", "Dadurch werden persönlicher Fortschritt, Bewertung, Spielzeit und Notizen entfernt. Das Spiel bleibt im Katalog und in der Spielebibliothek.", "Isso remove o progresso pessoal, a avaliação, o tempo de jogo e as observações. O jogo permanece no catálogo e na biblioteca de jogos."),
@@ -18675,6 +19482,94 @@ _RUNTIME_LOCALIZATION_ROWS = (
     ("Choose {label} data-bar starting color", "Pick the data-bar starting colour for {label}, mate", "Elegir color inicial de la barra de datos de {label}", "Choisir la couleur de début de la barre de données de {label}", "Startfarbe des Datenbalkens für {label} auswählen", "Escolher a cor inicial da barra de dados de {label}"),
     ("Choose {label} data-bar ending color", "Pick the data-bar ending colour for {label}, mate", "Elegir color final de la barra de datos de {label}", "Choisir la couleur de fin de la barre de données de {label}", "Endfarbe des Datenbalkens für {label} auswählen", "Escolher a cor final da barra de dados de {label}"),
     ("Choose the color for all {difficulty} hacks", "Pick the colour for every {difficulty} hack, mate", "Elegir el color de todos los hacks de dificultad {difficulty}", "Choisir la couleur de tous les hacks de difficulté {difficulty}", "Farbe für alle Hacks der Schwierigkeit {difficulty} auswählen", "Escolher a cor de todos os hacks de dificuldade {difficulty}"),
+    ("Game Modes", "Game Modes, mate", "Modos de juego", "Modes de jeu", "Spielmodi", "Modos de jogo"),
+    ("GAME MODES", "GAME MODES, MATE", "MODOS DE JUEGO", "MODES DE JEU", "SPIELMODI", "MODOS DE JOGO"),
+    ("Choose how you want to play.", "Pick how you want to have a crack, mate.", "Elige cómo quieres jugar.", "Choisissez votre façon de jouer.", "Wähle, wie du spielen möchtest.", "Escolha como você quer jogar."),
+    ("Hover over a game mode to see what it does, then select it to play.", "Hover over a mode for the good oil, then give it a burl, mate.", "Pasa el cursor sobre un modo de juego para ver qué hace y selecciónalo para jugar.", "Survolez un mode de jeu pour afficher sa description, puis sélectionnez-le pour jouer.", "Bewege den Mauszeiger über einen Spielmodus, um seine Beschreibung zu sehen, und wähle ihn dann zum Spielen aus.", "Passe o cursor sobre um modo de jogo para ver o que ele faz e selecione-o para jogar."),
+    ("Play one random downloaded and patched hack using your filters.", "Spin up one random downloaded and patched hack using your filters, mate.", "Juega un hack descargado y parcheado al azar usando tus filtros.", "Jouez à un hack téléchargé et patché au hasard selon vos filtres.", "Spiele einen zufälligen heruntergeladenen und gepatchten Hack mit deinen Filtern.", "Jogue um hack baixado e corrigido aleatoriamente usando seus filtros."),
+    ("Hack Draft", "Hack Draft, mate", "Selección de hacks", "Sélection de hacks", "Hack-Auswahl", "Seleção de hacks"),
+    ("HACK DRAFT", "HACK DRAFT, MATE", "SELECCIÓN DE HACKS", "SÉLECTION DE HACKS", "HACK-AUSWAHL", "SELEÇÃO DE HACKS"),
+    ("Deal three random ready-to-play hacks, then choose one to launch.", "Deal three ready-to-rip hacks and pick your champion, mate.", "Recibe tres hacks aleatorios listos para jugar y elige uno para iniciarlo.", "Recevez trois hacks aléatoires prêts à jouer, puis choisissez celui à lancer.", "Lass dir drei zufällige spielbereite Hacks geben und wähle einen zum Starten aus.", "Receba três hacks aleatórios prontos para jogar e escolha um para iniciar."),
+    ("Three ready-to-play hacks are dealt below. Choose one to launch, or deal three different choices.", "Three ready-to-rip hacks are on the table. Pick one or deal another hand, mate.", "A continuación aparecen tres hacks listos para jugar. Elige uno para iniciarlo o reparte tres opciones diferentes.", "Trois hacks prêts à jouer sont proposés ci-dessous. Choisissez-en un ou demandez trois nouvelles options.", "Unten werden drei spielbereite Hacks angeboten. Wähle einen aus oder lass dir drei neue Optionen geben.", "Três hacks prontos para jogar são exibidos abaixo. Escolha um ou sorteie três opções diferentes."),
+    ("Deal Again", "Deal another hand, mate", "Repartir de nuevo", "Redistribuer", "Neu auswählen", "Sortear novamente"),
+    ("Difficulty Ladder", "Difficulty Ladder, mate", "Escalera de dificultad", "Échelle de difficulté", "Schwierigkeitsleiter", "Escada de dificuldade"),
+    ("DIFFICULTY LADDER", "DIFFICULTY LADDER, MATE", "ESCALERA DE DIFICULTAD", "ÉCHELLE DE DIFFICULTÉ", "SCHWIERIGKEITSLEITER", "ESCADA DE DIFICULDADE"),
+    ("Climb from the easiest available difficulty to Grandmaster, one complete hack at a time.", "Climb from a gentle warm-up to Grandmaster, one whole hack at a time, mate.", "Sube desde la dificultad disponible más fácil hasta Gran maestro, un hack completo cada vez.", "Progressez de la difficulté disponible la plus facile jusqu’à Grand maître, un hack complet à la fois.", "Steige vom leichtesten verfügbaren Schwierigkeitsgrad bis zum Großmeister auf, jeweils einen vollständigen Hack.", "Suba da dificuldade disponível mais fácil até Grão-mestre, um hack completo de cada vez."),
+    ("Choose your current rung and complete one full hack before climbing to the next available difficulty.", "Pick your rung and finish the whole hack before climbing higher, mate.", "Elige tu peldaño actual y completa un hack entero antes de subir a la siguiente dificultad disponible.", "Choisissez votre échelon actuel et terminez un hack complet avant de passer à la difficulté disponible suivante.", "Wähle deine aktuelle Stufe und schließe einen vollständigen Hack ab, bevor du zur nächsten verfügbaren Schwierigkeit aufsteigst.", "Escolha seu degrau atual e conclua um hack inteiro antes de subir para a próxima dificuldade disponível."),
+    ("Ladder Rung", "Your rung on the ladder", "Peldaño", "Échelon", "Leiterstufe", "Degrau"),
+    ("Random Hack from This Rung", "Random hack from this rung, mate", "Hack aleatorio de este peldaño", "Hack aléatoire de cet échelon", "Zufälliger Hack dieser Stufe", "Hack aleatório deste degrau"),
+    ("Creator Spotlight", "Creator Spotlight, mate", "Creador destacado", "Créateur à l’honneur", "Ersteller im Rampenlicht", "Criador em destaque"),
+    ("CREATOR SPOTLIGHT", "CREATOR SPOTLIGHT, MATE", "CREADOR DESTACADO", "CRÉATEUR À L’HONNEUR", "ERSTELLER IM RAMPENLICHT", "CRIADOR EM DESTAQUE"),
+    ("Choose a creator and launch one of their downloaded hacks.", "Pick a creator and give one of their downloaded beauties a burl, mate.", "Elige un creador e inicia uno de sus hacks descargados.", "Choisissez un créateur et lancez l’un de ses hacks téléchargés.", "Wähle einen Ersteller und starte einen seiner heruntergeladenen Hacks.", "Escolha um criador e inicie um dos hacks baixados dele."),
+    ("Pick a creator to browse every downloaded hack credited to them, or launch a random spotlight selection.", "Pick a creator, browse all their downloaded work, or fire up a surprise spotlight pick, mate.", "Elige un creador para ver todos los hacks descargados que tiene acreditados o inicia una selección destacada al azar.", "Choisissez un créateur pour parcourir tous les hacks téléchargés qui lui sont attribués, ou lancez une sélection aléatoire.", "Wähle einen Ersteller, um alle ihm zugeordneten heruntergeladenen Hacks zu durchsuchen, oder starte eine zufällige Auswahl.", "Escolha um criador para ver todos os hacks baixados atribuídos a ele ou inicie uma seleção aleatória em destaque."),
+    ("Creator", "The legend who made it", "Creador", "Créateur", "Ersteller", "Criador"),
+    ("Random Hack by This Creator", "Random hack by this legend, mate", "Hack aleatorio de este creador", "Hack aléatoire de ce créateur", "Zufälliger Hack dieses Erstellers", "Hack aleatório deste criador"),
+    ("Time Capsule", "Time Capsule, mate", "Cápsula del tiempo", "Capsule temporelle", "Zeitkapsel", "Cápsula do tempo"),
+    ("TIME CAPSULE", "TIME CAPSULE, MATE", "CÁPSULA DEL TIEMPO", "CAPSULE TEMPORELLE", "ZEITKAPSEL", "CÁPSULA DO TEMPO"),
+    ("Choose a release year and play a downloaded hack from that year.", "Pick a year, head back in time, and play a downloaded hack from it, mate.", "Elige un año de lanzamiento y juega un hack descargado de ese año.", "Choisissez une année de sortie et jouez à un hack téléchargé de cette année.", "Wähle ein Veröffentlichungsjahr und spiele einen heruntergeladenen Hack aus diesem Jahr.", "Escolha um ano de lançamento e jogue um hack baixado daquele ano."),
+    ("Choose an SMW Central release year, then select a downloaded hack or let the tracker surprise you.", "Pick an SMW Central year, choose a downloaded classic, or let the tracker surprise you, mate.", "Elige un año de lanzamiento de SMW Central y selecciona un hack descargado o deja que el tracker te sorprenda.", "Choisissez une année de sortie SMW Central, puis un hack téléchargé, ou laissez le tracker vous surprendre.", "Wähle ein SMW-Central-Veröffentlichungsjahr und dann einen heruntergeladenen Hack, oder lass dich vom Tracker überraschen.", "Escolha um ano de lançamento do SMW Central e selecione um hack baixado ou deixe o tracker surpreender você."),
+    ("Release Year", "Year it hit the scene", "Año de lanzamiento", "Année de sortie", "Veröffentlichungsjahr", "Ano de lançamento"),
+    ("Random Hack from This Year", "Random hack from this vintage, mate", "Hack aleatorio de este año", "Hack aléatoire de cette année", "Zufälliger Hack aus diesem Jahr", "Hack aleatório deste ano"),
+    ("Hall of Fame Tour", "Hall of Fame Tour, mate", "Gira del Salón de la Fama", "Tournée du Temple de la renommée", "Ruhmeshallen-Tour", "Turnê do Hall da Fama"),
+    ("HALL OF FAME TOUR", "HALL OF FAME TOUR, MATE", "GIRA DEL SALÓN DE LA FAMA", "TOURNÉE DU TEMPLE DE LA RENOMMÉE", "RUHMESHALLEN-TOUR", "TURNÊ DO HALL DA FAMA"),
+    ("Browse downloaded SMW Central Hall of Fame hacks by difficulty and launch your next stop.", "Tour downloaded Hall of Fame legends by difficulty and fire up your next stop, mate.", "Explora los hacks descargados del Salón de la Fama de SMW Central por dificultad e inicia tu próxima parada.", "Parcourez les hacks téléchargés du Temple de la renommée SMW Central par difficulté et lancez votre prochaine étape.", "Durchsuche heruntergeladene SMW-Central-Ruhmeshallen-Hacks nach Schwierigkeit und starte deine nächste Station.", "Explore os hacks baixados do Hall da Fama do SMW Central por dificuldade e inicie sua próxima parada."),
+    ("Tour downloaded SMW Central Hall of Fame hacks. Choose a difficulty and launch any available stop.", "Tour the downloaded Hall of Fame legends. Pick a difficulty and fire up any stop, mate.", "Recorre los hacks descargados del Salón de la Fama de SMW Central. Elige una dificultad e inicia cualquier parada disponible.", "Parcourez les hacks téléchargés du Temple de la renommée SMW Central. Choisissez une difficulté et lancez l’étape disponible de votre choix.", "Bereise heruntergeladene SMW-Central-Ruhmeshallen-Hacks. Wähle eine Schwierigkeit und starte eine verfügbare Station.", "Percorra os hacks baixados do Hall da Fama do SMW Central. Escolha uma dificuldade e inicie qualquer parada disponível."),
+    ("Random Hall of Fame Hack", "Random Hall of Fame legend, mate", "Hack aleatorio del Salón de la Fama", "Hack aléatoire du Temple de la renommée", "Zufälliger Ruhmeshallen-Hack", "Hack aleatório do Hall da Fama"),
+    ("Ready-to-Play Hack", "Ready-to-rip hack", "Hack listo para jugar", "Hack prêt à jouer", "Spielbereiter Hack", "Hack pronto para jogar"),
+    ("Launch Selected Hack", "Fire up the selected hack", "Iniciar hack seleccionado", "Lancer le hack sélectionné", "Ausgewählten Hack starten", "Iniciar hack selecionado"),
+    ("No downloaded hacks match this game mode on the selected platform.", "Yeah, nah — no downloaded hacks fit this mode on the selected rig, mate.", "No hay hacks descargados que coincidan con este modo de juego en la plataforma seleccionada.", "Aucun hack téléchargé ne correspond à ce mode de jeu sur la plateforme sélectionnée.", "Auf der ausgewählten Plattform passen keine heruntergeladenen Hacks zu diesem Spielmodus.", "Nenhum hack baixado corresponde a este modo de jogo na plataforma selecionada."),
+    ("Build a multi-level run of random hacks that advances automatically after every completed level.", "Build a ripper multi-level run of random hacks that rolls on after every finished level, mate.", "Crea una partida de varios niveles con hacks aleatorios que avanza automáticamente después de cada nivel completado.", "Créez un parcours de plusieurs niveaux avec des hacks aléatoires qui avance automatiquement après chaque niveau terminé.", "Erstelle einen mehrstufigen Lauf mit zufälligen Hacks, der nach jedem abgeschlossenen Level automatisch fortfährt.", "Crie uma sequência de várias fases com hacks aleatórios que avança automaticamente após cada fase concluída."),
+    ("Hack Gauntlet Maker", "Hack Gauntlet Maker, mate", "Creador de maratones de hacks", "Créateur de parcours de hacks", "Hack-Gauntlet-Builder", "Criador de maratona de hacks"),
+    ("HACK GAUNTLET MAKER", "HACK GAUNTLET MAKER, MATE", "CREADOR DE MARATONES DE HACKS", "CRÉATEUR DE PARCOURS DE HACKS", "HACK-GAUNTLET-BUILDER", "CRIADOR DE MARATONA DE HACKS"),
+    ("Build a run of random hacks. Each completed level automatically launches the next hack in the gauntlet.", "Build a ripper run of random hacks, mate. Finish a level and the next hack fires up automatically.", "Crea una partida de hacks aleatorios. Cada nivel completado inicia automáticamente el siguiente hack de la maratón.", "Créez un parcours de hacks aléatoires. Chaque niveau terminé lance automatiquement le hack suivant.", "Erstelle einen Lauf aus zufälligen Hacks. Nach jedem abgeschlossenen Level wird automatisch der nächste Hack gestartet.", "Crie uma sequência de hacks aleatórios. Cada fase concluída inicia automaticamente o próximo hack da maratona."),
+    ("Number of levels", "Number of levels, mate", "Número de niveles", "Nombre de niveaux", "Anzahl der Level", "Número de fases"),
+    ("Allow the same hack to appear more than once", "Let the same hack have another go", "Permitir que el mismo hack aparezca más de una vez", "Autoriser le même hack plusieurs fois", "Denselben Hack mehrmals zulassen", "Permitir que o mesmo hack apareça mais de uma vez"),
+    ("Each hack starts normally so custom code, checkpoints, and level setup remain intact.", "Each hack starts the usual way so its custom tricks, checkpoints, and setup stay right as rain, mate.", "Cada hack comienza normalmente para que el código personalizado, los puntos de control y la configuración de niveles permanezcan intactos.", "Chaque hack démarre normalement afin de préserver le code personnalisé, les points de contrôle et la configuration des niveaux.", "Jeder Hack startet normal, damit benutzerdefinierter Code, Checkpoints und die Level-Einrichtung erhalten bleiben.", "Cada hack inicia normalmente para manter intactos o código personalizado, os pontos de controle e a configuração das fases."),
+    ("{count} downloaded hacks match these filters.", "{count} downloaded hacks fit the bill, mate.", "{count} hacks descargados coinciden con estos filtros.", "{count} hacks téléchargés correspondent à ces filtres.", "{count} heruntergeladene Hacks entsprechen diesen Filtern.", "{count} hacks baixados correspondem a estes filtros."),
+    ("Choose a number of levels from 1 through 100.", "Pick anywhere from 1 to 100 levels, mate.", "Elige entre 1 y 100 niveles.", "Choisissez entre 1 et 100 niveaux.", "Wähle eine Levelanzahl von 1 bis 100.", "Escolha um número de fases de 1 a 100."),
+    ("There are not enough unique matching hacks for that many levels. Choose fewer levels or allow repeats.", "Yeah, nah — there aren’t enough unique matching hacks for that many levels. Pick fewer or allow repeats, mate.", "No hay suficientes hacks únicos que coincidan para tantos niveles. Elige menos niveles o permite repeticiones.", "Il n’y a pas assez de hacks uniques correspondants pour autant de niveaux. Choisissez moins de niveaux ou autorisez les répétitions.", "Für so viele Level gibt es nicht genügend eindeutige passende Hacks. Wähle weniger Level oder erlaube Wiederholungen.", "Não há hacks únicos correspondentes suficientes para tantas fases. Escolha menos fases ou permita repetições."),
+    ("Build & Start Gauntlet", "Build & Start the Gauntlet, mate", "Crear e iniciar maratón", "Créer et démarrer le parcours", "Gauntlet erstellen und starten", "Criar e iniciar maratona"),
+    ("Hack Gauntlet", "Hack Gauntlet, mate", "Maratón de hacks", "Parcours de hacks", "Hack-Gauntlet", "Maratona de hacks"),
+    ("HACK GAUNTLET", "HACK GAUNTLET, MATE", "MARATÓN DE HACKS", "PARCOURS DE HACKS", "HACK-GAUNTLET", "MARATONA DE HACKS"),
+    ("Skip Level", "Skip this level, mate", "Saltar nivel", "Passer le niveau", "Level überspringen", "Pular fase"),
+    ("Stop Gauntlet", "Pull the pin on the gauntlet", "Detener maratón", "Arrêter le parcours", "Gauntlet beenden", "Parar maratona"),
+    ("Level {current} of {total}", "Level {current} of {total}, mate", "Nivel {current} de {total}", "Niveau {current} sur {total}", "Level {current} von {total}", "Fase {current} de {total}"),
+    ("Launching the next hack...", "Firing up the next hack, mate...", "Iniciando el siguiente hack...", "Lancement du hack suivant...", "Der nächste Hack wird gestartet...", "Iniciando o próximo hack..."),
+    ("Waiting for the current game launch to finish...", "Waiting for the current launch to finish up, mate...", "Esperando a que termine el inicio del juego actual...", "Attente de la fin du lancement du jeu actuel...", "Warten, bis der aktuelle Spielstart abgeschlossen ist...", "Aguardando o início do jogo atual terminar..."),
+    ("The gauntlet stopped because the hack could not be launched.", "Crikey, the gauntlet stopped because that hack wouldn’t launch.", "La maratón se detuvo porque no se pudo iniciar el hack.", "Le parcours s’est arrêté car le hack n’a pas pu être lancé.", "Die Gauntlet wurde beendet, weil der Hack nicht gestartet werden konnte.", "A maratona parou porque o hack não pôde ser iniciado."),
+    ("Complete one level to launch the next hack automatically.", "Finish one level and the next hack fires up automatically, mate.", "Completa un nivel para iniciar automáticamente el siguiente hack.", "Terminez un niveau pour lancer automatiquement le hack suivant.", "Schließe ein Level ab, um automatisch den nächsten Hack zu starten.", "Conclua uma fase para iniciar automaticamente o próximo hack."),
+    ("Waiting for the game to reach a safe point before choosing a random level...", "Waiting for the game to reach a safe spot before picking a random level, mate...", "Esperando a que el juego llegue a un punto seguro antes de elegir un nivel aleatorio...", "Attente d’un point sûr dans le jeu avant de choisir un niveau aléatoire...", "Warten auf einen sicheren Spielzustand, bevor ein zufälliges Level gewählt wird...", "Aguardando o jogo chegar a um ponto seguro antes de escolher uma fase aleatória..."),
+    ("Random level {level} selected. Complete it to launch the next hack automatically.", "Random level {level} is ready — rip in! Finish it and the next hack fires up automatically.", "Nivel aleatorio {level} seleccionado. Complétalo para iniciar automáticamente el siguiente hack.", "Niveau aléatoire {level} sélectionné. Terminez-le pour lancer automatiquement le hack suivant.", "Zufälliges Level {level} ausgewählt. Schließe es ab, um automatisch den nächsten Hack zu starten.", "Fase aleatória {level} selecionada. Conclua-a para iniciar automaticamente o próximo hack."),
+    ("No safe random level was found, so this hack started normally. Complete one level to continue.", "Crikey, no safe random level was found, so this hack started normally. Finish one level to keep going.", "No se encontró un nivel aleatorio seguro, así que este hack comenzó normalmente. Completa un nivel para continuar.", "Aucun niveau aléatoire sûr n’a été trouvé ; ce hack a donc démarré normalement. Terminez un niveau pour continuer.", "Es wurde kein sicheres zufälliges Level gefunden, daher wurde dieser Hack normal gestartet. Schließe ein Level ab, um fortzufahren.", "Nenhuma fase aleatória segura foi encontrada, então este hack começou normalmente. Conclua uma fase para continuar."),
+    ("Gauntlet complete!", "Gauntlet done and dusted — you beauty!", "¡Maratón completada!", "Parcours terminé !", "Gauntlet abgeschlossen!", "Maratona concluída!"),
+    ("Level complete! Loading the next hack...", "Level done — loading the next hack, mate...", "¡Nivel completado! Cargando el siguiente hack...", "Niveau terminé ! Chargement du hack suivant...", "Level abgeschlossen! Der nächste Hack wird geladen...", "Fase concluída! Carregando o próximo hack..."),
+    ("Skipping to the next hack...", "Skipping ahead to the next hack, mate...", "Saltando al siguiente hack...", "Passage au hack suivant...", "Weiter zum nächsten Hack...", "Pulando para o próximo hack..."),
+    ("Stop the current Hack Gauntlet?", "Pull the pin on the current Hack Gauntlet, mate?", "¿Detener la maratón de hacks actual?", "Arrêter le parcours de hacks en cours ?", "Die aktuelle Hack-Gauntlet beenden?", "Parar a maratona de hacks atual?"),
+    ("Hack Gauntlet Complete", "Hack Gauntlet Done and Dusted", "Maratón de hacks completada", "Parcours de hacks terminé", "Hack-Gauntlet abgeschlossen", "Maratona de hacks concluída"),
+    ("Gauntlet complete! Levels completed: {completed}/{total}. Levels skipped: {skipped}.", "Gauntlet done and dusted, mate! Levels completed: {completed}/{total}. Levels skipped: {skipped}.", "¡Maratón completada! Niveles completados: {completed}/{total}. Niveles omitidos: {skipped}.", "Parcours terminé ! Niveaux terminés : {completed}/{total}. Niveaux passés : {skipped}.", "Gauntlet abgeschlossen! Abgeschlossene Level: {completed}/{total}. Übersprungene Level: {skipped}.", "Maratona concluída! Fases concluídas: {completed}/{total}. Fases puladas: {skipped}."),
+    ("Open Automatic Tracker Excel Backup Folder", "Open the permanent tracker Excel backup folder, mate", "Abrir la carpeta de copia automática de Excel del tracker", "Ouvrir le dossier de sauvegarde Excel automatique du tracker", "Ordner der automatischen Tracker-Excel-Sicherung öffnen", "Abrir a pasta de backup automático do Excel do tracker"),
+    ("The automatic tracker Excel backup could not be updated.", "Crikey — the automatic tracker Excel backup couldn't be updated.", "No se pudo actualizar la copia automática de Excel del tracker.", "La sauvegarde Excel automatique du tracker n’a pas pu être mise à jour.", "Die automatische Tracker-Excel-Sicherung konnte nicht aktualisiert werden.", "Não foi possível atualizar o backup automático do Excel do tracker."),
+    ("Google Sheets Import", "Bring in Google Sheets, mate", "Importar desde Google Sheets", "Importer depuis Google Sheets", "Aus Google Sheets importieren", "Importar do Google Sheets"),
+    ("Google Sheets sync is not configured. Paste the Apps Script Web App URL first.", "Google Sheets isn't sorted yet, mate. Paste the Apps Script Web App URL first.", "La sincronización con Google Sheets no está configurada. Pega primero la URL de la aplicación web de Apps Script.", "La synchronisation Google Sheets n’est pas configurée. Collez d’abord l’URL de l’application Web Apps Script.", "Die Google-Sheets-Synchronisierung ist nicht eingerichtet. Fügen Sie zuerst die Apps-Script-Web-App-URL ein.", "A sincronização com o Google Sheets não está configurada. Cole primeiro a URL do aplicativo da Web do Apps Script."),
+    ("A Google Sheets import is already running.", "A Google Sheets import is already having a go, mate.", "Ya hay una importación de Google Sheets en curso.", "Une importation Google Sheets est déjà en cours.", "Ein Google-Sheets-Import wird bereits ausgeführt.", "Uma importação do Google Sheets já está em andamento."),
+    ("Import the tracker rows from your synchronized Google Sheet? A safety backup of the current tracker will be created first.", "Bring the tracker rows back from your synced Google Sheet, mate? We'll stash a safety backup first.", "¿Importar las filas del tracker desde tu hoja de Google sincronizada? Primero se creará una copia de seguridad del tracker actual.", "Importer les lignes du tracker depuis votre feuille Google synchronisée ? Une sauvegarde de sécurité du tracker actuel sera d’abord créée.", "Tracker-Zeilen aus der synchronisierten Google-Tabelle importieren? Zuerst wird eine Sicherheitskopie des aktuellen Trackers erstellt.", "Importar as linhas do tracker da sua planilha Google sincronizada? Um backup de segurança do tracker atual será criado primeiro."),
+    ("Synchronizing from Google Sheets…", "Bringing the latest rows back from Google Sheets, mate…", "Sincronizando desde Google Sheets…", "Synchronisation depuis Google Sheets…", "Synchronisierung aus Google Sheets…", "Sincronizando a partir do Google Sheets…"),
+    ("The Apps Script did not return tracker data.", "Crikey — Apps Script didn't send any tracker data back.", "Apps Script no devolvió datos del tracker.", "Apps Script n’a renvoyé aucune donnée du tracker.", "Apps Script hat keine Tracker-Daten zurückgegeben.", "O Apps Script não retornou dados do tracker."),
+    ("The Apps Script returned an invalid tracker table.", "Crikey — Apps Script sent back a dodgy tracker table.", "Apps Script devolvió una tabla del tracker no válida.", "Apps Script a renvoyé un tableau de tracker non valide.", "Apps Script hat eine ungültige Tracker-Tabelle zurückgegeben.", "O Apps Script retornou uma tabela de tracker inválida."),
+    ("The Apps Script did not return a tracker sheet. Copy the updated script, deploy it again, and try once more.", "Apps Script didn't send back a tracker sheet, mate. Copy the updated script, deploy it again, and give it another burl.", "Apps Script no devolvió una hoja del tracker. Copia el script actualizado, vuelve a implementarlo e inténtalo otra vez.", "Apps Script n’a renvoyé aucune feuille de tracker. Copiez le script mis à jour, redéployez-le, puis réessayez.", "Apps Script hat kein Tracker-Tabellenblatt zurückgegeben. Kopieren Sie das aktualisierte Skript, stellen Sie es erneut bereit und versuchen Sie es noch einmal.", "O Apps Script não retornou uma planilha do tracker. Copie o script atualizado, implante-o novamente e tente outra vez."),
+    ("Google Sheets import failed.", "Crikey — the Google Sheets import came a cropper.", "La importación desde Google Sheets falló.", "L’importation depuis Google Sheets a échoué.", "Der Google-Sheets-Import ist fehlgeschlagen.", "A importação do Google Sheets falhou."),
+    ("Google Sheets Import Failed", "Crikey! Google Sheets import failed", "Error al importar desde Google Sheets", "Échec de l’importation depuis Google Sheets", "Google-Sheets-Import fehlgeschlagen", "Falha na importação do Google Sheets"),
+    ("Google Sheets data imported into the tracker.", "Beauty — the Google Sheets data is back in the tracker, mate.", "Los datos de Google Sheets se importaron al tracker.", "Les données Google Sheets ont été importées dans le tracker.", "Die Google-Sheets-Daten wurden in den Tracker importiert.", "Os dados do Google Sheets foram importados para o tracker."),
+    ("Google Sheets Import Complete", "Google Sheets import done and dusted", "Importación desde Google Sheets completada", "Importation depuis Google Sheets terminée", "Google-Sheets-Import abgeschlossen", "Importação do Google Sheets concluída"),
+    ("Google Sheets imported: {count} tracker row(s).", "Google Sheets brought back {count} tracker row(s), mate.", "Google Sheets importó {count} fila(s) del tracker.", "Google Sheets a importé {count} ligne(s) du tracker.", "Aus Google Sheets wurden {count} Tracker-Zeile(n) importiert.", "O Google Sheets importou {count} linha(s) do tracker."),
+    ("Sync from Google Sheets", "Bring it back from Google Sheets, mate", "Sincronizar desde Google Sheets", "Synchroniser depuis Google Sheets", "Aus Google Sheets synchronisieren", "Sincronizar a partir do Google Sheets"),
+    ("Sync to Google Sheets Now", "Send it up to Google Sheets now, mate", "Sincronizar ahora con Google Sheets", "Synchroniser maintenant vers Google Sheets", "Jetzt mit Google Sheets synchronisieren", "Sincronizar agora com o Google Sheets"),
+    ("Paste a Google Sheets Link", "Paste a Google Sheets link here, mate", "Pegar un enlace de Google Sheets", "Coller un lien Google Sheets", "Google-Sheets-Link einfügen", "Colar um link do Google Sheets"),
+    ("Google Sheets link:", "Google Sheets link, mate:", "Enlace de Google Sheets:", "Lien Google Sheets :", "Google-Sheets-Link:", "Link do Google Sheets:"),
+    ("Paste the normal sharing link for your Google Sheet. Share it as Viewer with Anyone with the link first. The workbook must contain a Tracker or My Tracker tab.", "Paste the normal sharing link for your Google Sheet, mate. First share it as Viewer with Anyone with the link. The workbook needs a Tracker or My Tracker tab.", "Pega el enlace normal para compartir tu hoja de Google. Primero compártela como Lector con Cualquier persona que tenga el enlace. El libro debe contener una pestaña Tracker o My Tracker.", "Collez le lien de partage normal de votre feuille Google. Partagez-la d’abord en tant que Lecteur avec Toute personne disposant du lien. Le classeur doit contenir un onglet Tracker ou My Tracker.", "Fügen Sie den normalen Freigabelink Ihrer Google-Tabelle ein. Geben Sie sie zuerst als Betrachter für Jeden mit dem Link frei. Die Arbeitsmappe muss ein Blatt Tracker oder My Tracker enthalten.", "Cole o link normal de compartilhamento da sua Planilha Google. Primeiro compartilhe-a como Leitor com Qualquer pessoa com o link. A pasta de trabalho deve conter uma guia Tracker ou My Tracker."),
+    ("Import Now", "Bring it in now, mate", "Importar ahora", "Importer maintenant", "Jetzt importieren", "Importar agora"),
+    ("Paste a valid Google Sheets sharing link.", "That Google Sheets link looks a bit crook, mate. Paste a valid sharing link.", "Pega un enlace válido para compartir de Google Sheets.", "Collez un lien de partage Google Sheets valide.", "Fügen Sie einen gültigen Google-Sheets-Freigabelink ein.", "Cole um link de compartilhamento válido do Google Sheets."),
+    ("Google could not export this sheet as an Excel workbook. Make sure it is shared as Viewer with Anyone with the link.", "Google couldn't export that sheet, mate. Make sure it's shared as Viewer with Anyone with the link.", "Google no pudo exportar esta hoja como libro de Excel. Asegúrate de compartirla como Lector con Cualquier persona que tenga el enlace.", "Google n’a pas pu exporter cette feuille au format Excel. Vérifiez qu’elle est partagée en tant que Lecteur avec Toute personne disposant du lien.", "Google konnte diese Tabelle nicht als Excel-Arbeitsmappe exportieren. Stellen Sie sicher, dass sie als Betrachter für Jeden mit dem Link freigegeben ist.", "O Google não conseguiu exportar esta planilha como pasta de trabalho do Excel. Verifique se ela está compartilhada como Leitor com Qualquer pessoa com o link."),
 )
 for (
     _english_text,
@@ -18723,8 +19618,15 @@ SETUP_GUIDE_TRANSLATIONS = {
         "connection_title": "2. Connection & Emulator Setup",
         "connection_text": (
             "Open Downloads > Connection & Emulator Setup. Choose QUsb2Snes by "
-            "itself, or configure both SNI and RetroArch. This step advances only "
-            "after the required files have been found or installed."
+            "itself, configure both SNI and RetroArch, or set up MiSTer. This step "
+            "advances only after the selected connection is fully ready."
+        ),
+        "mister_connection_title": "2. Find & Set Up MiSTer",
+        "mister_connection_text": (
+            "Open Downloads > Connection & Emulator Setup > Set Up MiSTer. Then "
+            "select the flashing Find & Set Up MiSTer button. The tracker will "
+            "discover MiSTer, install live tracking, create its folders, enable "
+            "automatic login for this app, select MiSTer, and test the connection."
         ),
         "catalog_title": "3. Open the SMW Central Catalog",
         "catalog_text": "Open Downloads > SMW Central Catalog.",
@@ -18926,7 +19828,9 @@ SETUP_GUIDE_TRANSLATIONS = {
         "downloads_title": "1. Abrir Descargas",
         "downloads_text": "Selecciona el botón Descargas que parpadea. Esta ventana se cerrará y las siguientes opciones comenzarán a parpadear en el menú.",
         "connection_title": "2. Conexión y emulador",
-        "connection_text": "Abre Descargas > Configuración de conexión y emulador. Elige QUsb2Snes solo, o configura SNI y RetroArch. El paso avanza cuando se encuentren o instalen los archivos necesarios.",
+        "connection_text": "Abre Descargas > Configuración de conexión y emulador. Elige QUsb2Snes solo, configura SNI y RetroArch juntos o configura MiSTer. El paso avanza cuando la conexión seleccionada esté completamente lista.",
+        "mister_connection_title": "2. Buscar y configurar MiSTer",
+        "mister_connection_text": "Abre Descargas > Configuración de conexión y emulador > Configurar MiSTer. Después selecciona el botón intermitente Buscar y configurar MiSTer. El tracker detectará MiSTer, instalará el seguimiento en vivo, creará sus carpetas, activará el inicio de sesión automático para esta aplicación, seleccionará MiSTer y probará la conexión.",
         "catalog_title": "3. Abrir el catálogo de SMW Central",
         "catalog_text": "Abre Descargas > Catálogo de SMW Central.",
         "filter_prompt_title": "4. Elegir filtros del catálogo",
@@ -18996,7 +19900,8 @@ SETUP_GUIDE_TRANSLATIONS = {
         "follow_flashing_steps": "Suivez chaque bouton clignotant ou option de menu marquée d’une étoile jaune. L’étape suivante apparaîtra une fois l’étape actuelle terminée.",
         "setup_complete_title": "Configuration de l’application terminée", "setup_complete_message": "La configuration de l’application est terminée.",
         "downloads_title": "1. Ouvrir Téléchargements", "downloads_text": "Sélectionnez le bouton Téléchargements qui clignote. Cette fenêtre se fermera et les options suivantes commenceront à clignoter dans le menu.",
-        "connection_title": "2. Connexion et émulateur", "connection_text": "Ouvrez Téléchargements > Configuration de la connexion et de l’émulateur. Choisissez QUsb2Snes seul, ou configurez SNI et RetroArch. L’étape avance après détection ou installation des fichiers requis.",
+        "connection_title": "2. Connexion et émulateur", "connection_text": "Ouvrez Téléchargements > Configuration de la connexion et de l’émulateur. Choisissez QUsb2Snes seul, configurez SNI et RetroArch ensemble, ou configurez MiSTer. L’étape avance lorsque la connexion choisie est entièrement prête.",
+        "mister_connection_title": "2. Rechercher et configurer le MiSTer", "mister_connection_text": "Ouvrez Téléchargements > Configuration de la connexion et de l’émulateur > Configurer MiSTer. Sélectionnez ensuite le bouton clignotant Rechercher et configurer le MiSTer. Le tracker détectera le MiSTer, installera le suivi en direct, créera ses dossiers, activera la connexion automatique pour cette application, sélectionnera MiSTer et testera la connexion.",
         "catalog_title": "3. Ouvrir le catalogue SMW Central", "catalog_text": "Ouvrez Téléchargements > Catalogue SMW Central.",
         "filter_prompt_title": "4. Choisir les filtres du catalogue", "filter_prompt": "Choisissez les filtres souhaités dans le catalogue SMW Central. Laissez tous les filtres sur Tous pour récupérer l’intégralité du catalogue modéré. Lorsque vous êtes prêt, sélectionnez le bouton clignotant Actualiser les hacks modérés depuis SMW Central.",
         "refresh_title": "5. Actualiser les hacks modérés", "refresh_text": "Choisissez Actualiser les hacks modérés depuis SMW Central, puis Oui dans la confirmation.",
@@ -19054,7 +19959,8 @@ SETUP_GUIDE_TRANSLATIONS = {
         "follow_flashing_steps": "Folge den blinkenden Schaltflächen oder den Menüoptionen mit gelbem Stern. Der nächste Schritt erscheint, sobald der aktuelle abgeschlossen ist.",
         "setup_complete_title": "App-Einrichtung abgeschlossen", "setup_complete_message": "Die App-Einrichtung ist abgeschlossen.",
         "downloads_title": "1. Downloads öffnen", "downloads_text": "Wähle die blinkende Downloads-Schaltfläche. Dieses Fenster wird geschlossen und die nächsten Optionen beginnen im Menü zu blinken.",
-        "connection_title": "2. Verbindung und Emulator", "connection_text": "Öffne Downloads > Verbindung & Emulator. Wähle QUsb2Snes allein oder richte SNI und RetroArch gemeinsam ein. Der Schritt wird erst nach erfolgreicher Erkennung oder Installation fortgesetzt.",
+        "connection_title": "2. Verbindung und Emulator", "connection_text": "Öffne Downloads > Verbindung & Emulator. Wähle QUsb2Snes allein, richte SNI und RetroArch gemeinsam ein oder richte MiSTer ein. Der Schritt wird fortgesetzt, sobald die ausgewählte Verbindung vollständig bereit ist.",
+        "mister_connection_title": "2. MiSTer suchen und einrichten", "mister_connection_text": "Öffne Downloads > Verbindung & Emulator > MiSTer einrichten. Wähle anschließend die blinkende Schaltfläche MiSTer suchen und einrichten. Der Tracker findet MiSTer, installiert Live-Tracking, erstellt die Ordner, aktiviert die automatische Anmeldung für diese App, wählt MiSTer aus und testet die Verbindung.",
         "catalog_title": "3. SMW-Central-Katalog öffnen", "catalog_text": "Öffne Downloads > SMW-Central-Katalog.",
         "filter_prompt_title": "4. Katalogfilter auswählen", "filter_prompt": "Wähle die gewünschten Filter im SMW-Central-Katalog. Lass alle Filter auf Beliebig, wenn du den gesamten moderierten Katalog abrufen möchtest. Wähle anschließend die blinkende Schaltfläche Moderierte Hacks von SMW Central aktualisieren.",
         "refresh_title": "5. Moderierte Hacks aktualisieren", "refresh_text": "Wähle Moderierte Hacks von SMW Central aktualisieren und bestätige anschließend mit Ja.",
@@ -19111,7 +20017,8 @@ SETUP_GUIDE_TRANSLATIONS = {
         "follow_flashing_steps": "Siga cada botão piscando ou opção de menu com estrela amarela. A próxima etapa aparecerá quando a etapa atual for concluída.",
         "setup_complete_title": "Configuração do aplicativo concluída", "setup_complete_message": "A configuração do aplicativo foi concluída.",
         "downloads_title": "1. Abrir Downloads", "downloads_text": "Selecione o botão Downloads que está piscando. Esta janela será fechada e as próximas opções começarão a piscar no menu.",
-        "connection_title": "2. Conexão e emulador", "connection_text": "Abra Downloads > Configuração de conexão e emulador. Escolha somente QUsb2Snes ou configure SNI e RetroArch juntos. A etapa avança após os arquivos necessários serem encontrados ou instalados.",
+        "connection_title": "2. Conexão e emulador", "connection_text": "Abra Downloads > Configuração de conexão e emulador. Escolha somente QUsb2Snes, configure SNI e RetroArch juntos ou configure o MiSTer. A etapa avança quando a conexão escolhida estiver totalmente pronta.",
+        "mister_connection_title": "2. Encontrar e configurar o MiSTer", "mister_connection_text": "Abra Downloads > Configuração de conexão e emulador > Configurar MiSTer. Depois selecione o botão piscando Encontrar e configurar o MiSTer. O tracker localizará o MiSTer, instalará o acompanhamento ao vivo, criará as pastas, ativará o login automático para este aplicativo, selecionará o MiSTer e testará a conexão.",
         "catalog_title": "3. Abrir o catálogo do SMW Central", "catalog_text": "Abra Downloads > Catálogo do SMW Central.",
         "filter_prompt_title": "4. Escolher filtros do catálogo", "filter_prompt": "Escolha os filtros desejados no catálogo do SMW Central. Deixe todos os filtros em Qualquer para obter todo o catálogo moderado. Quando estiver pronto, selecione o botão piscando Atualizar hacks moderados do SMW Central.",
         "refresh_title": "5. Atualizar hacks moderados", "refresh_text": "Escolha Atualizar hacks moderados do SMW Central e depois Sim na confirmação.",
@@ -19195,8 +20102,15 @@ SETUP_GUIDE_TRANSLATIONS["au"].update({
     "connection_title": "2. Sort out the connection and emulator",
     "connection_text": (
         "Open Downloads > Connection & Emulator Setup. Use QUsb2Snes on its "
-        "own, or set up both SNI and RetroArch. Once the required files are "
-        "found or installed, you're right to continue."
+        "own, set up both SNI and RetroArch, or give MiSTer a burl. Once the "
+        "chosen connection is ready, you're right to continue."
+    ),
+    "mister_connection_title": "2. Find and sort out MiSTer, mate",
+    "mister_connection_text": (
+        "Open Downloads > Connection & Emulator Setup > Set Up MiSTer. Then "
+        "hit the flashing Find & Set Up MiSTer button. The tracker will sniff "
+        "out the MiSTer, install live tracking, make the folders, sort automatic "
+        "login, select MiSTer, and test the lot. Too easy!"
     ),
     "catalog_title": "3. Open the SMW Central Catalog",
     "catalog_text": "Open Downloads > SMW Central Catalog. Too easy, mate.",
@@ -19617,6 +20531,12 @@ DEFAULT_CONFIG = {
     "fxpak_python_path": "",
     "fxpak_launcher_script_path": "",
     "fxpak_rom_mappings": {},
+    "mister_host": "MiSTer",
+    "mister_ssh_port": 22,
+    "mister_ssh_user": "root",
+    "mister_ssh_fingerprint": "",
+    "mister_rom_root": "/media/fat/games/SNES/SMW Stream Tracker",
+    "mister_menu_root": "/media/fat/_SMW Stream Tracker",
     "rom_builder_base_rom_path": "",
     "rom_builder_library_folder": "",
     "rom_builder_copy_to_sd": False,
@@ -19625,6 +20545,7 @@ DEFAULT_CONFIG = {
     "rom_builder_usb_folder": "/All_Hacks",
     "google_sheets_enabled": False,
     "google_sheets_web_app_url": "",
+    "google_sheets_source_url": "",
     "google_sheets_sheet_base_name": "SMW Stream Tracker",
     "tracker_column_styles": DEFAULT_TRACKER_COLUMN_STYLES,
     "tracker_difficulty_colors": DEFAULT_TRACKER_DIFFICULTY_COLORS,
@@ -19633,6 +20554,7 @@ DEFAULT_CONFIG = {
     "check_for_updates_at_startup": False,
     "first_run_health_check_completed": False,
     "first_launch_welcome_completed": False,
+    "first_launch_mister_setup_requested": False,
     "automatic_backup_retention": 10,
     "last_automatic_backup_date": "",
 }
@@ -19640,15 +20562,32 @@ DEFAULT_CONFIG = {
 PLATFORM_OPTIONS = (
     "FXPAK Pro",
     "RetroArch",
+    "MiSTer",
 )
+
+PLATFORM_SETUP_MENU_OPTIONS = {
+    "FXPAK Pro": ("qusb2snes",),
+    "RetroArch": ("sni", "retroarch"),
+    "MiSTer": ("mister",),
+}
+
+
+def platform_setup_menu_options(platform_name: object) -> tuple[str, ...]:
+    """Return only the setup entries relevant to the selected platform."""
+    normalized = str(platform_name or "").strip()
+    if normalized not in PLATFORM_OPTIONS:
+        normalized = "FXPAK Pro"
+    return PLATFORM_SETUP_MENU_OPTIONS[normalized]
 
 PLATFORM_ASSET_FILES = {
     "RetroArch": "retroarch.jpg",
+    "MiSTer": "mister.png",
 }
 
 PLATFORM_DEVICE_HINTS = {
     "FXPAK Pro": ("fxpak", "sd2snes"),
     "RetroArch": ("retroarch", "ra://"),
+    "MiSTer": ("mister", "proxy://"),
 }
 
 PLATFORM_LOCAL_EMULATORS = {
@@ -19660,6 +20599,141 @@ PLATFORM_EXECUTABLE_CONFIG_KEYS = {
 }
 
 QUSB2SNES_URL = "ws://localhost:23074"
+
+
+def normalize_mister_host(value: object) -> str:
+    """Return a hostname/IP from a friendly host, SSH, or websocket value."""
+    text = str(value or "").strip()
+    if not text:
+        return "MiSTer"
+    parsed_text = text if "://" in text else "ssh://" + text
+    try:
+        parsed = urlparse(parsed_text)
+        return str(parsed.hostname or "MiSTer").strip() or "MiSTer"
+    except ValueError:
+        return text.strip("/[]") or "MiSTer"
+
+
+def local_private_ipv4_addresses() -> list[str]:
+    """Return usable local IPv4 addresses without platform-specific tools."""
+    addresses: list[str] = []
+
+    def remember(address: object) -> None:
+        text = str(address or "").strip()
+        if text and text not in addresses:
+            addresses.append(text)
+
+    # A UDP connect only asks the OS which interface it would use. It does not
+    # send a packet, and catches systems whose hostname resolves to loopback.
+    for destination in (("1.1.1.1", 53), ("8.8.8.8", 53)):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(destination)
+            remember(probe.getsockname()[0])
+        except OSError:
+            pass
+        finally:
+            probe.close()
+
+    try:
+        for result in socket.getaddrinfo(
+            socket.gethostname(),
+            None,
+            family=socket.AF_INET,
+            type=socket.SOCK_STREAM,
+        ):
+            remember(result[4][0])
+    except OSError:
+        pass
+
+    usable: list[str] = []
+    for address in addresses:
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if (
+            parsed.version == 4
+            and not parsed.is_loopback
+            and not parsed.is_link_local
+            and not parsed.is_unspecified
+        ):
+            usable.append(str(parsed))
+    return usable
+
+
+def mister_local_scan_candidates(
+    local_addresses: Iterable[str],
+    *,
+    maximum_subnets: int = 3,
+) -> list[str]:
+    """Build bounded /24 discovery targets for typical home networks."""
+    candidates: list[str] = []
+    seen_networks: set[str] = set()
+    for address in local_addresses:
+        try:
+            parsed = ipaddress.ip_address(str(address))
+        except ValueError:
+            continue
+        if parsed.version != 4 or parsed.is_loopback or parsed.is_link_local:
+            continue
+        network = ipaddress.ip_network(f"{parsed}/24", strict=False)
+        network_text = str(network)
+        if network_text in seen_networks:
+            continue
+        seen_networks.add(network_text)
+        if len(seen_networks) > maximum_subnets:
+            break
+        candidates.extend(
+            str(host)
+            for host in network.hosts()
+            if host != parsed
+        )
+    return candidates
+
+
+def mister_websocket_url(config: dict[str, Any]) -> str:
+    host = normalize_mister_host(config.get("mister_host", "MiSTer"))
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"ws://{host}:23074"
+
+
+def selected_platform_websocket_url(config: dict[str, Any]) -> str:
+    if str(config.get("selected_platform", "FXPAK Pro")).strip() == "MiSTer":
+        return mister_websocket_url(config)
+    return str(
+        config.get(
+            "platform_websocket_url",
+            config.get("fxpak_websocket_url", QUSB2SNES_URL),
+        )
+    ).strip() or QUSB2SNES_URL
+
+
+def mister_safe_rom_filename(game: dict[str, Any], suffix: str = ".sfc") -> str:
+    """Create a portable MiSTer filename while preserving the catalog title."""
+    safe_title = rom_builder_fxpak_safe_title(
+        str(game.get("title", "Unknown")),
+        str(game.get("smwc_id", "")),
+    )
+    safe_title = re.sub(r"[<>:\"/\\|?*\x00-\x1f]", "_", safe_title)
+    safe_title = re.sub(r"\s+", " ", safe_title).strip(" .") or "SMW Hack"
+    selected_suffix = str(suffix or ".sfc").casefold()
+    if selected_suffix not in {".sfc", ".smc", ".fig", ".bin"}:
+        selected_suffix = ".sfc"
+    return safe_title[:180].rstrip(" .") + selected_suffix
+
+
+def mister_mgl_text(relative_rom_path: str) -> str:
+    root = ET.Element("mistergamedescription")
+    ET.SubElement(root, "rbf").text = "_Console/SNES"
+    file_node = ET.SubElement(
+        root,
+        "file",
+        {"delay": "2", "type": "f", "index": "0"},
+    )
+    file_node.set("path", str(PurePosixPath(relative_rom_path)))
+    return ET.tostring(root, encoding="unicode") + "\n"
 
 SRAM_BASE_ADDRESS = 0xE00000
 SAVE_SLOT_SIZE = 0x8F
@@ -19687,8 +20761,11 @@ SPRITE_LOCK_ADDRESS = "F5009D"      # $7E009D; gameplay/sprites are frozen
 PLAYER_LIVES_ADDRESS = "F50DBE"    # $7E0DBE; current player's lives
 PAUSE_FLAG_ADDRESS = "F513D4"      # $7E13D4
 TRANSLEVEL_ADDRESS = "F513BF"      # $7E13BF
+MIDWAY_POINT_FLAG_ADDRESS = "F513CE"  # $7E13CE; nonzero = use midpoint
 EXIT_COUNTER_ADDRESS = "F51F2E"    # $7E1F2E
 LEVEL_FLAGS_BASE_ADDRESS = 0xF51EA2  # $7E1EA2; bit 7 = level beaten
+OVERWORLD_TRANSLEVEL_TABLE_ADDRESS = "F5D000"  # $7ED000-$7ED7FF
+OVERWORLD_TRANSLEVEL_TABLE_SIZE = 0x0800
 LEVEL_END_TIMER_ADDRESS = "F51493" # $7E1493; goal tape/orb end sequence
 SECRET_GOAL_FLAG_ADDRESS = "F5141C" # $7E141C; nonzero = secret route
 JOYPAD_HELD_ADDRESS = "F50015"      # $7E0015; Start = bit 0x10
@@ -19730,6 +20807,44 @@ LEVEL_MODE = 0x14
 # the game timer must continue through it. The later credits/end modes still
 # finish the run automatically.
 ENDING_MODES = {0x1B, 0x1C}
+
+
+def hack_gauntlet_translevel_candidates(
+    overworld_table: bytes,
+    *,
+    current_level: int | None = None,
+    excluded_levels: Iterable[int] = (),
+) -> list[int]:
+    """Return distinct playable-looking overworld translevels.
+
+    SMW builds the $7ED000 table from the ROM's actual overworld. Empty path
+    tiles normally contain 00 or FF, while placed level tiles contain their
+    translevel number. Using this live table lets the gauntlet work with
+    current and future hacks without maintaining a hard-coded level list.
+    """
+    excluded = {int(value) & 0xFF for value in excluded_levels}
+    candidates = sorted(
+        {
+            int(value)
+            for value in bytes(overworld_table)
+            if 0 < int(value) <= 0x5F and int(value) not in excluded
+        }
+    )
+    if current_level is not None and len(candidates) > 1:
+        current = int(current_level) & 0xFF
+        candidates = [value for value in candidates if value != current]
+    return candidates
+
+
+def hack_gauntlet_level_number(translevel: int) -> int:
+    """Convert SMW's translevel byte to Lunar Magic's displayed level ID."""
+    value = int(translevel) & 0xFF
+    return value if value <= 0x24 else value + 0xDC
+
+
+def hack_gauntlet_level_override(translevel: int) -> int:
+    """Encode a translevel for SMW's direct-level override at $7E0109."""
+    return (hack_gauntlet_level_number(translevel) + 0x24) & 0xFF
 
 CHECK_INTERVAL_SECONDS = 0.10
 RECONNECT_DELAY_SECONDS = 5
@@ -19954,6 +21069,10 @@ def ensure_obs_text_files(
         "hack_name.txt": "No game detected",
         "level_timer.txt": "00:00",
         "game_timer.txt": "00:00",
+        # Streamer.bot can follow this append-only event file with its File
+        # Tail service. It is separate from display text so prediction
+        # automation never has to infer a clear from a formatted counter.
+        "streamerbot_level_events.txt": "",
     }
     for filename, initial_text in defaults.items():
         file_path = output_folder / filename
@@ -20067,19 +21186,31 @@ def load_config() -> dict[str, Any]:
         candidates: tuple[Path, ...],
         search_roots: tuple[Path, ...],
     ) -> str:
+        def accessible_file(path: Path) -> bool:
+            try:
+                return path.is_file()
+            except OSError:
+                return False
+
+        def accessible_directory(path: Path) -> bool:
+            try:
+                return path.is_dir()
+            except OSError:
+                return False
+
         configured_path = Path(configured_text)
         if (
             configured_text
-            and configured_path.is_file()
+            and accessible_file(configured_path)
             and configured_path.name.casefold()
             in {name.casefold() for name in executable_names}
         ):
             return str(configured_path)
         for candidate in candidates:
-            if candidate.is_file():
+            if accessible_file(candidate):
                 return str(candidate)
         for search_root in search_roots:
-            if not search_root.is_dir():
+            if not accessible_directory(search_root):
                 continue
             try:
                 for executable_name in executable_names:
@@ -20087,13 +21218,13 @@ def load_config() -> dict[str, Any]:
                         (
                             candidate
                             for candidate in search_root.rglob(executable_name)
-                            if candidate.is_file()
+                            if accessible_file(candidate)
                         ),
                         None,
                     )
                     if match is not None:
                         return str(match)
-            except StopIteration:
+            except (OSError, StopIteration):
                 continue
         return configured_text
 
@@ -20429,6 +21560,12 @@ class TrackerWorker:
         self.level_id: int | None = None
         self.level_elapsed = 0.0
         self.level_finished = False
+        self.level_completion_event_sent = False
+        self.streamerbot_level_session_id = ""
+        self.streamerbot_level_event_sequence = 0
+        self.hack_gauntlet_target_level: int | None = None
+        self.hack_gauntlet_target_entered = False
+        self.hack_gauntlet_retry_pending = False
 
         self.previous_mode: int | None = None
         self.previous_exit_count: int | None = None
@@ -20567,6 +21704,7 @@ class TrackerWorker:
         self.thread.start()
 
     def stop(self) -> None:
+        self.cancel_streamerbot_level_session("tracker stopped")
         self.stop_event.set()
 
     def request_console_refresh(self) -> None:
@@ -20657,8 +21795,120 @@ class TrackerWorker:
         """Re-arm ROM detection after an app-initiated platform launch."""
         self.command_queue.put("catalog_launch")
 
+    def request_hack_gauntlet_random_level(
+        self,
+        request_id: str,
+        excluded_levels: Iterable[int] = (),
+    ) -> None:
+        """Ask the attached platform to enter one random overworld level."""
+        payload = json.dumps(
+            {
+                "request_id": str(request_id),
+                "excluded_levels": [
+                    int(value) & 0xFF for value in excluded_levels
+                ],
+            },
+            separators=(",", ":"),
+        )
+        self.command_queue.put(f"hack_gauntlet_random_level:{payload}")
+
+    def cancel_hack_gauntlet_level(self) -> None:
+        self.command_queue.put("hack_gauntlet_cancel_level")
+
     def send_event(self, event_type: str, **data: object) -> None:
         self.event_queue.put({"type": event_type, **data})
+
+    @staticmethod
+    def _streamerbot_text_field(value: object) -> str:
+        """Encode arbitrary Unicode text for the one-line event protocol."""
+        return base64.b64encode(
+            str(value or "").encode("utf-8")
+        ).decode("ascii")
+
+    def append_streamerbot_level_event(
+        self,
+        event_name: str,
+        *,
+        reason: str = "",
+    ) -> bool:
+        """Append one level event for Streamer.bot's File Tail trigger.
+
+        The protocol is line-oriented and versioned. Free-form text is Base64
+        encoded so emoji, pipes, and line breaks cannot split one event into
+        several File Tail triggers.
+        """
+        output_folder_text = str(
+            self.config.get("output_folder", "")
+        ).strip()
+        if not output_folder_text or not self.streamerbot_level_session_id:
+            return False
+
+        try:
+            output_folder = Path(output_folder_text)
+            output_folder.mkdir(parents=True, exist_ok=True)
+            self.streamerbot_level_event_sequence += 1
+            event_id = (
+                f"{time.time_ns()}-"
+                f"{self.streamerbot_level_event_sequence}"
+            )
+            fields = (
+                "SMWTRACKER",
+                "1",
+                event_id,
+                str(event_name).strip().casefold(),
+                self.streamerbot_level_session_id,
+                self._streamerbot_text_field(self.current_hack_title),
+                str(int(self.level_id) if self.level_id is not None else -1),
+                str(max(0, int(self.level_death_count))),
+                self._streamerbot_text_field(reason),
+                str(self.config.get("app_language", "en") or "en"),
+            )
+            event_path = output_folder / "streamerbot_level_events.txt"
+            with event_path.open("a", encoding="utf-8", newline="\n") as file:
+                file.write("|".join(fields) + "\n")
+            return True
+        except (OSError, TypeError, ValueError) as error:
+            self.log(
+                "Could not update streamerbot_level_events.txt: "
+                f"{error}"
+            )
+            return False
+
+    def start_streamerbot_level_session(self, translevel: int) -> None:
+        """Start a uniquely identified Streamer.bot prediction session."""
+        if self.streamerbot_level_session_id:
+            self.append_streamerbot_level_event(
+                "cancel",
+                reason="another level started",
+            )
+        self.streamerbot_level_session_id = (
+            f"{time.time_ns()}-{int(translevel) & 0xFF:02X}"
+        )
+        self.append_streamerbot_level_event(
+            "start",
+            reason="playable level started",
+        )
+
+    def cancel_streamerbot_level_session(self, reason: str) -> None:
+        """Cancel an unresolved prediction without affecting later levels."""
+        if not self.streamerbot_level_session_id:
+            return
+        self.append_streamerbot_level_event("cancel", reason=reason)
+        self.streamerbot_level_session_id = ""
+
+    def send_level_completion_event(self, reason: str) -> None:
+        """Tell the UI once a cleared level has reached a safe boundary."""
+        if self.level_completion_event_sent or self.level_id is None:
+            return
+        self.level_completion_event_sent = True
+        self.append_streamerbot_level_event("clear", reason=reason)
+        self.streamerbot_level_session_id = ""
+        self.send_event(
+            "level_complete",
+            level_id=int(self.level_id),
+            rom_key=str(self.current_rom_key or ""),
+            reason=reason,
+        )
 
     def log(self, message: str, show_status: bool = True) -> None:
         output_folder = Path(str(self.config["output_folder"]))
@@ -21288,6 +22538,7 @@ class TrackerWorker:
         self.update_timer_files()
 
     def reset_all_timers_for_new_rom(self) -> None:
+        self.cancel_streamerbot_level_session("ROM changed")
         self.game_started = False
         self.game_finished = False
         self.game_elapsed = 0.0
@@ -21296,6 +22547,8 @@ class TrackerWorker:
         self.level_id = None
         self.level_elapsed = 0.0
         self.level_finished = False
+        self.level_completion_event_sent = False
+        self.clear_hack_gauntlet_level()
 
         self.previous_mode = None
         self.previous_exit_count = None
@@ -21579,6 +22832,93 @@ class TrackerWorker:
                 self.log(
                     "App launch detected; re-armed ROM and timer detection."
                 )
+                continue
+
+            elif command == "hack_gauntlet_cancel_level":
+                self.clear_hack_gauntlet_level()
+                continue
+
+            elif command.startswith("hack_gauntlet_random_level:"):
+                request_id = ""
+                try:
+                    payload = json.loads(command.split(":", 1)[1])
+                    request_id = str(payload.get("request_id", ""))
+                    self.send_event(
+                        "hack_gauntlet_random_level",
+                        request_id=request_id,
+                        success=False,
+                        retry=False,
+                        reason="feature_removed",
+                    )
+                    continue
+                    excluded_levels = payload.get("excluded_levels", [])
+                    state = self.read_game_state(ws)
+                    mode = int(state.get("mode", -1))
+                    if mode not in {OVERWORLD_MODE, LEVEL_MODE}:
+                        self.send_event(
+                            "hack_gauntlet_random_level",
+                            request_id=request_id,
+                            success=False,
+                            retry=True,
+                            reason="waiting_for_game",
+                        )
+                        continue
+
+                    overworld_table = self.read_memory(
+                        ws,
+                        OVERWORLD_TRANSLEVEL_TABLE_ADDRESS,
+                        OVERWORLD_TRANSLEVEL_TABLE_SIZE,
+                    )
+                    candidates = hack_gauntlet_translevel_candidates(
+                        overworld_table,
+                        current_level=state.get("translevel"),
+                        excluded_levels=excluded_levels,
+                    )
+                    if not candidates:
+                        self.send_event(
+                            "hack_gauntlet_random_level",
+                            request_id=request_id,
+                            success=False,
+                            retry=False,
+                            reason="no_levels",
+                        )
+                        continue
+
+                    selected_level = random.choice(candidates)
+                    self.enter_hack_gauntlet_level(
+                        ws,
+                        selected_level,
+                        midway=False,
+                    )
+                    self.hack_gauntlet_target_level = selected_level
+                    self.hack_gauntlet_target_entered = False
+                    self.hack_gauntlet_retry_pending = False
+                    self.level_auto_tracking_armed = True
+                    self.level_waiting_for_start = True
+                    self.level_finished = False
+                    self.level_completion_event_sent = False
+                    self.send_event(
+                        "hack_gauntlet_random_level",
+                        request_id=request_id,
+                        success=True,
+                        retry=False,
+                        translevel=selected_level,
+                        level_number=(
+                            hack_gauntlet_level_number(selected_level)
+                        ),
+                    )
+                    self.log(
+                        "Hack Gauntlet selected random level "
+                        f"{hack_gauntlet_level_number(selected_level):03X}."
+                    )
+                except Exception as error:
+                    self.send_event(
+                        "hack_gauntlet_random_level",
+                        request_id=request_id,
+                        success=False,
+                        retry=False,
+                        reason=str(error),
+                    )
                 continue
 
             elif command == "reset_game":
@@ -24668,10 +26008,12 @@ finally {
         ws: websocket.WebSocket,
         opcode: str,
         operands: list[str] | None = None,
+        *,
+        space: str = "SNES",
     ) -> None:
         request: dict[str, Any] = {
             "Opcode": opcode,
-            "Space": "SNES",
+            "Space": space,
         }
 
         if operands:
@@ -24680,15 +26022,7 @@ finally {
         ws.send(json.dumps(request))
 
     def try_connect_websocket(self) -> websocket.WebSocket:
-        websocket_url = str(
-            self.config.get(
-                "platform_websocket_url",
-                self.config.get(
-                    "fxpak_websocket_url",
-                    QUSB2SNES_URL,
-                ),
-            )
-        ).strip() or QUSB2SNES_URL
+        websocket_url = selected_platform_websocket_url(self.config)
         return websocket.create_connection(
             websocket_url,
             timeout=10,
@@ -24703,6 +26037,16 @@ finally {
 
         except Exception:
             pass
+
+        if str(self.config.get("selected_platform", "")).strip() == "MiSTer":
+            host = normalize_mister_host(
+                self.config.get("mister_host", "MiSTer")
+            )
+            raise RuntimeError(
+                f"MiSTer is not responding at {host}:23074. Connect the "
+                "MiSTer to the same network, then use Downloads > Connection "
+                "& Emulator Setup > Set Up MiSTer."
+            )
 
         candidates: list[tuple[str, Path]] = []
         invalid_paths: list[str] = []
@@ -24776,6 +26120,12 @@ finally {
 
         if not devices:
             ws.close()
+            if selected_platform == "MiSTer":
+                raise RuntimeError(
+                    "MiSTer is reachable, but its SNES live-tracking device "
+                    "is not available. Load the SNES core once after running "
+                    "MiSTer Setup, then try Refresh."
+                )
             if selected_platform == "RetroArch":
                 retroarch_status = self.get_retroarch_network_status()
                 if retroarch_status:
@@ -24860,6 +26210,12 @@ finally {
 
         if not device:
             ws.close()
+            if selected_platform == "MiSTer":
+                raise RuntimeError(
+                    "The MiSTer connection is online, but no MiSTer SNES "
+                    "device was reported. Load the SNES core and make sure "
+                    "SNI mode is enabled."
+                )
             if selected_platform == "RetroArch":
                 raise RuntimeError(
                     "The connection service is running, but its RetroArch "
@@ -25082,6 +26438,161 @@ finally {
 
         return bytes(received[:size])
 
+    def write_memory(
+        self,
+        ws: websocket.WebSocket,
+        address: str,
+        data: bytes,
+    ) -> None:
+        """Write bytes through SNI/QUsb2Snes to an emulator live device."""
+        payload = bytes(data)
+        if not payload:
+            return
+        self.send_request(
+            ws,
+            "PutAddress",
+            [address, f"{len(payload):X}"],
+        )
+        ws.send_binary(payload)
+
+    def write_fxpak_wram(
+        self,
+        ws: websocket.WebSocket,
+        writes: Iterable[tuple[str, bytes]],
+    ) -> None:
+        """Execute small WRAM writes safely through the FXPAK command buffer."""
+        command = bytearray(b"\x00\xE2\x20\x48\xEB\x48")
+        for address, values in writes:
+            numeric_address = int(str(address), 16)
+            if not 0xF50000 <= numeric_address <= 0xF6FFFF:
+                raise ValueError("FXPAK WRAM write is outside the safe range")
+            snes_address = numeric_address + 0x7E0000 - 0xF50000
+            for offset, value in enumerate(bytes(values)):
+                target = snes_address + offset
+                command.extend((0xA9, value, 0x8F))
+                command.extend(
+                    (
+                        target & 0xFF,
+                        (target >> 8) & 0xFF,
+                        (target >> 16) & 0xFF,
+                    )
+                )
+        command.extend(
+            b"\xA9\x00\x8F\x00\x2C\x00\x68\xEB\x68\x28\x6C\xEA\xFF\x08"
+        )
+        self.send_request(
+            ws,
+            "PutAddress",
+            ["2C00", f"{len(command) - 1:X}", "2C00", "1"],
+            space="CMD",
+        )
+        ws.send_binary(bytes(command))
+
+    def enter_hack_gauntlet_level(
+        self,
+        ws: websocket.WebSocket,
+        translevel: int,
+        *,
+        midway: bool = False,
+    ) -> None:
+        """Tell SMW to load one translevel through its normal level loader."""
+        selected_level = int(translevel) & 0xFF
+        # Do not replace $13BF here. SMW deliberately keeps the overworld
+        # translevel that launched the direct-entry level and uses that slot for
+        # its midpoint flag. Changing it to the randomly selected level makes a
+        # checkpoint impossible to recall reliably after a death.
+        writes = (
+            (MIDWAY_POINT_FLAG_ADDRESS, bytes((1 if midway else 0,))),
+            (
+                "F50109",
+                bytes((hack_gauntlet_level_override(selected_level),)),
+            ),
+            (GAME_MODE_ADDRESS, bytes((0x0F,))),
+        )
+        selected_platform = str(
+            self.config.get("selected_platform", "FXPAK Pro")
+        ).strip()
+        if selected_platform == "FXPAK Pro":
+            self.write_fxpak_wram(ws, writes)
+            return
+        for address, payload in writes:
+            self.write_memory(ws, address, payload)
+
+    def clear_hack_gauntlet_level(self) -> None:
+        self.hack_gauntlet_target_level = None
+        self.hack_gauntlet_target_entered = False
+        self.hack_gauntlet_retry_pending = False
+
+    def maintain_hack_gauntlet_level(
+        self,
+        ws: websocket.WebSocket | None,
+        state: dict[str, int],
+    ) -> bool:
+        """Reload an uncleared gauntlet level and preserve its checkpoint."""
+        target = self.hack_gauntlet_target_level
+        if target is None:
+            return False
+
+        mode = int(state.get("mode", -1))
+        translevel = int(state.get("translevel", -1)) & 0xFF
+        if mode == LEVEL_MODE:
+            first_active_sample = not self.hack_gauntlet_target_entered
+            self.hack_gauntlet_target_entered = True
+            self.hack_gauntlet_retry_pending = False
+            if first_active_sample:
+                self.log(
+                    "Hack Gauntlet random level "
+                    f"{hack_gauntlet_level_number(target):03X} is active "
+                    f"(SMW checkpoint slot {translevel:02X})."
+                )
+            return False
+
+        if (
+            self.hack_gauntlet_target_entered
+            and self.previous_mode == LEVEL_MODE
+            and mode != LEVEL_MODE
+            and not self.level_finished
+        ):
+            self.hack_gauntlet_retry_pending = True
+
+        if (
+            ws is None
+            or mode != OVERWORLD_MODE
+            or not self.hack_gauntlet_retry_pending
+            or self.level_finished
+        ):
+            return False
+
+        midway = bool(
+            int(state.get("midway_point", 0))
+            or (int(state.get("level_flags", 0)) & 0x40)
+        )
+        self.enter_hack_gauntlet_level(
+            ws,
+            target,
+            midway=midway,
+        )
+        self.hack_gauntlet_retry_pending = False
+        self.log(
+            "Hack Gauntlet reloaded random level "
+            f"{hack_gauntlet_level_number(target):03X}"
+            + (" from its checkpoint." if midway else ".")
+        )
+        return True
+
+    def finish_hack_gauntlet_level_if_ready(self) -> bool:
+        """Emit one gauntlet clear event as soon as the goal is confirmed."""
+        if (
+            not self.level_finished
+            or self.hack_gauntlet_target_level is None
+            or not self.hack_gauntlet_target_entered
+        ):
+            return False
+        self.level_id = int(self.hack_gauntlet_target_level)
+        self.send_level_completion_event("gauntlet goal")
+        self.clear_hack_gauntlet_level()
+        return True
+
     def read_save_slot_sram(
         self,
         ws: websocket.WebSocket,
@@ -25226,6 +26737,7 @@ finally {
             "player_lives": byte_at(PLAYER_LIVES_ADDRESS),
             "paused": byte_at(PAUSE_FLAG_ADDRESS),
             "translevel": translevel,
+            "midway_point": byte_at(MIDWAY_POINT_FLAG_ADDRESS),
             "level_flags": byte_at(f"{level_flags_address:06X}"),
             "exits": byte_at(EXIT_COUNTER_ADDRESS),
             "level_end_timer": byte_at(LEVEL_END_TIMER_ADDRESS),
@@ -25434,6 +26946,7 @@ finally {
         self.save_current_death_count()
         self.save_current_level_progress()
         self.update_death_file()
+        self.append_streamerbot_level_event("death", reason=source)
         self.log(
             f"Level death {self.level_death_count}; total death "
             f"{self.death_count} recorded for "
@@ -25553,6 +27066,7 @@ finally {
         self.level_death_count += prestart_deaths
         self.level_prestart_tracking = False
         self.level_finished = False
+        self.level_completion_event_sent = False
         self.level_manual_paused = False
         self.timers_paused = False
         self.level_overworld_entered_at = None
@@ -25563,6 +27077,7 @@ finally {
         self.level_waiting_for_start = False
         self.update_death_file()
         self.update_timer_files()
+        self.start_streamerbot_level_session(translevel)
 
         if self.level_elapsed > 0 or self.level_death_count > 0:
             self.log(
@@ -25632,6 +27147,8 @@ finally {
         state: dict[str, int],
         delta: float,
         now: float,
+        *,
+        websocket_connection: websocket.WebSocket | None = None,
     ) -> None:
         mode = state["mode"]
         save_slot = state["save_slot"]
@@ -25881,6 +27398,13 @@ finally {
             exits=exits,
             level_end_timer=level_end_timer,
         )
+
+        if entered_title_screen and self.level_finished:
+            self.send_level_completion_event("title screen")
+        elif entered_title_screen and self.level_id is not None:
+            self.cancel_streamerbot_level_session(
+                "level abandoned at title screen"
+            )
 
         if (
             entered_title_screen
@@ -26263,6 +27787,7 @@ finally {
             and self.level_id is not None
         ):
             if self.level_finished:
+                self.send_level_completion_event("overworld")
                 self.save_current_level_progress()
                 self.send_livesplit_command("level", "reset")
                 self.level_manual_paused = False
@@ -26345,6 +27870,9 @@ finally {
                 )
             else:
                 previous_level_id = self.level_id
+                self.cancel_streamerbot_level_session(
+                    "a different level was selected"
+                )
                 self.save_current_level_progress()
                 self.send_livesplit_command("level", "reset")
                 self.level_id = None
@@ -26370,6 +27898,12 @@ finally {
             and translevel != self.level_id
         ):
             previous_level_id = self.level_id
+            if self.level_finished:
+                self.send_level_completion_event("direct level change")
+            else:
+                self.cancel_streamerbot_level_session(
+                    "a different level loaded directly"
+                )
             self.save_current_level_progress()
             self.send_livesplit_command("level", "reset")
             self.level_livesplit_running = False
@@ -26555,6 +28089,7 @@ finally {
                         state,
                         delta,
                         now,
+                        websocket_connection=ws,
                     )
 
                     displayed_total = (
@@ -26778,6 +28313,10 @@ class TrackerApp:
                 pass
 
         self.config = load_config()
+        # The MiSTer password is intentionally session-only and is never
+        # written to the tracker configuration file.
+        self.mister_session_password = ""
+        self.mister_session_credentials_confirmed = False
         saved_language = str(
             self.config.get("app_language", "en")
         ).strip()
@@ -27036,13 +28575,20 @@ class TrackerApp:
         self.tracker_overlay_after_id: str | None = None
         self.tracker_overlay_retry_count = 0
         self.tracker_paint_cover_after_id: str | None = None
+        self.shutdown_in_progress = False
         self.custom_hacks_dialog: tk.Toplevel | None = None
         self.custom_hacks_widgets: dict[str, Any] = {}
         self.custom_hacks_records: dict[str, dict[str, Any]] = {}
+        self.spreadsheet_settings_dialog: tk.Toplevel | None = None
         self.google_sheets_dialog: tk.Toplevel | None = None
+        self.google_sheet_link_dialog: tk.Toplevel | None = None
         self.google_sync_after_id: str | None = None
         self.google_sync_thread: threading.Thread | None = None
         self.google_sync_pending_show_dialog = False
+        self.google_import_thread: threading.Thread | None = None
+        self.tracker_excel_backup_after_id: str | None = None
+        self.tracker_excel_backup_thread: threading.Thread | None = None
+        self.tracker_excel_backup_pending = False
         self.banner_resize_after_id: str | None = None
         self.banner_render_size: tuple[int, int] | None = None
         self.banner_pending_render_size: tuple[int, int] | None = None
@@ -27059,6 +28605,23 @@ class TrackerApp:
         self.about_update_dot_image: tk.PhotoImage | None = None
         self.update_dialog: tk.Toplevel | None = None
         self.random_hack_dialog: tk.Toplevel | None = None
+        self.game_mode_dialog: tk.Toplevel | None = None
+        self.game_mode_dialog_key = ""
+        self.hack_gauntlet_dialog: tk.Toplevel | None = None
+        self.hack_gauntlet_status_dialog: tk.Toplevel | None = None
+        self.hack_gauntlet_status_var: tk.StringVar | None = None
+        self.hack_gauntlet_progress_var: tk.StringVar | None = None
+        self.hack_gauntlet_title_var: tk.StringVar | None = None
+        self.hack_gauntlet_queue: list[dict[str, Any]] = []
+        self.hack_gauntlet_index = -1
+        self.hack_gauntlet_completed_levels = 0
+        self.hack_gauntlet_skipped_levels = 0
+        self.hack_gauntlet_active = False
+        self.hack_gauntlet_advancing = False
+        self.hack_gauntlet_direct_level_resume = False
+        self.hack_gauntlet_resume_after_id: str | None = None
+        self.hack_gauntlet_level_request_token = ""
+        self.hack_gauntlet_level_request_attempts = 0
         # Update indicators are driven only by a successful release check.
         # Preview builds must never seed a synthetic update in production.
         self.update_available_version = ""
@@ -27073,6 +28636,8 @@ class TrackerApp:
         self.obs_setup_choice_dialog: tk.Toplevel | None = None
         self.guided_obs_dialog: tk.Toplevel | None = None
         self.livesplit_obs_guide_dialog: tk.Toplevel | None = None
+        self.mister_setup_dialog: tk.Toplevel | None = None
+        self.mister_setup_automatic_button: tk.Widget | None = None
         self.livesplit_install_in_progress: set[str] = set()
         self.livesplit_install_buttons: dict[str, tk.Widget] = {}
         self.livesplit_release_asset_cache: tuple[
@@ -27095,6 +28660,7 @@ class TrackerApp:
         self.download_patch_menu_index: int | None = None
         self.connection_setup_menu_index: int | None = None
         self.connection_option_menu_indexes: tuple[int, ...] = ()
+        self.connection_option_menu_names: tuple[str, ...] = ()
         self.smwcentral_catalog_menu_index: int | None = None
         self.catalog_page_refresh_button: tk.Widget | None = None
         self.in_app_page_shell: tk.Frame | None = None
@@ -27204,6 +28770,7 @@ class TrackerApp:
             self.root.after(200, self.process_events)
             self.root.after(400, self.start_tracker)
             self.root.after(700, self._create_daily_recovery_backup)
+            self.root.after(900, self._queue_automatic_tracker_excel_backup)
             self.root.after(1100, self._offer_first_launch_welcome)
             # Always perform one quiet release check so the Help-tab badge can
             # advertise an available update without interrupting the user.
@@ -28440,6 +30007,9 @@ class TrackerApp:
         # opened a replacement.  Only the currently visible page is allowed
         # to tear down the shared browser shell.
         if page is not None and page is not active_page:
+            if page is getattr(self, "tracker_list_dialog", None):
+                self._dispose_tracker_list_ui()
+                self.tracker_list_dialog = None
             try:
                 if page.winfo_exists():
                     page._destroy_from_app()
@@ -28447,6 +30017,8 @@ class TrackerApp:
                 pass
             return
         target = page or active_page
+        if target is getattr(self, "tracker_list_dialog", None):
+            self._dispose_tracker_list_ui()
         if target is not None:
             try:
                 target._destroy_from_app()
@@ -29529,8 +31101,8 @@ class TrackerApp:
 
         self._make_action_button(
             controls_layout,
-            text="🎲  Play Random Hack",
-            command=self._play_random_main_hack,
+            text="🎮  Game Modes",
+            command=self._open_game_modes_page,
             bg=THEME["orange"],
             active_bg="#A84808",
             width=24,
@@ -30228,8 +31800,22 @@ class TrackerApp:
             "toad",
         )
         stats_menu.add_separator()
-        add_mario_command(
+
+        database_tools_menu = tk.Menu(
             stats_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["yellow"],
+            activeforeground="#000000",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        add_mario_command(
+            database_tools_menu,
             "Back Up Database…",
             protected_menu_action(
                 "stats_files",
@@ -30240,7 +31826,7 @@ class TrackerApp:
             "mushroom",
         )
         add_mario_command(
-            stats_menu,
+            database_tools_menu,
             "Restore Database…",
             protected_menu_action(
                 "stats_files",
@@ -30251,7 +31837,7 @@ class TrackerApp:
             "one_up",
         )
         add_mario_command(
-            stats_menu,
+            database_tools_menu,
             "Open Database Folder",
             protected_menu_action(
                 "stats_files",
@@ -30261,14 +31847,32 @@ class TrackerApp:
             ),
             "mario_head",
         )
-        add_mario_command(
+        stats_menu.add_cascade(
+            label="Database Tools",
+            menu=database_tools_menu,
+        )
+
+        automatic_backups_menu = tk.Menu(
             stats_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["yellow"],
+            activeforeground="#000000",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        add_mario_command(
+            automatic_backups_menu,
             "Create Recovery Backup Now",
             lambda: self._create_recovery_backup("manual", True),
             "star",
         )
         add_mario_command(
-            stats_menu,
+            automatic_backups_menu,
             "Open Automatic Backups Folder",
             protected_menu_action(
                 "stats_files",
@@ -30277,6 +31881,23 @@ class TrackerApp:
                 lambda: self._open_local_folder(AUTOMATIC_BACKUP_DIR),
             ),
             "one_up",
+        )
+        add_mario_command(
+            automatic_backups_menu,
+            "Open Automatic Tracker Excel Backup Folder",
+            protected_menu_action(
+                "stats_files",
+                "Stats file tools",
+                "Open Automatic Tracker Excel Backup Folder",
+                lambda: self._open_local_folder(
+                    PERSISTENT_TRACKER_BACKUP_DIR
+                ),
+            ),
+            "spreadsheet",
+        )
+        stats_menu.add_cascade(
+            label="Automatic Backups",
+            menu=automatic_backups_menu,
         )
 
         self.settings_menu_button, settings_menu = (
@@ -30316,6 +31937,14 @@ class TrackerApp:
             "RetroArch",
             self._on_platform_selected,
             "star",
+            variable=self.platform_var,
+        )
+        add_mario_radio(
+            platform_menu,
+            "MiSTer",
+            "MiSTer",
+            self._on_platform_selected,
+            "one_up",
             variable=self.platform_var,
         )
         settings_menu.add_cascade(
@@ -30494,30 +32123,56 @@ class TrackerApp:
         )
         self.connection_setup_menu = software_menu
         connection_option_indexes: list[int] = []
-        add_mario_command(
-            software_menu,
-            "Install or Find SNI (Needed for RetroArch)...",
-            lambda: self._guided_install_optional_software("sni"),
-            "star",
+        connection_option_names: list[str] = []
+        selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
+        visible_setup_options = platform_setup_menu_options(
+            selected_platform
         )
-        connection_option_indexes.append(int(software_menu.index("end")))
-        add_mario_command(
-            software_menu,
-            "Install or Find QUsb2Snes (Needed for FXPAK Pro)...",
-            lambda: self._guided_install_optional_software("qusb2snes"),
-            "mario",
-        )
-        connection_option_indexes.append(int(software_menu.index("end")))
-        software_menu.add_separator()
-        add_mario_command(
-            software_menu,
-            "Install or Configure RetroArch...",
-            lambda: self._guided_install_optional_software("retroarch"),
-            "mushroom",
-        )
-        connection_option_indexes.append(int(software_menu.index("end")))
+        setup_option_specs = {
+            "sni": (
+                "Install or Find SNI (Needed for RetroArch)...",
+                lambda: self._guided_install_optional_software("sni"),
+                "star",
+            ),
+            "qusb2snes": (
+                "Install or Find QUsb2Snes (Needed for FXPAK Pro)...",
+                lambda: self._guided_install_optional_software("qusb2snes"),
+                "mario",
+            ),
+            "retroarch": (
+                "Install or Configure RetroArch...",
+                lambda: self._guided_install_optional_software("retroarch"),
+                "mushroom",
+            ),
+            "mister": (
+                "Set Up MiSTer...",
+                self._guided_open_mister_setup,
+                "one_up",
+            ),
+        }
+        for option_position, option_name in enumerate(
+            visible_setup_options
+        ):
+            if option_position:
+                software_menu.add_separator()
+            option_label, option_command, option_icon = setup_option_specs[
+                option_name
+            ]
+            add_mario_command(
+                software_menu,
+                option_label,
+                option_command,
+                option_icon,
+            )
+            connection_option_names.append(option_name)
+            connection_option_indexes.append(
+                int(software_menu.index("end"))
+            )
         self.connection_option_menu_indexes = tuple(
             connection_option_indexes
+        )
+        self.connection_option_menu_names = tuple(
+            connection_option_names
         )
         downloads_menu.add_cascade(
             label="Connection & Emulator Setup",
@@ -30526,18 +32181,19 @@ class TrackerApp:
         self.connection_setup_menu_index = downloads_menu.index("end")
         downloads_menu.add_separator()
 
-        add_mario_command(
-            downloads_menu,
-            "FXPAK Pro…",
-            protected_menu_action(
-                "downloads_files",
-                "Downloads",
-                "FXPAK Pro SD Card",
-                self.open_fxpak_sd_card_browser,
-            ),
-            "mario",
-        )
-        downloads_menu.add_separator()
+        if selected_platform == "FXPAK Pro":
+            add_mario_command(
+                downloads_menu,
+                "FXPAK Pro…",
+                protected_menu_action(
+                    "downloads_files",
+                    "Downloads",
+                    "FXPAK Pro SD Card",
+                    self.open_fxpak_sd_card_browser,
+                ),
+                "mario",
+            )
+            downloads_menu.add_separator()
 
         catalog_menu = tk.Menu(
             downloads_menu,
@@ -30679,6 +32335,7 @@ class TrackerApp:
             "mario_head",
         )
         self.help_menu = help_menu
+
         self.about_updates_menu_index = help_menu.index("end")
         dot_size = self._ui_px(12)
         dot_image = tk.PhotoImage(
@@ -30741,6 +32398,31 @@ class TrackerApp:
         self.fxpak_downloads_menu = None
         self.appearance_menu = None
         self.help_menu = help_menu
+
+    def _rebuild_platform_specific_menus(self) -> None:
+        """Recreate the menu bar after a platform radio selection changes."""
+        old_menu_bar = getattr(self, "custom_menu_bar", None)
+        try:
+            if old_menu_bar is not None and old_menu_bar.winfo_exists():
+                old_menu_bar.destroy()
+        except tk.TclError:
+            pass
+
+        self._build_menu_bar()
+        main_shell = getattr(self, "main_shell", None)
+        try:
+            if main_shell is not None and main_shell.winfo_exists():
+                self.custom_menu_bar.pack_forget()
+                self.custom_menu_bar.pack(
+                    side="top",
+                    fill="x",
+                    before=main_shell,
+                )
+        except tk.TclError:
+            pass
+        self._apply_menu_appearance()
+        self._localize_widget_tree(self.custom_menu_bar)
+        self._refresh_help_update_badge()
 
     def _refresh_help_update_badge(self) -> None:
         badge = getattr(self, "help_update_badge", None)
@@ -31511,6 +33193,1010 @@ class TrackerApp:
         if software != "retroarch" and self._tracker_is_running():
             self.refresh_tracker()
         self._guided_optional_software_completed(software)
+
+    def _save_mister_connection_settings(
+        self,
+        host: str,
+        user: str,
+        port_text: str,
+        *,
+        select_platform: bool = False,
+    ) -> tuple[str, str, int]:
+        normalized_host = normalize_mister_host(host)
+        normalized_user = str(user).strip() or "root"
+        try:
+            port = int(str(port_text).strip() or "22")
+        except ValueError as error:
+            raise ValueError(
+                "The MiSTer SSH port must be a number between 1 and 65535."
+            ) from error
+        if not 1 <= port <= 65535:
+            raise ValueError(
+                "The MiSTer SSH port must be a number between 1 and 65535."
+            )
+        self.config.update(
+            {
+                "mister_host": normalized_host,
+                "mister_ssh_user": normalized_user,
+                "mister_ssh_port": port,
+            }
+        )
+        self.config["platform_websocket_url"] = mister_websocket_url(self.config)
+        if select_platform:
+            self.config["selected_platform"] = "MiSTer"
+            self.platform_var.set("MiSTer")
+        save_config(self.config)
+        if self.worker is not None:
+            self.worker.config.update(self.config)
+        if select_platform:
+            self._on_platform_selected()
+        return normalized_host, normalized_user, port
+
+    def _open_mister_ssh_client(
+        self,
+        host: str,
+        user: str,
+        port: int,
+        password: str,
+        *,
+        timeout: float = 10,
+        remember_host: bool = True,
+    ):
+        if paramiko is None:
+            raise RuntimeError(
+                "MiSTer support is missing from this application build. "
+                "Install the Paramiko package or use the packaged release."
+            )
+        client = paramiko.SSHClient()
+        client.load_system_host_keys()
+        known_hosts = APP_DATA_DIR / "mister_known_hosts"
+        if known_hosts.is_file():
+            try:
+                client.load_host_keys(str(known_hosts))
+            except OSError:
+                pass
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        private_key = None
+        private_key_path = APP_DATA_DIR / "mister_id_rsa"
+        if private_key_path.is_file():
+            try:
+                private_key = paramiko.RSAKey.from_private_key_file(
+                    str(private_key_path)
+                )
+            except (OSError, ValueError, paramiko.SSHException):
+                private_key = None
+        try:
+            client.connect(
+                hostname=host,
+                port=port,
+                username=user,
+                password=password or None,
+                pkey=private_key,
+                timeout=timeout,
+                auth_timeout=timeout,
+                banner_timeout=timeout,
+                allow_agent=True,
+                look_for_keys=True,
+            )
+            if remember_host:
+                self._remember_mister_host_key(client)
+            return client
+        except Exception:
+            client.close()
+            raise
+
+    @staticmethod
+    def _mister_host_key_fingerprint(client) -> str:
+        transport = client.get_transport()
+        if transport is None:
+            return ""
+        server_key = transport.get_remote_server_key()
+        digest = hashlib.sha256(server_key.asbytes()).digest()
+        return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _verified_mister_peer(client) -> str:
+        """Verify the SSH target is a MiSTer before changing any files."""
+        command = (
+            "test -d /media/fat && "
+            "test -e /dev/MiSTer_cmd && "
+            "test -f /media/fat/MiSTer && "
+            "printf SMW_MISTER_OK"
+        )
+        _stdin, stdout, stderr = client.exec_command(command, timeout=6)
+        exit_status = stdout.channel.recv_exit_status()
+        output = stdout.read().decode("utf-8", errors="replace").strip()
+        if exit_status != 0 or output != "SMW_MISTER_OK":
+            detail = stderr.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                detail or "The SSH device is not a compatible MiSTer."
+            )
+        transport = client.get_transport()
+        if transport is None:
+            raise RuntimeError("The MiSTer SSH connection closed unexpectedly.")
+        peer = transport.getpeername()
+        return str(peer[0])
+
+    @staticmethod
+    def _tcp_port_is_open(
+        host: str,
+        port: int,
+        timeout: float = 0.2,
+    ) -> bool:
+        try:
+            with socket.create_connection((host, int(port)), timeout=timeout):
+                return True
+        except (OSError, ValueError):
+            return False
+
+    def _remember_mister_host_key(self, client) -> None:
+        known_hosts = APP_DATA_DIR / "mister_known_hosts"
+        known_hosts.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            client.save_host_keys(str(known_hosts))
+        except OSError:
+            pass
+
+    def _install_mister_app_ssh_key(self, client) -> Path:
+        """Install an app-only SSH key so later IP changes need no password."""
+        if paramiko is None:
+            raise RuntimeError("Paramiko is required for MiSTer setup.")
+        private_key_path = APP_DATA_DIR / "mister_id_rsa"
+        private_key_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            key = paramiko.RSAKey.from_private_key_file(str(private_key_path))
+        except (OSError, ValueError, paramiko.SSHException):
+            key = paramiko.RSAKey.generate(bits=3072)
+            key.write_private_key_file(str(private_key_path))
+        try:
+            private_key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+        public_line = (
+            f"{key.get_name()} {key.get_base64()} smw-stream-tracker"
+        ).encode("ascii")
+        _stdin, stdout, _stderr = client.exec_command(
+            "printf '%s' \"$HOME\"",
+            timeout=6,
+        )
+        remote_home = stdout.read().decode(
+            "utf-8", errors="replace"
+        ).strip() or "/root"
+        if not remote_home.startswith("/"):
+            remote_home = "/root"
+        ssh_folder = str(PurePosixPath(remote_home) / ".ssh")
+        authorized_path = str(PurePosixPath(ssh_folder) / "authorized_keys")
+        sftp = client.open_sftp()
+        try:
+            self._mister_sftp_makedirs(sftp, ssh_folder)
+            try:
+                with sftp.open(authorized_path, "rb") as remote_file:
+                    existing = remote_file.read(1024 * 1024)
+            except OSError:
+                existing = b""
+            if public_line not in existing.splitlines():
+                payload = existing.rstrip(b"\r\n")
+                if payload:
+                    payload += b"\n"
+                payload += public_line + b"\n"
+                self._mister_sftp_write(sftp, authorized_path, payload)
+            sftp.chmod(ssh_folder, 0o700)
+            sftp.chmod(authorized_path, 0o600)
+        finally:
+            sftp.close()
+        return private_key_path
+
+    def _discover_mister_host(
+        self,
+        host_hint: str,
+        user: str,
+        port: int,
+        password: str,
+        status_variable: tk.StringVar,
+    ) -> tuple[str, str]:
+        """Find and positively identify a MiSTer on the local network."""
+        direct_candidates: list[str] = []
+        for candidate in (
+            host_hint,
+            self.config.get("mister_host", ""),
+            "MiSTer",
+            "mister.local",
+        ):
+            normalized = normalize_mister_host(candidate)
+            if normalized and normalized.casefold() not in {
+                value.casefold() for value in direct_candidates
+            }:
+                direct_candidates.append(normalized)
+
+        authentication_failed = False
+
+        def try_candidate(candidate: str) -> tuple[str, str] | None:
+            nonlocal authentication_failed
+            if not self._tcp_port_is_open(candidate, port, timeout=0.35):
+                return None
+            client = None
+            try:
+                client = self._open_mister_ssh_client(
+                    candidate,
+                    user,
+                    port,
+                    password,
+                    timeout=3,
+                    remember_host=False,
+                )
+                peer = self._verified_mister_peer(client)
+                fingerprint = self._mister_host_key_fingerprint(client)
+                self._remember_mister_host_key(client)
+                return peer, fingerprint
+            except paramiko.AuthenticationException:
+                authentication_failed = True
+                return None
+            except (OSError, RuntimeError, paramiko.SSHException):
+                return None
+            finally:
+                if client is not None:
+                    client.close()
+
+        self._set_optional_install_status(
+            status_variable,
+            "Looking for MiSTer on your network...",
+        )
+        for candidate in direct_candidates:
+            found = try_candidate(candidate)
+            if found is not None:
+                return found
+
+        local_addresses = local_private_ipv4_addresses()
+        scan_candidates = mister_local_scan_candidates(local_addresses)
+        if scan_candidates:
+            self._set_optional_install_status(
+                status_variable,
+                "MiSTer was not found by name. Scanning the local network...",
+            )
+            open_hosts: list[str] = []
+            with ThreadPoolExecutor(max_workers=64) as executor:
+                futures = {
+                    executor.submit(
+                        self._tcp_port_is_open,
+                        candidate,
+                        port,
+                        0.22,
+                    ): candidate
+                    for candidate in scan_candidates
+                }
+                for future in as_completed(futures):
+                    try:
+                        is_open = future.result()
+                    except Exception:
+                        is_open = False
+                    if is_open:
+                        open_hosts.append(futures[future])
+
+            # A running SNID service uniquely identifies the most likely
+            # MiSTer and avoids testing unrelated SSH devices first.
+            open_hosts.sort(
+                key=lambda candidate: (
+                    not self._tcp_port_is_open(candidate, 23074, 0.12),
+                    tuple(int(part) for part in candidate.split(".")),
+                )
+            )
+            for candidate in open_hosts[:32]:
+                found = try_candidate(candidate)
+                if found is not None:
+                    return found
+
+        if authentication_failed:
+            raise RuntimeError(
+                "MiSTer was found, but the SSH login was not accepted. "
+                "Use the MiSTer SSH password shown above (the factory "
+                "default is 1), then try again."
+            )
+        raise RuntimeError(
+            "MiSTer could not be found on this local network. Make sure it "
+            "is powered on, connected to the same router, and SSH is enabled, "
+            "then try again."
+        )
+
+    @staticmethod
+    def _mister_sftp_makedirs(sftp, remote_path: str) -> None:
+        path = PurePosixPath(remote_path)
+        current = PurePosixPath("/")
+        for part in path.parts:
+            if part in {"", "/"}:
+                continue
+            current = current / part
+            try:
+                sftp.stat(str(current))
+            except OSError:
+                sftp.mkdir(str(current))
+
+    @staticmethod
+    def _mister_sftp_write(sftp, remote_path: str, payload: bytes) -> None:
+        with sftp.open(remote_path, "wb") as remote_file:
+            remote_file.write(payload)
+
+    def _install_mister_support(
+        self,
+        host: str,
+        user: str,
+        port: int,
+        password: str,
+        status_variable: tk.StringVar,
+    ) -> dict[str, str]:
+        download_path = APP_DATA_DIR / "DependencyDownloads" / "snid"
+        uartmode_download_path = (
+            APP_DATA_DIR / "DependencyDownloads" / "uartmode"
+        )
+        self._download_dependency_file(
+            MISTER_SNID_DOWNLOAD_URL,
+            download_path,
+            expected_sha256=MISTER_SNID_DOWNLOAD_SHA256,
+            maximum_bytes=MISTER_SNID_MAX_BYTES,
+            status_variable=status_variable,
+            description="MiSTer SNES live-tracking support",
+        )
+        self._download_dependency_file(
+            MISTER_UARTMODE_DOWNLOAD_URL,
+            uartmode_download_path,
+            expected_sha256=MISTER_UARTMODE_DOWNLOAD_SHA256,
+            maximum_bytes=MISTER_UARTMODE_MAX_BYTES,
+            status_variable=status_variable,
+            description="MiSTer live-tracking launcher",
+        )
+        self._set_optional_install_status(
+            status_variable,
+            "Connecting securely to MiSTer...",
+        )
+        client = self._open_mister_ssh_client(
+            host,
+            user,
+            port,
+            password,
+        )
+        try:
+            self._verified_mister_peer(client)
+            sftp = client.open_sftp()
+            try:
+                self._set_optional_install_status(
+                    status_variable,
+                    "Installing MiSTer SNES live tracking...",
+                )
+                staged_snid_path = "/media/fat/.snid-smwtracker-new"
+                try:
+                    sftp.remove(staged_snid_path)
+                except OSError:
+                    pass
+                try:
+                    # Never overwrite /media/fat/snid in place. When live
+                    # tracking is already active Linux treats that executable
+                    # as busy and MiSTer's SFTP server returns only "Failure".
+                    # Stage it under a different name, then replace it after
+                    # uartmode 0 has stopped the running copy.
+                    sftp.put(str(download_path), staged_snid_path)
+                    sftp.chmod(staged_snid_path, 0o755)
+                except OSError as error:
+                    raise RuntimeError(
+                        "The MiSTer SD card would not accept the live-tracking "
+                        "file. Make sure the SD card is inserted and is not "
+                        "write-protected, then try again."
+                    ) from error
+                try:
+                    sftp.put(
+                        str(uartmode_download_path),
+                        "/tmp/smw-stream-tracker-uartmode",
+                    )
+                    sftp.chmod(
+                        "/tmp/smw-stream-tracker-uartmode",
+                        0o755,
+                    )
+                except OSError as error:
+                    raise RuntimeError(
+                        "MiSTer temporary storage would not accept the "
+                        "live-tracking launcher. Restart MiSTer and try again."
+                    ) from error
+                self._mister_sftp_makedirs(sftp, "/media/fat/config")
+                self._mister_sftp_write(
+                    sftp,
+                    "/media/fat/config/uartmode.SNES",
+                    (6).to_bytes(4, byteorder="little", signed=False),
+                )
+                self._mister_sftp_makedirs(
+                    sftp,
+                    str(self.config.get("mister_rom_root")),
+                )
+                self._mister_sftp_makedirs(
+                    sftp,
+                    str(self.config.get("mister_menu_root")),
+                )
+            finally:
+                sftp.close()
+
+            # Linux images predating SNI mode 6 include an old uartmode
+            # launcher. Install the verified current launcher exactly as the
+            # official install_snid.sh does, while retaining the original the
+            # first time this repair runs. The saved uartmode.SNES file handles
+            # future core loads; running it now also supports an active core.
+            install_command = (
+                "set -e; "
+                "mount -o remount,rw /; "
+                "/etc/init.d/S50sshd start >/dev/null 2>&1 || true; "
+                "if [ ! -f /usr/sbin/uartmode.smwtracker.bak ]; then "
+                "cp -p /usr/sbin/uartmode "
+                "/usr/sbin/uartmode.smwtracker.bak; "
+                "fi; "
+                "install -m 755 /tmp/smw-stream-tracker-uartmode "
+                "/usr/sbin/uartmode; "
+                "uartmode 0 || true; "
+                "sleep 1; "
+                "mv -f /media/fat/.snid-smwtracker-new /media/fat/snid; "
+                "chmod 755 /media/fat/snid; "
+                "sync; "
+                "nohup uartmode 6 >/tmp/uartmode-launch.log 2>&1 "
+                "</dev/null &"
+            )
+            _stdin, stdout, stderr = client.exec_command(
+                install_command,
+                timeout=20,
+            )
+            exit_status = stdout.channel.recv_exit_status()
+            install_output = stdout.read().decode("utf-8", errors="replace").strip()
+            install_error = stderr.read().decode("utf-8", errors="replace").strip()
+            if exit_status != 0:
+                detail = install_error or install_output or f"exit code {exit_status}"
+                raise RuntimeError(
+                    "The MiSTer live-tracking launcher could not be installed: "
+                    + detail
+                )
+
+            self._set_optional_install_status(
+                status_variable,
+                "Enabling automatic MiSTer login for this app...",
+            )
+            self._install_mister_app_ssh_key(client)
+
+            for _attempt in range(20):
+                if self._test_tcp_port(host, 23074):
+                    break
+                time.sleep(0.25)
+            else:
+                _stdin, log_stdout, _stderr = client.exec_command(
+                    "tail -n 40 /tmp/snid.log 2>/dev/null || true",
+                    timeout=10,
+                )
+                log_text = log_stdout.read().decode(
+                    "utf-8",
+                    errors="replace",
+                ).strip()
+                detail = log_text or "No snid log was produced."
+                raise RuntimeError(
+                    "MiSTer live tracking did not start after installation. "
+                    + detail
+                )
+        finally:
+            client.close()
+        return {
+            "host": host,
+            "websocket": mister_websocket_url(self.config),
+        }
+
+    def _prompt_mister_password(
+        self,
+        *,
+        parent: tk.Widget | None = None,
+    ) -> bool:
+        owner = parent or self.root
+        palette = self._library_palette()
+        dialog = tk.Toplevel(owner)
+        dialog.title(self._translate_ui_text("MiSTer Login"))
+        self._size_dialog_for_ui(dialog, 660, 360, 600, 330)
+        dialog.resizable(False, False)
+        dialog.transient(owner)
+        dialog.configure(bg=palette["window"])
+        result = {"accepted": False}
+        password_var = tk.StringVar(value=self.mister_session_password or "1")
+
+        tk.Label(
+            dialog,
+            text=self._translate_ui_text("MISTER LOGIN"),
+            font=("Segoe UI", 16, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            pady=self._ui_px(12),
+        ).pack(fill="x")
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=self._ui_px(24),
+            pady=self._ui_px(20),
+        )
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        tk.Label(
+            body,
+            text=self._translate_ui_text(
+                "Enter the MiSTer SSH password. The factory default is 1. "
+                "Leave it blank if you use an SSH key. The password is kept "
+                "only until the tracker closes."
+            ),
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["panel"],
+            wraplength=self._ui_px(570),
+            justify="left",
+        ).pack(fill="x", pady=(0, 12))
+        password_entry = tk.Entry(
+            body,
+            textvariable=password_var,
+            show="*",
+            font=("Segoe UI", 12),
+            bg=palette["entry"],
+            fg=palette["text"],
+            insertbackground=palette["text"],
+        )
+        password_entry.pack(fill="x", ipady=6)
+
+        def finish(accepted: bool) -> None:
+            if accepted:
+                self.mister_session_password = password_var.get()
+                self.mister_session_credentials_confirmed = True
+                result["accepted"] = True
+            dialog.destroy()
+
+        buttons = tk.Frame(body, bg=palette["panel"])
+        buttons.pack(fill="x", pady=(18, 0))
+        self._make_action_button(
+            buttons,
+            self._translate_ui_text("Cancel"),
+            lambda: finish(False),
+            "#63788F",
+            "#4A6078",
+            width=12,
+        ).pack(side="right", padx=(8, 0))
+        self._make_action_button(
+            buttons,
+            self._translate_ui_text("Continue"),
+            lambda: finish(True),
+            THEME["green"],
+            "#208A39",
+            width=12,
+        ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        dialog.bind("<Return>", lambda _event: finish(True))
+        dialog.bind("<Escape>", lambda _event: finish(False))
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        dialog.grab_set()
+        password_entry.focus_set()
+        owner.wait_window(dialog)
+        return bool(result["accepted"])
+
+    def _guided_open_mister_setup(self) -> None:
+        if self._guided_setup_stage == "connection":
+            self._guided_setup_software_choice = "mister"
+            self._guided_setup_software_selected = {"mister"}
+            self._guided_setup_software_completed = set()
+        self.open_mister_setup()
+
+    def open_mister_setup(self) -> None:
+        existing_dialog = self.mister_setup_dialog
+        if existing_dialog is not None:
+            try:
+                if existing_dialog.winfo_exists():
+                    existing_dialog.lift()
+                    existing_dialog.focus_force()
+                    self._guided_setup_refresh_connection_flash()
+                    return
+            except tk.TclError:
+                pass
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.mister_setup_dialog = dialog
+        dialog.title(self._translate_ui_text("MiSTer Setup"))
+        self._size_dialog_for_ui(dialog, 940, 740, 780, 660)
+        dialog.minsize(self._ui_px(760), self._ui_px(560))
+        dialog.transient(self.root)
+        dialog.configure(bg=palette["window"])
+
+        host_var = tk.StringVar(
+            value=str(self.config.get("mister_host", "MiSTer"))
+        )
+        user_var = tk.StringVar(
+            value=str(self.config.get("mister_ssh_user", "root"))
+        )
+        port_var = tk.StringVar(
+            value=str(self.config.get("mister_ssh_port", 22))
+        )
+        password_var = tk.StringVar(value=self.mister_session_password or "1")
+        status_var = self._localized_string_var(
+            value="Ready for MiSTer setup.",
+            master=dialog,
+        )
+
+        def close_dialog(*, restore_guide: bool = True) -> None:
+            self.mister_setup_dialog = None
+            self.mister_setup_automatic_button = None
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+            if (
+                restore_guide
+                and self._guided_setup_stage == "connection"
+                and self._guided_setup_software_choice == "mister"
+            ):
+                self._guided_setup_refresh_connection_flash()
+                self.root.after(100, self._guided_setup_post_downloads_menu)
+
+        tk.Label(
+            dialog,
+            text=self._translate_ui_text("MISTER SETUP"),
+            font=("Segoe UI", 18, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            pady=self._ui_px(13),
+        ).pack(fill="x")
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=self._ui_px(24),
+            pady=self._ui_px(18),
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        tk.Label(
+            body,
+            text=self._translate_ui_text(
+                "1. Connect MiSTer to your router with Ethernet or Wi-Fi and "
+                "power it on.\n2. Keep this computer on the same network.\n"
+                "3. Select Find & Set Up MiSTer. The tracker will find its "
+                "address, install live tracking, create its game folders, "
+                "enable automatic login for this app, select MiSTer, and "
+                "test everything.\n4. The fields and smaller buttons below "
+                "are only needed for manual setup."
+            ),
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="w",
+            justify="left",
+            wraplength=self._ui_px(840),
+        ).grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 18))
+
+        fields = (
+            ("MiSTer host or IP:", host_var, False),
+            ("SSH user:", user_var, False),
+            ("SSH port:", port_var, False),
+            ("SSH password:", password_var, True),
+        )
+        for row, (label_text, variable, secret) in enumerate(fields, start=1):
+            tk.Label(
+                body,
+                text=self._translate_ui_text(label_text),
+                font=("Segoe UI", 11, "bold"),
+                fg=palette["text"],
+                bg=palette["panel"],
+                anchor="e",
+            ).grid(row=row, column=0, sticky="e", padx=(0, 12), pady=7)
+            entry = tk.Entry(
+                body,
+                textvariable=variable,
+                show="*" if secret else "",
+                font=("Segoe UI", 11),
+                bg=palette["entry"],
+                fg=palette["text"],
+                insertbackground=palette["text"],
+            )
+            entry.grid(row=row, column=1, columnspan=2, sticky="ew", ipady=5)
+
+        tk.Label(
+            body,
+            text=self._translate_ui_text(
+                "The password is used only for this tracker session and is "
+                "never saved. Leave it blank if your MiSTer uses an SSH key."
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            anchor="w",
+            justify="left",
+        ).grid(row=5, column=1, columnspan=2, sticky="w", pady=(0, 12))
+        status_label = tk.Label(
+            body,
+            textvariable=status_var,
+            font=("Segoe UI", 10, "bold"),
+            fg="#FFD43B",
+            bg=palette["panel"],
+            anchor="w",
+            justify="left",
+            wraplength=self._ui_px(820),
+        )
+        status_label.grid(row=6, column=0, columnspan=3, sticky="ew", pady=12)
+
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_columnconfigure(2, weight=0)
+        body.grid_rowconfigure(6, weight=1)
+
+        one_click_button_frame = tk.Frame(body, bg=palette["panel"])
+        one_click_button_frame.grid(
+            row=7,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(8, 10),
+        )
+        tk.Label(
+            body,
+            text=self._translate_ui_text("Manual setup options"),
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            anchor="w",
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(2, 4))
+        buttons = tk.Frame(body, bg=palette["panel"])
+        buttons.grid(row=9, column=0, columnspan=3, sticky="ew")
+
+        busy_buttons: list[tk.Widget] = []
+
+        def saved_values(select_platform: bool = False):
+            values = self._save_mister_connection_settings(
+                host_var.get(),
+                user_var.get(),
+                port_var.get(),
+                select_platform=select_platform,
+            )
+            self.mister_session_password = password_var.get()
+            self.mister_session_credentials_confirmed = True
+            return values
+
+        def set_busy(busy: bool) -> None:
+            for button in busy_buttons:
+                try:
+                    button.configure(state="disabled" if busy else "normal")
+                except tk.TclError:
+                    pass
+
+        def finish_task(message: str, error: str = "") -> None:
+            set_busy(False)
+            if error:
+                status_var.set(self._translate_ui_text("Setup failed:") + " " + error)
+                self._show_localized_info(
+                    "MiSTer Setup Failed",
+                    error,
+                    parent=dialog,
+                )
+            else:
+                status_var.set(message)
+                self._show_localized_info(
+                    "MiSTer Ready",
+                    message,
+                    parent=dialog,
+                )
+
+        def test_connection() -> None:
+            try:
+                host, user, port = saved_values(False)
+            except Exception as error:
+                finish_task("", str(error))
+                return
+            set_busy(True)
+            status_var.set(self._translate_ui_text("Testing MiSTer connection..."))
+
+            def worker() -> None:
+                client = None
+                try:
+                    client = self._open_mister_ssh_client(
+                        host,
+                        user,
+                        port,
+                        password_var.get(),
+                    )
+                    live_ready = self._test_tcp_port(host, 23074)
+                    message = (
+                        "MiSTer SSH is connected. SNES live tracking is ready."
+                        if live_ready
+                        else "MiSTer SSH is connected. Install / Repair Support, then load the SNES core once to start live tracking."
+                    )
+                    self.root.after(0, lambda: finish_task(message))
+                except Exception as error:
+                    self.root.after(0, lambda detail=str(error): finish_task("", detail))
+                finally:
+                    if client is not None:
+                        client.close()
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def install_support() -> None:
+            try:
+                host, user, port = saved_values(True)
+            except Exception as error:
+                finish_task("", str(error))
+                return
+            set_busy(True)
+            status_var.set(self._translate_ui_text("Preparing MiSTer support..."))
+
+            def worker() -> None:
+                try:
+                    self._install_mister_support(
+                        host,
+                        user,
+                        port,
+                        password_var.get(),
+                        status_var,
+                    )
+                    message = (
+                        "MiSTer support is installed. Load the SNES core once, "
+                        "then select Refresh in the tracker. Games launched by "
+                        "the app will be copied to the MiSTer automatically."
+                    )
+                    self.root.after(0, lambda: finish_task(message))
+                except Exception as error:
+                    append_error_log("MiSTer setup failed", traceback.format_exc())
+                    self.root.after(0, lambda detail=str(error): finish_task("", detail))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def automatic_setup() -> None:
+            try:
+                user = str(user_var.get()).strip() or "root"
+                port = int(str(port_var.get()).strip() or "22")
+                if not 1 <= port <= 65535:
+                    raise ValueError
+            except ValueError:
+                finish_task(
+                    "",
+                    "The MiSTer SSH port must be a number between 1 and 65535.",
+                )
+                return
+
+            password = password_var.get()
+            host_hint = host_var.get()
+            self.mister_session_password = password
+            self.mister_session_credentials_confirmed = True
+            set_busy(True)
+            status_var.set(
+                self._translate_ui_text(
+                    "Looking for MiSTer on your network..."
+                )
+            )
+
+            def worker() -> None:
+                key_client = None
+                try:
+                    host, fingerprint = self._discover_mister_host(
+                        host_hint,
+                        user,
+                        port,
+                        password,
+                        status_var,
+                    )
+                    self._set_optional_install_status(
+                        status_var,
+                        self._translate_ui_text(
+                            "MiSTer found. Installing and testing everything..."
+                        ),
+                    )
+                    self._install_mister_support(
+                        host,
+                        user,
+                        port,
+                        password,
+                        status_var,
+                    )
+                    key_client = self._open_mister_ssh_client(
+                        host,
+                        user,
+                        port,
+                        "",
+                        timeout=6,
+                    )
+                    self._verified_mister_peer(key_client)
+
+                    def complete() -> None:
+                        host_var.set(host)
+                        self.config["mister_ssh_fingerprint"] = fingerprint
+                        self._save_mister_connection_settings(
+                            host,
+                            user,
+                            str(port),
+                            select_platform=True,
+                        )
+                        finish_task(
+                            "MiSTer is fully set up. The tracker found it, "
+                            "installed live tracking, created the game "
+                            "folders, enabled automatic login for this app, "
+                            "selected MiSTer, and verified the connection."
+                        )
+                        self._guided_optional_software_completed("mister")
+                        if self._guided_setup_stage != "connection":
+                            close_dialog(restore_guide=False)
+
+                    self.root.after(0, complete)
+                except Exception as error:
+                    append_error_log(
+                        "Automatic MiSTer setup failed",
+                        traceback.format_exc(),
+                    )
+                    self.root.after(
+                        0,
+                        lambda detail=str(error): finish_task("", detail),
+                    )
+                finally:
+                    if key_client is not None:
+                        key_client.close()
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def save_only() -> None:
+            try:
+                saved_values(True)
+            except Exception as error:
+                finish_task("", str(error))
+                return
+            status_var.set(self._translate_ui_text("MiSTer settings saved."))
+
+        automatic_button = self._make_action_button(
+            one_click_button_frame,
+            self._translate_ui_text("Find & Set Up MiSTer"),
+            automatic_setup,
+            THEME["green"],
+            "#208A39",
+            width=30,
+        )
+        self.mister_setup_automatic_button = automatic_button
+        automatic_button.pack(fill="x")
+        test_button = self._make_action_button(
+            buttons,
+            self._translate_ui_text("Test Connection"),
+            test_connection,
+            THEME["blue"],
+            "#1768B2",
+            width=15,
+        )
+        test_button.pack(side="left", padx=(0, 8))
+        install_button = self._make_action_button(
+            buttons,
+            self._translate_ui_text("Install / Repair Support"),
+            install_support,
+            THEME["green"],
+            "#208A39",
+            width=21,
+        )
+        install_button.pack(side="left")
+        save_button = self._make_action_button(
+            buttons,
+            self._translate_ui_text("Save & Select MiSTer"),
+            save_only,
+            THEME["purple"],
+            "#6037AA",
+            width=19,
+        )
+        save_button.pack(side="right", padx=(8, 0))
+        close_button = self._make_action_button(
+            buttons,
+            self._translate_ui_text("Close"),
+            close_dialog,
+            "#63788F",
+            "#4A6078",
+            width=10,
+        )
+        close_button.pack(side="right")
+        busy_buttons.extend(
+            (automatic_button, test_button, install_button, save_button)
+        )
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        if (
+            self._guided_setup_stage == "connection"
+            and self._guided_setup_software_choice == "mister"
+        ):
+            dialog.after_idle(self._guided_setup_refresh_connection_flash)
 
     def _streamer_privacy_warning_is_suppressed(
         self,
@@ -33140,6 +35826,20 @@ class TrackerApp:
         ok_button.focus_set()
         owner.wait_window(dialog)
 
+    def _show_localized_error(
+        self,
+        title: str,
+        message: str,
+        *,
+        parent: tk.Widget | None = None,
+    ) -> None:
+        """Show errors in the same blue app dialog used by other messages."""
+        self._show_localized_info(
+            title,
+            message,
+            parent=parent,
+        )
+
     def reset_smwcentral_catalog(self) -> None:
         """Reset the downloaded catalog while preserving personal data."""
         parent = self.downloader_dialog or self.root
@@ -33705,11 +36405,14 @@ class TrackerApp:
         local_qusb = tk.StringVar(
             value=self.qusb_path_var.get()
         )
-        connection_service_codes = (
-            "Automatic",
-            "SNI",
-            "QUsb2Snes",
-        )
+        selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
+        if selected_platform == "RetroArch":
+            connection_service_codes = ("Automatic", "SNI")
+        elif selected_platform == "MiSTer":
+            connection_service_codes = ("Automatic",)
+        else:
+            selected_platform = "FXPAK Pro"
+            connection_service_codes = ("Automatic", "QUsb2Snes")
         connection_service_labels_to_codes = {
             self._translate_ui_text(code): code
             for code in connection_service_codes
@@ -33922,55 +36625,58 @@ class TrackerApp:
             if selected:
                 local_retroarch_core.set(selected)
 
-        add_path_setting(
-            0,
-            "▣",
-            "SNI",
-            local_sni,
-            choose_sni,
-        )
-        add_path_setting(
-            1,
-            "▣",
-            "QUsb2Snes",
-            local_qusb,
-            choose_qusb,
-        )
+        if selected_platform == "RetroArch":
+            add_path_setting(
+                0,
+                "▣",
+                "SNI",
+                local_sni,
+                choose_sni,
+            )
+        elif selected_platform == "FXPAK Pro":
+            add_path_setting(
+                1,
+                "▣",
+                "QUsb2Snes",
+                local_qusb,
+                choose_qusb,
+            )
 
-        tk.Label(
-            body,
-            text="⇄",
-            font=("Segoe UI Symbol", 14, "bold"),
-            fg=THEME["purple"],
-            bg="#F9F5FF",
-            width=2,
-        ).grid(row=2, column=0, padx=(0, 8), pady=7)
-        OutlinedLabel(
-            body,
-            text="Preferred service",
-            font=("Segoe UI", 10, "bold"),
-            fg=THEME["text"],
-            bg="#F9F5FF",
-            anchor="w",
-            width=17,
-        ).grid(row=2, column=1, sticky="w", pady=7)
-        ttk.Combobox(
-            body,
-            textvariable=local_connection_service,
-            values=tuple(
-                connection_service_labels_to_codes.keys()
-            ),
-            state="readonly",
-            justify="center",
-            width=24,
-        ).grid(
-            row=2,
-            column=2,
-            sticky="w",
-            padx=(8, 0),
-            pady=7,
-            ipady=4,
-        )
+        if selected_platform in {"FXPAK Pro", "RetroArch"}:
+            tk.Label(
+                body,
+                text="⇄",
+                font=("Segoe UI Symbol", 14, "bold"),
+                fg=THEME["purple"],
+                bg="#F9F5FF",
+                width=2,
+            ).grid(row=2, column=0, padx=(0, 8), pady=7)
+            OutlinedLabel(
+                body,
+                text="Preferred service",
+                font=("Segoe UI", 10, "bold"),
+                fg=THEME["text"],
+                bg="#F9F5FF",
+                anchor="w",
+                width=17,
+            ).grid(row=2, column=1, sticky="w", pady=7)
+            ttk.Combobox(
+                body,
+                textvariable=local_connection_service,
+                values=tuple(
+                    connection_service_labels_to_codes.keys()
+                ),
+                state="readonly",
+                justify="center",
+                width=24,
+            ).grid(
+                row=2,
+                column=2,
+                sticky="w",
+                padx=(8, 0),
+                pady=7,
+                ipady=4,
+            )
         add_path_setting(
             3,
             "▦",
@@ -33992,23 +36698,24 @@ class TrackerApp:
             local_rom_library,
             choose_rom_library,
         )
-        add_path_setting(
-            6,
-            "◉",
-            "RetroArch",
-            local_retroarch,
-            lambda: choose_emulator(
-                "Select RetroArch application",
+        if selected_platform == "RetroArch":
+            add_path_setting(
+                6,
+                "◉",
+                "RetroArch",
                 local_retroarch,
-            ),
-        )
-        add_path_setting(
-            7,
-            "◌",
-            "RetroArch core",
-            local_retroarch_core,
-            choose_retroarch_core,
-        )
+                lambda: choose_emulator(
+                    "Select RetroArch application",
+                    local_retroarch,
+                ),
+            )
+            add_path_setting(
+                7,
+                "◌",
+                "RetroArch core",
+                local_retroarch_core,
+                choose_retroarch_core,
+            )
 
         tk.Label(
             body,
@@ -34279,13 +36986,24 @@ class TrackerApp:
             pady=7,
         )
 
-        tk.Label(
-            body,
-            text=(
-                "FXPAK Pro and RetroArch use SNI or QUsb2Snes for live memory "
-                "tracking. RetroArch also needs Network Commands enabled. "
+        platform_settings_note = {
+            "FXPAK Pro": (
+                "FXPAK Pro uses QUsb2Snes for live memory tracking. "
                 "The workbook remains optional after import."
             ),
+            "RetroArch": (
+                "RetroArch uses SNI for live memory tracking and also needs "
+                "Network Commands enabled. The workbook remains optional "
+                "after import."
+            ),
+            "MiSTer": (
+                "MiSTer uses its local network connection for live memory "
+                "tracking. The workbook remains optional after import."
+            ),
+        }[selected_platform]
+        tk.Label(
+            body,
+            text=self._translate_ui_text(platform_settings_note),
             font=("Segoe UI", 9),
             fg=THEME["muted"],
             bg="#F9F5FF",
@@ -41117,6 +43835,148 @@ class TrackerApp:
         except tk.TclError:
             pass
 
+    def open_spreadsheet_settings(self) -> None:
+        """Collect the tracker workbook actions in one blue popup."""
+        if (
+            self.spreadsheet_settings_dialog is not None
+            and self.spreadsheet_settings_dialog.winfo_exists()
+        ):
+            self.spreadsheet_settings_dialog.deiconify()
+            self.spreadsheet_settings_dialog.lift()
+            self.spreadsheet_settings_dialog.focus_force()
+            return
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.spreadsheet_settings_dialog = dialog
+        dialog.title("Spreadsheet Settings")
+        self._size_dialog_for_ui(
+            dialog,
+            720,
+            330,
+            620,
+            290,
+        )
+        dialog.configure(bg=palette["window"])
+        dialog.transient(self.root)
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["blue"],
+            padx=18,
+            pady=11,
+        )
+        title_bar.pack(fill="x")
+        self._add_dialog_window_controls(
+            title_bar,
+            dialog,
+            THEME["blue"],
+        )
+        OutlinedLabel(
+            title_bar,
+            text="Spreadsheet Settings",
+            font=("Segoe UI", 17, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+        ).pack(side="left")
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=22,
+            pady=22,
+        )
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=14,
+            pady=12,
+        )
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+
+        tk.Label(
+            body,
+            text=(
+                "Import or export your tracker using an Excel workbook."
+            ),
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="center",
+        ).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(0, 22),
+        )
+
+        self._make_action_button(
+            body,
+            text="Import Spreadsheet...",
+            command=lambda: self._run_with_streamer_privacy_warning(
+                "stats_files",
+                "Tracker spreadsheet tools",
+                "Import Spreadsheet",
+                self.import_existing_spreadsheet,
+            ),
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=22,
+            pad_y=8,
+        ).grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            padx=(0, 6),
+        )
+        self._make_action_button(
+            body,
+            text="Export My Tracker...",
+            command=lambda: self._run_with_streamer_privacy_warning(
+                "stats_files",
+                "Tracker spreadsheet tools",
+                "Export My Tracker",
+                self.export_my_tracker,
+            ),
+            bg=THEME["green"],
+            active_bg=THEME["green_dark"],
+            width=22,
+            pad_y=8,
+        ).grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            padx=(6, 0),
+        )
+
+        def close_dialog() -> None:
+            dialog.destroy()
+            self.spreadsheet_settings_dialog = None
+
+        self._make_action_button(
+            body,
+            text="Close",
+            command=close_dialog,
+            bg=THEME["muted"],
+            active_bg="#384D65",
+            width=11,
+            pad_y=6,
+        ).grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="e",
+            pady=(24, 0),
+        )
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        self._localize_widget_tree(dialog)
+
     def open_my_tracker(
         self,
         event=None,
@@ -41371,6 +44231,9 @@ class TrackerApp:
             "letter_filter": letter_filter,
             "count_var": count_var,
             "title_gradient": title_gradient,
+            "remove_mode": False,
+            "remove_selected_iids": set(),
+            "remove_checkbox_boxes": {},
         }
 
         filters = tk.Frame(
@@ -41386,7 +44249,22 @@ class TrackerApp:
             padx=14,
             pady=(12, 8),
         )
-        filters.columnconfigure(0, weight=1)
+        for column_index, column_weight in enumerate(
+            (3, 2, 2, 2, 2, 2)
+        ):
+            filters.columnconfigure(
+                column_index,
+                weight=column_weight,
+                uniform="tracker_filter_controls",
+            )
+        # The final two tracker columns begin immediately after Started.
+        # Reserve their combined width for the compact add/remove controls so
+        # Reset Filters ends on the same vertical line as Started.
+        filters.columnconfigure(
+            6,
+            weight=0,
+            minsize=self._ui_px(300),
+        )
 
         OutlinedLabel(
             filters,
@@ -41400,6 +44278,7 @@ class TrackerApp:
         search_entry = tk.Entry(
             filters,
             textvariable=search_var,
+            width=34,
             font=("Segoe UI", 10),
             fg=palette["text"],
             bg=palette["entry"],
@@ -41471,7 +44350,7 @@ class TrackerApp:
                 row=0,
                 column=column_index,
                 sticky="ew",
-                padx=(0, 8 + self._ui_px(27)),
+                padx=(0, 8),
             )
             combo = ttk.Combobox(
                 filters,
@@ -41511,9 +44390,261 @@ class TrackerApp:
         ).grid(
             row=1,
             column=5,
-            sticky="e",
+            sticky="ew",
+            padx=(0, 8),
             pady=(3, 0),
         )
+
+        circle_actions_frame = tk.Frame(
+            filters,
+            bg=palette["panel"],
+            bd=0,
+            highlightthickness=0,
+        )
+        circle_actions_frame.grid(
+            row=0,
+            column=6,
+            rowspan=2,
+            sticky="e",
+            padx=(self._ui_px(8), 0),
+        )
+
+        def make_tracker_circle_action(
+            symbol: str,
+            color: str,
+            hover_color: str,
+            command: Callable[[], None],
+        ) -> tk.Canvas:
+            diameter = self._ui_px(42)
+            circle = tk.Canvas(
+                circle_actions_frame,
+                width=diameter,
+                height=diameter,
+                bg=palette["panel"],
+                bd=0,
+                highlightthickness=0,
+                cursor="hand2",
+                takefocus=1,
+            )
+
+            def render_circle(fill_color: str):
+                if Image is None or ImageDraw is None or ImageTk is None:
+                    return None
+                supersample = 6
+                high_size = diameter * supersample
+                edge = max(supersample, self._ui_px(1) * supersample)
+                image = Image.new(
+                    "RGBA",
+                    (high_size, high_size),
+                    (0, 0, 0, 0),
+                )
+                draw = ImageDraw.Draw(image)
+                draw.ellipse(
+                    (
+                        edge,
+                        edge,
+                        high_size - edge - 1,
+                        high_size - edge - 1,
+                    ),
+                    fill=fill_color,
+                    outline="#FFFFFF",
+                    width=max(supersample, self._ui_px(1) * supersample),
+                )
+                center = high_size / 2
+                arm = round(high_size * 0.245)
+                thickness = max(
+                    supersample * 5,
+                    round(high_size * 0.145),
+                )
+                left = round(center - arm)
+                right = round(center + arm)
+                top = round(center - thickness / 2)
+                bottom = top + thickness
+                radius = max(1, round(thickness * 0.16))
+                draw.rounded_rectangle(
+                    (left, top, right, bottom),
+                    radius=radius,
+                    fill="#FFFFFF",
+                )
+                if symbol == "+":
+                    draw.rounded_rectangle(
+                        (top, left, bottom, right),
+                        radius=radius,
+                        fill="#FFFFFF",
+                    )
+                image = image.resize(
+                    (diameter, diameter),
+                    Image.Resampling.LANCZOS,
+                )
+                return ImageTk.PhotoImage(
+                    image,
+                    master=circle,
+                )
+
+            normal_photo = render_circle(color)
+            hover_photo = render_circle(hover_color)
+            if normal_photo is not None and hover_photo is not None:
+                image_item = circle.create_image(
+                    diameter / 2,
+                    diameter / 2,
+                    image=normal_photo,
+                    anchor="center",
+                )
+                circle._smw_circle_photos = (
+                    normal_photo,
+                    hover_photo,
+                )
+                show_normal = lambda: circle.itemconfigure(
+                    image_item,
+                    image=normal_photo,
+                )
+                show_hover = lambda: circle.itemconfigure(
+                    image_item,
+                    image=hover_photo,
+                )
+            else:
+                oval = circle.create_oval(
+                    self._ui_px(2),
+                    self._ui_px(2),
+                    diameter - self._ui_px(2),
+                    diameter - self._ui_px(2),
+                    fill=color,
+                    outline="#FFFFFF",
+                    width=max(1, self._ui_px(1)),
+                )
+                center = diameter // 2
+                arm = max(self._ui_px(8), round(diameter * 0.25))
+                thickness = max(self._ui_px(5), round(diameter * 0.14))
+                mark_top = center - thickness // 2
+                mark_bottom = mark_top + thickness
+                circle.create_rectangle(
+                    center - arm,
+                    mark_top,
+                    center + arm,
+                    mark_bottom,
+                    fill="#FFFFFF",
+                    outline="",
+                )
+                if symbol == "+":
+                    circle.create_rectangle(
+                        mark_top,
+                        center - arm,
+                        mark_bottom,
+                        center + arm,
+                        fill="#FFFFFF",
+                        outline="",
+                    )
+                show_normal = lambda: circle.itemconfigure(
+                    oval,
+                    fill=color,
+                )
+                show_hover = lambda: circle.itemconfigure(
+                    oval,
+                    fill=hover_color,
+                )
+            circle.pack(
+                side="left",
+                padx=(self._ui_px(5), 0),
+            )
+            circle.bind(
+                "<Enter>",
+                lambda _event: show_hover(),
+            )
+            circle.bind(
+                "<Leave>",
+                lambda _event: show_normal(),
+            )
+            circle.bind("<Button-1>", lambda _event: command())
+            circle.bind("<Return>", lambda _event: command())
+            circle.bind("<space>", lambda _event: command())
+            return circle
+
+        add_tracker_circle = make_tracker_circle_action(
+            "+",
+            THEME["green"],
+            THEME["green_dark"],
+            self._add_tracker_record,
+        )
+        remove_tracker_circle = make_tracker_circle_action(
+            "−",
+            THEME["red"],
+            "#B92824",
+            self._remove_tracker_record,
+        )
+
+        remove_mode_bar = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=THEME["red"],
+            highlightthickness=self._ui_px(2),
+            padx=self._ui_px(12),
+            pady=self._ui_px(7),
+        )
+        remove_mode_bar.columnconfigure(0, weight=1)
+        remove_mode_label = tk.Label(
+            remove_mode_bar,
+            text=self._translate_ui_text(
+                "Select the hacks you want to remove, then choose Remove Selected."
+            ),
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="w",
+        )
+        remove_mode_label.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, self._ui_px(12)),
+        )
+        remove_selection_var = self._localized_string_var(
+            value="0 hack(s) selected",
+            master=dialog,
+        )
+        remove_mode_count_label = tk.Label(
+            remove_mode_bar,
+            textvariable=remove_selection_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["yellow"],
+            bg=palette["panel"],
+            anchor="e",
+        )
+        remove_mode_count_label.grid(
+            row=0,
+            column=1,
+            sticky="e",
+            padx=(0, self._ui_px(10)),
+        )
+        cancel_remove_button = self._make_action_button(
+            remove_mode_bar,
+            text=self._translate_ui_text("Cancel Selection"),
+            command=lambda: self._set_tracker_remove_mode(False),
+            bg=THEME["muted"],
+            active_bg="#384D65",
+            width=13,
+            font_size=9,
+            pad_y=4,
+        )
+        cancel_remove_button.grid(
+            row=0,
+            column=2,
+            padx=(0, self._ui_px(7)),
+        )
+        confirm_remove_button = self._make_action_button(
+            remove_mode_bar,
+            text=self._translate_ui_text("Remove Selected"),
+            command=self._confirm_tracker_remove_selection,
+            bg=THEME["red"],
+            active_bg="#B92824",
+            width=15,
+            font_size=9,
+            pad_y=4,
+        )
+        confirm_remove_button.grid(
+            row=0,
+            column=3,
+        )
+        confirm_remove_button.configure(state="disabled")
 
         tree_frame = tk.Frame(
             dialog,
@@ -41829,45 +44960,6 @@ class TrackerApp:
         )
         legacy_note_label.pack(side="left")
 
-        tracker_spreadsheet_actions = (
-            (
-                "Import Spreadsheet...",
-                lambda: self._run_with_streamer_privacy_warning(
-                    "stats_files",
-                    "Tracker spreadsheet tools",
-                    "Import Spreadsheet",
-                    self.import_existing_spreadsheet,
-                ),
-                THEME["blue"],
-            ),
-            (
-                "Export My Tracker...",
-                lambda: self._run_with_streamer_privacy_warning(
-                    "stats_files",
-                    "Tracker spreadsheet tools",
-                    "Export My Tracker",
-                    self.export_my_tracker,
-                ),
-                THEME["green"],
-            ),
-            (
-                "Google Sheets Settings...",
-                lambda: self._run_with_streamer_privacy_warning(
-                    "stats_files",
-                    "Tracker spreadsheet tools",
-                    "Google Sheets Settings",
-                    self.open_google_sheets_sync,
-                ),
-                THEME["purple"],
-            ),
-            (
-                "Sync Google Sheets Now",
-                lambda: self._start_google_sheets_sync(
-                    show_dialog=True
-                ),
-                THEME["orange"],
-            ),
-        )
         button_bar = tk.Frame(
             dialog,
             bg=palette["window"],
@@ -41877,110 +44969,82 @@ class TrackerApp:
             padx=14,
             pady=(0, 12),
         )
-        tracker_action_button_width = self._ui_px(190)
-        tracker_action_font_size = 8
-        self._make_action_button(
-            button_bar,
-            text="Edit Selected",
-            command=self._edit_tracker_record,
-            bg=THEME["green"],
-            active_bg=THEME["green_dark"],
-            width=18,
-            pad_y=5,
-            font_size=tracker_action_font_size,
-            fixed_pixel_width=tracker_action_button_width,
-        ).pack(side="left")
-        self._make_action_button(
-            button_bar,
-            text="Open SMWCentral",
-            command=self._open_selected_tracker_page,
-            bg=THEME["blue"],
-            active_bg=THEME["navy"],
-            width=18,
-            pad_y=5,
-            font_size=tracker_action_font_size,
-            fixed_pixel_width=tracker_action_button_width,
-        ).pack(side="left", padx=(8, 0))
-        self._make_action_button(
-            button_bar,
-            text="Launch Game",
-            command=self._launch_selected_tracker_game,
-            bg=THEME["purple"],
-            active_bg="#6037AA",
-            width=18,
-            pad_y=5,
-            font_size=tracker_action_font_size,
-            fixed_pixel_width=tracker_action_button_width,
-        ).pack(side="left", padx=(8, 0))
-        self._make_action_button(
-            button_bar,
-            text="Add to Tracker",
-            command=self._add_tracker_record,
-            bg=THEME["green"],
-            active_bg=THEME["green_dark"],
-            width=18,
-            pad_y=5,
-            font_size=tracker_action_font_size,
-            fixed_pixel_width=tracker_action_button_width,
-        ).pack(side="left", padx=(8, 0))
-        self._make_action_button(
-            button_bar,
-            text="Remove from Tracker",
-            command=self._remove_tracker_record,
-            bg=THEME["red"],
-            active_bg="#B92824",
-            width=18,
-            pad_y=5,
-            font_size=tracker_action_font_size,
-            fixed_pixel_width=tracker_action_button_width,
-        ).pack(side="left", padx=(8, 0))
-        # Keep every tracker action exactly the same size. A fixed pixel width
-        # prevents longer spreadsheet captions from stretching their buttons.
-        for action_text, action_command, action_color in (
-            tracker_spreadsheet_actions
-        ):
+        for column_index in range(4):
+            button_bar.columnconfigure(
+                column_index,
+                weight=1,
+                uniform="tracker_bottom_actions",
+            )
+        tracker_bottom_actions = (
+            (
+                "Spreadsheet Settings",
+                self.open_spreadsheet_settings,
+                THEME["blue"],
+                THEME["navy"],
+            ),
+            (
+                "Google Sheets Settings",
+                lambda: self._run_with_streamer_privacy_warning(
+                    "stats_files",
+                    "Tracker spreadsheet tools",
+                    "Google Sheets Settings",
+                    self.open_google_sheets_sync,
+                ),
+                THEME["green"],
+                THEME["green_dark"],
+            ),
+            (
+                "Open SMW Central",
+                self._open_selected_tracker_page,
+                THEME["orange"],
+                "#C85D11",
+            ),
+            (
+                "Launch Game",
+                self._launch_selected_tracker_game,
+                THEME["purple"],
+                "#6037AA",
+            ),
+        )
+        for column_index, (
+            action_text,
+            action_command,
+            action_color,
+            active_color,
+        ) in enumerate(tracker_bottom_actions):
             self._make_action_button(
                 button_bar,
                 text=action_text,
                 command=action_command,
                 bg=action_color,
-                active_bg=action_color,
-                width=18,
-                font_size=tracker_action_font_size,
-                pad_y=5,
-                fixed_pixel_width=tracker_action_button_width,
-            ).pack(side="left", padx=(8, 0))
-        self._make_action_button(
-            button_bar,
-            text="Close",
-            command=dialog.destroy,
-            bg=THEME["muted"],
-            active_bg="#384D65",
-            width=10,
-            pad_y=5,
-        ).pack(side="right")
-        button_hint_label = tk.Label(
-            button_bar,
-            text=(
-                "Right-click a cell to edit data bars "
-                "and colors"
-            ),
-            font=("Segoe UI", 9, "bold"),
-            fg=palette["muted"],
-            bg=palette["window"],
-        )
-        button_hint_label.pack(
-            side="right",
-            padx=(0, self._ui_px(14)),
-        )
+                active_bg=active_color,
+                width=22,
+                font_size=9,
+                pad_y=6,
+            ).grid(
+                row=0,
+                column=column_index,
+                sticky="ew",
+                padx=(
+                    0 if column_index == 0 else self._ui_px(4),
+                    0 if column_index == 3 else self._ui_px(4),
+                ),
+            )
 
         self.tracker_list_widgets.update(
             {
                 "filters": filters,
                 "search_entry": search_entry,
-                "spreadsheet_bar": button_bar,
                 "button_bar": button_bar,
-                "button_hint_label": button_hint_label,
+                "circle_actions_frame": circle_actions_frame,
+                "add_tracker_circle": add_tracker_circle,
+                "remove_tracker_circle": remove_tracker_circle,
+                "remove_mode_bar": remove_mode_bar,
+                "remove_mode_label": remove_mode_label,
+                "remove_mode_count_label": remove_mode_count_label,
+                "remove_selection_var": remove_selection_var,
+                "cancel_remove_button": cancel_remove_button,
+                "confirm_remove_button": confirm_remove_button,
                 "legacy_note_frame": legacy_note_frame,
                 "legacy_note_star": legacy_note_star,
                 "legacy_note_label": legacy_note_label,
@@ -42034,8 +45098,8 @@ class TrackerApp:
             for widget_key, background in (
                 ("filters", palette["panel"]),
                 ("tree_frame", palette["panel"]),
-                ("spreadsheet_bar", palette["window"]),
                 ("button_bar", palette["window"]),
+                ("remove_mode_bar", palette["panel"]),
                 ("legacy_note_frame", palette["window"]),
             ):
                 widget = self.tracker_list_widgets.get(
@@ -42058,14 +45122,38 @@ class TrackerApp:
                     selectforeground="#FFFFFF",
                 )
 
-            button_hint_label = self.tracker_list_widgets.get(
-                "button_hint_label"
+            for circle_key in (
+                "add_tracker_circle",
+                "remove_tracker_circle",
+            ):
+                circle = self.tracker_list_widgets.get(circle_key)
+                if circle is not None:
+                    circle.configure(bg=palette["panel"])
+            circle_actions_frame = self.tracker_list_widgets.get(
+                "circle_actions_frame"
             )
-            if button_hint_label is not None:
-                button_hint_label.configure(
-                    bg=palette["window"],
-                    fg=palette["muted"],
+            if circle_actions_frame is not None:
+                circle_actions_frame.configure(bg=palette["panel"])
+
+            for remove_label_key in (
+                "remove_mode_label",
+                "remove_mode_count_label",
+            ):
+                remove_label = self.tracker_list_widgets.get(
+                    remove_label_key
                 )
+                if remove_label is not None:
+                    remove_label.configure(bg=palette["panel"])
+            remove_mode_label = self.tracker_list_widgets.get(
+                "remove_mode_label"
+            )
+            if remove_mode_label is not None:
+                remove_mode_label.configure(fg=palette["text"])
+            remove_mode_count_label = self.tracker_list_widgets.get(
+                "remove_mode_count_label"
+            )
+            if remove_mode_count_label is not None:
+                remove_mode_count_label.configure(fg=THEME["yellow"])
 
             legacy_note_label = self.tracker_list_widgets.get(
                 "legacy_note_label"
@@ -42160,15 +45248,45 @@ class TrackerApp:
         # bars, and difficulty cells switch to their light/dark variants too.
         self._refresh_my_tracker()
 
+    def _tracker_list_ui_is_alive(self) -> bool:
+        """Return whether the tracker page and its table can still be updated."""
+        dialog = getattr(self, "tracker_list_dialog", None)
+        widgets = getattr(self, "tracker_list_widgets", {})
+        tree = widgets.get("tree") if isinstance(widgets, dict) else None
+        if dialog is None or tree is None:
+            return False
+        try:
+            return bool(dialog.winfo_exists() and tree.winfo_exists())
+        except (AttributeError, tk.TclError):
+            return False
+
+    def _dispose_tracker_list_ui(self) -> None:
+        """Cancel table painting work and forget widgets owned by a closed page."""
+        for attribute_name in (
+            "tracker_overlay_after_id",
+            "tracker_paint_cover_after_id",
+        ):
+            after_id = getattr(self, attribute_name, None)
+            if after_id is not None:
+                try:
+                    self.root.after_cancel(after_id)
+                except (AttributeError, tk.TclError):
+                    pass
+            setattr(self, attribute_name, None)
+        try:
+            self._clear_tracker_cell_overlays()
+        except (AttributeError, tk.TclError):
+            pass
+        self.tracker_overlay_retry_count = 0
+        self.tracker_list_widgets = {}
+        self.tracker_list_records = {}
+
     def _refresh_my_tracker(self) -> None:
-        if not self.tracker_list_widgets:
+        if not self._tracker_list_ui_is_alive():
+            self._dispose_tracker_list_ui()
             return
 
-        tree = self.tracker_list_widgets.get("tree")
-
-        if tree is None:
-            self._hide_tracker_paint_cover()
-            return
+        tree = self.tracker_list_widgets["tree"]
 
         self._show_tracker_paint_cover()
         self.tracker_overlay_retry_count = 0
@@ -42363,6 +45481,14 @@ class TrackerApp:
             )
             visible += 1
 
+        remove_selected_iids = self.tracker_list_widgets.get(
+            "remove_selected_iids"
+        )
+        if isinstance(remove_selected_iids, set):
+            remove_selected_iids.intersection_update(
+                self.tracker_list_records
+            )
+        self._update_tracker_remove_selection_label()
         self.tracker_list_widgets["count_var"].set(
             self._format_ui_text(
                 "{count} hack(s)",
@@ -44117,6 +47243,24 @@ class TrackerApp:
         self.tracker_list_widgets[
             "overlay_row_height"
         ] = row_height
+        remove_mode = bool(
+            self.tracker_list_widgets.get("remove_mode")
+        )
+        remove_selected_iids = self.tracker_list_widgets.get(
+            "remove_selected_iids"
+        )
+        if not isinstance(remove_selected_iids, set):
+            remove_selected_iids = set()
+            self.tracker_list_widgets[
+                "remove_selected_iids"
+            ] = remove_selected_iids
+        remove_checkbox_boxes: dict[
+            str,
+            tuple[int, int, int, int],
+        ] = {}
+        self.tracker_list_widgets[
+            "remove_checkbox_boxes"
+        ] = remove_checkbox_boxes
 
         for row_index, iid in enumerate(ordered_iids):
             record = self.tracker_list_records[iid]
@@ -44502,6 +47646,53 @@ class TrackerApp:
                     alignment="center",
                     bold=bold,
                 )
+                if remove_mode and column == "#0":
+                    checkbox_size = min(
+                        self._ui_px(18),
+                        max(self._ui_px(14), box[3] - self._ui_px(10)),
+                    )
+                    checkbox_left = box[0] + self._ui_px(6)
+                    checkbox_top = (
+                        box[1]
+                        + max(0, (box[3] - checkbox_size) // 2)
+                    )
+                    checkbox_right = checkbox_left + checkbox_size
+                    checkbox_bottom = checkbox_top + checkbox_size
+                    remove_checkbox_boxes[iid] = (
+                        checkbox_left,
+                        checkbox_top,
+                        checkbox_right,
+                        checkbox_bottom,
+                    )
+                    checkbox_selected = iid in remove_selected_iids
+                    row_canvas.create_rectangle(
+                        checkbox_left,
+                        checkbox_top,
+                        checkbox_right,
+                        checkbox_bottom,
+                        fill=(
+                            THEME["red"]
+                            if checkbox_selected
+                            else palette["entry"]
+                        ),
+                        outline="#FFFFFF",
+                        width=max(1, self._ui_px(2)),
+                    )
+                    if checkbox_selected:
+                        line_width = max(2, self._ui_px(2))
+                        row_canvas.create_line(
+                            checkbox_left + checkbox_size * 0.22,
+                            checkbox_top + checkbox_size * 0.54,
+                            checkbox_left + checkbox_size * 0.43,
+                            checkbox_top + checkbox_size * 0.75,
+                            checkbox_left + checkbox_size * 0.80,
+                            checkbox_top + checkbox_size * 0.27,
+                            fill="#FFFFFF",
+                            width=line_width,
+                            capstyle="round",
+                            joinstyle="round",
+                            smooth=True,
+                        )
 
         self._sync_tracker_overlay_scroll()
         self._hide_tracker_paint_cover()
@@ -44892,6 +48083,27 @@ class TrackerApp:
         event,
     ) -> str:
         iid = self._tracker_overlay_iid_at_event(event)
+        if iid and bool(
+            self.tracker_list_widgets.get("remove_mode")
+        ):
+            checkbox_box = self.tracker_list_widgets.get(
+                "remove_checkbox_boxes",
+                {},
+            ).get(iid)
+            if checkbox_box is not None:
+                try:
+                    canvas_x = float(event.widget.canvasx(event.x))
+                    canvas_y = float(event.widget.canvasy(event.y))
+                except (AttributeError, tk.TclError):
+                    canvas_x = float(event.x)
+                    canvas_y = float(event.y)
+                left, top, right, bottom = checkbox_box
+                if (
+                    left <= canvas_x <= right
+                    and top <= canvas_y <= bottom
+                ):
+                    self._toggle_tracker_remove_checkbox(iid)
+                    return "break"
         if iid:
             self._select_tracker_overlay_row(iid)
             self._remember_tracker_cell(
@@ -45588,7 +48800,7 @@ class TrackerApp:
 
         title_bar = tk.Frame(
             dialog,
-            bg=THEME["green"],
+            bg=THEME["blue"],
             padx=16,
             pady=10,
         )
@@ -45596,7 +48808,7 @@ class TrackerApp:
         self._add_dialog_window_controls(
             title_bar,
             dialog,
-            THEME["green"],
+            THEME["blue"],
         )
         OutlinedLabel(
             title_bar,
@@ -45929,21 +49141,133 @@ class TrackerApp:
         completed_entry.focus_set()
         self.root.wait_window(dialog)
 
-    def _remove_tracker_record(self) -> None:
-        record = self._selected_tracker_record()
+    def _update_tracker_remove_selection_label(self) -> None:
+        selected_iids = self.tracker_list_widgets.get(
+            "remove_selected_iids"
+        )
+        selected_count = (
+            len(selected_iids)
+            if isinstance(selected_iids, set)
+            else 0
+        )
+        selection_var = self.tracker_list_widgets.get(
+            "remove_selection_var"
+        )
+        if selection_var is not None:
+            selection_var.set(
+                self._format_ui_text(
+                    "{count} hack(s) selected",
+                    count=f"{selected_count:,}",
+                )
+            )
+        confirm_button = self.tracker_list_widgets.get(
+            "confirm_remove_button"
+        )
+        if confirm_button is not None:
+            try:
+                confirm_button.configure(
+                    state=(
+                        "normal"
+                        if selected_count
+                        else "disabled"
+                    )
+                )
+            except tk.TclError:
+                pass
 
-        if record is None:
+    def _set_tracker_remove_mode(self, enabled: bool) -> None:
+        if not self.tracker_list_widgets:
+            return
+        remove_mode = bool(enabled)
+        self.tracker_list_widgets["remove_mode"] = remove_mode
+        selected_iids = self.tracker_list_widgets.get(
+            "remove_selected_iids"
+        )
+        if not isinstance(selected_iids, set):
+            selected_iids = set()
+            self.tracker_list_widgets[
+                "remove_selected_iids"
+            ] = selected_iids
+        selected_iids.clear()
+
+        remove_bar = self.tracker_list_widgets.get(
+            "remove_mode_bar"
+        )
+        tree_frame = self.tracker_list_widgets.get(
+            "tree_frame"
+        )
+        if remove_bar is not None:
+            try:
+                if remove_mode and tree_frame is not None:
+                    remove_bar.pack(
+                        fill="x",
+                        padx=self._ui_px(14),
+                        pady=(0, self._ui_px(8)),
+                        before=tree_frame,
+                    )
+                else:
+                    remove_bar.pack_forget()
+            except tk.TclError:
+                pass
+
+        tree = self.tracker_list_widgets.get("tree")
+        if tree is not None:
+            try:
+                if remove_mode:
+                    tree.selection_remove(*tree.selection())
+                tree.focus_set()
+            except tk.TclError:
+                pass
+        self._update_tracker_remove_selection_label()
+        self._schedule_tracker_cell_overlays()
+
+    def _toggle_tracker_remove_checkbox(self, iid: str) -> None:
+        if (
+            not bool(self.tracker_list_widgets.get("remove_mode"))
+            or iid not in self.tracker_list_records
+        ):
+            return
+        selected_iids = self.tracker_list_widgets.get(
+            "remove_selected_iids"
+        )
+        if not isinstance(selected_iids, set):
+            selected_iids = set()
+            self.tracker_list_widgets[
+                "remove_selected_iids"
+            ] = selected_iids
+        if iid in selected_iids:
+            selected_iids.remove(iid)
+        else:
+            selected_iids.add(iid)
+        self._update_tracker_remove_selection_label()
+        self._schedule_tracker_cell_overlays()
+
+    def _confirm_tracker_remove_selection(self) -> None:
+        selected_iids = self.tracker_list_widgets.get(
+            "remove_selected_iids"
+        )
+        if not isinstance(selected_iids, set) or not selected_iids:
+            return
+        selected_records = [
+            self.tracker_list_records[iid]
+            for iid in tuple(selected_iids)
+            if iid in self.tracker_list_records
+        ]
+        if not selected_records:
+            self._set_tracker_remove_mode(False)
             return
 
-        hack_title = str(record["title"])
+        selected_count = len(selected_records)
         confirmation_message = (
-            self._translate_ui_text(
-                'Remove "{title}" from My Tracker?'
-            ).format(title=hack_title)
+            self._format_ui_text(
+                "Remove {count} selected hack(s) from My Tracker?",
+                count=f"{selected_count:,}",
+            )
             + "\n\n"
             + self._translate_ui_text(
-                "This removes personal progress, rating, playtime, and notes. "
-                "The game stays in the catalog and game library."
+                "This removes personal progress, ratings, playtime, and notes "
+                "for the selected hacks. The games stay in the catalog and "
+                "game library."
             )
         )
         confirmed = self._ask_localized_yes_no(
@@ -45951,16 +49275,29 @@ class TrackerApp:
             confirmation_message,
             parent=self.tracker_list_dialog or self.root,
         )
-
         if not confirmed:
             return
 
-        self.stats_db.remove_tracked(
-            int(record["id"])
-        )
+        for record in selected_records:
+            self.stats_db.remove_tracked(int(record["id"]))
+        self._set_tracker_remove_mode(False)
         self._refresh_my_tracker()
         self._refresh_database_status()
         self._queue_google_sheets_sync()
+        self.status_var.set(
+            self._format_ui_text(
+                "Removed {count} hack(s) from My Tracker.",
+                count=f"{selected_count:,}",
+            )
+        )
+
+    def _remove_tracker_record(self) -> None:
+        """Toggle the row-checkbox mode used for bulk tracker removal."""
+        self._set_tracker_remove_mode(
+            not bool(
+                self.tracker_list_widgets.get("remove_mode")
+            )
+        )
 
     def _open_selected_tracker_page(self) -> None:
         record = self._selected_tracker_record()
@@ -47085,7 +50422,12 @@ class TrackerApp:
     def import_existing_spreadsheet(
         self,
         workbook_path: Path | None = None,
-    ) -> None:
+        *,
+        ask_confirmation: bool = True,
+        remember_workbook: bool = True,
+        queue_google_sync: bool = True,
+        show_completion: bool = True,
+    ) -> dict[str, int] | None:
         if workbook_path is None:
             selected = filedialog.askopenfilename(
                 title=self._translate_ui_text("Import existing SMW tracker workbook"),
@@ -47100,7 +50442,7 @@ class TrackerApp:
             )
 
             if not selected:
-                return
+                return None
 
             workbook_path = Path(selected)
 
@@ -47111,27 +50453,28 @@ class TrackerApp:
             or workbook_path.suffix.casefold()
             not in {".xlsx", ".xlsm"}
         ):
-            messagebox.showerror(
+            self._show_localized_error(
                 "Import Spreadsheet",
                 "Select an existing .xlsx or .xlsm tracker workbook.",
                 parent=self.root,
             )
-            return
+            return None
 
-        confirmed = messagebox.askyesno(
-            "Import Spreadsheet",
-            (
-                "Import the official catalog, personal Tracker rows, "
-                "custom hacks, FXPAK mappings, and workbook metadata?\n\n"
-                "Existing database records with the same catalog key will "
-                "be updated. Other records will be preserved.\n\n"
-                + str(workbook_path)
-            ),
-            parent=self.root,
-        )
+        if ask_confirmation:
+            confirmed = self._ask_localized_yes_no(
+                "Import Spreadsheet",
+                (
+                    "Import the official catalog, personal Tracker rows, "
+                    "custom hacks, FXPAK mappings, and workbook metadata?\n\n"
+                    "Existing database records with the same catalog key will "
+                    "be updated. Other records will be preserved.\n\n"
+                    + str(workbook_path)
+                ),
+                parent=self.root,
+            )
 
-        if not confirmed:
-            return
+            if not confirmed:
+                return None
 
         STATS_BACKUP_DIR.mkdir(
             parents=True,
@@ -47163,7 +50506,7 @@ class TrackerApp:
                 workbook_path
             )
         except Exception as error:
-            messagebox.showerror(
+            self._show_localized_error(
                 "Spreadsheet Import Failed",
                 str(error),
                 parent=self.root,
@@ -47171,22 +50514,29 @@ class TrackerApp:
             self.status_var.set(
                 "Spreadsheet import failed."
             )
-            return
+            return None
 
-        self.spreadsheet_path_var.set(
-            str(workbook_path)
-        )
-        self.config["spreadsheet_path"] = str(
-            workbook_path
-        )
+        if remember_workbook:
+            self.spreadsheet_path_var.set(
+                str(workbook_path)
+            )
+            self.config["spreadsheet_path"] = str(
+                workbook_path
+            )
 
-        try:
-            save_config(self.config)
-        except OSError:
-            pass
+            try:
+                save_config(self.config)
+            except OSError:
+                pass
 
         self._reload_database_catalog()
         self._refresh_database_status()
+        # Importing while My Tracker is open previously updated SQLite but left
+        # the visible rows stale, which made a successful import look like it
+        # had done nothing. Rebuild only a live table; navigating away destroys
+        # its Treeview and must not turn a successful import into a callback error.
+        if self._tracker_list_ui_is_alive():
+            self._refresh_my_tracker()
         message = (
             f"Official catalog entries imported: {summary['catalog']:,}\n"
             f"Custom hacks imported: {summary['custom']:,}\n"
@@ -47204,12 +50554,17 @@ class TrackerApp:
         self.status_var.set(
             "Spreadsheet data imported into the tracker database."
         )
-        self._queue_google_sheets_sync()
-        messagebox.showinfo(
-            "Spreadsheet Import Complete",
-            message,
-            parent=self.root,
-        )
+        if queue_google_sync:
+            self._queue_google_sheets_sync()
+        else:
+            self._queue_automatic_tracker_excel_backup()
+        if show_completion:
+            self._show_localized_info(
+                "Spreadsheet Import Complete",
+                message,
+                parent=self.root,
+            )
+        return summary
 
     def export_my_tracker(self) -> None:
         selected = filedialog.asksaveasfilename(
@@ -47246,14 +50601,14 @@ class TrackerApp:
                     "or CSV file (.csv)."
                 )
         except Exception as error:
-            messagebox.showerror(
+            self._show_localized_error(
                 "Export Failed",
                 str(error),
                 parent=self.root,
             )
             return
 
-        messagebox.showinfo(
+        self._show_localized_info(
             "Export Complete",
             "My Tracker was exported to:\n\n" + selected,
             parent=self.root,
@@ -47371,6 +50726,93 @@ class TrackerApp:
 
         open_local_path(APP_DATA_DIR)
 
+    def _queue_automatic_tracker_excel_backup(
+        self,
+        delay_ms: int = 1200,
+    ) -> None:
+        """Debounce a tracker-only Excel backup outside uninstall data."""
+        existing = getattr(
+            self,
+            "tracker_excel_backup_after_id",
+            None,
+        )
+        if existing is not None:
+            try:
+                self.root.after_cancel(existing)
+            except tk.TclError:
+                pass
+        self.tracker_excel_backup_after_id = self.root.after(
+            max(0, int(delay_ms)),
+            self._start_automatic_tracker_excel_backup,
+        )
+
+    def _start_automatic_tracker_excel_backup(self) -> None:
+        self.tracker_excel_backup_after_id = None
+        current = getattr(
+            self,
+            "tracker_excel_backup_thread",
+            None,
+        )
+        if current is not None and current.is_alive():
+            self.tracker_excel_backup_pending = True
+            return
+        self.tracker_excel_backup_pending = False
+        self.tracker_excel_backup_thread = threading.Thread(
+            target=self._automatic_tracker_excel_backup_worker,
+            daemon=True,
+        )
+        self.tracker_excel_backup_thread.start()
+
+    def _automatic_tracker_excel_backup_worker(self) -> None:
+        temporary_path = (
+            PERSISTENT_TRACKER_BACKUP_DIR
+            / ".SMW_Stream_Tracker_Automatic_Backup.tmp.xlsx"
+        )
+        error_text = ""
+        try:
+            PERSISTENT_TRACKER_BACKUP_DIR.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            self.stats_db.export_tracker_xlsx(temporary_path)
+            os.replace(
+                temporary_path,
+                PERSISTENT_TRACKER_BACKUP_FILE,
+            )
+        except Exception as error:
+            error_text = f"{type(error).__name__}: {error}"
+            append_error_log(
+                "Automatic tracker Excel backup failed",
+                traceback.format_exc(),
+            )
+        finally:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            self.root.after(
+                0,
+                lambda: self._finish_automatic_tracker_excel_backup(
+                    error_text
+                ),
+            )
+        except tk.TclError:
+            pass
+
+    def _finish_automatic_tracker_excel_backup(
+        self,
+        error_text: str,
+    ) -> None:
+        self.tracker_excel_backup_thread = None
+        if error_text:
+            self.status_var.set(
+                "The automatic tracker Excel backup could not be updated."
+            )
+        if self.tracker_excel_backup_pending:
+            self.tracker_excel_backup_pending = False
+            self._start_automatic_tracker_excel_backup()
+
 
     def _google_sheets_is_configured(self) -> bool:
         return bool(
@@ -47483,6 +50925,7 @@ class TrackerApp:
         }
 
     def _queue_google_sheets_sync(self) -> None:
+        self._queue_automatic_tracker_excel_backup()
         if not self._google_sheets_is_configured():
             return
 
@@ -47658,6 +51101,504 @@ class TrackerApp:
                 ),
             )
 
+    @staticmethod
+    def _google_sheet_export_url(source_url: str) -> str:
+        """Convert a normal Google Sheets sharing link to an XLSX export."""
+        parsed = urlparse(str(source_url).strip())
+        host = str(parsed.hostname or "").casefold()
+        match = re.search(
+            r"/spreadsheets/(?:u/\d+/)?d/([A-Za-z0-9_-]+)",
+            parsed.path,
+        )
+        if (
+            parsed.scheme.casefold() not in {"http", "https"}
+            or host != "docs.google.com"
+            or match is None
+        ):
+            raise ValueError(
+                "Paste a valid Google Sheets sharing link."
+            )
+        spreadsheet_id = match.group(1)
+        return (
+            "https://docs.google.com/spreadsheets/d/"
+            + spreadsheet_id
+            + "/export?format=xlsx"
+        )
+
+    def open_google_sheet_link_import(self) -> None:
+        """Show an obvious one-step Google Sheets import entry point."""
+        if (
+            self.google_sheet_link_dialog is not None
+            and self.google_sheet_link_dialog.winfo_exists()
+        ):
+            self.google_sheet_link_dialog.deiconify()
+            self.google_sheet_link_dialog.lift()
+            self.google_sheet_link_dialog.focus_force()
+            return
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.google_sheet_link_dialog = dialog
+        dialog.title("Sync from Google Sheets")
+        self._size_dialog_for_ui(
+            dialog,
+            820,
+            390,
+            680,
+            330,
+        )
+        dialog.configure(bg=palette["window"])
+        dialog.transient(self.root)
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["blue"],
+            padx=18,
+            pady=11,
+        )
+        title_bar.pack(fill="x")
+        self._add_dialog_window_controls(
+            title_bar,
+            dialog,
+            THEME["blue"],
+        )
+        OutlinedLabel(
+            title_bar,
+            text="Sync from Google Sheets",
+            font=("Segoe UI", 17, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+        ).pack(side="left")
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=20,
+            pady=18,
+        )
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=14,
+            pady=12,
+        )
+        body.columnconfigure(0, weight=1)
+
+        tk.Label(
+            body,
+            text=(
+                "Paste the normal sharing link for your Google Sheet. "
+                "Share it as Viewer with Anyone with the link first. "
+                "The workbook must contain a Tracker or My Tracker tab."
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel"],
+            wraplength=740,
+            justify="left",
+        ).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            pady=(0, 16),
+        )
+
+        OutlinedLabel(
+            body,
+            text="Google Sheets link:",
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(0, 5),
+        )
+        source_var = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "google_sheets_source_url",
+                    "",
+                )
+            )
+        )
+        source_entry = tk.Entry(
+            body,
+            textvariable=source_var,
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["entry"],
+            insertbackground=palette["text"],
+            relief="flat",
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        source_entry.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            ipady=8,
+        )
+
+        button_bar = tk.Frame(
+            body,
+            bg=palette["panel"],
+        )
+        button_bar.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            pady=(22, 0),
+        )
+
+        def close_dialog() -> None:
+            dialog.destroy()
+            self.google_sheet_link_dialog = None
+
+        def start_import() -> None:
+            source_url = source_var.get().strip()
+            try:
+                self._google_sheet_export_url(source_url)
+            except ValueError as error:
+                messagebox.showerror(
+                    "Google Sheets Import",
+                    self._translate_ui_text(str(error)),
+                    parent=dialog,
+                )
+                source_entry.focus_set()
+                return
+            self.config["google_sheets_source_url"] = source_url
+            try:
+                save_config(self.config)
+            except OSError:
+                pass
+            self._start_google_sheet_link_import(
+                source_url,
+                parent=dialog,
+            )
+
+        self._make_action_button(
+            button_bar,
+            text="Close",
+            command=close_dialog,
+            bg=THEME["muted"],
+            active_bg="#384D65",
+            width=11,
+            pad_y=6,
+        ).pack(side="right")
+        self._make_action_button(
+            button_bar,
+            text="Import Now",
+            command=start_import,
+            bg=THEME["green"],
+            active_bg=THEME["green_dark"],
+            width=16,
+            pad_y=6,
+        ).pack(side="right", padx=(0, 8))
+        self._make_action_button(
+            button_bar,
+            text="Google Sheets Settings...",
+            command=self.open_google_sheets_sync,
+            bg=THEME["purple"],
+            active_bg="#6037AA",
+            width=22,
+            pad_y=6,
+        ).pack(side="left")
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        source_entry.focus_set()
+
+    def _start_google_sheet_link_import(
+        self,
+        source_url: str,
+        *,
+        parent: tk.Widget | None = None,
+    ) -> None:
+        try:
+            export_url = self._google_sheet_export_url(source_url)
+        except ValueError as error:
+            messagebox.showerror(
+                "Google Sheets Import",
+                self._translate_ui_text(str(error)),
+                parent=parent or self.root,
+            )
+            return
+        if (
+            self.google_import_thread is not None
+            and self.google_import_thread.is_alive()
+        ):
+            messagebox.showinfo(
+                "Google Sheets Import",
+                "A Google Sheets import is already running.",
+                parent=parent or self.root,
+            )
+            return
+
+        self.status_var.set("Synchronizing from Google Sheets…")
+        self.google_import_thread = threading.Thread(
+            target=self._google_sheet_link_import_worker,
+            args=(export_url,),
+            daemon=True,
+        )
+        self.google_import_thread.start()
+
+    def _google_sheet_link_import_worker(
+        self,
+        export_url: str,
+    ) -> None:
+        workbook_path: Path | None = None
+        error_text = ""
+        try:
+            request = Request(
+                export_url,
+                headers={
+                    "User-Agent": "SMW-Stream-Tracker/1.0",
+                },
+                method="GET",
+            )
+            with urlopen(request, timeout=60) as response:
+                workbook_bytes = response.read(64 * 1024 * 1024 + 1)
+            if (
+                len(workbook_bytes) > 64 * 1024 * 1024
+                or not workbook_bytes.startswith(b"PK")
+            ):
+                raise RuntimeError(
+                    "Google could not export this sheet as an Excel "
+                    "workbook. Make sure it is shared as Viewer with "
+                    "Anyone with the link."
+                )
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix="SMWTrackerGoogleLinkImport_",
+                suffix=".xlsx",
+            )
+            os.close(descriptor)
+            workbook_path = Path(temporary_name)
+            workbook_path.write_bytes(workbook_bytes)
+        except Exception as error:
+            error_text = str(error)
+            append_error_log(
+                "Google Sheets link import failed",
+                traceback.format_exc(),
+            )
+        try:
+            self.root.after(
+                0,
+                lambda: self._finish_google_sheets_import(
+                    workbook_path,
+                    0,
+                    error_text,
+                ),
+            )
+        except tk.TclError:
+            if workbook_path is not None:
+                workbook_path.unlink(missing_ok=True)
+
+    def _start_google_sheets_import(
+        self,
+        *,
+        parent: tk.Widget | None = None,
+    ) -> None:
+        web_app_url = str(
+            self.config.get("google_sheets_web_app_url", "")
+        ).strip()
+        if not web_app_url:
+            messagebox.showinfo(
+                "Google Sheets Import",
+                (
+                    "Google Sheets sync is not configured. Paste the Apps "
+                    "Script Web App URL first."
+                ),
+                parent=parent or self.root,
+            )
+            return
+        if (
+            self.google_import_thread is not None
+            and self.google_import_thread.is_alive()
+        ):
+            messagebox.showinfo(
+                "Google Sheets Import",
+                "A Google Sheets import is already running.",
+                parent=parent or self.root,
+            )
+            return
+        if not self._ask_localized_yes_no(
+            "Google Sheets Import",
+            (
+                "Import the tracker rows from your synchronized Google "
+                "Sheet? A safety backup of the current tracker will be "
+                "created first."
+            ),
+            parent=parent or self.root,
+        ):
+            return
+
+        base_name = str(
+            self.config.get(
+                "google_sheets_sheet_base_name",
+                "SMW Stream Tracker",
+            )
+        ).strip() or "SMW Stream Tracker"
+        self.status_var.set("Synchronizing from Google Sheets…")
+        self.google_import_thread = threading.Thread(
+            target=self._google_sheets_import_worker,
+            args=(web_app_url, base_name),
+            daemon=True,
+        )
+        self.google_import_thread.start()
+
+    def _google_sheets_import_worker(
+        self,
+        web_app_url: str,
+        base_name: str,
+    ) -> None:
+        workbook_path: Path | None = None
+        error_text = ""
+        row_count = 0
+        try:
+            separator = "&" if "?" in web_app_url else "?"
+            read_url = (
+                web_app_url
+                + separator
+                + urlencode(
+                    {
+                        "action": "read",
+                        "sheet_base_name": base_name,
+                    }
+                )
+            )
+            request = Request(
+                read_url,
+                headers={"User-Agent": "SMW-Stream-Tracker/1.0"},
+                method="GET",
+            )
+            with urlopen(request, timeout=45) as response:
+                response_text = response.read().decode(
+                    "utf-8",
+                    errors="replace",
+                )
+            response_data = json.loads(response_text)
+            if not isinstance(response_data, dict) or not bool(
+                response_data.get("ok", False)
+            ):
+                raise RuntimeError(
+                    str(
+                        response_data.get(
+                            "error",
+                            "The Apps Script did not return tracker data.",
+                        )
+                        if isinstance(response_data, dict)
+                        else "The Apps Script did not return tracker data."
+                    )
+                )
+            headers = response_data.get("headers", [])
+            rows = response_data.get("rows", [])
+            if not isinstance(headers, list) or not isinstance(rows, list):
+                raise RuntimeError(
+                    "The Apps Script returned an invalid tracker table."
+                )
+            normalized_headers = {
+                normalize_title(value) for value in headers
+            }
+            if normalize_title("ROM Hack Title") not in normalized_headers:
+                raise RuntimeError(
+                    "The Apps Script did not return a tracker sheet. Copy "
+                    "the updated script, deploy it again, and try once more."
+                )
+
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix="SMWTrackerGoogleImport_",
+                suffix=".xlsx",
+            )
+            os.close(descriptor)
+            workbook_path = Path(temporary_name)
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = TRACKER_SHEET
+            worksheet.append([str(value) for value in headers])
+            for source_row in rows:
+                if not isinstance(source_row, list):
+                    continue
+                prepared_row = list(source_row[: len(headers)])
+                prepared_row.extend(
+                    [""] * max(0, len(headers) - len(prepared_row))
+                )
+                worksheet.append(prepared_row)
+                row_count += 1
+            try:
+                workbook.save(workbook_path)
+            finally:
+                workbook.close()
+        except Exception as error:
+            error_text = f"{type(error).__name__}: {error}"
+            append_error_log(
+                "Google Sheets import failed",
+                traceback.format_exc(),
+            )
+        try:
+            self.root.after(
+                0,
+                lambda: self._finish_google_sheets_import(
+                    workbook_path,
+                    row_count,
+                    error_text,
+                ),
+            )
+        except tk.TclError:
+            if workbook_path is not None:
+                workbook_path.unlink(missing_ok=True)
+
+    def _finish_google_sheets_import(
+        self,
+        workbook_path: Path | None,
+        row_count: int,
+        error_text: str,
+    ) -> None:
+        self.google_import_thread = None
+        message_parent = (
+            self.google_sheet_link_dialog
+            or self.google_sheets_dialog
+            or self.root
+        )
+        if error_text or workbook_path is None:
+            self.status_var.set("Google Sheets import failed.")
+            messagebox.showerror(
+                "Google Sheets Import Failed",
+                self._translate_ui_text(error_text)
+                or "The Apps Script did not return tracker data.",
+                parent=message_parent,
+            )
+            return
+        try:
+            summary = self.import_existing_spreadsheet(
+                workbook_path,
+                ask_confirmation=False,
+                remember_workbook=False,
+                queue_google_sync=False,
+                show_completion=False,
+            )
+        finally:
+            try:
+                workbook_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if summary is None:
+            return
+        imported_count = int(summary.get("tracked", row_count))
+        self.status_var.set("Google Sheets data imported into the tracker.")
+        messagebox.showinfo(
+            "Google Sheets Import Complete",
+            self._format_ui_text(
+                "Google Sheets imported: {count} tracker row(s).",
+                count=f"{imported_count:,}",
+            ),
+            parent=message_parent,
+        )
+
     def open_google_sheets_sync(self) -> None:
         if (
             self.google_sheets_dialog is not None
@@ -47686,7 +51627,7 @@ class TrackerApp:
 
         title_bar = tk.Frame(
             dialog,
-            bg=THEME["green"],
+            bg=THEME["blue"],
             padx=18,
             pady=11,
         )
@@ -47694,14 +51635,14 @@ class TrackerApp:
         self._add_dialog_window_controls(
             title_bar,
             dialog,
-            THEME["green"],
+            THEME["blue"],
         )
         OutlinedLabel(
             title_bar,
-            text="☁  GOOGLE SHEETS SYNC",
+            text="☁  GOOGLE SHEETS SETTINGS",
             font=("Segoe UI", 17, "bold"),
             fg="white",
-            bg=THEME["green"],
+            bg=THEME["blue"],
         ).pack(side="left")
 
         body = tk.Frame(
@@ -47717,7 +51658,7 @@ class TrackerApp:
             pady=12,
         )
         body.columnconfigure(1, weight=1)
-        body.rowconfigure(5, weight=1)
+        body.rowconfigure(6, weight=1)
 
         enabled_var = tk.BooleanVar(
             value=bool(
@@ -47740,6 +51681,14 @@ class TrackerApp:
                 self.config.get(
                     "google_sheets_sheet_base_name",
                     "SMW Stream Tracker",
+                )
+            )
+        )
+        source_var = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "google_sheets_source_url",
+                    "",
                 )
             )
         )
@@ -47824,6 +51773,37 @@ class TrackerApp:
             pady=4,
         )
 
+        OutlinedLabel(
+            body,
+            text="Google Sheets sharing link (import):",
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+        ).grid(
+            row=3,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+            pady=4,
+        )
+        source_entry = tk.Entry(
+            body,
+            textvariable=source_var,
+            font=("Segoe UI", 9),
+            fg=palette["text"],
+            bg=palette["entry"],
+            insertbackground=palette["text"],
+            relief="flat",
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        source_entry.grid(
+            row=3,
+            column=1,
+            sticky="ew",
+            pady=4,
+        )
+
         tk.Label(
             body,
             text=(
@@ -47839,7 +51819,7 @@ class TrackerApp:
             wraplength=820,
             justify="left",
         ).grid(
-            row=3,
+            row=4,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -47851,7 +51831,7 @@ class TrackerApp:
             bg=palette["panel"],
         )
         code_header.grid(
-            row=4,
+            row=5,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -47876,7 +51856,7 @@ class TrackerApp:
             highlightthickness=1,
         )
         code_box.grid(
-            row=5,
+            row=6,
             column=0,
             columnspan=2,
             sticky="nsew",
@@ -47895,7 +51875,7 @@ class TrackerApp:
             bg=palette["panel"],
         )
         button_bar.grid(
-            row=6,
+            row=7,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -47951,6 +51931,9 @@ class TrackerApp:
                 base_name_var.get().strip()
                 or "SMW Stream Tracker"
             )
+            self.config[
+                "google_sheets_source_url"
+            ] = source_var.get().strip()
 
             try:
                 save_config(self.config)
@@ -47991,6 +51974,39 @@ class TrackerApp:
             width=15,
             pad_y=5,
         ).pack(side="left", padx=(8, 0))
+        def sync_from_google_sheets() -> None:
+            if save_google_settings(False):
+                source_url = source_var.get().strip()
+                if source_url:
+                    try:
+                        self._google_sheet_export_url(source_url)
+                    except ValueError as error:
+                        self._show_localized_error(
+                            "Google Sheets Import",
+                            str(error),
+                            parent=dialog,
+                        )
+                        source_entry.focus_set()
+                        return
+                    self._start_google_sheet_link_import(
+                        source_url,
+                        parent=dialog,
+                    )
+                else:
+                    self._start_google_sheets_import(
+                        parent=dialog,
+                    )
+
+        self._make_action_button(
+            button_bar,
+            text="Sync from Google Sheets",
+            command=sync_from_google_sheets,
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=20,
+            pad_y=5,
+        ).pack(side="left", padx=(8, 0))
+
         self._make_action_button(
             button_bar,
             text="Save & Sync Now",
@@ -48029,6 +52045,7 @@ class TrackerApp:
                 == "dark"
             ),
         )
+        self._localize_widget_tree(dialog)
 
     def open_smwcentral_catalog_browser(self) -> None:
         self.open_hack_downloader(
@@ -48716,77 +52733,79 @@ class TrackerApp:
             pady=(0, 2),
         )
 
-        tk.Checkbutton(
-            path_panel,
-            text="Upload new ROMs through FXPAK Pro USB:",
-            variable=upload_via_usb_var,
-            onvalue=True,
-            offvalue=False,
-            font=("Segoe UI", 9, "bold"),
-            fg=palette["text"],
-            bg=palette["panel"],
-            activeforeground=palette["text"],
-            activebackground=palette["panel"],
-            selectcolor=palette["entry"],
-            highlightthickness=0,
-            borderwidth=0,
-        ).grid(
-            row=4,
-            column=0,
-            sticky="w",
-            padx=(0, 8),
-            pady=(5, 2),
-        )
-        tk.Entry(
-            path_panel,
-            textvariable=usb_folder_var,
-            font=("Segoe UI", 9),
-            fg=palette["text"],
-            bg=palette["entry"],
-            insertbackground=palette["text"],
-            relief="flat",
-            highlightbackground=palette["border"],
-            highlightthickness=1,
-        ).grid(
-            row=4,
-            column=1,
-            sticky="ew",
-            pady=(5, 2),
-        )
-        self._make_action_button(
-            path_panel,
-            text="Test USB",
-            command=self._test_downloader_fxpak_usb,
-            bg=THEME["blue"],
-            active_bg=THEME["navy"],
-            width=9,
-            pad_y=3,
-        ).grid(
-            row=4,
-            column=2,
-            padx=(8, 0),
-            pady=(4, 1),
-        )
-        OutlinedLabel(
-            path_panel,
-            text=(
-                "Leave the SD card in the FXPAK Pro. Connect its USB data "
-                "cable and keep QUsb2Snes running; this is the folder on "
-                "the card, not a Windows folder.\n"
-                "Local ROMs with emoji titles will also be uploaded using "
-                "readable FXPAK-only filenames. Their titles inside the app "
-                "stay unchanged."
-            ),
-            font=("Segoe UI", 8),
-            fg=palette["muted"],
-            bg=palette["panel"],
-        ).grid(
-            row=5,
-            column=1,
-            columnspan=2,
-            sticky="w",
-            pady=(0, 2),
-        )
+        selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
+        if selected_platform == "FXPAK Pro":
+            tk.Checkbutton(
+                path_panel,
+                text="Upload new ROMs through FXPAK Pro USB:",
+                variable=upload_via_usb_var,
+                onvalue=True,
+                offvalue=False,
+                font=("Segoe UI", 9, "bold"),
+                fg=palette["text"],
+                bg=palette["panel"],
+                activeforeground=palette["text"],
+                activebackground=palette["panel"],
+                selectcolor=palette["entry"],
+                highlightthickness=0,
+                borderwidth=0,
+            ).grid(
+                row=4,
+                column=0,
+                sticky="w",
+                padx=(0, 8),
+                pady=(5, 2),
+            )
+            tk.Entry(
+                path_panel,
+                textvariable=usb_folder_var,
+                font=("Segoe UI", 9),
+                fg=palette["text"],
+                bg=palette["entry"],
+                insertbackground=palette["text"],
+                relief="flat",
+                highlightbackground=palette["border"],
+                highlightthickness=1,
+            ).grid(
+                row=4,
+                column=1,
+                sticky="ew",
+                pady=(5, 2),
+            )
+            self._make_action_button(
+                path_panel,
+                text="Test USB",
+                command=self._test_downloader_fxpak_usb,
+                bg=THEME["blue"],
+                active_bg=THEME["navy"],
+                width=9,
+                pad_y=3,
+            ).grid(
+                row=4,
+                column=2,
+                padx=(8, 0),
+                pady=(4, 1),
+            )
+            OutlinedLabel(
+                path_panel,
+                text=(
+                    "Leave the SD card in the FXPAK Pro. Connect its USB data "
+                    "cable and keep QUsb2Snes running; this is the folder on "
+                    "the card, not a Windows folder.\n"
+                    "Local ROMs with emoji titles will also be uploaded using "
+                    "readable FXPAK-only filenames. Their titles inside the "
+                    "app stay unchanged."
+                ),
+                font=("Segoe UI", 8),
+                fg=palette["muted"],
+                bg=palette["panel"],
+            ).grid(
+                row=5,
+                column=1,
+                columnspan=2,
+                sticky="w",
+                pady=(0, 2),
+            )
 
         filter_panel = tk.Frame(
             dialog,
@@ -50297,6 +54316,8 @@ class TrackerApp:
         ].get()
         repair_fxpak_emoji_names = bool(
             not catalog_view_only
+            and (self.platform_var.get().strip() or "FXPAK Pro")
+            == "FXPAK Pro"
             and self.downloader_widgets.get("upload_via_usb_var") is not None
             and self.downloader_widgets["upload_via_usb_var"].get()
         )
@@ -51525,7 +55546,9 @@ class TrackerApp:
             ].get().strip()
         )
         upload_via_usb = bool(
-            self.downloader_widgets[
+            (self.platform_var.get().strip() or "FXPAK Pro")
+            == "FXPAK Pro"
+            and self.downloader_widgets[
                 "upload_via_usb_var"
             ].get()
         )
@@ -54451,6 +58474,7 @@ class TrackerApp:
         uploaded_within_months: int | None = None,
         *,
         released_value: str = "Any",
+        sa1_value: str = "Any",
         hall_of_fame_value: str = "Any",
         reference_date: date | None = None,
     ) -> list[dict[str, Any]]:
@@ -54484,7 +58508,7 @@ class TrackerApp:
                 type_value,
                 "All",
                 "Any",
-                "Any",
+                sa1_value,
                 hall_of_fame_value,
                 "Any",
             )
@@ -54496,6 +58520,1372 @@ class TrackerApp:
             and matches_upload_window(game)
             and self._catalog_game_has_downloaded_rom(game)
         ]
+
+    @staticmethod
+    def _build_hack_gauntlet_queue(
+        candidates: list[dict[str, Any]],
+        level_count: int,
+        allow_repeats: bool,
+    ) -> list[dict[str, Any]]:
+        """Build a randomized queue while avoiding adjacent repeats."""
+        count = max(0, int(level_count))
+        pool = [dict(game) for game in candidates]
+        if count == 0 or not pool:
+            return []
+        if not allow_repeats:
+            if count > len(pool):
+                raise ValueError("not enough unique hacks")
+            return random.sample(pool, count)
+
+        entries: list[dict[str, Any]] = []
+        while len(entries) < count:
+            cycle = random.sample(pool, len(pool))
+            if (
+                entries
+                and len(cycle) > 1
+                and normalize_title(cycle[0].get("title", ""))
+                == normalize_title(entries[-1].get("title", ""))
+            ):
+                cycle[0], cycle[1] = cycle[1], cycle[0]
+            entries.extend(cycle)
+        return entries[:count]
+
+    def _hack_gauntlet_candidates(
+        self,
+        rating_value: str,
+        difficulty_value: str,
+        type_value: str,
+        sa1_value: str,
+        hall_of_fame_value: str,
+    ) -> list[dict[str, Any]]:
+        return self._random_main_hack_candidates(
+            rating_value,
+            difficulty_value,
+            type_value,
+            sa1_value=sa1_value,
+            hall_of_fame_value=hall_of_fame_value,
+        )
+
+    def _open_game_modes_page(self) -> None:
+        palette = self._library_palette()
+        page = self._open_in_app_page("game_modes", "Game Modes")
+        page.title(self._translate_ui_text("Game Modes"))
+        page.configure(bg=palette["window"])
+
+        tk.Label(
+            page,
+            text="GAME MODES",
+            font=("Segoe UI", 24, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            padx=self._ui_px(20),
+            pady=self._ui_px(15),
+        ).pack(fill="x")
+        tk.Label(
+            page,
+            text="Choose how you want to play.",
+            font=("Segoe UI", 13, "bold"),
+            fg=palette["text"],
+            bg=palette["window"],
+            pady=self._ui_px(12),
+        ).pack(fill="x")
+
+        mode_grid = tk.Frame(
+            page,
+            bg=palette["window"],
+            padx=self._ui_px(28),
+            pady=self._ui_px(6),
+        )
+        mode_grid.pack(fill="both", expand=True)
+        for column in range(2):
+            mode_grid.columnconfigure(
+                column,
+                weight=1,
+                uniform="game_modes",
+            )
+        for row in range(3):
+            mode_grid.rowconfigure(row, weight=1, uniform="game_modes")
+
+        default_description = (
+            "Hover over a game mode to see what it does, then select it to play."
+        )
+        description_var = self._localized_string_var(
+            value=default_description,
+            master=page,
+        )
+        description_panel = tk.Frame(
+            page,
+            bg=palette["panel"],
+            highlightbackground=THEME["border"],
+            highlightthickness=2,
+            padx=self._ui_px(18),
+            pady=self._ui_px(12),
+        )
+        description_panel.pack(
+            fill="x",
+            padx=self._ui_px(28),
+            pady=(self._ui_px(4), self._ui_px(22)),
+        )
+        tk.Label(
+            description_panel,
+            textvariable=description_var,
+            font=("Segoe UI", 12, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="center",
+            anchor="center",
+            wraplength=self._ui_px(920),
+            pady=self._ui_px(4),
+        ).pack(fill="x")
+
+        mode_definitions = (
+            (
+                "Play Random Hack",
+                "Play one random downloaded and patched hack using your filters.",
+                self._play_random_main_hack,
+                THEME["green"],
+                THEME["green_dark"],
+            ),
+            (
+                "Hack Draft",
+                "Deal three random ready-to-play hacks, then choose one to launch.",
+                self._open_hack_draft,
+                THEME["blue"],
+                THEME["sky_dark"],
+            ),
+            (
+                "Difficulty Ladder",
+                "Climb from the easiest available difficulty to Grandmaster, one complete hack at a time.",
+                self._open_difficulty_ladder,
+                THEME["orange"],
+                "#C65312",
+            ),
+            (
+                "Creator Spotlight",
+                "Choose a creator and launch one of their downloaded hacks.",
+                self._open_creator_spotlight,
+                THEME["purple"],
+                "#6536B4",
+            ),
+            (
+                "Time Capsule",
+                "Choose a release year and play a downloaded hack from that year.",
+                self._open_time_capsule,
+                THEME["red"],
+                "#B92324",
+            ),
+            (
+                "Hall of Fame Tour",
+                "Browse downloaded SMW Central Hall of Fame hacks by difficulty and launch your next stop.",
+                self._open_hall_of_fame_tour,
+                "#D49C05",
+                "#A66E00",
+            ),
+        )
+        for index, (
+            title,
+            description,
+            command,
+            accent,
+            active_bg,
+        ) in enumerate(mode_definitions):
+            row, column = divmod(index, 2)
+            button = self._make_action_button(
+                mode_grid,
+                self._translate_ui_text(title),
+                command,
+                accent,
+                active_bg=active_bg,
+                width=28,
+                font_size=15,
+                pad_y=14,
+            )
+            button.grid(
+                row=row,
+                column=column,
+                sticky="nsew",
+                padx=self._ui_px(10),
+                pady=self._ui_px(8),
+            )
+            button.bind(
+                "<Enter>",
+                lambda _event, text=description: description_var.set(text),
+                add="+",
+            )
+            button.bind(
+                "<FocusIn>",
+                lambda _event, text=description: description_var.set(text),
+                add="+",
+            )
+            button.bind(
+                "<Leave>",
+                lambda _event: description_var.set(default_description),
+                add="+",
+            )
+        page.after_idle(lambda: self._localize_widget_tree(page))
+
+    def _game_mode_ready_hacks(self) -> list[dict[str, Any]]:
+        """Return title-sorted ROMs ready for the selected platform."""
+        return sorted(
+            (
+                game
+                for game in self.hack_catalog
+                if str(game.get("title", "")).strip()
+                and self._catalog_game_has_downloaded_rom(game)
+            ),
+            key=lambda game: str(game.get("title", "")).casefold(),
+        )
+
+    def _close_game_mode_dialog(self) -> None:
+        dialog = self.game_mode_dialog
+        self.game_mode_dialog = None
+        self.game_mode_dialog_key = ""
+        if dialog is not None:
+            try:
+                if dialog.winfo_exists():
+                    dialog.destroy()
+            except tk.TclError:
+                pass
+
+    def _game_mode_dialog_shell(
+        self,
+        key: str,
+        title: str,
+        heading: str,
+        description: str,
+        *,
+        width: int = 780,
+        height: int = 620,
+    ) -> tuple[tk.Toplevel, dict[str, str], tk.Frame] | None:
+        current = self.game_mode_dialog
+        if current is not None:
+            try:
+                if current.winfo_exists() and self.game_mode_dialog_key == key:
+                    current.deiconify()
+                    current.lift()
+                    current.focus_force()
+                    return None
+            except tk.TclError:
+                pass
+        self._close_game_mode_dialog()
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.game_mode_dialog = dialog
+        self.game_mode_dialog_key = key
+        dialog.title(self._translate_ui_text(title))
+        dialog.configure(bg=palette["window"])
+        self._size_dialog_for_ui(dialog, width, height, 660, 520)
+        dialog.resizable(True, True)
+        self._add_dialog_window_controls(dialog, dialog, palette["window"])
+        tk.Label(
+            dialog,
+            text=self._translate_ui_text(heading),
+            font=("Segoe UI", 19, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(13),
+        ).pack(fill="x")
+        tk.Label(
+            dialog,
+            text=self._translate_ui_text(description),
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["window"],
+            justify="center",
+            wraplength=self._ui_px(width - 100),
+            padx=self._ui_px(24),
+            pady=self._ui_px(16),
+        ).pack(fill="x")
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
+            padx=self._ui_px(18),
+            pady=self._ui_px(18),
+        )
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(20),
+            pady=(0, self._ui_px(12)),
+        )
+
+        def close_dialog() -> None:
+            self._close_game_mode_dialog()
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        return dialog, palette, body
+
+    @staticmethod
+    def _game_mode_unique_labels(
+        games: list[dict[str, Any]],
+    ) -> tuple[list[str], dict[str, dict[str, Any]]]:
+        labels: list[str] = []
+        mapped: dict[str, dict[str, Any]] = {}
+        for game in games:
+            title = str(game.get("title", "Unknown")).strip() or "Unknown"
+            author = smwc_author_text(game.get("author", "Unknown"))
+            base = f"{title}  —  {author}"
+            label = base
+            suffix = 2
+            while label in mapped:
+                label = f"{base} ({suffix})"
+                suffix += 1
+            labels.append(label)
+            mapped[label] = game
+        return labels, mapped
+
+    def _game_mode_metadata_text(self, game: dict[str, Any]) -> str:
+        author = smwc_author_text(game.get("author", "Unknown"))
+        difficulty = str(game.get("difficulty", "Unknown") or "Unknown")
+        rating_value = game.get("rating")
+        rating = "—" if rating_value in {None, ""} else str(rating_value)
+        return (
+            f"{self._translate_ui_text('Created By')}: {author}   •   "
+            f"{self._translate_ui_text('Difficulty')}: "
+            f"{self._translate_ui_text(difficulty)}   •   "
+            f"{self._translate_ui_text('SMW Central rating')}: {rating}"
+        )
+
+    def _launch_game_mode_hack(
+        self,
+        game: dict[str, Any],
+    ) -> None:
+        selected_label = self._selector_label_for_game(game)
+        self.main_hack_selector_var.set(selected_label)
+        self.main_hack_selector_selected_label = selected_label
+        self._align_main_hack_selector_text(selected_label)
+        self._close_game_mode_dialog()
+        self._launch_catalog_game(game)
+
+    def _open_hack_draft(self) -> None:
+        ready = self._game_mode_ready_hacks()
+        if not ready:
+            self._show_localized_info(
+                "Hack Draft",
+                "No downloaded hacks are available for the selected platform. Download a hack or map an existing ROM first.",
+                parent=owner,
+            )
+            return
+        shell = self._game_mode_dialog_shell(
+            "hack_draft",
+            "Hack Draft",
+            "HACK DRAFT",
+            "Three ready-to-play hacks are dealt below. Choose one to launch, or deal three different choices.",
+            height=640,
+        )
+        if shell is None:
+            return
+        dialog, palette, body = shell
+        choices_host = tk.Frame(body, bg=palette["panel"])
+        choices_host.pack(fill="both", expand=True)
+
+        def deal_choices() -> None:
+            for child in choices_host.winfo_children():
+                child.destroy()
+            count = min(3, len(ready))
+            for game in random.sample(ready, count):
+                row = tk.Frame(
+                    choices_host,
+                    bg=palette["panel"],
+                    highlightbackground=THEME["border"],
+                    highlightthickness=1,
+                    padx=self._ui_px(10),
+                    pady=self._ui_px(9),
+                )
+                row.pack(fill="x", pady=self._ui_px(6))
+                title = str(game.get("title", "Unknown"))
+                display_title = (
+                    title if len(title) <= 58 else title[:55].rstrip() + "..."
+                )
+                self._make_action_button(
+                    row,
+                    display_title,
+                    lambda selected=game: self._launch_game_mode_hack(selected),
+                    THEME["green"],
+                    active_bg=THEME["green_dark"],
+                    width=36,
+                    font_size=12,
+                    pad_y=9,
+                ).pack(fill="x")
+                tk.Label(
+                    row,
+                    text=self._game_mode_metadata_text(game),
+                    font=("Segoe UI", 9, "bold"),
+                    fg=palette["muted"],
+                    bg=palette["panel"],
+                    wraplength=self._ui_px(650),
+                    justify="center",
+                    pady=self._ui_px(5),
+                ).pack(fill="x")
+
+        actions = tk.Frame(dialog, bg=palette["window"])
+        actions.pack(fill="x", padx=self._ui_px(20), pady=(0, self._ui_px(16)))
+        self._make_action_button(
+            actions,
+            self._translate_ui_text("Deal Again"),
+            deal_choices,
+            THEME["purple"],
+            active_bg="#6536B4",
+            width=15,
+            font_size=11,
+            pad_y=8,
+        ).pack(side="left")
+        self._make_action_button(
+            actions,
+            self._translate_ui_text("Close"),
+            self._close_game_mode_dialog,
+            THEME["muted"],
+            active_bg="#384D65",
+            width=12,
+            font_size=11,
+            pad_y=8,
+        ).pack(side="right")
+        deal_choices()
+        dialog.after_idle(lambda: self._localize_widget_tree(dialog))
+
+    def _open_grouped_game_mode_picker(
+        self,
+        *,
+        key: str,
+        title: str,
+        heading: str,
+        description: str,
+        group_label: str,
+        groups: list[tuple[str, list[dict[str, Any]]]],
+        random_button_text: str,
+    ) -> None:
+        populated_groups = [
+            (str(label), list(games))
+            for label, games in groups
+            if games
+        ]
+        if not populated_groups:
+            self._show_localized_info(
+                title,
+                "No downloaded hacks match this game mode on the selected platform.",
+                parent=self.root,
+            )
+            return
+        shell = self._game_mode_dialog_shell(
+            key,
+            title,
+            heading,
+            description,
+        )
+        if shell is None:
+            return
+        dialog, palette, body = shell
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+
+        display_to_group: dict[str, list[dict[str, Any]]] = {}
+        display_values: list[str] = []
+        for raw_label, games in populated_groups:
+            display = self._translate_ui_text(raw_label)
+            if display in display_to_group:
+                display = raw_label
+            display_values.append(display)
+            display_to_group[display] = games
+
+        group_var = tk.StringVar(value=display_values[0])
+        hack_var = tk.StringVar()
+        metadata_var = tk.StringVar()
+        current_hacks: dict[str, dict[str, Any]] = {}
+
+        tk.Label(
+            body,
+            text=self._translate_ui_text(group_label),
+            font=("Segoe UI", 11, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(4, 6))
+        tk.Label(
+            body,
+            text=self._translate_ui_text("Ready-to-Play Hack"),
+            font=("Segoe UI", 11, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+        ).grid(row=0, column=1, sticky="ew", padx=8, pady=(4, 6))
+        group_combo = ttk.Combobox(
+            body,
+            textvariable=group_var,
+            values=display_values,
+            state="readonly",
+            justify="center",
+            style="Mario.TCombobox",
+        )
+        group_combo.grid(row=1, column=0, sticky="ew", padx=8)
+        hack_combo = ttk.Combobox(
+            body,
+            textvariable=hack_var,
+            state="readonly",
+            justify="center",
+            style="Mario.TCombobox",
+        )
+        hack_combo.grid(row=1, column=1, sticky="ew", padx=8)
+        tk.Label(
+            body,
+            textvariable=metadata_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            justify="center",
+            wraplength=self._ui_px(650),
+            pady=self._ui_px(24),
+        ).grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8)
+        body.rowconfigure(2, weight=1)
+
+        def selected_game() -> dict[str, Any] | None:
+            return current_hacks.get(hack_var.get())
+
+        def update_metadata(_event=None) -> None:
+            game = selected_game()
+            metadata_var.set(
+                self._game_mode_metadata_text(game) if game is not None else ""
+            )
+
+        def update_hacks(_event=None) -> None:
+            nonlocal current_hacks
+            games = display_to_group.get(group_var.get(), [])
+            labels, current_hacks = self._game_mode_unique_labels(games)
+            hack_combo.configure(values=labels)
+            hack_var.set(labels[0] if labels else "")
+            update_metadata()
+
+        def launch_selected() -> None:
+            game = selected_game()
+            if game is not None:
+                self._launch_game_mode_hack(game)
+
+        def launch_random() -> None:
+            games = display_to_group.get(group_var.get(), [])
+            if games:
+                self._launch_game_mode_hack(random.choice(games))
+
+        group_combo.bind("<<ComboboxSelected>>", update_hacks)
+        hack_combo.bind("<<ComboboxSelected>>", update_metadata)
+        actions = tk.Frame(dialog, bg=palette["window"])
+        actions.pack(fill="x", padx=self._ui_px(20), pady=(0, self._ui_px(16)))
+        self._make_action_button(
+            actions,
+            self._translate_ui_text(random_button_text),
+            launch_random,
+            THEME["purple"],
+            active_bg="#6536B4",
+            width=18,
+            font_size=11,
+            pad_y=8,
+        ).pack(side="left")
+        self._make_action_button(
+            actions,
+            self._translate_ui_text("Launch Selected Hack"),
+            launch_selected,
+            THEME["green"],
+            active_bg=THEME["green_dark"],
+            width=20,
+            font_size=11,
+            pad_y=8,
+        ).pack(side="right")
+        self._make_action_button(
+            actions,
+            self._translate_ui_text("Close"),
+            self._close_game_mode_dialog,
+            THEME["muted"],
+            active_bg="#384D65",
+            width=11,
+            font_size=11,
+            pad_y=8,
+        ).pack(side="right", padx=(0, self._ui_px(10)))
+        update_hacks()
+        dialog.after_idle(lambda: self._localize_widget_tree(dialog))
+
+    def _open_difficulty_ladder(self) -> None:
+        ready = self._game_mode_ready_hacks()
+        ladder_order = (
+            "Newcomer",
+            "Casual",
+            "Intermediate",
+            "Advanced",
+            "Expert",
+            "Master",
+            "Grandmaster",
+        )
+        groups = [
+            (
+                difficulty,
+                [
+                    game
+                    for game in ready
+                    if str(game.get("difficulty", "")).strip() == difficulty
+                ],
+            )
+            for difficulty in ladder_order
+        ]
+        self._open_grouped_game_mode_picker(
+            key="difficulty_ladder",
+            title="Difficulty Ladder",
+            heading="DIFFICULTY LADDER",
+            description="Choose your current rung and complete one full hack before climbing to the next available difficulty.",
+            group_label="Ladder Rung",
+            groups=groups,
+            random_button_text="Random Hack from This Rung",
+        )
+
+    def _open_creator_spotlight(self) -> None:
+        ready = self._game_mode_ready_hacks()
+        by_creator: dict[str, list[dict[str, Any]]] = {}
+        for game in ready:
+            creator = smwc_author_text(game.get("author", "Unknown"))
+            by_creator.setdefault(creator, []).append(game)
+        groups = sorted(by_creator.items(), key=lambda item: item[0].casefold())
+        self._open_grouped_game_mode_picker(
+            key="creator_spotlight",
+            title="Creator Spotlight",
+            heading="CREATOR SPOTLIGHT",
+            description="Pick a creator to browse every downloaded hack credited to them, or launch a random spotlight selection.",
+            group_label="Creator",
+            groups=groups,
+            random_button_text="Random Hack by This Creator",
+        )
+
+    def _open_time_capsule(self) -> None:
+        ready = self._game_mode_ready_hacks()
+        by_year: dict[str, list[dict[str, Any]]] = {}
+        for game in ready:
+            released = rom_builder_parse_date(game.get("added_date", ""))
+            if released is not None:
+                by_year.setdefault(str(released.year), []).append(game)
+        groups = [
+            (year, by_year[year])
+            for year in sorted(by_year, reverse=True)
+        ]
+        self._open_grouped_game_mode_picker(
+            key="time_capsule",
+            title="Time Capsule",
+            heading="TIME CAPSULE",
+            description="Choose an SMW Central release year, then select a downloaded hack or let the tracker surprise you.",
+            group_label="Release Year",
+            groups=groups,
+            random_button_text="Random Hack from This Year",
+        )
+
+    def _open_hall_of_fame_tour(self) -> None:
+        ready = [
+            game
+            for game in self._game_mode_ready_hacks()
+            if smwc_boolean_value(game.get("hall_of_fame", False))
+        ]
+        difficulty_order = (
+            "Newcomer",
+            "Casual",
+            "Intermediate",
+            "Advanced",
+            "Expert",
+            "Master",
+            "Grandmaster",
+            "Unranked",
+            "Unknown",
+        )
+        groups = [
+            (
+                difficulty,
+                [
+                    game
+                    for game in ready
+                    if str(game.get("difficulty", "Unknown") or "Unknown")
+                    == difficulty
+                ],
+            )
+            for difficulty in difficulty_order
+        ]
+        self._open_grouped_game_mode_picker(
+            key="hall_of_fame_tour",
+            title="Hall of Fame Tour",
+            heading="HALL OF FAME TOUR",
+            description="Tour downloaded SMW Central Hall of Fame hacks. Choose a difficulty and launch any available stop.",
+            group_label="Difficulty",
+            groups=groups,
+            random_button_text="Random Hall of Fame Hack",
+        )
+
+    def _open_hack_gauntlet_maker(self) -> None:
+        if self.hack_gauntlet_active:
+            active_dialog = self.hack_gauntlet_status_dialog
+            if active_dialog is not None and active_dialog.winfo_exists():
+                active_dialog.deiconify()
+                active_dialog.lift()
+                active_dialog.focus_force()
+            return
+        if (
+            self.hack_gauntlet_dialog is not None
+            and self.hack_gauntlet_dialog.winfo_exists()
+        ):
+            self.hack_gauntlet_dialog.deiconify()
+            self.hack_gauntlet_dialog.lift()
+            self.hack_gauntlet_dialog.focus_force()
+            return
+
+        available = [
+            game
+            for game in self.hack_catalog
+            if str(game.get("title", "")).strip()
+            and self._catalog_game_has_downloaded_rom(game)
+        ]
+        if not available:
+            self._show_localized_info(
+                "Hack Gauntlet Maker",
+                "No downloaded hacks are available for the selected platform. Download a hack or map an existing ROM first.",
+                parent=self.root,
+            )
+            return
+
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.hack_gauntlet_dialog = dialog
+        dialog.title(self._translate_ui_text("Hack Gauntlet Maker"))
+        dialog.configure(bg=palette["window"])
+        self._size_dialog_for_ui(dialog, 790, 690, 700, 610)
+        dialog.resizable(True, True)
+        self._add_dialog_window_controls(dialog, dialog, palette["window"])
+
+        tk.Label(
+            dialog,
+            text="HACK GAUNTLET MAKER",
+            font=("Segoe UI", 18, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            padx=18,
+            pady=13,
+        ).pack(fill="x")
+        tk.Label(
+            dialog,
+            text=(
+                "Build a run of random hacks. Each completed level "
+                "automatically launches the next hack in the gauntlet."
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["window"],
+            wraplength=self._ui_px(690),
+            justify="center",
+            pady=12,
+        ).pack(fill="x", padx=18)
+
+        saved = self.config.get("hack_gauntlet_settings", {})
+        if not isinstance(saved, dict):
+            saved = {}
+        level_count_var = tk.StringVar(value=str(saved.get("level_count", 5)))
+        difficulty_var = tk.StringVar(
+            value=str(saved.get("difficulty", "Any"))
+        )
+        type_var = tk.StringVar(value=str(saved.get("hack_type", "Any")))
+        rating_var = tk.StringVar(value=str(saved.get("rating", "Any")))
+        boolean_options = self._boolean_filter_options()
+        sa1_var = tk.StringVar(value=str(saved.get("sa1", boolean_options[0])))
+        hall_of_fame_var = tk.StringVar(
+            value=str(saved.get("hall_of_fame", boolean_options[0]))
+        )
+        allow_repeats_var = tk.BooleanVar(
+            value=bool(saved.get("allow_repeats", False))
+        )
+        match_count_var = tk.StringVar(value="")
+
+        options_frame = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=18,
+            pady=16,
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        options_frame.pack(fill="both", expand=True, padx=18, pady=(0, 12))
+        for column in range(2):
+            options_frame.columnconfigure(column, weight=1, uniform="gauntlet")
+
+        fields = (
+            (
+                "Number of levels",
+                level_count_var,
+                tuple(str(value) for value in range(1, 101)),
+            ),
+            (
+                "Difficulty",
+                difficulty_var,
+                ("Any", *self._difficulty_values()),
+            ),
+            ("Type", type_var, ("Any", *self._type_tokens())),
+            (
+                "SMW Central rating",
+                rating_var,
+                ("Any", "1+", "2+", "3+", "4+", "4.5+", "5"),
+            ),
+            ("SA-1", sa1_var, boolean_options),
+            ("Hall of Fame", hall_of_fame_var, boolean_options),
+        )
+        filter_combos: list[ttk.Combobox] = []
+        for index, (label_text, variable, values) in enumerate(fields):
+            row, column = divmod(index, 2)
+            tk.Label(
+                options_frame,
+                text=label_text,
+                font=("Segoe UI", 10, "bold"),
+                fg=palette["text"],
+                bg=palette["panel"],
+            ).grid(
+                row=row * 2,
+                column=column,
+                sticky="ew",
+                padx=8,
+                pady=(0 if row == 0 else 13, 5),
+            )
+            combo = ttk.Combobox(
+                options_frame,
+                textvariable=variable,
+                values=values,
+                state="readonly",
+                justify="center",
+                style="Mario.TCombobox",
+            )
+            combo.grid(
+                row=row * 2 + 1,
+                column=column,
+                sticky="ew",
+                padx=8,
+            )
+            filter_combos.append(combo)
+
+        choice_frame = tk.Frame(options_frame, bg=palette["panel"])
+        choice_frame.grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=8,
+            pady=(18, 0),
+        )
+        check_style = {
+            "font": ("Segoe UI", 10),
+            "fg": palette["text"],
+            "bg": palette["panel"],
+            "activeforeground": palette["text"],
+            "activebackground": palette["panel"],
+            "selectcolor": palette["entry"],
+            "anchor": "w",
+        }
+        tk.Checkbutton(
+            choice_frame,
+            text="Allow the same hack to appear more than once",
+            variable=allow_repeats_var,
+            **check_style,
+        ).pack(fill="x", pady=(0, 7))
+        tk.Label(
+            options_frame,
+            text=(
+                "Each hack starts normally so custom code, checkpoints, "
+                "and level setup remain intact."
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            wraplength=self._ui_px(670),
+            justify="center",
+        ).grid(
+            row=7,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=8,
+            pady=(12, 0),
+        )
+        tk.Label(
+            options_frame,
+            textvariable=match_count_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["yellow"],
+            bg=palette["panel"],
+        ).grid(
+            row=8,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=8,
+            pady=(16, 0),
+        )
+
+        def matching_candidates() -> list[dict[str, Any]]:
+            return self._hack_gauntlet_candidates(
+                rating_var.get(),
+                difficulty_var.get(),
+                type_var.get(),
+                sa1_var.get(),
+                hall_of_fame_var.get(),
+            )
+
+        def refresh_match_count(_event=None) -> None:
+            match_count_var.set(
+                self._format_ui_text(
+                    "{count} downloaded hacks match these filters.",
+                    count=len(matching_candidates()),
+                )
+            )
+
+        for combo in filter_combos[1:]:
+            combo.bind("<<ComboboxSelected>>", refresh_match_count, add="+")
+        refresh_match_count()
+
+        def close_maker() -> None:
+            self.hack_gauntlet_dialog = None
+            dialog.destroy()
+
+        def build_and_start() -> None:
+            try:
+                level_count = int(level_count_var.get())
+            except (TypeError, ValueError):
+                level_count = 0
+            if not 1 <= level_count <= 100:
+                self._show_localized_info(
+                    "Hack Gauntlet Maker",
+                    "Choose a number of levels from 1 through 100.",
+                    parent=dialog,
+                )
+                return
+            candidates = matching_candidates()
+            if not candidates:
+                self._show_localized_info(
+                    "Hack Gauntlet Maker",
+                    "No downloaded and patched hacks match these filters.",
+                    parent=dialog,
+                )
+                return
+            try:
+                queue_entries = self._build_hack_gauntlet_queue(
+                    candidates,
+                    level_count,
+                    allow_repeats_var.get(),
+                )
+            except ValueError:
+                self._show_localized_info(
+                    "Hack Gauntlet Maker",
+                    "There are not enough unique matching hacks for that many levels. Choose fewer levels or allow repeats.",
+                    parent=dialog,
+                )
+                return
+
+            self.config["hack_gauntlet_settings"] = {
+                "level_count": level_count,
+                "difficulty": difficulty_var.get(),
+                "hack_type": type_var.get(),
+                "rating": rating_var.get(),
+                "sa1": sa1_var.get(),
+                "hall_of_fame": hall_of_fame_var.get(),
+                "allow_repeats": bool(allow_repeats_var.get()),
+                "direct_level_resume": False,
+            }
+            try:
+                save_config(self.config)
+            except OSError:
+                pass
+            close_maker()
+            self._start_hack_gauntlet(
+                queue_entries,
+                direct_level_resume=False,
+            )
+
+        actions = tk.Frame(dialog, bg=palette["window"])
+        actions.pack(fill="x", padx=18, pady=(0, 16))
+        self._make_action_button(
+            actions,
+            "Build & Start Gauntlet",
+            build_and_start,
+            THEME["green"],
+            active_bg=THEME["green_dark"],
+            width=20,
+            font_size=11,
+            pad_y=7,
+        ).pack(side="right")
+        self._make_action_button(
+            actions,
+            "Cancel",
+            close_maker,
+            THEME["muted"],
+            active_bg="#384D65",
+            width=12,
+            font_size=11,
+            pad_y=7,
+        ).pack(side="right", padx=(0, 10))
+        dialog.protocol("WM_DELETE_WINDOW", close_maker)
+        dialog.after_idle(lambda: self._localize_widget_tree(dialog))
+
+    @staticmethod
+    def _hack_gauntlet_games_match(
+        expected: dict[str, Any],
+        actual: dict[str, Any],
+    ) -> bool:
+        expected_id = str(expected.get("smwc_id", "")).strip()
+        actual_id = str(actual.get("smwc_id", "")).strip()
+        if expected_id and actual_id:
+            return expected_id == actual_id
+        return normalize_title(expected.get("title", "")) == normalize_title(
+            actual.get("title", "")
+        )
+
+    def _start_hack_gauntlet(
+        self,
+        queue_entries: list[dict[str, Any]],
+        *,
+        direct_level_resume: bool,
+    ) -> None:
+        self.hack_gauntlet_queue = [dict(game) for game in queue_entries]
+        self.hack_gauntlet_index = 0
+        self.hack_gauntlet_completed_levels = 0
+        self.hack_gauntlet_skipped_levels = 0
+        self.hack_gauntlet_active = bool(self.hack_gauntlet_queue)
+        self.hack_gauntlet_advancing = True
+        # Directly forcing arbitrary level IDs breaks custom initialization in
+        # many hacks and can enter test/junk rooms. Keep every gauntlet on the
+        # game's own normal loader, including configurations saved by older
+        # builds that had direct entry enabled.
+        self.hack_gauntlet_direct_level_resume = False
+        self.hack_gauntlet_level_request_token = ""
+        self.hack_gauntlet_level_request_attempts = 0
+        if not self.hack_gauntlet_active:
+            return
+        self._show_hack_gauntlet_status()
+        self._launch_current_hack_gauntlet_entry()
+
+    def _show_hack_gauntlet_status(self) -> None:
+        palette = self._library_palette()
+        dialog = tk.Toplevel(self.root)
+        self.hack_gauntlet_status_dialog = dialog
+        dialog.title(self._translate_ui_text("Hack Gauntlet"))
+        dialog.configure(bg=palette["window"])
+        self._size_dialog_for_ui(dialog, 700, 430, 620, 380)
+        dialog.resizable(False, False)
+        self._add_dialog_window_controls(dialog, dialog, palette["window"])
+        tk.Label(
+            dialog,
+            text="HACK GAUNTLET",
+            font=("Segoe UI", 18, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            pady=13,
+        ).pack(fill="x")
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=24,
+            pady=22,
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.hack_gauntlet_progress_var = tk.StringVar(value="")
+        self.hack_gauntlet_title_var = tk.StringVar(value="")
+        self.hack_gauntlet_status_var = tk.StringVar(value="")
+        tk.Label(
+            body,
+            textvariable=self.hack_gauntlet_progress_var,
+            font=("Segoe UI", 15, "bold"),
+            fg=THEME["yellow"],
+            bg=palette["panel"],
+        ).pack(fill="x", pady=(4, 12))
+        tk.Label(
+            body,
+            textvariable=self.hack_gauntlet_title_var,
+            font=("Segoe UI", 17, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            wraplength=self._ui_px(600),
+            justify="center",
+        ).pack(fill="x", pady=(0, 14))
+        tk.Label(
+            body,
+            textvariable=self.hack_gauntlet_status_var,
+            font=("Segoe UI", 10),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            wraplength=self._ui_px(600),
+            justify="center",
+        ).pack(fill="x", pady=(0, 18))
+        actions = tk.Frame(body, bg=palette["panel"])
+        actions.pack(fill="x", side="bottom")
+        self._make_action_button(
+            actions,
+            "Skip Level",
+            self._skip_hack_gauntlet_level,
+            THEME["blue"],
+            active_bg=THEME["navy"],
+            width=14,
+            pad_y=7,
+        ).pack(side="left")
+        self._make_action_button(
+            actions,
+            "Stop Gauntlet",
+            self._request_stop_hack_gauntlet,
+            THEME["red"],
+            active_bg="#A52020",
+            width=14,
+            pad_y=7,
+        ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", self._request_stop_hack_gauntlet)
+        dialog.after_idle(lambda: self._localize_widget_tree(dialog))
+
+    def _set_hack_gauntlet_status(
+        self,
+        text: str,
+        **values: object,
+    ) -> None:
+        if self.hack_gauntlet_status_var is not None:
+            if values:
+                status = self._format_ui_text(text, **values)
+            else:
+                status = self._translate_ui_text(text)
+            self.hack_gauntlet_status_var.set(status)
+
+    def _launch_current_hack_gauntlet_entry(self) -> None:
+        if not self.hack_gauntlet_active:
+            return
+        if getattr(self, "game_library_launching", False):
+            self._set_hack_gauntlet_status(
+                "Waiting for the current game launch to finish..."
+            )
+            self.root.after(500, self._launch_current_hack_gauntlet_entry)
+            return
+        if not 0 <= self.hack_gauntlet_index < len(self.hack_gauntlet_queue):
+            self._finish_hack_gauntlet()
+            return
+        game = dict(self.hack_gauntlet_queue[self.hack_gauntlet_index])
+        self.hack_gauntlet_level_request_token = ""
+        self.hack_gauntlet_level_request_attempts = 0
+        if self.hack_gauntlet_index > 0:
+            game["_gauntlet_skip_previous_state_save"] = True
+        total = len(self.hack_gauntlet_queue)
+        if self.hack_gauntlet_progress_var is not None:
+            self.hack_gauntlet_progress_var.set(
+                self._format_ui_text(
+                    "Level {current} of {total}",
+                    current=self.hack_gauntlet_index + 1,
+                    total=total,
+                )
+            )
+        if self.hack_gauntlet_title_var is not None:
+            self.hack_gauntlet_title_var.set(str(game.get("title", "Unknown")))
+        self._set_hack_gauntlet_status("Launching the next hack...")
+        selected_label = self._selector_label_for_game(game)
+        self.main_hack_selector_var.set(selected_label)
+        self.main_hack_selector_selected_label = selected_label
+        self._align_main_hack_selector_text(selected_label)
+        self.hack_gauntlet_advancing = True
+        self._launch_catalog_game(game)
+
+    def _finish_hack_gauntlet_launch(
+        self,
+        game: dict[str, Any],
+        error: str | None,
+    ) -> None:
+        if not getattr(self, "hack_gauntlet_active", False) or not getattr(
+            self,
+            "hack_gauntlet_queue",
+            [],
+        ):
+            return
+        expected = self.hack_gauntlet_queue[self.hack_gauntlet_index]
+        if not self._hack_gauntlet_games_match(expected, game):
+            return
+        if error:
+            self.hack_gauntlet_active = False
+            self.hack_gauntlet_advancing = False
+            self._set_hack_gauntlet_status(
+                "The gauntlet stopped because the hack could not be launched."
+            )
+            return
+        self.hack_gauntlet_advancing = False
+        self._set_hack_gauntlet_status(
+            "Complete one level to launch the next hack automatically."
+        )
+
+    def _schedule_hack_gauntlet_direct_resume(self) -> None:
+        if (
+            not self.hack_gauntlet_active
+            or not self.hack_gauntlet_direct_level_resume
+        ):
+            return
+        if self.hack_gauntlet_resume_after_id is not None:
+            try:
+                self.root.after_cancel(self.hack_gauntlet_resume_after_id)
+            except tk.TclError:
+                pass
+        self.hack_gauntlet_resume_after_id = self.root.after(
+            1400,
+            self._attempt_hack_gauntlet_direct_resume,
+        )
+
+    def _attempt_hack_gauntlet_direct_resume(self) -> None:
+        self.hack_gauntlet_resume_after_id = None
+        if (
+            not self.hack_gauntlet_active
+            or self.hack_gauntlet_advancing
+        ):
+            return
+        if not 0 <= self.hack_gauntlet_index < len(self.hack_gauntlet_queue):
+            return
+        current_game = self.hack_gauntlet_queue[self.hack_gauntlet_index]
+        excluded_levels = [
+            int(entry["_gauntlet_level_id"])
+            for entry in self.hack_gauntlet_queue[: self.hack_gauntlet_index]
+            if "_gauntlet_level_id" in entry
+            and self._hack_gauntlet_games_match(current_game, entry)
+        ]
+        self.hack_gauntlet_level_request_attempts += 1
+        token = (
+            f"{self.hack_gauntlet_index}:"
+            f"{time.monotonic_ns()}:"
+            f"{self.hack_gauntlet_level_request_attempts}"
+        )
+        self.hack_gauntlet_level_request_token = token
+        self.worker.request_hack_gauntlet_random_level(
+            token,
+            excluded_levels,
+        )
+        self._set_hack_gauntlet_status(
+            "Waiting for the game to reach a safe point before choosing a random level..."
+        )
+
+    def _handle_hack_gauntlet_random_level(
+        self,
+        event: dict[str, Any],
+    ) -> None:
+        if (
+            not self.hack_gauntlet_active
+            or str(event.get("request_id", ""))
+            != self.hack_gauntlet_level_request_token
+        ):
+            return
+        if bool(event.get("success")):
+            translevel = int(event.get("translevel", 0)) & 0xFF
+            level_number = int(
+                event.get(
+                    "level_number",
+                    hack_gauntlet_level_number(translevel),
+                )
+            )
+            self.hack_gauntlet_queue[self.hack_gauntlet_index][
+                "_gauntlet_level_id"
+            ] = translevel
+            self._set_hack_gauntlet_status(
+                "Random level {level} selected. Complete it to launch the next hack automatically.",
+                level=f"{level_number:03X}",
+            )
+            return
+        if (
+            bool(event.get("retry"))
+            and self.hack_gauntlet_level_request_attempts < 120
+        ):
+            self.hack_gauntlet_resume_after_id = self.root.after(
+                650,
+                self._attempt_hack_gauntlet_direct_resume,
+            )
+            return
+        self._set_hack_gauntlet_status(
+            "No safe random level was found, so this hack started normally. Complete one level to continue."
+        )
+
+    def _handle_hack_gauntlet_level_complete(
+        self,
+        event: dict[str, Any],
+    ) -> None:
+        if not self.hack_gauntlet_active or self.hack_gauntlet_advancing:
+            return
+        self.hack_gauntlet_completed_levels += 1
+        self.hack_gauntlet_advancing = True
+        if self.hack_gauntlet_index + 1 >= len(self.hack_gauntlet_queue):
+            self._set_hack_gauntlet_status("Gauntlet complete!")
+            self.root.after(900, self._finish_hack_gauntlet)
+            return
+        self._set_hack_gauntlet_status(
+            "Level complete! Loading the next hack..."
+        )
+        self.root.after(1200, self._advance_hack_gauntlet)
+
+    def _advance_hack_gauntlet(self) -> None:
+        if not self.hack_gauntlet_active:
+            return
+        self.hack_gauntlet_index += 1
+        self._launch_current_hack_gauntlet_entry()
+
+    def _skip_hack_gauntlet_level(self) -> None:
+        if not self.hack_gauntlet_active or self.hack_gauntlet_advancing:
+            return
+        self.worker.cancel_hack_gauntlet_level()
+        self.hack_gauntlet_skipped_levels += 1
+        self.hack_gauntlet_advancing = True
+        if self.hack_gauntlet_index + 1 >= len(self.hack_gauntlet_queue):
+            self._finish_hack_gauntlet()
+            return
+        self._set_hack_gauntlet_status("Skipping to the next hack...")
+        self.root.after(250, self._advance_hack_gauntlet)
+
+    def _request_stop_hack_gauntlet(self) -> None:
+        if not self.hack_gauntlet_active:
+            self._close_hack_gauntlet_status()
+            return
+        if not self._ask_localized_yes_no(
+            "Stop Gauntlet",
+            "Stop the current Hack Gauntlet?",
+            parent=self.hack_gauntlet_status_dialog or self.root,
+        ):
+            return
+        self.hack_gauntlet_active = False
+        self.hack_gauntlet_advancing = False
+        self.hack_gauntlet_level_request_token = ""
+        self.worker.cancel_hack_gauntlet_level()
+        if self.hack_gauntlet_resume_after_id is not None:
+            try:
+                self.root.after_cancel(self.hack_gauntlet_resume_after_id)
+            except tk.TclError:
+                pass
+            self.hack_gauntlet_resume_after_id = None
+        self._close_hack_gauntlet_status()
+
+    def _close_hack_gauntlet_status(self) -> None:
+        dialog = self.hack_gauntlet_status_dialog
+        self.hack_gauntlet_status_dialog = None
+        if dialog is not None:
+            try:
+                if dialog.winfo_exists():
+                    dialog.destroy()
+            except tk.TclError:
+                pass
+
+    def _finish_hack_gauntlet(self) -> None:
+        self.worker.cancel_hack_gauntlet_level()
+        if self.hack_gauntlet_resume_after_id is not None:
+            try:
+                self.root.after_cancel(self.hack_gauntlet_resume_after_id)
+            except tk.TclError:
+                pass
+            self.hack_gauntlet_resume_after_id = None
+        completed = self.hack_gauntlet_completed_levels
+        skipped = self.hack_gauntlet_skipped_levels
+        total = len(self.hack_gauntlet_queue)
+        self.hack_gauntlet_active = False
+        self.hack_gauntlet_advancing = False
+        self.hack_gauntlet_level_request_token = ""
+        self._close_hack_gauntlet_status()
+        self._show_localized_info(
+            "Hack Gauntlet Complete",
+            self._format_ui_text(
+                "Gauntlet complete! Levels completed: {completed}/{total}. Levels skipped: {skipped}.",
+                completed=completed,
+                total=total,
+                skipped=skipped,
+            ),
+            parent=self.root,
+        )
 
     def _random_upload_age_options(
         self,
@@ -54582,7 +59972,7 @@ class TrackerApp:
             text="PLAY A RANDOM DOWNLOADED HACK",
             font=("Segoe UI", 17, "bold"),
             fg="white",
-            bg=THEME["orange"],
+            bg=THEME["blue"],
             padx=18,
             pady=12,
         ).pack(fill="x")
@@ -56708,6 +62098,14 @@ class TrackerApp:
         game: dict[str, Any],
     ) -> None:
         selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
+        if (
+            selected_platform == "MiSTer"
+            and not self.mister_session_credentials_confirmed
+            and not self._prompt_mister_password(
+                parent=self.game_library_dialog or self.root,
+            )
+        ):
+            return
         if self.game_library_launching:
             messagebox.showinfo(
                 selected_platform,
@@ -56767,7 +62165,10 @@ class TrackerApp:
     ) -> None:
         paused_worker: TrackerWorker | None = None
         try:
-            if (self.platform_var.get().strip() or "FXPAK Pro") == "FXPAK Pro":
+            if (self.platform_var.get().strip() or "FXPAK Pro") in {
+                "FXPAK Pro",
+                "MiSTer",
+            }:
                 paused_worker = self._pause_tracker_bridge_for_fxpak_files()
             result = self._run_fxpak_game_launch(game)
             self.root.after(
@@ -56972,6 +62373,106 @@ class TrackerApp:
             f'No local ROM matching "{game.get("title", "Unknown")}" '
             f"was found under {library_folder}."
         )
+
+    def _run_mister_game_launch(
+        self,
+        game: dict[str, Any],
+    ) -> dict[str, str]:
+        local_rom, match_method = self._resolve_local_rom_path(game, "MiSTer")
+        host = normalize_mister_host(
+            self.config.get("mister_host", "MiSTer")
+        )
+        user = str(self.config.get("mister_ssh_user", "root")).strip() or "root"
+        try:
+            port = int(self.config.get("mister_ssh_port", 22))
+        except (TypeError, ValueError):
+            port = 22
+        remote_root = str(
+            self.config.get(
+                "mister_rom_root",
+                "/media/fat/games/SNES/SMW Stream Tracker",
+            )
+        ).rstrip("/")
+        menu_root = str(
+            self.config.get(
+                "mister_menu_root",
+                "/media/fat/_SMW Stream Tracker",
+            )
+        ).rstrip("/")
+        if not remote_root.startswith("/media/fat/games/SNES/"):
+            raise ValueError(
+                "The MiSTer ROM folder must be inside /media/fat/games/SNES."
+            )
+        if not menu_root.startswith("/media/fat/"):
+            raise ValueError(
+                "The MiSTer launch-menu folder must be inside /media/fat."
+            )
+
+        remote_filename = mister_safe_rom_filename(game, local_rom.suffix)
+        remote_rom = str(PurePosixPath(remote_root) / remote_filename)
+        relative_rom = str(
+            PurePosixPath(remote_rom).relative_to("/media/fat/games/SNES")
+        )
+        remote_mgl = str(
+            PurePosixPath(menu_root) / "SMW Stream Tracker Launch.mgl"
+        )
+        client = self._open_mister_ssh_client(
+            host,
+            user,
+            port,
+            self.mister_session_password,
+        )
+        uploaded = False
+        try:
+            sftp = client.open_sftp()
+            try:
+                self._mister_sftp_makedirs(sftp, remote_root)
+                self._mister_sftp_makedirs(sftp, menu_root)
+                try:
+                    remote_size = int(sftp.stat(remote_rom).st_size)
+                except OSError:
+                    remote_size = -1
+                if remote_size != local_rom.stat().st_size:
+                    sftp.put(str(local_rom), remote_rom)
+                    uploaded = True
+                self._mister_sftp_write(
+                    sftp,
+                    remote_mgl,
+                    mister_mgl_text(relative_rom).encode("utf-8"),
+                )
+            finally:
+                sftp.close()
+
+            load_command = "load_core " + remote_mgl
+            shell_command = (
+                "printf '%s\\n' "
+                + shlex.quote(load_command)
+                + " > /dev/MiSTer_cmd"
+            )
+            _stdin, stdout, stderr = client.exec_command(
+                shell_command,
+                timeout=15,
+            )
+            exit_status = stdout.channel.recv_exit_status()
+            error_text = stderr.read().decode("utf-8", errors="replace").strip()
+            if exit_status != 0:
+                raise RuntimeError(
+                    error_text
+                    or "MiSTer did not accept the SNES launch command."
+                )
+        finally:
+            client.close()
+
+        return {
+            "path": remote_rom,
+            "device": "MiSTer",
+            "method": (
+                "MiSTer network upload and MGL launch"
+                if uploaded
+                else "existing MiSTer ROM and MGL launch"
+            ),
+            "match": match_method,
+        }
 
     def _send_retroarch_network_command(
         self,
@@ -57223,6 +62724,8 @@ class TrackerApp:
         self,
         core_path: Path,
         rom_path: Path,
+        *,
+        save_previous_state: bool = True,
     ) -> tuple[bool, bool]:
         """Ask a running RetroArch process to load content in its window."""
         original_status = self._retroarch_status()
@@ -57231,7 +62734,7 @@ class TrackerApp:
 
         had_content = "CONTENTLESS" not in original_status.upper()
         saved_previous_state = False
-        if had_content:
+        if had_content and save_previous_state:
             self._send_retroarch_network_command("SAVE_STATE")
             # SAVE_STATE is fire-and-forget. Let RetroArch finish writing
             # before replacing the running content in the same process.
@@ -57273,6 +62776,7 @@ class TrackerApp:
         self,
         *,
         already_saved: bool = False,
+        save_previous_state: bool = True,
     ) -> str:
         """Save and retire a running instance before launching new content."""
         status = self._retroarch_status()
@@ -57281,7 +62785,7 @@ class TrackerApp:
 
         had_content = "CONTENTLESS" not in status.upper()
         if had_content:
-            if not already_saved:
+            if not already_saved and save_previous_state:
                 self._send_retroarch_network_command("SAVE_STATE")
                 # SAVE_STATE has no acknowledgement. Give RetroArch enough
                 # time to flush the state file before safely closing the core.
@@ -57346,6 +62850,9 @@ class TrackerApp:
         command = [str(executable)]
         switch_method = ""
         if platform == "RetroArch":
+            save_previous_state = not bool(
+                game.get("_gauntlet_skip_previous_state_save")
+            )
             if IS_MACOS:
                 command.extend(
                     [
@@ -57367,12 +62874,21 @@ class TrackerApp:
         if platform == "RetroArch":
             saved_previous_state = False
             if IS_WINDOWS:
-                loaded_in_place, saved_previous_state = (
-                    self._load_retroarch_content_in_place(
-                        core_path,
-                        rom_path,
+                if save_previous_state:
+                    loaded_in_place, saved_previous_state = (
+                        self._load_retroarch_content_in_place(
+                            core_path,
+                            rom_path,
+                        )
                     )
-                )
+                else:
+                    loaded_in_place, saved_previous_state = (
+                        self._load_retroarch_content_in_place(
+                            core_path,
+                            rom_path,
+                            save_previous_state=False,
+                        )
+                    )
                 if loaded_in_place:
                     return {
                         "path": str(rom_path),
@@ -57394,9 +62910,15 @@ class TrackerApp:
                         "current game running instead of opening a duplicate "
                         "RetroArch window."
                     )
-            switch_method = self._prepare_retroarch_game_switch(
-                already_saved=saved_previous_state,
-            )
+            if save_previous_state:
+                switch_method = self._prepare_retroarch_game_switch(
+                    already_saved=saved_previous_state,
+                )
+            else:
+                switch_method = self._prepare_retroarch_game_switch(
+                    already_saved=saved_previous_state,
+                    save_previous_state=False,
+                )
 
         if IS_WINDOWS:
             creation_flags = getattr(
@@ -57489,6 +63011,8 @@ class TrackerApp:
         game: dict[str, Any],
     ) -> dict[str, str]:
         selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
+        if selected_platform == "MiSTer":
+            return self._run_mister_game_launch(game)
         if selected_platform in PLATFORM_LOCAL_EMULATORS:
             return self._run_local_emulator_launcher(
                 game,
@@ -59312,10 +64836,15 @@ class TrackerApp:
                 "SMW Stream Tracker Error",
                 error_message,
                 parent=self.root,
-            ),
-            master=dialog,
-        except tk.TclError:
-            pass
+            )
+        except Exception:
+            # Tk routes failures from callbacks here.  This handler must never
+            # raise another exception or PyInstaller will show its unstyled
+            # emergency "Unhandled exception in script" window.
+            append_error_log(
+                "Error popup failed",
+                traceback.format_exc(),
+            )
 
     def _open_local_folder(self, folder: Path) -> None:
         folder.mkdir(parents=True, exist_ok=True)
@@ -59406,6 +64935,13 @@ class TrackerApp:
         connection = self.connection_var.get().strip() or "Unknown"
         frozen = bool(getattr(sys, "frozen", False))
         tr = self._translate_ui_text
+        mister_host = normalize_mister_host(
+            self.config.get("mister_host", "MiSTer")
+        )
+        try:
+            mister_ssh_port = int(self.config.get("mister_ssh_port", 22) or 22)
+        except (TypeError, ValueError):
+            mister_ssh_port = 22
         details = [
             tr("SMW STREAM TRACKER DIAGNOSTICS"),
             tr("Generated:") + " " + datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -59435,6 +64971,17 @@ class TrackerApp:
             ),
             "QUsb2Snes: " + self._configured_path_status(
                 self.config.get("qusb2snes_path", ""), "file"
+            ),
+            tr("MiSTer host:") + " " + mister_host,
+            tr("MiSTer SSH:") + " " + (
+                tr("Ready")
+                if self._test_tcp_port(mister_host, mister_ssh_port)
+                else tr("Not responding")
+            ),
+            tr("MiSTer live tracking:") + " " + (
+                tr("Ready")
+                if self._test_tcp_port(mister_host, 23074)
+                else tr("Not responding")
             ),
             "RetroArch: " + self._configured_path_status(
                 self.config.get("retroarch_executable_path", ""), "file"
@@ -59630,17 +65177,52 @@ class TrackerApp:
                 + ". Neither is currently responding on port 23074."
             )
         else:
-            interface_state = "Missing" if platform_name == "FXPAK Pro" else "Needs Attention"
-            interface_detail = (
-                "Install SNI (recommended) or QUsb2Snes, then select it in Settings."
-                if platform_name == "FXPAK Pro"
-                else "Optional for RetroArch users. Install it only if you also use FXPAK Pro."
-            )
+            if platform_name == "FXPAK Pro":
+                interface_state = "Missing"
+                interface_detail = (
+                    "Install SNI (recommended) or QUsb2Snes, then select it in Settings."
+                )
+            else:
+                interface_state = "Optional"
+                interface_detail = (
+                    "A local SNI/QUsb2Snes service is optional for the selected platform."
+                )
         results.append((
             interface_state,
             "FXPAK connection services",
             interface_detail,
         ))
+
+        mister_host = normalize_mister_host(
+            self.config.get("mister_host", "MiSTer")
+        )
+        try:
+            mister_ssh_port = int(self.config.get("mister_ssh_port", 22))
+        except (TypeError, ValueError):
+            mister_ssh_port = 22
+        mister_ssh_ready = self._test_tcp_port(mister_host, mister_ssh_port)
+        mister_tracking_ready = self._test_tcp_port(mister_host, 23074)
+        if mister_ssh_ready and mister_tracking_ready:
+            mister_state = "Ready"
+            mister_detail = (
+                "MiSTer network launching and SNES live tracking are responding."
+            )
+        elif platform_name != "MiSTer":
+            mister_state = "Optional"
+            mister_detail = "MiSTer is optional and is not currently selected."
+        elif mister_ssh_ready:
+            mister_state = "Needs Attention"
+            mister_detail = (
+                "MiSTer SSH is responding. Run MiSTer Setup, then load the "
+                "SNES core once to start live tracking."
+            )
+        else:
+            mister_state = "Missing"
+            mister_detail = (
+                f"MiSTer is not responding at {mister_host}. Connect it to "
+                "the same network and run MiSTer Setup."
+            )
+        results.append((mister_state, "MiSTer", mister_detail))
 
         retroarch_text = str(self.config.get("retroarch_executable_path", "")).strip()
         core_text = str(self.config.get("retroarch_core_path", "")).strip()
@@ -59670,8 +65252,8 @@ class TrackerApp:
         elif platform_name != "RetroArch":
             retro_state = "Ready"
             retro_detail = (
-                "RetroArch is optional and is not required while FXPAK Pro "
-                "is selected."
+                "RetroArch is optional and is not required while another "
+                "platform is selected."
             )
         elif retroarch_ready and core_ready:
             retro_state = "Needs Attention"
@@ -59923,6 +65505,14 @@ class TrackerApp:
         dialog.after_idle(dialog.focus_force)
 
     def _guided_setup_stage_copy(self, stage: str) -> tuple[str, str]:
+        if (
+            stage == "connection"
+            and self._guided_setup_software_choice == "mister"
+        ):
+            return (
+                self._setup_guide_text("mister_connection_title"),
+                self._setup_guide_text("mister_connection_text"),
+            )
         key_map = {
             "downloads": ("downloads_title", "downloads_text"),
             "connection": ("connection_title", "connection_text"),
@@ -60036,7 +65626,16 @@ class TrackerApp:
             dialog,
             dark=(self.appearance_var.get() == "dark"),
         )
-        self._guided_setup_software_choice = ""
+        self._guided_setup_software_choice = (
+            "mister"
+            if bool(
+                self.config.get(
+                    "first_launch_mister_setup_requested",
+                    False,
+                )
+            )
+            else ""
+        )
         self._guided_setup_software_selected = set()
         self._guided_setup_software_completed = set()
         self._guided_setup_set_stage("downloads")
@@ -60063,6 +65662,11 @@ class TrackerApp:
     def _guided_setup_target_widget(self, stage: str) -> tk.Widget | None:
         if stage in {"downloads", "downloads_again"}:
             return getattr(self, "downloads_menu_button", None)
+        if (
+            stage == "connection"
+            and self._guided_setup_software_choice == "mister"
+        ):
+            return getattr(self, "mister_setup_automatic_button", None)
         if stage == "refresh_catalog":
             return getattr(self, "catalog_page_refresh_button", None)
         if stage == "download_all":
@@ -60085,10 +65689,17 @@ class TrackerApp:
             if downloads_menu is not None and connection_index is not None:
                 entries.append((downloads_menu, int(connection_index)))
             if connection_menu is not None:
-                option_names = (
-                    "sni",
-                    "qusb2snes",
-                    "retroarch",
+                option_names = tuple(
+                    getattr(
+                        self,
+                        "connection_option_menu_names",
+                        (
+                            "sni",
+                            "qusb2snes",
+                            "retroarch",
+                            "mister",
+                        ),
+                    )
                 )
                 option_indexes = tuple(
                     int(index)
@@ -60126,6 +65737,15 @@ class TrackerApp:
                         for name, index in option_pairs
                         if name in {"sni", "retroarch"}
                         and name not in finished_or_chosen
+                    )
+                elif (
+                    getattr(self, "_guided_setup_software_choice", "")
+                    == "mister"
+                ):
+                    option_pairs = tuple(
+                        (name, index)
+                        for name, index in option_pairs
+                        if name == "mister"
                     )
                 entries.extend(
                     (connection_menu, index)
@@ -60392,7 +66012,25 @@ class TrackerApp:
                 and configured_file("retroarch_executable_path")
                 and configured_file("retroarch_core_path")
             )
+        elif choice == "mister":
+            ready = (
+                "mister" in completed_software
+                and str(self.config.get("selected_platform", "")).strip()
+                == "MiSTer"
+                and bool(str(self.config.get("mister_host", "")).strip())
+                and bool(
+                    str(
+                        self.config.get("mister_ssh_fingerprint", "")
+                    ).strip()
+                )
+            )
         if ready:
+            if choice == "mister":
+                self.config["first_launch_mister_setup_requested"] = False
+                try:
+                    save_config(self.config)
+                except OSError:
+                    pass
             self._guided_setup_set_stage("catalog")
         else:
             self._guided_setup_refresh_connection_flash()
@@ -61644,9 +67282,16 @@ class TrackerApp:
     ) -> Path | None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_reason = re.sub(r"[^a-z0-9_-]+", "_", reason.casefold()).strip("_")
-        destination = AUTOMATIC_BACKUP_DIR / (
+        backup_stem = (
             f"SMWStreamTracker_{safe_reason or 'backup'}_{timestamp}.zip"
         )
+        destination = AUTOMATIC_BACKUP_DIR / backup_stem
+        duplicate_number = 2
+        while destination.exists():
+            destination = AUTOMATIC_BACKUP_DIR / (
+                f"{Path(backup_stem).stem}_{duplicate_number}.zip"
+            )
+            duplicate_number += 1
         temporary_database = AUTOMATIC_BACKUP_DIR / ("." + timestamp + ".db")
         try:
             AUTOMATIC_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -63313,6 +68958,32 @@ class TrackerApp:
                             "Live tracking is connected, but game launching still needs the missing path(s) in Settings."
                         )
                     )
+                elif platform == "MiSTer":
+                    host = normalize_mister_host(
+                        self.config.get("mister_host", "MiSTer")
+                    )
+                    try:
+                        ssh_port = int(self.config.get("mister_ssh_port", 22))
+                    except (TypeError, ValueError):
+                        ssh_port = 22
+                    rom_library = str(
+                        self.config.get("platform_rom_library_folder", "")
+                        or self.config.get("rom_builder_library_folder", "")
+                    ).strip()
+                    launch_ready = bool(
+                        paramiko is not None
+                        and self._test_tcp_port(host, ssh_port)
+                        and Path(rom_library).is_dir()
+                    )
+                    launch_note = (
+                        "\n\n"
+                        + self._translate_ui_text("Game launching: ready")
+                        if launch_ready
+                        else "\n\n"
+                        + self._translate_ui_text(
+                            "Live tracking is connected, but MiSTer game launching still needs MiSTer Setup and a local ROM library."
+                        )
+                    )
                 message = (
                     self._format_ui_text(
                         "{platform} is connected through {device}.",
@@ -63413,6 +69084,11 @@ class TrackerApp:
             save_config(self.config)
         except OSError:
             pass
+
+        # Rebuild just the compact menu bar after the radio command returns.
+        # This immediately removes setup entries for the two inactive
+        # platforms without repainting the dashboard or interrupting a page.
+        self.root.after_idle(self._rebuild_platform_specific_menus)
 
         self.connection_var.set(
             f"Switching to {platform}..."
@@ -64480,6 +70156,9 @@ class TrackerApp:
         self.root.after(0, self.shutdown)
 
     def shutdown(self) -> None:
+        if getattr(self, "shutdown_in_progress", False):
+            return
+        self.shutdown_in_progress = True
         self._dismiss_main_hack_selector_popup()
         self.catalog_freshness_cancel_event.set()
         self.fxpak_sd_cancel_event.set()
@@ -64497,6 +70176,10 @@ class TrackerApp:
             self.worker.save_current_game_time()
             self.worker.save_current_death_count()
             self.worker.stop()
+
+        # Every normal exit gets its own dated recovery archive.  It is kept
+        # outside the installed app so a fresh install cannot remove it.
+        self._create_recovery_backup("exit")
 
         if self.tray_icon:
             try:

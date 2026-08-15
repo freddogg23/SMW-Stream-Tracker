@@ -6,6 +6,7 @@ tiers facultatifs :
 * SNI depuis les versions officielles alttpo/sni sur GitHub.
 * QUsb2Snes depuis les versions officielles usb2snes (Windows) ou Skarsnik/QUsb2snes (Mac) sur GitHub.
 * RetroArch depuis le serveur de compilation officiel Libretro.
+* snid depuis les versions officielles NobodyNada/snid pour la prise en charge facultative de MiSTer.
 
 Ces programmes sont des projets distincts régis par leurs propres licences.
 Ils ne sont pas intégrés à SMW Stream Tracker. L'assistant télécharge uniquement
@@ -17,6 +18,8 @@ Informations sur les projets et les licences :
 * QUsb2Snes pour Windows : https://github.com/usb2snes/usb2snes
 * QUsb2Snes pour Mac : https://github.com/Skarsnik/QUsb2snes
 * RetroArch et cœurs Libretro : https://www.libretro.com/
+* snid pour MiSTer : https://github.com/NobodyNada/snid
+* Paramiko : https://www.paramiko.org/
 * Pillow : https://python-pillow.org/
 * openpyxl : https://openpyxl.readthedocs.io/
 * websocket-client : https://github.com/websocket-client/websocket-client

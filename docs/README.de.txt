@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - VOLLSTÄNDIGE EINRICHTUNGSANLEITUNG
-Version 1.0.11
+Version 1.1.0
 
 SPRACHEN
 English: README.en.txt
@@ -24,7 +24,27 @@ level_timer.txt für OBS bereit. Katalog, Patchen, FXPAK-Emoji-Aliase,
 Datenbank, Arbeitsmappen und OBS-Texte funktionieren unter Windows und Mac
 gleich.
 
-NEU IN VERSION 1.0.11
+NEU IN VERSION 1.1.0
+
+* MiSTer FPGA ist jetzt eine vollständige Spielplattform. Die Ein-Klick-Einrichtung
+  findet die Konsole im lokalen Netzwerk, richtet Fernstart und Live-Tracking ein
+  und funktioniert mit MiSTer sowie MiSTer Multisystem².
+* Spielmodi enthält Zufälligen Hack spielen, Hack-Draft, Schwierigkeitsleiter,
+  Creator Spotlight, Zeitkapsel und Hall-of-Fame-Tour mit übersetzten blauen
+  Fenstern und Beschreibungen beim Darüberfahren.
+* Tabellenkalkulations-Einstellungen bietet einen intelligenten Excel-Import.
+  Google Sheets synchronisiert in beide Richtungen, und bei jedem ordentlichen
+  Beenden wird eine neue Tracker-/Datenbank-Wiederherstellungskopie gespeichert.
+* Mein Tracker hat kompakte Hinzufügen-/Entfernen-Schaltflächen, Mehrfachlöschung,
+  automatische Hack-#-Neunummerierung und übersichtlichere Tabellen-Untermenüs.
+* Menüs und Einstellungen blenden Optionen aus, die nicht zur ausgewählten
+  Plattform FXPAK Pro, RetroArch oder MiSTer gehören.
+* Die optionale RetroArch-Einrichtung unter Windows ist schneller; RetroArch
+  bleibt geschlossen, bis ein Spiel gestartet wird.
+* Streamer.bot-Levelereignisse und übersetzte Anleitungen ermöglichen eine
+  optionale Automatisierung von Twitch-Vorhersagen.
+* Alle neuen Menüs, Schaltflächen, Statusanzeigen, Meldungen und
+  Einrichtungsanweisungen sind in allen sechs Sprachen übersetzt.
 
 * Das native Verhalten unter Windows und macOS umfasst reproduzierbare Builds
   für Apple Silicon und Intel sowie die plattformgerechte Einrichtung von SNI,
@@ -85,10 +105,10 @@ INHALTSVERZEICHNIS
 
 1. VORAUSSETZUNGEN
 
-* Ein 64-Bit-PC mit Windows 10 oder Windows 11.
+* Ein 64-Bit-PC mit Windows 10/11 oder ein unterstützter Intel-/Apple-Silicon-Mac.
 * Ein Ordner für gepatchte ROMs.
 * Internet für Katalogaktualisierungen und optionale Downloads.
-* Ein FXPAK Pro/SD2SNES oder RetroArch unter Windows.
+* Ein FXPAK Pro/SD2SNES, RetroArch oder ein MiSTer FPGA im lokalen Netzwerk.
 * Ihr eigenes rechtmäßig erworbenes, sauberes Super-Mario-World-ROM, wenn Sie
   aus moderierten Patches spielbare ROMs erstellen möchten.
 
@@ -96,10 +116,10 @@ SMW Stream Tracker enthält und lädt kein kommerzielles Basis-ROM herunter.
 
 2. PROGRAMM INSTALLIEREN
 
-1. Starten Sie SMWStreamTracker_Setup_1.0.11.exe.
+1. Starten Sie SMWStreamTracker_Setup_1.1.0.exe.
 2. Wählen Sie auf dem ersten Bildschirm eine Sprache.
 3. Lesen Sie den Hinweis zu optionaler Software und ROMs.
-4. Wählen Sie FXPAK Pro oder RetroArch als erste Plattform.
+4. Wählen Sie FXPAK Pro, RetroArch oder MiSTer als erste Plattform.
 5. Markieren Sie die optionalen Werkzeuge, die installiert werden sollen.
 6. Wählen Sie ROM- und OBS-Ordner oder lassen Sie die Felder leer, um sie später
    einzurichten.
@@ -216,11 +236,12 @@ für dauerhaftes Massenkopieren wird meist ein Kartenleser benötigt.
 10. EINEN HACK SPIELEN UND VERFOLGEN
 
 Geben Sie Text in Hack suchen oder auswählen ein, wählen Sie ein Ergebnis und
-klicken Sie auf Spielen. Zufälliger Hack wählt nur bereits heruntergeladene
-Hacks aus, die sich auf der gewählten Plattform starten lassen. Reine
-Katalogeinträge werden nie ausgewählt. Zu Mein
-Tracker hinzufügen erstellt einen Eintrag und Hack abschließen speichert den
-Abschluss. Ein Klick außerhalb schließt die Liste.
+klicken Sie auf Spielen. Spielmodi auf der Hauptseite öffnet eine Vollbildseite
+mit einer Startseite-Schaltfläche. Wählen Sie Zufälligen Hack spielen für ein
+zufällig ausgewähltes heruntergeladenes Spiel mit den gewählten Filtern.
+Zu Mein Tracker hinzufügen
+erstellt einen Eintrag und Hack abschließen speichert den Abschluss. Ein Klick
+außerhalb schließt die Liste.
 
 11. TIMER, MEIN TRACKER UND STATISTIKEN
 
@@ -319,6 +340,17 @@ LiveSplit-Server: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
 OBS-Textquellen: https://obsproject.com/kb/text-sources
 Streamlabs-Aufnahme: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
+IMPORT, GOOGLE SHEETS UND DAUERHAFTE EXCEL-SICHERUNG
+
+Statistik > Vorhandene Tabelle importieren stellt aktuelle Mein-Tracker-Exporte
+mit Fortschritt, Spielzeit, Toden, Bewertungen, Daten und Notizen wieder her.
+Für den direkten Import öffnen Sie Mein Tracker > Aus Google Sheets
+synchronisieren, fügen den normalen Freigabelink ein und wählen Jetzt
+importieren. Geben Sie die Tabelle als Betrachter für Jeden mit dem Link frei;
+sie muss ein Blatt Tracker oder My Tracker enthalten. Apps Script bleibt für
+die automatische Synchronisierung verfügbar. Documents > SMW Stream Tracker Backups >
+SMW_Stream_Tracker_Automatic_Backup.xlsx bleibt bei der Deinstallation erhalten.
+
 13. UPDATES, SICHERUNG UND ROLLBACK
 
 Verwenden Sie SMWStreamTracker_Update_VERSION.exe für kleine Versionen, nachdem
@@ -340,3 +372,18 @@ größeren System- oder Speicheränderungen.
 Tracker-Daten und Pfade werden lokal verarbeitet. Katalog-, Abhängigkeits-,
 Update- und Synchronisierungsfunktionen verbinden sich nur bei Verwendung.
 Lesen Sie PRIVACY.txt und THIRD_PARTY_NOTICE.txt für vollständige Hinweise.
+
+MISTER-SCHNELLEINRICHTUNG
+
+Wählen Sie bei einer neuen Windows-Installation MiSTer FPGA und lassen Sie
+MiSTer beim ersten Start einrichten aktiviert. Der blinkende Assistent führt
+Sie zur automatischen Einrichtungsschaltfläche.
+
+Verbinden Sie MiSTer und diesen Computer mit demselben Router und öffnen Sie
+Downloads > Verbindung und Emulator > MiSTer einrichten. Wählen Sie MiSTer
+suchen und einrichten. Der Tracker findet und prüft das Gerät, installiert oder
+repariert die Live-Verfolgung, erstellt die Spieleordner, wählt MiSTer aus,
+richtet eine eigene automatische App-Anmeldung ein und testet die Verbindung.
+Falls gefragt, lautet die SSH-Werksanmeldung root, Port 22, Passwort 1; das
+Passwort wird nie gespeichert. Hacks werden unter sicheren Dateinamen kopiert,
+während ihre echten Katalogtitel erhalten bleiben.

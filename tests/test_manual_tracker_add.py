@@ -42,9 +42,10 @@ class ManualTrackerAddTests(unittest.TestCase):
             self.methods[name],
         )
 
-    def test_add_button_opens_the_manual_tracker_form(self):
+    def test_add_circle_opens_the_manual_tracker_form(self):
         source = self.method_source("open_my_tracker")
-        self.assertIn("command=self._add_tracker_record", source)
+        self.assertIn("make_tracker_circle_action", source)
+        self.assertIn("self._add_tracker_record", source)
 
     def test_manual_form_uses_blue_app_style_and_refreshes_tracker(self):
         source = self.method_source("_add_tracker_record")
@@ -106,6 +107,40 @@ class ManualTrackerAddTests(unittest.TestCase):
             self.assertEqual(record["playtime_seconds"], 3723)
             self.assertEqual(record["notes"], "Added from the blue form.")
 
+    def test_removing_a_tracker_row_compacts_hack_numbers(self):
+        with tempfile.TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as temporary_directory:
+            database = self.tracker.TrackerDatabase(
+                Path(temporary_directory) / "tracker.db"
+            )
+            added_records = [
+                database.add_to_tracker(
+                    {
+                        "title": title,
+                        "author": "Test Creator",
+                        "total_exits": 1,
+                    }
+                )
+                for title in (
+                    "First Test Hack",
+                    "Second Test Hack",
+                    "Third Test Hack",
+                )
+            ]
+
+            database.remove_tracked(int(added_records[1]["id"]))
+
+            remaining = database.list_tracked()
+            self.assertEqual(
+                [row["title"] for row in remaining],
+                ["First Test Hack", "Third Test Hack"],
+            )
+            self.assertEqual(
+                [row["display_order"] for row in remaining],
+                [1, 2],
+            )
+
     def test_manual_form_text_is_translated_in_every_language(self):
         texts = (
             "Add Hack to Tracker",
@@ -140,18 +175,36 @@ class ManualTrackerAddTests(unittest.TestCase):
                         self.assertNotEqual(translations[text], text)
 
     def test_remove_confirmation_uses_the_blue_app_dialog(self):
-        source = self.method_source("_remove_tracker_record")
+        source = self.method_source("_confirm_tracker_remove_selection")
         self.assertIn("self._ask_localized_yes_no(", source)
         self.assertNotIn("messagebox.askyesno(", source)
+
+    def test_remove_circle_opens_bulk_checkbox_mode(self):
+        toggle_source = self.method_source("_remove_tracker_record")
+        mode_source = self.method_source("_set_tracker_remove_mode")
+        event_source = self.method_source("_select_tracker_overlay_event")
+        render_source = self.method_source("_render_tracker_cell_overlays")
+        confirm_source = self.method_source(
+            "_confirm_tracker_remove_selection"
+        )
+        self.assertIn("self._set_tracker_remove_mode(", toggle_source)
+        self.assertIn('remove_bar.pack(', mode_source)
+        self.assertIn('"remove_checkbox_boxes"', event_source)
+        self.assertIn('column == "#0"', render_source)
+        self.assertIn("row_canvas.create_line(", render_source)
+        self.assertIn("for record in selected_records:", confirm_source)
+        self.assertIn("self.stats_db.remove_tracked", confirm_source)
 
     def test_remove_confirmation_is_translated_in_every_language(self):
         texts = (
             "Remove from My Tracker",
-            'Remove "{title}" from My Tracker?',
-            (
-                "This removes personal progress, rating, playtime, and notes. "
-                "The game stays in the catalog and game library."
-            ),
+            "Select the hacks you want to remove, then choose Remove Selected.",
+            "{count} hack(s) selected",
+            "Remove Selected",
+            "Cancel Selection",
+            "Remove {count} selected hack(s) from My Tracker?",
+            "This removes personal progress, ratings, playtime, and notes for the selected hacks. The games stay in the catalog and game library.",
+            "Removed {count} hack(s) from My Tracker.",
         )
         for language in ("au", "es", "fr", "de", "pt-BR"):
             translations = self.tracker.UI_TRANSLATIONS[language]

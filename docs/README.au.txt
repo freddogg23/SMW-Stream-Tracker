@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.0.11
+Version 1.1.0
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -27,7 +27,26 @@ Timer and Level Timer windows plus game_timer.txt and level_timer.txt for OBS.
 The catalogue, patching, FXPAK emoji aliases, database, workbooks, and OBS text
 files all work the same way. Crikey, that saves a bit of mucking about!
 
-WHAT'S NEW IN VERSION 1.0.11, MATE
+WHAT'S NEW IN VERSION 1.1.0, MATE
+
+* MiSTer FPGA is now a proper playable platform, mate. One-click setup sniffs
+  it out on your local network, sorts remote launching and live tracking, and
+  works with both standard MiSTer and MiSTer Multisystem² gear. Too easy.
+* Game Modes now serves up Play Random Hack, Hack Draft, Difficulty Ladder,
+  Creator Spotlight, Time Capsule, and Hall of Fame Tour, each with a blue
+  window and a handy hover yarn explaining what it does.
+* Spreadsheet Settings can smart-import Excel files, Google Sheets syncs both
+  ways, and the tracker stashes a fresh recovery backup on every clean exit.
+* My Tracker has tidy plus/minus controls, multi-row removal, automatic Hack #
+  renumbering, and cleaner spreadsheet submenus. No gaps, no dramas.
+* Menus now hide platform gear that has nothing to do with your selected FXPAK
+  Pro, RetroArch, or MiSTer setup. Fair dinkum.
+* Optional Windows RetroArch setup is quicker and stays shut until you launch a
+  game, so the installer no longer takes a scenic tour of the Outback.
+* Streamer.bot level events and translated guides can run optional Twitch
+  predictions without chucking the whole feature into the tracker.
+* Every new button, menu, status, popup, and setup instruction is translated in
+  all six languages. The Australian version remains delightfully cooked, mate.
 
 * Windows and Mac are both ready to rip, with Apple Silicon and Intel builds
   plus the proper SNI, QUsb2Snes, and RetroArch gear for each platform.
@@ -87,11 +106,11 @@ WHAT'S IN THIS YARN
 
 1. THE GEAR YOU'LL NEED
 
-* A 64-bit Windows 10 or Windows 11 computer. Nothing too flash, just something
-  that isn't held together with fencing wire.
+* A 64-bit Windows 10/11 computer or a supported Intel/Apple Silicon Mac.
+  Nothing too flash, just something that isn't held together with fencing wire.
 * A folder where your patched ROMs can bunk down.
 * Internet access for catalogue refreshes, updates, and optional downloads.
-* Either an FXPAK Pro/SD2SNES or RetroArch on Windows.
+* An FXPAK Pro/SD2SNES, RetroArch, or a MiSTer FPGA on your local network.
 * Your own legally obtained clean Super Mario World ROM if you want to turn
   moderated patch files into playable ROMs.
 
@@ -101,10 +120,10 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.0.11.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.1.0.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
-4. Pick FXPAK Pro or RetroArch as your first cab off the rank.
+4. Pick FXPAK Pro, RetroArch, or MiSTer as your first cab off the rank.
 5. Tick whichever optional tools you want Setup to chuck in.
 6. Choose a patched-ROM folder and an OBS output folder, or leave either field
    blank and sort it out later. No dramas.
@@ -254,9 +273,8 @@ once, and Bob's your uncle.
 10. PICK A HACK AND HAVE A CRACK
 
 * Type in Search or select a hack, choose a result, and press Play.
-* Play Random Hack rolls the dice only among downloaded hacks that can launch
-  on the selected platform. It will not pick a catalogue-only entry and send
-  you on a wild goose chase.
+* Game Modes on the main screen opens a full-screen page with a Home button.
+  Pick Play Random Hack for one filtered mystery game, mate.
 * Add to My Tracker creates a tracked entry.
 * Complete Hack records your completion data. On ya.
 * Clicking elsewhere closes the search list. The placeholder hangs about until
@@ -361,6 +379,17 @@ LiveSplit server: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
 OBS text sources: https://obsproject.com/kb/text-sources
 Streamlabs capture: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
+IMPORTING, GOOGLE SHEETS, AND THE BACKUP THAT STAYS PUT
+
+The scorecard > Import Existing Spreadsheet brings a current My Tracker Excel
+export back with progress, playtime, mishaps, scores, dates, and notes. Google
+Sheets is easier now, mate: open My Tracker > Bring it back from Google Sheets,
+paste the normal sharing link, and import it. Share it as Viewer with Anyone
+with the link first, and keep a Tracker or My Tracker tab in the sheet. Apps
+Script is still in Google Sheets Settings for automatic two-way syncing. A
+permanent workbook also lives in Documents > SMW Stream Tracker Backups as
+SMW_Stream_Tracker_Automatic_Backup.xlsx, safe from an uninstall. Too easy.
+
 13. UPDATES, BACKUPS, AND WINDING BACK A VERSION
 
 Use File > Check for Updates inside SMW Stream Tracker. The app checks the
@@ -402,3 +431,17 @@ used. The diagnostic report redacts personal paths and ROM details. Read
 PRIVACY.txt and THIRD_PARTY_NOTICE.txt for the full serious yarn.
 
 That's the lot, mate. Fire it up, pick a hack, and have an absolute ripper.
+
+MISTER QUICK SETUP, MATE
+
+On a fresh Windows install, pick MiSTer FPGA and leave Set up MiSTer on first
+launch ticked. The flashing guide takes you straight to the magic button, mate.
+
+Hook MiSTer and this PC to the same router, then head to Grab the goods >
+Connection and emulator wrangling > Sort out the MiSTer, then pick Find and sort
+out the MiSTer, mate. The tracker hunts it down, checks it is really a MiSTer,
+sorts live tracking, makes the game folders, picks MiSTer, sets up its own
+automatic login, and gives the finished connection a burl. If asked, the factory
+SSH login is root, port 22, password 1; the password is never saved. Hacks still
+copy over with safe filenames while their proper catalogue titles stay put.
+Crikey, that's the whole MiSTer sorted.

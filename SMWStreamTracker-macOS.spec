@@ -14,6 +14,7 @@ version_match = re.search(r'^APP_VERSION = "([^"]+)"', source_text, flags=re.MUL
 app_version = version_match.group(1) if version_match else "0.0.0"
 webview_datas, webview_binaries, webview_hiddenimports = collect_all("webview")
 certifi_datas, certifi_binaries, certifi_hiddenimports = collect_all("certifi")
+paramiko_datas, paramiko_binaries, paramiko_hiddenimports = collect_all("paramiko")
 
 localized_notices = []
 for notice_name in ("PRIVACY", "LICENSE", "THIRD_PARTY_NOTICE"):
@@ -28,7 +29,7 @@ for notice_name in ("PRIVACY", "LICENSE", "THIRD_PARTY_NOTICE"):
 a = Analysis(
     [str(project_root / "SMWStreamTrackerLauncher.py")],
     pathex=[str(project_root)],
-    binaries=webview_binaries + certifi_binaries,
+    binaries=webview_binaries + certifi_binaries + paramiko_binaries,
     datas=[
         (str(project_root / "banner_background_assets"), "banner_background_assets"),
         (str(project_root / "banner_character_assets"), "banner_character_assets"),
@@ -39,8 +40,8 @@ a = Analysis(
         (str(project_root / "platform_assets"), "platform_assets"),
         (str(project_root / "app_assets"), "app_assets"),
         (str(project_root / "docs"), "docs"),
-    ] + localized_notices + webview_datas + certifi_datas,
-    hiddenimports=webview_hiddenimports + certifi_hiddenimports,
+    ] + localized_notices + webview_datas + certifi_datas + paramiko_datas,
+    hiddenimports=webview_hiddenimports + certifi_hiddenimports + paramiko_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

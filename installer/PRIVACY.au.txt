@@ -1,8 +1,9 @@
 SMW STREAM TRACKER PRIVACY — THE FAIR DINKUM VERSION
 =====================================================
 
-SMW Stream Tracker does not collect telemetry and does not upload ROM files.
-No funny business, mate.
+SMW Stream Tracker does not collect telemetry or send ROM files to an internet
+service. It can copy a patched ROM to your own MiSTer over the local network
+when you launch it. No funny business, mate.
 
 The app uses the network only for features you request or enable:
 
@@ -10,7 +11,8 @@ The app uses the network only for features you request or enable:
 * GitHub release checks and checksum-verified updater downloads.
 * Optional Google Sheets synchronisation through the URL you supply.
 * Optional installer downloads for SNI, QUsb2Snes, RetroArch, and Libretro cores.
-* Local communication with SNI, QUsb2Snes, FXPAK Pro, or RetroArch.
+* Local communication with SNI, QUsb2Snes, FXPAK Pro, RetroArch, or MiSTer.
+* Optional checksum-verified snid download and SSH/SFTP setup on your MiSTer.
 * The optional Microsoft Forms feedback page you choose to open.
 
 Feedback & Suggestions opens a public Microsoft Forms page inside a dedicated
@@ -22,6 +24,9 @@ paths, or tracker data. Only the answers you enter into the form are submitted.
 Microsoft may process normal service data under its privacy policy when the form
 is opened or submitted. SMW Stream Tracker does not receive or store that service
 data.
+
+The MiSTer SSH password only hangs around in memory for this app session and is
+never saved. A saved host key helps recognize your MiSTer next time, mate.
 
 Tracker data, settings, timer state, mappings, recovery backups, and error logs
 are stored locally. Error logs may contain technical file paths, but Copy

@@ -1,33 +1,37 @@
 # SMW Stream Tracker
 
-**Version 1.0.11**
+**Version 1.1.0**
 
-SMW Stream Tracker is a Windows and macOS application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports two playable platforms:
+SMW Stream Tracker is a Windows and macOS application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
 - FXPAK Pro / SD2SNES hardware
 - RetroArch on Windows or macOS
+- MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
 
-## What’s new in v1.0.11
+## What’s new in v1.1.0
 
-- Adds native Windows and macOS behavior, including reproducible Apple Silicon
-  and Intel builds plus platform-correct SNI, QUsb2Snes, and RetroArch setup.
-- Makes window movement and My Tracker scrolling substantially smoother by
-  caching the banner, reducing redraw work, and preventing table-grid artifacts.
-- Adds vertical dashboard scrolling when the main window is shorter than the
-  full interface and improves text rendering throughout the app.
-- Adds a translated blue **Add to Tracker** form with complete hack, progress,
-  rating, playtime, date, death, and notes fields.
-- Fixes custom unmoderated hacks so they remain beside the full catalog, enter
-  Download & Patch Missing Hacks, and can be patched and uploaded to FXPAK Pro.
-- Makes the main Refresh button request a safe FXPAK Pro game reset before
-  reconnecting, which can recover a running Super Nt session that has frozen.
-- Converts the Remove from My Tracker confirmation to the translated blue app
-  dialog while preserving its progress-removal warning.
-- Retains the complete emoji-safe FXPAK filename mapping, guided setup, OBS,
-  LiveSplit, catalog, table, statistics, installer, and six-language features
-  introduced in v1.0.10.
+- Adds full **MiSTer FPGA** support with one-click network discovery and setup,
+  ROM upload and launch, live tracking, controller restoration after switching
+  games, and compatibility with standard MiSTer and MiSTer Multisystem² setups.
+- Adds **Game Modes** with Play Random Hack, Hack Draft, Difficulty Ladder,
+  Creator Spotlight, Time Capsule, and Hall of Fame Tour. Each mode has a
+  translated blue window and a description shown when its button is hovered.
+- Adds smart Excel import, Google Sheets synchronization, Spreadsheet Settings,
+  and automatic tracker/database recovery backups created on every clean exit.
+- Reworks My Tracker with compact add/remove controls, multi-row removal,
+  automatic Hack # renumbering, and cleaner spreadsheet and Google Sheets menus.
+- Hides platform-specific setup and settings that do not apply to the selected
+  FXPAK Pro, RetroArch, or MiSTer platform.
+- Speeds up the optional Windows RetroArch setup and waits to open RetroArch
+  until a game is actually launched.
+- Adds Streamer.bot level-event output and translated setup guides for optional
+  Twitch prediction automation.
+- Keeps the complete emoji-safe FXPAK mapping, native Apple Silicon and Intel
+  builds, guided setup, OBS/LiveSplit tools, catalog, and blue dialog system.
+- Completes every new menu, button, status, popup, and setup instruction in all
+  six languages, including the playful Australian translation.
 - **About & Updates** includes a translated **Join Discord** button for help and
   contact: <https://discord.gg/fHkTRgqjcr>
 
@@ -63,10 +67,10 @@ remove the catalog, settings, statistics, backups, ROM mappings, or OBS files.
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.0.11 Live Session dashboard with centered controls, platform status, timers, and death counters">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.1.0 Live Session dashboard with centered controls, platform status, timers, and death counters">
 </p>
 
-The v1.0.11 dashboard places level time and deaths, current-hack details, and game time and deaths in one vertically centered Live Session panel, with compact controls below.
+The v1.1.0 dashboard places level time and deaths, current-hack details, and game time and deaths in one vertically centered Live Session panel, with compact controls below.
 
 <table>
   <tr>
@@ -173,6 +177,14 @@ The setup wizard installs all six text guides in its `Documentation` folder and 
 - A compatible SNES Libretro core, preferably bsnes-mercury Performance.
 - RetroArch Network Commands enabled on port `55355`.
 
+### Required for MiSTer
+
+- A MiSTer connected to the same local network by Ethernet or Wi-Fi.
+- The current MiSTer Main and SNES core.
+- SSH access. The factory login is `root` with password `1`; the tracker also
+  supports an SSH key and never saves the entered password.
+- A configured local patched-ROM library in SMW Stream Tracker.
+
 ## 2. Install SMW Stream Tracker
 
 ### Windows
@@ -250,6 +262,37 @@ Select RetroArch when:
 You may skip it when it is already installed or when you only use FXPAK Pro. When RetroArch is selected, the blue SMW Stream Tracker installer downloads and extracts the official portable build into its Tools folder, adds the bsnes-mercury Performance core, enables Network Commands on port `55355`, and saves the correct executable and core paths. No separate RetroArch setup wizard opens.
 
 Official website: <https://www.retroarch.com/>
+
+### MiSTer
+
+During a fresh Windows installation, choose **MiSTer FPGA** and leave **Set up
+MiSTer on first launch** selected. The flashing setup guide will lead directly
+to the same one-click setup below.
+
+1. Connect MiSTer and this computer to the same router and power on MiSTer.
+2. In the app, open **Downloads → Connection & Emulator Setup → Set Up
+   MiSTer**.
+3. Select **Find & Set Up MiSTer**. The app locates and verifies the MiSTer,
+   downloads the pinned `snid` release, verifies its SHA-256 checksum, repairs
+   the required services, enables SNI mode, creates the tracker ROM and launch
+   folders, selects MiSTer, and tests the finished connection.
+4. The app creates its own SSH key for later automatic connections. It never
+   saves the entered SSH password. If the automatic search needs a password,
+   the factory login is user `root`, port `22`, password `1`.
+5. Load the SNES core once and select **Refresh** in the tracker. Live timers,
+   deaths, exits, checkpoints, and current-game detection then use MiSTer's
+   memory bridge directly.
+6. Launch any locally patched hack from the tracker. The app gives the MiSTer
+   copy a hardware-safe filename, uploads it by SFTP when needed, writes an MGL
+   launch file, and switches MiSTer directly into that game. The catalog title
+   and SMW Central identity remain unchanged inside the tracker.
+
+The app does not store an SSH password or expose MiSTer to the internet. The
+app-only SSH key is stored in the current user's application-data folder. Its
+MiSTer setup, upload, launch, and live-tracking traffic stays on the local
+network. The MiSTer-side helper comes from
+<https://github.com/NobodyNada/snid>; MiSTer SNES core and network information
+is available from <https://mister-devel.github.io/MkDocs_MiSTer/>.
 
 If you skip any of these tools in the installer, open **Downloads →
 Connection & Emulator Setup** later. The app can locate an existing SNI,
@@ -410,9 +453,8 @@ The mapping is keyed to the SMW Central ID instead of the displayed filename.
 2. Begin typing a title or creator to filter the list.
 3. Select a result.
 4. Select **Play**.
-5. To choose automatically, select **Play Random Hack**. Random selection uses
-   only ROMs that are already downloaded and launchable on the selected
-   platform; catalog-only entries are excluded.
+5. Select **Game Modes** on the main screen. The full-screen page has a **Home**
+   button and **Play Random Hack** for one filtered random downloaded game.
 6. Select **Add to My Tracker** to track the current hack.
 7. Select **Complete Hack** after finishing it.
 
@@ -557,6 +599,10 @@ Official references: [LiveSplit server setup](https://github.com/LiveSplit/LiveS
 
 ## 15. Optional Google Sheets sync
 
+For a quick import, open **My Tracker**, select **Sync from Google Sheets**, and paste the normal Google Sheets sharing link. First set the sheet to **Anyone with the link → Viewer**. The workbook must contain a **Tracker** or **My Tracker** tab. Selecting **Import Now** downloads the current sheet, creates a safety backup, imports its tracker rows, and refreshes the open table immediately.
+
+For automatic two-way synchronization through Apps Script:
+
 1. Open the Google Sheet you want to use.
 2. Select **Extensions → Apps Script**.
 3. In SMW Stream Tracker, open **Stats → Google Sheets Sync**.
@@ -567,8 +613,11 @@ Official references: [LiveSplit server setup](https://github.com/LiveSplit/LiveS
 8. Paste that URL into **Apps Script Web App URL** in the tracker.
 9. Keep the URL private because it can update the bound sheet.
 10. Select **Save & Sync Now**.
+11. To bring edits from the synchronized Tracker tab back into the app, open **Google Sheets Settings** and select **Sync from Google Sheets**. The tracker creates a safety backup before importing the rows.
 
-Google Sheets is optional. The local SQLite tracker database remains the primary source of truth.
+Google Sheets is optional. The local SQLite tracker database remains the primary source of truth. If you configured Google Sheets with an older app version, copy the current script, replace the old Apps Script code, and deploy a new Web App version before using **Sync from Google Sheets**.
+
+You can also restore a tracker workbook made by this app with **Stats → Import Existing Spreadsheet**. Current exports use the **My Tracker** worksheet and preserve playtime, deaths, status, ratings, dates, and notes when imported.
 
 ## 16. Updates, backups, and rollback
 
@@ -590,6 +639,8 @@ The app creates one rotating recovery backup per day and keeps approximately ten
 - ROM and platform mappings stored in those files
 
 Use **Stats → Create Recovery Backup Now** for an immediate backup. Use **Stats → Open Automatic Backups Folder** to view them.
+
+The app also keeps a current, human-readable tracker workbook at **Documents → SMW Stream Tracker Backups → SMW_Stream_Tracker_Automatic_Backup.xlsx**. It is refreshed after tracker changes and is stored outside the app data removed by a fresh install or uninstall. Use **Stats → Open Automatic Tracker Excel Backup Folder** to find it.
 
 ### Roll back the application
 

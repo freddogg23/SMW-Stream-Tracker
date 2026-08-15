@@ -1,14 +1,14 @@
-Release 1.0.11
+Release 1.1.0
 
-* Adds native Windows and macOS behavior with reproducible Apple Silicon and Intel Mac application builds.
-* Adds platform-correct Mac downloads and configuration for SNI, QUsb2Snes, RetroArch, and the bsnes-mercury Performance core.
-* Provides tracker-controlled Game and Level timer windows plus OBS timer text files on Mac, where classic LiveSplit is unavailable.
-* Makes the main window, banner, and My Tracker table substantially smoother while moving, resizing, and scrolling.
-* Adds vertical main-dashboard scrolling for shorter windows and prevents table borders from becoming misaligned while scrolling.
-* Improves text rendering and reduces startup color flashing by applying saved table styling before the tracker becomes visible.
-* Adds a translated blue Add to Tracker form with complete hack, progress, rating, playtime, date, death, and notes fields.
-* Fixes custom unmoderated hacks so they remain beside the full catalog and can be patched and uploaded from Download & Patch Missing Hacks.
-* Makes the main Refresh button request a safe FXPAK Pro game reset before reconnecting to a running Super Nt session.
-* Converts Remove from My Tracker to the translated blue confirmation dialog while keeping the full data-removal warning.
-* Preserves the v1.0.10 emoji-safe FXPAK mappings, guided setup, catalog, OBS, installer, localization, and update behavior.
-* Uses the existing repository screenshots; no new screenshots are included in v1.0.11.
+* Adds full MiSTer FPGA support with one-click local-network discovery and setup, remote ROM upload and launch, live tracking, and controller restoration after switching games.
+* Supports both standard MiSTer consoles and MiSTer Multisystem² hardware through the same automatic setup flow.
+* Adds Game Modes with Play Random Hack, Hack Draft, Difficulty Ladder, Creator Spotlight, Time Capsule, and Hall of Fame Tour.
+* Adds smart Excel import, two-way Google Sheets synchronization, and clearer Spreadsheet and Google Sheets settings.
+* Creates a new automatic tracker and database recovery backup on every clean exit so reinstall recovery is safer.
+* Reworks My Tracker with compact add/remove controls, multi-row removal, automatic Hack # renumbering, and cleaner action menus.
+* Hides platform-specific setup and settings that do not apply to the selected FXPAK Pro, RetroArch, or MiSTer platform.
+* Speeds up optional Windows RetroArch setup and keeps RetroArch closed until a game is launched.
+* Adds Streamer.bot level-event output and translated setup guides for optional Twitch prediction automation.
+* Updates the MiSTer platform art with the transparent pink-accent cat logo.
+* Completes all new menus, buttons, statuses, popups, and setup instructions in English, Australian, Spanish, French, German, and Brazilian Portuguese.
+* Preserves the existing emoji-safe FXPAK mappings, native Apple Silicon and Intel builds, catalog, OBS/LiveSplit tools, blue dialogs, and automatic updater.

@@ -1,14 +1,17 @@
 DATENSCHUTZ BEI SMW STREAM TRACKER
 ==================================
 
-SMW Stream Tracker erfasst keine Telemetriedaten und lädt keine ROM-Dateien
-hoch.
+SMW Stream Tracker erfasst keine Telemetriedaten und überträgt keine ROMs an
+einen Internetdienst. Beim Start kann ein gepatchtes ROM über das lokale
+Netzwerk an den eigenen MiSTer des Benutzers übertragen werden.
 
 Die App nutzt das Netzwerk nur für Funktionen, die der Benutzer anfordert oder
 aktiviert: den moderierten Katalog und die Patch-Informationen von SMW Central,
 GitHub-Versionsprüfungen, die optionale Google-Sheets-Synchronisierung,
 optionale Downloads von SNI, QUsb2Snes, RetroArch und Libretro-Cores, die lokale
-Kommunikation mit diesen Werkzeugen und das optionale Microsoft-Forms-Formular.
+Kommunikation mit diesen Werkzeugen oder MiSTer, den prüfsummengeprüften
+snid-Download, die SSH/SFTP-Einrichtung des MiSTer und das optionale
+Microsoft-Forms-Formular.
 
 Feedback und Vorschläge öffnet ein öffentliches Microsoft-Forms-Formular in
 einem integrierten Webfenster von SMW Stream Tracker. Ist diese Webansicht nicht
@@ -20,6 +23,10 @@ werden nur die Antworten, die der Benutzer selbst eingibt.
 Microsoft kann beim Öffnen oder Absenden des Formulars übliche Dienstdaten nach
 seiner Datenschutzrichtlinie verarbeiten. SMW Stream Tracker empfängt oder
 speichert diese Dienstdaten nicht.
+
+Das MiSTer-SSH-Passwort bleibt nur während der aktuellen Sitzung im Speicher
+und wird nie gespeichert. Ein gespeicherter Hostschlüssel erkennt diesen
+MiSTer später wieder.
 
 Tracker-Daten, Einstellungen, Timerzustände, Zuordnungen,
 Wiederherstellungssicherungen und Fehlerprotokolle werden lokal gespeichert.

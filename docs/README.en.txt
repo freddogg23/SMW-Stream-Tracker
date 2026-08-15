@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - COMPLETE SETUP GUIDE
-Version 1.0.11
+Version 1.1.0
 
 LANGUAGES
 English: README.en.txt
@@ -23,7 +23,27 @@ Timer and Level Timer windows plus game_timer.txt and level_timer.txt for OBS.
 All catalog, patching, FXPAK, emoji-alias, database, workbook, and OBS text
 features use the same data and behavior on Windows and Mac.
 
-NEW IN VERSION 1.0.11
+NEW IN VERSION 1.1.0
+
+* MiSTer FPGA is now a complete playable platform. One-click setup discovers
+  the console on the local network, prepares remote launching and live tracking,
+  and works with standard MiSTer and MiSTer Multisystem² consoles.
+* Game Modes now includes Play Random Hack, Hack Draft, Difficulty Ladder,
+  Creator Spotlight, Time Capsule, and Hall of Fame Tour, with translated blue
+  windows and hover descriptions.
+* Spreadsheet Settings now includes smart Excel import. Google Sheets can sync
+  in either direction, and a new tracker/database recovery backup is saved on
+  every clean exit.
+* My Tracker has compact add/remove controls, multi-row removal, automatic Hack #
+  renumbering, and cleaner Spreadsheet and Google Sheets submenus.
+* Menus and settings now hide options that do not apply to the selected FXPAK
+  Pro, RetroArch, or MiSTer platform.
+* Optional Windows RetroArch setup is faster, and RetroArch stays closed until
+  the user launches a game.
+* Streamer.bot level-event output and translated guides support optional Twitch
+  prediction automation.
+* Every new menu, button, status, popup, and setup instruction is translated in
+  English, Australian, Spanish, French, German, and Brazilian Portuguese.
 
 * Native Windows and macOS behavior now includes reproducible Apple Silicon
   and Intel builds and platform-correct SNI, QUsb2Snes, and RetroArch setup.
@@ -83,10 +103,10 @@ TABLE OF CONTENTS
 
 1. WHAT YOU NEED
 
-* A 64-bit Windows 10 or Windows 11 computer.
+* A 64-bit Windows 10/11 computer or a supported Intel/Apple Silicon Mac.
 * A folder for patched ROMs.
 * Internet access for catalog updates and optional downloads.
-* Either an FXPAK Pro/SD2SNES or RetroArch on Windows.
+* An FXPAK Pro/SD2SNES, RetroArch, or a network-connected MiSTer FPGA.
 * Your own legally obtained clean Super Mario World ROM if you want to build
   playable ROMs from moderated patch files.
 
@@ -94,10 +114,10 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 
 2. INSTALL THE PROGRAM
 
-1. Start SMWStreamTracker_Setup_1.0.11.exe.
+1. Start SMWStreamTracker_Setup_1.1.0.exe.
 2. Select a language on the first screen.
 3. Read the optional-software and ROM notice.
-4. Choose FXPAK Pro or RetroArch as the initial platform.
+4. Choose FXPAK Pro, RetroArch, or MiSTer as the initial platform.
 5. Select any optional tools you want Setup to install.
 6. Choose a patched-ROM folder and an OBS output folder, or leave either field
    blank and configure it later.
@@ -216,9 +236,8 @@ but permanent bulk copying usually requires an SD-card reader.
 10. PLAY AND TRACK A HACK
 
 * Type in Search or select a hack, choose a result, and press Play.
-* Play Random Hack chooses only from hacks that are already downloaded and
-  launchable on the currently selected platform. Catalog-only entries are
-  never selected.
+* Game Modes on the main screen opens a full-screen page with a Home button.
+  Choose Play Random Hack for one filtered random downloaded game.
 * Add to My Tracker creates a tracked entry.
 * Complete Hack records completion data.
 * Clicking away closes the search list. The placeholder remains until a hack
@@ -321,6 +340,17 @@ LiveSplit server: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
 OBS text sources: https://obsproject.com/kb/text-sources
 Streamlabs capture: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
+IMPORT, GOOGLE SHEETS, AND PERMANENT EXCEL BACKUP
+
+Stats > Import Existing Spreadsheet restores current My Tracker Excel exports,
+including progress, playtime, deaths, ratings, dates, and notes. Google Sheets
+can also be imported directly: open My Tracker > Sync from Google Sheets, paste
+the normal sharing link, and select Import Now. Share the sheet as Viewer with
+Anyone with the link first; it must contain a Tracker or My Tracker tab. Apps
+Script remains available in Google Sheets Settings for automatic two-way sync.
+The tracker also maintains Documents > SMW Stream Tracker Backups >
+SMW_Stream_Tracker_Automatic_Backup.xlsx outside the data removed by uninstall.
+
 13. UPDATES, BACKUP, AND ROLLBACK
 
 Use SMWStreamTracker_Update_VERSION.exe for small releases after the complete
@@ -346,3 +376,17 @@ The application processes local ROM paths, tracker data, and stream text on
 your computer. Optional catalog, dependency, update, and sync features connect
 only when used. Read PRIVACY.txt and THIRD_PARTY_NOTICE.txt in the installation
 folder for the complete notices.
+
+MISTER QUICK SETUP
+
+On a fresh Windows install, choose MiSTer FPGA and keep Set up MiSTer on first
+launch selected. The flashing setup guide will lead you to the one-click button.
+
+Connect MiSTer and this computer to the same router, then open Downloads >
+Connection & Emulator Setup > Set Up MiSTer, then select Find & Set Up MiSTer.
+The tracker finds and verifies the unit, installs or repairs live tracking,
+creates its game folders, selects MiSTer, sets up an app-only automatic login,
+and tests the finished connection. If prompted, the factory SSH login is root,
+port 22, password 1; the password is never saved. Launching a hack copies it
+with a hardware-safe filename and starts it automatically while its real
+catalog title remains unchanged.

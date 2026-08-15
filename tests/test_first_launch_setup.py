@@ -33,6 +33,39 @@ class FirstLaunchSetupTests(unittest.TestCase):
         )
         installer = INSTALLER_PATH.read_text(encoding="utf-8")
         self.assertIn('"first_launch_welcome_completed": false', installer)
+        self.assertIn(
+            '"first_launch_mister_setup_requested": False',
+            self.source,
+        )
+        self.assertIn(
+            '"first_launch_mister_setup_requested": ',
+            installer,
+        )
+
+    def test_installer_offers_translated_mister_platform_and_setup(self):
+        installer = INSTALLER_PATH.read_text(encoding="utf-8")
+        for language in (
+            "english",
+            "australian",
+            "spanish",
+            "french",
+            "german",
+            "brazilianportuguese",
+        ):
+            for key in ("MiSTerOption", "MiSTerSetupOption", "ReadyMiSTer"):
+                with self.subTest(language=language, key=key):
+                    self.assertIn(f"{language}.{key}=", installer)
+
+        self.assertIn(
+            "PlatformPage.Add(ExpandConstant('{cm:MiSTerOption}'));",
+            installer,
+        )
+        self.assertIn(
+            "DependencyPage.Add(ExpandConstant('{cm:MiSTerSetupOption}'));",
+            installer,
+        )
+        self.assertIn("function ShouldSetUpMiSTer: Boolean;", installer)
+        self.assertIn("Result := 'MiSTer'", installer)
 
     def test_complete_installer_uses_the_shared_banner_and_blue_theme(self):
         installer = INSTALLER_PATH.read_text(encoding="utf-8")
@@ -126,35 +159,43 @@ class FirstLaunchSetupTests(unittest.TestCase):
         self.assertIn("JsonEscape(FolderOBSEdit.Text)", installer)
         self.assertNotIn("FolderPage.Values[1]", installer)
 
-    def test_installer_uses_verified_portable_retroarch_without_second_wizard(self):
+    def test_installer_uses_verified_fast_silent_retroarch_setup(self):
         installer = INSTALLER_PATH.read_text(encoding="utf-8")
 
         self.assertIn(
             'Source: "https://buildbot.libretro.com/stable/1.22.2/'
-            'windows/x86_64/RetroArch.7z";',
+            'windows/x86_64/RetroArch-Win64-setup.exe";',
             installer,
         )
         self.assertIn(
-            'Hash: "b2139b1d0f9d4526dc6b5ce23cbb3efdc766096fa6f2c3df016818b486ac6372";',
+            'Hash: "bb2b95329542d98d951bb381c0dd57e803d846242878895f12d374b87201c1c9";',
             installer,
         )
-        self.assertIn("ExternalSize: 202509078", installer)
+        self.assertIn("ExternalSize: 209037907", installer)
         self.assertIn(
-            'DestDir: "{app}\\Tools\\RetroArch";',
+            'DestDir: "{tmp}";',
             installer,
         )
         self.assertIn(
-            "Flags: external download extractarchive recursesubdirs ignoreversion",
+            "Flags: external download ignoreversion deleteafterinstall",
             installer,
         )
-        self.assertNotIn("RetroArch-Win64-setup.exe", installer)
         self.assertNotIn('Verb: "runas"', installer)
-
-        portable_executable = (
-            "{app}\\Tools\\RetroArch\\RetroArch-Win64\\retroarch.exe"
+        self.assertIn("procedure InstallPortableRetroArch;", installer)
+        self.assertIn("if not ShellExec(", installer)
+        self.assertIn("'runas',", installer)
+        self.assertIn("    '/S',", installer)
+        self.assertNotIn("'/S /D=' + InstallDirectory", installer)
+        self.assertIn("ewWaitUntilTerminated", installer)
+        self.assertIn("InstallPortableRetroArch;", installer)
+        self.assertIn(
+            "ExtractArchive(CoreArchivePath, CoreDirectory, '', True, nil);",
+            installer,
         )
+
+        portable_executable = "{sd}\\RetroArch-Win64\\retroarch.exe"
         portable_core = (
-            "{app}\\Tools\\RetroArch\\RetroArch-Win64\\cores\\"
+            "{sd}\\RetroArch-Win64\\cores\\"
             "bsnes_mercury_performance_libretro.dll"
         )
         self.assertIn(portable_executable, installer)
@@ -239,7 +280,7 @@ class FirstLaunchSetupTests(unittest.TestCase):
             with self.subTest(state_path=state_path):
                 self.assertIn(state_path, installer)
 
-        for protected_tool in ("SNI", "QUsb2Snes", "RetroArch"):
+        for protected_tool in ("SNI", "QUsb2Snes"):
             with self.subTest(protected_tool=protected_tool):
                 installed_tool_line = next(
                     line
@@ -251,6 +292,11 @@ class FirstLaunchSetupTests(unittest.TestCase):
                 tool_block_end = installer.find("\n\n", tool_block_start)
                 tool_block = installer[tool_block_start:tool_block_end]
                 self.assertIn("uninsneveruninstall", tool_block)
+
+        # RetroArch's faster nested installer owns its files, so the tracker
+        # uninstaller never registers or removes them.
+        self.assertIn("procedure InstallPortableRetroArch;", installer)
+        self.assertIn("{sd}\\RetroArch-Win64", installer)
 
         uninstall_section = installer.split("[UninstallDelete]", 1)[1].split(
             "[Icons]", 1
@@ -425,7 +471,7 @@ class FirstLaunchSetupTests(unittest.TestCase):
             click_source,
         )
 
-    def test_connection_step_flashes_parent_and_all_three_choices(self):
+    def test_connection_step_flashes_parent_and_all_four_choices(self):
         targets_source = ast.get_source_segment(
             self.source,
             self.methods["_guided_setup_target_menu_entries"],
@@ -435,6 +481,11 @@ class FirstLaunchSetupTests(unittest.TestCase):
         self.assertIn("connection_option_menu_indexes", targets_source)
         self.assertIn(
             "self.connection_option_menu_indexes = tuple(",
+            self.source,
+        )
+        self.assertIn('"mister",', targets_source)
+        self.assertIn(
+            "self._guided_open_mister_setup,",
             self.source,
         )
 
@@ -469,6 +520,36 @@ class FirstLaunchSetupTests(unittest.TestCase):
             'configured_file("retroarch_core_path")',
             completion_source,
         )
+        self.assertIn('elif choice == "mister":', completion_source)
+        self.assertIn('"mister_ssh_fingerprint"', completion_source)
+
+    def test_installer_selected_mister_flashes_one_click_setup(self):
+        start_source = ast.get_source_segment(
+            self.source,
+            self.methods["start_guided_app_setup"],
+        )
+        target_source = ast.get_source_segment(
+            self.source,
+            self.methods["_guided_setup_target_widget"],
+        )
+        mister_source = ast.get_source_segment(
+            self.source,
+            self.methods["open_mister_setup"],
+        )
+        self.assertIn("first_launch_mister_setup_requested", start_source)
+        self.assertIn("mister_setup_automatic_button", target_source)
+        self.assertIn(
+            'self._guided_optional_software_completed("mister")',
+            mister_source,
+        )
+        self.assertIn(
+            "dialog.after_idle(self._guided_setup_refresh_connection_flash)",
+            mister_source,
+        )
+
+    def test_mister_guide_copy_is_translated_in_every_language(self):
+        self.assertEqual(self.source.count('"mister_connection_title":'), 6)
+        self.assertEqual(self.source.count('"mister_connection_text":'), 6)
 
     def test_catalog_and_download_handoffs_follow_requested_order(self):
         catalog_source = ast.get_source_segment(

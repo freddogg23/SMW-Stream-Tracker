@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.11',
+    [string]$Version = '1.1.0',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -156,6 +156,10 @@ if (-not $SkipAppBuild) {
     & $pythonPath -c "from importlib.metadata import version; import webview, clr; print('pywebview ' + version('pywebview') + ' with pythonnet ' + version('pythonnet'))"
     if ($LASTEXITCODE -ne 0) {
         throw 'The selected Python environment cannot load pywebview and pythonnet. Install the Windows release requirements before packaging.'
+    }
+    & $pythonPath -c "from importlib.metadata import version; import paramiko; print('Paramiko ' + version('paramiko'))"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The selected Python environment cannot load Paramiko. Install the Windows release requirements before packaging MiSTer support.'
     }
     & $pythonPath -m PyInstaller --noconfirm --clean (Join-Path $projectRoot 'SMWStreamTracker.spec')
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }

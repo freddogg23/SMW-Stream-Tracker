@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUÍA COMPLETA DE CONFIGURACIÓN
-Versión 1.0.11
+Versión 1.1.0
 
 IDIOMAS
 English: README.en.txt
@@ -24,7 +24,27 @@ además de game_timer.txt y level_timer.txt para OBS. El catálogo, los parches,
 los alias de emojis para FXPAK, la base de datos, los libros y los textos de OBS
 mantienen el mismo funcionamiento en Windows y Mac.
 
-NOVEDADES DE LA VERSIÓN 1.0.11
+NOVEDADES DE LA VERSIÓN 1.1.0
+
+* MiSTer FPGA ya es una plataforma de juego completa. La configuración con un
+  clic encuentra la consola en la red local, prepara el inicio remoto y el
+  seguimiento en vivo, y funciona con MiSTer y MiSTer Multisystem².
+* Modos de juego incluye Jugar hack aleatorio, Draft de hacks, Escalera de
+  dificultad, Especial del creador, Cápsula del tiempo y Gira del Salón de la
+  Fama, con ventanas azules traducidas y descripciones al pasar el cursor.
+* Configuración de hojas de cálculo permite importar Excel de forma inteligente.
+  Google Sheets sincroniza en ambas direcciones y se guarda una nueva copia de
+  recuperación del tracker y la base de datos en cada cierre correcto.
+* Mi Tracker tiene controles compactos para añadir y eliminar, eliminación de
+  varias filas, renumeración automática de Hack # y submenús más ordenados.
+* Los menús y ajustes ocultan las opciones que no corresponden a la plataforma
+  FXPAK Pro, RetroArch o MiSTer seleccionada.
+* La instalación opcional de RetroArch en Windows es más rápida y RetroArch no
+  se abre hasta que el usuario inicia un juego.
+* La salida de eventos de nivel para Streamer.bot y las guías traducidas permiten
+  automatizar predicciones opcionales de Twitch.
+* Todos los menús, botones, estados, mensajes e instrucciones nuevos están
+  traducidos a los seis idiomas compatibles.
 
 * El comportamiento nativo para Windows y macOS incluye compilaciones
   reproducibles para Apple Silicon e Intel y la configuración correcta de SNI,
@@ -85,10 +105,10 @@ NOVEDADES DE LA VERSIÓN 1.0.11
 
 1. REQUISITOS
 
-* Un PC de 64 bits con Windows 10 u 11.
+* Un PC de 64 bits con Windows 10/11 o un Mac Intel/Apple Silicon compatible.
 * Una carpeta para las ROMs parcheadas.
 * Internet para actualizar el catálogo y realizar descargas opcionales.
-* Un FXPAK Pro/SD2SNES o RetroArch para Windows.
+* Un FXPAK Pro/SD2SNES, RetroArch o un MiSTer FPGA conectado a la red local.
 * Tu propia ROM limpia y obtenida legalmente de Super Mario World si deseas
   crear ROMs jugables a partir de parches moderados.
 
@@ -96,10 +116,10 @@ SMW Stream Tracker no incluye ni descarga una ROM base comercial.
 
 2. INSTALAR EL PROGRAMA
 
-1. Ejecuta SMWStreamTracker_Setup_1.0.11.exe.
+1. Ejecuta SMWStreamTracker_Setup_1.1.0.exe.
 2. Elige un idioma en la primera pantalla.
 3. Lee el aviso sobre software opcional y ROMs.
-4. Elige FXPAK Pro o RetroArch como plataforma inicial.
+4. Elige FXPAK Pro, RetroArch o MiSTer como plataforma inicial.
 5. Marca las herramientas opcionales que quieras instalar.
 6. Elige las carpetas de ROMs parcheadas y salida de OBS, o déjalas vacías para
    configurarlas más adelante.
@@ -212,10 +232,11 @@ permanentes suele hacer falta un lector de tarjetas.
 10. JUGAR Y SEGUIR UN HACK
 
 Escribe en Buscar o seleccionar un hack, elige un resultado y pulsa Jugar.
-Jugar hack aleatorio elige únicamente hacks ya descargados que se pueden abrir
-en la plataforma seleccionada; nunca elige entradas que solo estén en el
-catálogo. Añadir a Mi Tracker crea una
-entrada y Completar hack registra la finalización. Al hacer clic fuera se cierra
+Modos de juego en la pantalla principal abre una página de pantalla completa
+con un botón Inicio. Elige Jugar hack aleatorio para iniciar una partida
+descargada al azar según los filtros seleccionados.
+Añadir a Mi Tracker crea una entrada y Completar hack registra la finalización.
+Al hacer clic fuera se cierra
 la lista; el texto de búsqueda permanece hasta elegir un hack.
 
 11. TEMPORIZADORES, MI TRACKER Y ESTADÍSTICAS
@@ -312,6 +333,17 @@ Servidor LiveSplit: https://github.com/LiveSplit/LiveSplit#the-livesplit-server
 Texto en OBS: https://obsproject.com/kb/text-sources
 Captura en Streamlabs: https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
+IMPORTACIÓN, GOOGLE SHEETS Y COPIA PERMANENTE DE EXCEL
+
+Estadísticas > Importar hoja de cálculo existente restaura las exportaciones
+actuales de Mi Tracker con progreso, tiempo, muertes, puntuaciones, fechas y
+notas. Para importar directamente, abre Mi Tracker > Sincronizar desde Google
+Sheets, pega el enlace normal y selecciona Importar ahora. Comparte la hoja como
+Lector con Cualquier persona que tenga el enlace; debe incluir una pestaña
+Tracker o My Tracker. Apps Script sigue disponible para sincronización automática.
+El archivo Documents > SMW Stream Tracker Backups >
+SMW_Stream_Tracker_Automatic_Backup.xlsx no se elimina al desinstalar.
+
 13. ACTUALIZACIONES, COPIAS Y REVERSIÓN
 
 Usa SMWStreamTracker_Update_VERSION.exe para versiones pequeñas después de una
@@ -333,3 +365,18 @@ cambios importantes de Windows o almacenamiento.
 Los datos del tracker y las rutas se procesan localmente. Las funciones de
 catálogo, dependencias, actualización y sincronización solo se conectan cuando
 se usan. Consulta PRIVACY.txt y THIRD_PARTY_NOTICE.txt para los avisos completos.
+
+CONFIGURACIÓN RÁPIDA DE MISTER
+
+En una instalación nueva de Windows, elige MiSTer FPGA y deja seleccionada la
+opción Configurar MiSTer en el primer inicio. La guía intermitente te llevará al
+botón de configuración automática.
+
+Conecta MiSTer y este equipo al mismo router y abre Descargas > Configuración
+de conexión y emulador > Configurar MiSTer y selecciona Buscar y configurar
+MiSTer. El tracker encuentra y verifica la unidad, instala o repara el
+seguimiento en vivo, crea las carpetas de juegos, selecciona MiSTer, configura
+un acceso automático exclusivo para la aplicación y prueba la conexión. Si se
+solicita, el acceso SSH de fábrica es root, puerto 22, contraseña 1; la contraseña
+nunca se guarda. Los hacks se copian con nombres seguros sin cambiar sus títulos
+reales en el catálogo.

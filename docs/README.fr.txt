@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUIDE COMPLET DE CONFIGURATION
-Version 1.0.11
+Version 1.1.0
 
 LANGUES
 English : README.en.txt
@@ -25,7 +25,29 @@ game_timer.txt et level_timer.txt pour OBS. Le catalogue, les correctifs, les
 alias emoji FXPAK, la base de données, les classeurs et les textes OBS gardent
 le même fonctionnement sous Windows et Mac.
 
-NOUVEAUTÉS DE LA VERSION 1.0.11
+NOUVEAUTÉS DE LA VERSION 1.1.0
+
+* MiSTer FPGA est maintenant une plateforme de jeu complète. La configuration
+  en un clic détecte la console sur le réseau local, prépare le lancement à
+  distance et le suivi en direct, et fonctionne avec MiSTer et MiSTer
+  Multisystem².
+* Modes de jeu propose Hack aléatoire, Draft de hacks, Échelle de difficulté,
+  Focus créateur, Capsule temporelle et Tournée du Panthéon, avec des fenêtres
+  bleues traduites et une description au survol.
+* Paramètres des feuilles de calcul permet l'importation intelligente de fichiers
+  Excel. Google Sheets se synchronise dans les deux sens et une nouvelle copie
+  de récupération du tracker et de la base est créée à chaque fermeture normale.
+* Mon tracker propose des commandes compactes d'ajout/suppression, la suppression
+  de plusieurs lignes, la renumérotation automatique de Hack # et des sous-menus
+  de feuilles de calcul plus clairs.
+* Les menus et réglages masquent les options qui ne concernent pas la plateforme
+  FXPAK Pro, RetroArch ou MiSTer sélectionnée.
+* L'installation facultative de RetroArch sous Windows est plus rapide et
+  RetroArch reste fermé jusqu'au lancement d'un jeu.
+* La sortie d'événements de niveau Streamer.bot et les guides traduits permettent
+  l'automatisation facultative des prédictions Twitch.
+* Tous les nouveaux menus, boutons, états, messages et écrans de configuration
+  sont traduits dans les six langues prises en charge.
 
 * Le fonctionnement natif sous Windows et macOS comprend des versions
   reproductibles pour Apple Silicon et Intel ainsi que la configuration SNI,
@@ -87,10 +109,10 @@ TABLE DES MATIÈRES
 
 1. PRÉREQUIS
 
-* Un PC 64 bits sous Windows 10 ou Windows 11.
+* Un PC 64 bits sous Windows 10/11 ou un Mac Intel/Apple Silicon compatible.
 * Un dossier destiné aux ROMs corrigées.
 * Internet pour le catalogue et les téléchargements facultatifs.
-* Un FXPAK Pro/SD2SNES ou RetroArch sous Windows.
+* Un FXPAK Pro/SD2SNES, RetroArch ou un MiSTer FPGA connecté au réseau local.
 * Votre propre ROM propre de Super Mario World obtenue légalement pour créer
   des ROMs jouables à partir de correctifs modérés.
 
@@ -98,10 +120,10 @@ SMW Stream Tracker n'inclut et ne télécharge aucune ROM commerciale de base.
 
 2. INSTALLER LE PROGRAMME
 
-1. Lancez SMWStreamTracker_Setup_1.0.11.exe.
+1. Lancez SMWStreamTracker_Setup_1.1.0.exe.
 2. Choisissez une langue sur le premier écran.
 3. Lisez l'avis sur les logiciels facultatifs et les ROMs.
-4. Choisissez FXPAK Pro ou RetroArch comme plateforme initiale.
+4. Choisissez FXPAK Pro, RetroArch ou MiSTer comme plateforme initiale.
 5. Cochez les outils facultatifs à installer.
 6. Choisissez les dossiers des ROMs et de sortie OBS, ou laissez-les vides pour
    les configurer ultérieurement.
@@ -216,9 +238,9 @@ lecteur de cartes reste normalement nécessaire pour une copie permanente.
 10. JOUER ET SUIVRE UN HACK
 
 Saisissez du texte dans Rechercher ou sélectionner un hack, choisissez un
-résultat et cliquez sur Jouer. Le jeu aléatoire choisit uniquement parmi les
-hacks déjà téléchargés et utilisables avec la plateforme sélectionnée ; les
-entrées présentes uniquement dans le catalogue sont exclues.
+résultat et cliquez sur Jouer. Modes de jeu sur l’écran principal ouvre une
+page plein écran avec un bouton Accueil. Choisissez Jouer à un hack aléatoire
+pour lancer un jeu téléchargé au hasard selon les filtres sélectionnés.
 Ajouter à Mon Tracker crée une entrée et Terminer le hack enregistre la fin.
 Un clic à l'extérieur ferme la liste.
 
@@ -316,6 +338,17 @@ Serveur LiveSplit : https://github.com/LiveSplit/LiveSplit#the-livesplit-server
 Texte OBS : https://obsproject.com/kb/text-sources
 Capture Streamlabs : https://streamlabs.com/content-hub/post/how-to-capture-your-screen-in-streamlabs-desktop
 
+IMPORTATION, GOOGLE SHEETS ET SAUVEGARDE EXCEL PERMANENTE
+
+Statistiques > Importer une feuille de calcul existante restaure les exports
+actuels de Mon Tracker avec progression, temps de jeu, morts, notes, dates et
+commentaires. Pour importer directement, ouvrez Mon Tracker > Synchroniser
+depuis Google Sheets, collez le lien de partage normal et choisissez Importer
+maintenant. Partagez la feuille en tant que Lecteur avec Toute personne disposant
+du lien ; elle doit contenir un onglet Tracker ou My Tracker. Apps Script reste
+disponible pour la synchronisation automatique. Documents > SMW Stream Tracker Backups >
+SMW_Stream_Tracker_Automatic_Backup.xlsx n’est pas supprimé à la désinstallation.
+
 13. MISES À JOUR, SAUVEGARDE ET RESTAURATION
 
 Utilisez SMWStreamTracker_Update_VERSION.exe pour les petites versions après
@@ -337,3 +370,18 @@ avant toute modification importante du système ou du stockage.
 Les chemins et données du tracker sont traités localement. Les fonctions de
 catalogue, dépendances, mise à jour et synchronisation se connectent uniquement
 lorsqu'elles sont utilisées. Consultez PRIVACY.txt et THIRD_PARTY_NOTICE.txt.
+
+CONFIGURATION RAPIDE DE MISTER
+
+Lors d'une nouvelle installation Windows, choisissez MiSTer FPGA et conservez
+l'option Configurer MiSTer au premier lancement. Le guide clignotant vous mènera
+au bouton de configuration automatique.
+
+Connectez le MiSTer et cet ordinateur au même routeur, puis ouvrez
+Téléchargements > Configuration de la connexion et de l'émulateur > Configurer
+MiSTer, puis choisissez Rechercher et configurer le MiSTer. Le tracker trouve et
+vérifie l'appareil, installe ou répare le suivi en direct, crée les dossiers de
+jeux, sélectionne MiSTer, configure une connexion automatique propre à
+l'application et teste la connexion finale. Si demandé, l'accès SSH d'usine est
+root, port 22, mot de passe 1 ; le mot de passe n'est jamais enregistré. Les
+hacks sont copiés avec des noms sûrs sans modifier leur vrai titre du catalogue.

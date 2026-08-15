@@ -100,6 +100,7 @@ class ObsTextFileTests(unittest.TestCase):
                     "hack_name.txt",
                     "level_timer.txt",
                     "game_timer.txt",
+                    "streamerbot_level_events.txt",
                 },
             )
             self.assertEqual(
