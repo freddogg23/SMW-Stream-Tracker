@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.1.1
+Version 1.1.2
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -26,6 +26,15 @@ desktop LiveSplit is Windows-only, so the Mac app supplies synchronized Game
 Timer and Level Timer windows plus game_timer.txt and level_timer.txt for OBS.
 The catalogue, patching, FXPAK emoji aliases, database, workbooks, and OBS text
 files all work the same way. Crikey, that saves a bit of mucking about!
+
+WHAT'S NEW IN VERSION 1.1.2, MATE
+
+* If a blue popup has already nicked off, a delayed outlined-button redraw now
+  pulls up stumps quietly instead of printing an "invalid command name" yarn.
+* Regression tests cover buttons that are already gone and the tiny timing gap
+  where one disappears straight after the app checks it. No dramas.
+* This tidy-up does not change MiSTer, FXPAK Pro, RetroArch, tracker data, or
+  any of the translated interface text.
 
 WHAT'S NEW IN VERSION 1.1.1, MATE
 
@@ -138,7 +147,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.1.1.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.1.2.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro, RetroArch, or MiSTer as your first cab off the rank.

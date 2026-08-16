@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.1.1**
+**Version 1.1.2**
 
 SMW Stream Tracker is a Windows and macOS application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -9,6 +9,15 @@ SMW Stream Tracker is a Windows and macOS application for tracking Super Mario W
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
+
+## What’s new in v1.1.2
+
+- Prevents a delayed outlined-button redraw from reporting a Tkinter
+  `invalid command name` error after its popup has already closed.
+- Adds regression coverage for both already-destroyed buttons and the narrow
+  timing race where a button disappears immediately after the existence check.
+- This cleanup-only fix does not change MiSTer, FXPAK Pro, RetroArch, tracker
+  data, or any translated interface text.
 
 ## What’s new in v1.1.1
 

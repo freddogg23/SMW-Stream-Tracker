@@ -377,7 +377,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 APP_BUILD_DATE = "2026-08-16"
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -4447,6 +4447,18 @@ class OutlinedButton(tk.Canvas):
         return self._fg
 
     def _redraw(self, event=None) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+            self._redraw_existing(event)
+        except tk.TclError:
+            # A Configure/after_idle callback can arrive after its popup and
+            # Canvas have already been destroyed. Tk reports that normal
+            # teardown race as an "invalid command name"; there is then
+            # nothing left to redraw.
+            return
+
+    def _redraw_existing(self, event=None) -> None:
         self.delete("all")
 
         width = max(

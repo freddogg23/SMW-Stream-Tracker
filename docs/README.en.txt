@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - COMPLETE SETUP GUIDE
-Version 1.1.1
+Version 1.1.2
 
 LANGUAGES
 English: README.en.txt
@@ -22,6 +22,15 @@ desktop LiveSplit is Windows-only, so the Mac app provides synchronized Game
 Timer and Level Timer windows plus game_timer.txt and level_timer.txt for OBS.
 All catalog, patching, FXPAK, emoji-alias, database, workbook, and OBS text
 features use the same data and behavior on Windows and Mac.
+
+NEW IN VERSION 1.1.2
+
+* A delayed outlined-button redraw now stops quietly if its popup has already
+  closed, preventing Tkinter's "invalid command name" cleanup traceback.
+* Regression tests cover both an already-destroyed button and the narrow race
+  where the button disappears immediately after its existence check.
+* This cleanup-only fix does not change MiSTer, FXPAK Pro, RetroArch, tracker
+  data, or any translated interface text.
 
 NEW IN VERSION 1.1.1
 
@@ -132,7 +141,7 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 
 2. INSTALL THE PROGRAM
 
-1. Start SMWStreamTracker_Setup_1.1.1.exe.
+1. Start SMWStreamTracker_Setup_1.1.2.exe.
 2. Select a language on the first screen.
 3. Read the optional-software and ROM notice.
 4. Choose FXPAK Pro, RetroArch, or MiSTer as the initial platform.

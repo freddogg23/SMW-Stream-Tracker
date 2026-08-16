@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUÍA COMPLETA DE CONFIGURACIÓN
-Versión 1.1.1
+Versión 1.1.2
 
 IDIOMAS
 English: README.en.txt
@@ -23,6 +23,16 @@ incluye ventanas sincronizadas para los temporizadores de juego y nivel,
 además de game_timer.txt y level_timer.txt para OBS. El catálogo, los parches,
 los alias de emojis para FXPAK, la base de datos, los libros y los textos de OBS
 mantienen el mismo funcionamiento en Windows y Mac.
+
+NOVEDADES DE LA VERSIÓN 1.1.2
+
+* Si una ventana emergente ya se ha cerrado, el redibujado pendiente de un
+  botón con contorno se detiene sin mostrar el error «invalid command name» de
+  Tkinter.
+* Las pruebas cubren tanto los botones ya destruidos como el breve intervalo en
+  que desaparecen justo después de comprobar su existencia.
+* Esta corrección de limpieza no modifica MiSTer, FXPAK Pro, RetroArch, los
+  datos del tracker ni ningún texto traducido de la interfaz.
 
 NOVEDADES DE LA VERSIÓN 1.1.1
 
@@ -135,7 +145,7 @@ SMW Stream Tracker no incluye ni descarga una ROM base comercial.
 
 2. INSTALAR EL PROGRAMA
 
-1. Ejecuta SMWStreamTracker_Setup_1.1.1.exe.
+1. Ejecuta SMWStreamTracker_Setup_1.1.2.exe.
 2. Elige un idioma en la primera pantalla.
 3. Lee el aviso sobre software opcional y ROMs.
 4. Elige FXPAK Pro, RetroArch o MiSTer como plataforma inicial.

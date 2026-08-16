@@ -1,10 +1,5 @@
-Release 1.1.1
+Release 1.1.2
 
-* Adds an integrated SMW Central home experience with live content cards, richer hack details, tag search, screenshots, and account/comment tools.
-* Adds SMW Central Radio and SPC playback with a compact player that can be moved, resized, minimized, and kept open while using the tracker.
-* Adds optional OBS Capture Mode so the tracker's blue popups can remain inside one OBS Window Capture source.
-* Adds compatibility-checked MiSTer save states 5–11 with an exact restorable backup, native slots 1–4 preserved, and F12 still assigned to the MiSTer menu.
-* Reorganizes Setup, application, OBS, and LiveSplit menus while preserving the guided setup flow.
-* Returns to the dashboard after a Game Mode launches and fixes stale MiSTer connection data affecting RetroArch.
-* Fixes window resizing edge cases and improves the Google Sheets settings close flow.
-* Completes all new interface text in English, Australian, Spanish, French, German, and Brazilian Portuguese and adds a permanent deep translation audit.
+* Prevents delayed outlined-button redraw callbacks from reporting Tkinter's "invalid command name" traceback after their popup has already closed.
+* Covers both already-destroyed buttons and the narrow timing race where a button disappears immediately after its existence check.
+* Leaves MiSTer, FXPAK Pro, RetroArch, tracker data, and all translated interface text unchanged.
