@@ -1,23 +1,19 @@
 {
   "schema": 1,
-  "version": "1.1.0",
-  "release_date": "2026-08-15",
+  "version": "1.1.1",
+  "release_date": "2026-08-16",
   "notes": [
-    "Adds full MiSTer FPGA support with one-click local-network discovery and setup, remote ROM upload and launch, live tracking, and controller restoration after switching games.",
-    "Supports both standard MiSTer consoles and MiSTer Multisystem² hardware through the same automatic setup flow.",
-    "Adds Game Modes with Play Random Hack, Hack Draft, Difficulty Ladder, Creator Spotlight, Time Capsule, and Hall of Fame Tour.",
-    "Adds smart Excel import, two-way Google Sheets synchronization, and clearer Spreadsheet and Google Sheets settings.",
-    "Creates a new automatic tracker and database recovery backup on every clean exit so reinstall recovery is safer.",
-    "Reworks My Tracker with compact add/remove controls, multi-row removal, automatic Hack # renumbering, and cleaner action menus.",
-    "Hides platform-specific setup and settings that do not apply to the selected FXPAK Pro, RetroArch, or MiSTer platform.",
-    "Speeds up optional Windows RetroArch setup and keeps RetroArch closed until a game is launched.",
-    "Adds Streamer.bot level-event output and translated setup guides for optional Twitch prediction automation.",
-    "Updates the MiSTer platform art with the transparent pink-accent cat logo.",
-    "Completes all new menus, buttons, statuses, popups, and setup instructions in English, Australian, Spanish, French, German, and Brazilian Portuguese.",
-    "Preserves the existing emoji-safe FXPAK mappings, native Apple Silicon and Intel builds, catalog, OBS/LiveSplit tools, blue dialogs, and automatic updater."
+    "Adds an integrated SMW Central home experience with live content cards, richer hack details, tag search, screenshots, and account/comment tools.",
+    "Adds SMW Central Radio and SPC playback with a compact player that can be moved, resized, minimized, and kept open while using the tracker.",
+    "Adds optional OBS Capture Mode so the tracker's blue popups can remain inside one OBS Window Capture source.",
+    "Adds compatibility-checked MiSTer save states 5–11 with an exact restorable backup, native slots 1–4 preserved, and F12 still assigned to the MiSTer menu.",
+    "Reorganizes Setup, application, OBS, and LiveSplit menus while preserving the guided setup flow.",
+    "Returns to the dashboard after a Game Mode launches and fixes stale MiSTer connection data affecting RetroArch.",
+    "Fixes window resizing edge cases and improves the Google Sheets settings close flow.",
+    "Completes all new interface text in English, Australian, Spanish, French, German, and Brazilian Portuguese and adds a permanent deep translation audit."
   ],
-  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.1.0/SMWStreamTracker_Update_1.1.0.exe",
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v1.1.1/SMWStreamTracker_Update_1.1.1.exe",
   "verification": "sha256",
-  "sha256": "c118be6b554ac8f1a20cf839d3aafab3f50320e85b52a767566e21673247b0e8",
-  "size": 69587619
+  "sha256": "a97de1f54c6eb9078dc9d64497dcdd061b3f2ec468104f020a4b8f890480bcb9",
+  "size": 84905956
 }

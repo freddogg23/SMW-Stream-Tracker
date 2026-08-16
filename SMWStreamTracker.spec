@@ -77,6 +77,11 @@ a = Analysis(
         ('installer\\THIRD_PARTY_NOTICE.fr.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.de.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.pt-BR.txt', 'installer'),
+        (
+            'experiments\\mister_instant_states\\Main_MiSTer_20260707\\'
+            'bin_experimental\\MiSTer-SMW-Virtual-States',
+            'mister_experimental',
+        ),
     ] + webview_datas + paramiko_datas,
     hiddenimports=webview_hiddenimports + paramiko_hiddenimports,
     hookspath=[],

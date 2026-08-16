@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - COMPLETE SETUP GUIDE
-Version 1.1.0
+Version 1.1.1
 
 LANGUAGES
 English: README.en.txt
@@ -22,6 +22,24 @@ desktop LiveSplit is Windows-only, so the Mac app provides synchronized Game
 Timer and Level Timer windows plus game_timer.txt and level_timer.txt for OBS.
 All catalog, patching, FXPAK, emoji-alias, database, workbook, and OBS text
 features use the same data and behavior on Windows and Mac.
+
+NEW IN VERSION 1.1.1
+
+* SMW Central now has an integrated home experience with live content cards,
+  richer hack details, tag search, screenshots, and account/comment tools.
+* SMW Central Radio and SPC playback include a compact player that can be
+  moved, resized, minimized, and left open while using the tracker.
+* Optional OBS Capture Mode keeps blue tracker popups inside the main window so
+  one OBS Window Capture source can include them.
+* The normal Windows build adds compatibility-checked MiSTer save states 5–11,
+  preserves an exact restorable backup and native slots 1–4, and keeps F12 for
+  the MiSTer menu.
+* Setup, application, OBS, and LiveSplit menus are reorganized without breaking
+  guided setup. Game Modes return to the dashboard after launching a hack.
+* Stale MiSTer connection data no longer affects RetroArch, and window resizing
+  and Google Sheets settings close more reliably.
+* Every new phrase is translated in all six supported languages and checked by
+  a deeper automatic translation audit.
 
 NEW IN VERSION 1.1.0
 
@@ -114,7 +132,7 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 
 2. INSTALL THE PROGRAM
 
-1. Start SMWStreamTracker_Setup_1.1.0.exe.
+1. Start SMWStreamTracker_Setup_1.1.1.exe.
 2. Select a language on the first screen.
 3. Read the optional-software and ROM notice.
 4. Choose FXPAK Pro, RetroArch, or MiSTer as the initial platform.
@@ -390,3 +408,12 @@ and tests the finished connection. If prompted, the factory SSH login is root,
 port 22, password 1; the password is never saved. Launching a hack copies it
 with a hardware-safe filename and starts it automatically while its real
 catalog title remains unchanged.
+
+The normal Windows build installs MiSTer save states 5–11 automatically when
+Find & Set Up MiSTer or Install Virtual Save State Slots is run. Alt+F5 through Alt+F11
+save; F5 through F11 load states 5–11; F12 still
+opens the MiSTer menu; native slots 1–4 stay intact. Tracker updates keep the
+feature and may safely replace a version previously installed by the tracker.
+If MiSTer Main is updated separately, the tracker refuses to overwrite or
+downgrade the unknown file. Use Restore Previous MiSTer Version before updating
+MiSTer Main, then use a tracker build made for that newer Main version.

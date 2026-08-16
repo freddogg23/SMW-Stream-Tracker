@@ -206,6 +206,8 @@ class TrackerImportBackupGoogleSyncTests(unittest.TestCase):
         )
         self.assertIn('text="Sync from Google Sheets"', source)
         self.assertIn("self._start_google_sheets_import(", source)
+        self.assertIn('text="Close"', source)
+        self.assertIn('dialog.bind(\n            "<Escape>"', source)
 
     def test_my_tracker_consolidates_spreadsheet_and_google_controls(self):
         source = inspect.getsource(

@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.1.0**
+**Version 1.1.1**
 
 SMW Stream Tracker is a Windows and macOS application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -9,6 +9,24 @@ SMW Stream Tracker is a Windows and macOS application for tracking Super Mario W
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
+
+## What’s new in v1.1.1
+
+- Adds an integrated **SMW Central** home experience with live content cards,
+  richer hack details, tag search, screenshots, and account/comment tools.
+- Adds **SMW Central Radio** and SPC playback, including a compact player that
+  can be moved, resized, minimized, and kept open while using the tracker.
+- Adds optional **OBS Capture Mode**, which keeps the tracker's blue popups
+  inside the main window so one OBS Window Capture source can include them.
+- Adds MiSTer save states **5–11** to the normal Windows build. Installation is
+  compatibility-checked, preserves an exact restorable backup, keeps native
+  slots 1–4 intact, and leaves F12 assigned to the MiSTer menu.
+- Reorganizes Setup, application, OBS, and LiveSplit menus while preserving the
+  guided setup flow, and returns to the dashboard after a Game Mode launches.
+- Fixes stale MiSTer connection data affecting RetroArch, several window and
+  resizing edge cases, and the Google Sheets settings close flow.
+- Completes all new interface text in English, Australian, Spanish, French,
+  German, and Brazilian Portuguese, with a permanent deep translation audit.
 
 ## What’s new in v1.1.0
 
@@ -293,6 +311,16 @@ MiSTer setup, upload, launch, and live-tracking traffic stays on the local
 network. The MiSTer-side helper comes from
 <https://github.com/NobodyNada/snid>; MiSTer SNES core and network information
 is available from <https://mister-devel.github.io/MkDocs_MiSTer/>.
+
+The normal Windows build includes MiSTer save states 5–11 automatically whenever
+**Find & Set Up MiSTer** or **Install Virtual Save State Slots** is run. Use `Alt+F5`
+through `Alt+F11` to save and `F5` through `F11` to load states 5–11. `F12`
+still opens the MiSTer menu, and native
+slots 1–4 remain intact. Tracker updates keep this feature packaged and may safely update a
+version that the tracker previously installed. If MiSTer Main is updated
+independently, the tracker detects the changed file and refuses to overwrite or
+downgrade it. Use **Restore Previous MiSTer Version** before updating MiSTer
+Main, then install a tracker build made for that newer Main version.
 
 If you skip any of these tools in the installer, open **Downloads →
 Connection & Emulator Setup** later. The app can locate an existing SNI,

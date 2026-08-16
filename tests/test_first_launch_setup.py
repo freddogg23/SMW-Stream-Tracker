@@ -489,6 +489,53 @@ class FirstLaunchSetupTests(unittest.TestCase):
             self.source,
         )
 
+    def test_reorganized_menus_keep_guided_setup_flash_targets(self):
+        menu_source = ast.get_source_segment(
+            self.source,
+            self.methods["_build_menu_bar"],
+        )
+        self.assertIn('create_menu_button(\n                "File"', menu_source)
+        self.assertIn('create_menu_button(\n                "Setup"', menu_source)
+        self.assertIn('label="Connection & Emulator"', menu_source)
+        self.assertIn('label="Application"', menu_source)
+        self.assertIn('label="LiveSplit Timers"', menu_source)
+        self.assertIn('"App Settings"', menu_source)
+        self.assertIn('label="OBS Settings"', menu_source)
+        settings_section = menu_source.split(
+            "self.downloads_menu_button, downloads_menu =",
+            1,
+        )[0]
+        application_section = menu_source.split(
+            "application_setup_menu = tk.Menu(",
+            1,
+        )[1].split(
+            "livesplit_setup_menu = tk.Menu(",
+            1,
+        )[0]
+        self.assertNotIn('"App Settings"', settings_section)
+        self.assertNotIn('label="OBS Settings"', settings_section)
+        self.assertIn('"App Settings"', application_section)
+        self.assertIn('label="OBS Settings"', application_section)
+        self.assertIn(
+            "obs_menu = tk.Menu(\n            application_setup_menu,",
+            application_section,
+        )
+        self.assertIn('"Test Selected Platform"', menu_source)
+        self.assertIn('"Setup & Health Check..."', menu_source)
+        self.assertIn('"Diagnostics..."', menu_source)
+        self.assertIn(
+            "self.connection_setup_menu_index = downloads_menu.index(\"end\")",
+            menu_source,
+        )
+        self.assertIn(
+            "self.connection_option_menu_indexes = tuple(",
+            menu_source,
+        )
+        self.assertIn(
+            "command=self._guided_downloads_menu_button_clicked",
+            menu_source,
+        )
+
     def test_posted_native_menu_entries_are_stable_and_clickable(self):
         tick_source = ast.get_source_segment(
             self.source,
@@ -678,8 +725,14 @@ class FirstLaunchSetupTests(unittest.TestCase):
         self.assertNotIn('"Download Missing Hacks…"', self.source)
         self.assertNotIn('"Download All Matching Hacks"', self.source)
 
-    def test_setup_help_menu_and_obs_paths_are_available(self):
-        self.assertIn('self._setup_guide_text("setup_menu")', self.source)
+    def test_setup_menu_and_obs_paths_are_available(self):
+        menu_source = ast.get_source_segment(
+            self.source,
+            self.methods["_build_menu_bar"],
+        )
+        self.assertIn('create_menu_button(\n                "Setup"', menu_source)
+        self.assertIn('label="Application"', menu_source)
+        self.assertIn('label="LiveSplit Timers"', menu_source)
         self.assertIn('self._setup_guide_text("app_setup")', self.source)
         self.assertIn('self._setup_guide_text("obs_setup")', self.source)
         self.assertIn('self._setup_guide_text("livesplit_setup")', self.source)

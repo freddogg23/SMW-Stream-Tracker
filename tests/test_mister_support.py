@@ -97,6 +97,21 @@ class MisterSupportTests(unittest.TestCase):
             "ws://10.0.0.25:23074",
         )
 
+    def test_retroarch_ignores_stale_mister_websocket_url(self):
+        config = dict(self.tracker.DEFAULT_CONFIG)
+        config.update(
+            {
+                "selected_platform": "RetroArch",
+                "mister_host": "192.168.50.41",
+                "platform_websocket_url": "ws://192.168.50.41:23074",
+                "fxpak_websocket_url": "ws://localhost:23074",
+            }
+        )
+        self.assertEqual(
+            self.tracker.selected_platform_websocket_url(config),
+            "ws://localhost:23074",
+        )
+
     def test_mister_support_repairs_old_uartmode_and_waits_for_tracking(self):
         self.assertIn("d4469d2a3d", self.tracker.MISTER_UARTMODE_DOWNLOAD_URL)
         self.assertEqual(len(self.tracker.MISTER_UARTMODE_DOWNLOAD_SHA256), 64)
@@ -118,6 +133,177 @@ class MisterSupportTests(unittest.TestCase):
         )
         self.assertIn("nohup uartmode 6", source)
         self.assertIn("self._test_tcp_port(host, 23074)", source)
+
+    def test_experimental_mister_binary_matches_the_embedded_safety_hash(self):
+        binary_path = (
+            MODULE_PATH.parent
+            / "experiments"
+            / "mister_instant_states"
+            / "Main_MiSTer_20260707"
+            / "bin_experimental"
+            / "MiSTer-SMW-Virtual-States"
+        )
+        self.assertTrue(binary_path.is_file())
+        import hashlib
+
+        self.assertEqual(
+            hashlib.sha256(binary_path.read_bytes()).hexdigest(),
+            self.tracker.MISTER_VIRTUAL_STATES_BINARY_SHA256,
+        )
+
+    def test_experimental_mister_base_matches_the_official_release(self):
+        base_path = (
+            MODULE_PATH.parent
+            / "experiments"
+            / "mister_instant_states"
+            / "Main_MiSTer_20260707"
+            / "releases"
+            / "MiSTer_20260707"
+        )
+        self.assertTrue(base_path.is_file())
+        import hashlib
+
+        self.assertEqual(
+            hashlib.sha256(base_path.read_bytes()).hexdigest(),
+            self.tracker.MISTER_VIRTUAL_STATES_BASE_SHA256,
+        )
+        self.assertEqual(
+            self.tracker.MISTER_VIRTUAL_STATES_BASE_VERSION,
+            "20260707",
+        )
+
+    def test_virtual_state_bridge_waits_before_restoring_native_slot_four(self):
+        source_path = (
+            MODULE_PATH.parent
+            / "experiments"
+            / "mister_instant_states"
+            / "Main_MiSTer_20260707"
+            / "user_io.cpp"
+        )
+        source = source_path.read_text(encoding="utf-8")
+        load_start = source.index("static int ss_virtual_state_load")
+        save_start = source.index("static int ss_virtual_state_save")
+        load_source = source[load_start:save_start]
+        self.assertIn(
+            "ss_schedule_native_slot_four_restore(SMW_VIRTUAL_LOAD_GUARD_MS)",
+            load_source,
+        )
+        self.assertNotIn("ss_restore_native_slot_four();", load_source)
+        self.assertIn("ss_virtual_restore_pending", source)
+        self.assertIn("ss_virtual_state_busy()", source)
+        self.assertIn("slot >= 5 && slot <= 11", source)
+        self.assertIn("key >= KEY_F5 && key <= KEY_F10", source)
+        self.assertIn("if (key == KEY_F11) return 11", source)
+        self.assertNotIn("if (key == KEY_F12) return 12", source)
+        self.assertNotIn("ss_virtual_f12_held", source)
+        self.assertIn("int virtual_shortcut = virtual_slot;", source)
+        self.assertIn("%.*s%d%s", source)
+
+    def test_experimental_build_defaults_to_the_compatible_20260707_source(self):
+        build_script = (
+            MODULE_PATH.parent
+            / "experiments"
+            / "mister_instant_states"
+            / "build_mister_experimental.ps1"
+        ).read_text(encoding="utf-8-sig")
+        self.assertIn(
+            '[string]$SourceDirectory = "Main_MiSTer_20260707"',
+            build_script,
+        )
+
+    def test_normal_windows_build_contains_virtual_state_support(self):
+        build_spec = (MODULE_PATH.parent / "SMWStreamTracker.spec").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("MiSTer-SMW-Virtual-States", build_spec)
+        self.assertIn("mister_experimental", build_spec)
+
+    def test_tracker_update_can_replace_only_its_own_mister_build(self):
+        original_hash = "1" * 64
+        installed_hash = "2" * 64
+        next_hash = "3" * 64
+        manifest = {
+            "original_sha256": original_hash,
+            "experimental_sha256": installed_hash,
+        }
+        allowed = self.tracker.mister_virtual_states_allowed_current_hashes(
+            manifest,
+            next_hash,
+        )
+        self.assertEqual(
+            allowed,
+            frozenset({original_hash, installed_hash, next_hash}),
+        )
+        self.assertNotIn("4" * 64, allowed)
+
+    def test_mister_update_is_detected_before_custom_main_is_installed(self):
+        install_source = inspect.getsource(
+            self.tracker.TrackerApp._install_mister_virtual_states
+        )
+        self.assertIn("current_sha256", install_source)
+        self.assertIn(
+            "mister_virtual_states_allowed_current_hashes",
+            install_source,
+        )
+        self.assertLess(
+            install_source.index("current_sha256 not in allowed_current_hashes"),
+            install_source.index("staged_binary ="),
+        )
+        self.assertIn(
+            "original_sha256 != MISTER_VIRTUAL_STATES_BASE_SHA256",
+            install_source,
+        )
+        self.assertLess(
+            install_source.index(
+                "original_sha256 != MISTER_VIRTUAL_STATES_BASE_SHA256"
+            ),
+            install_source.index("staged_binary ="),
+        )
+
+    def test_experimental_restore_path_is_hash_bound_and_rejects_tampering(self):
+        original_hash = "a" * 64
+        backup_path = self.tracker.mister_virtual_states_backup_path(
+            original_hash
+        )
+        self.assertEqual(
+            self.tracker.mister_virtual_states_manifest_backup_path(
+                {
+                    "original_sha256": original_hash,
+                    "backup_path": backup_path,
+                }
+            ),
+            backup_path,
+        )
+        with self.assertRaises(ValueError):
+            self.tracker.mister_virtual_states_manifest_backup_path(
+                {
+                    "original_sha256": original_hash,
+                    "backup_path": "/media/fat/MiSTer",
+                }
+            )
+
+    def test_experimental_install_and_restore_keep_an_exact_backup(self):
+        install_source = inspect.getsource(
+            self.tracker.TrackerApp._install_mister_virtual_states
+        )
+        restore_source = inspect.getsource(
+            self.tracker.TrackerApp._restore_mister_before_virtual_states
+        )
+        self.assertIn("/media/fat/MiSTer", install_source)
+        self.assertIn("original_sha256", install_source)
+        self.assertIn("backup_path", install_source)
+        self.assertIn("MISTER_VIRTUAL_STATES_BINARY_SHA256", install_source)
+        self.assertIn("ldd /media/fat/.MiSTer-smw-virtual-states-new", install_source)
+        self.assertIn("not found|version .* not found", install_source)
+        self.assertLess(
+            install_source.index("ldd /media/fat/.MiSTer-smw-virtual-states-new"),
+            install_source.index(
+                "mv -f /media/fat/.MiSTer-smw-virtual-states-new"
+            ),
+        )
+        self.assertIn("mister_virtual_states_manifest_backup_path", restore_source)
+        self.assertIn("original_sha256", restore_source)
+        self.assertIn("MISTER_VIRTUAL_STATES_MARKER", restore_source)
 
     def test_local_mister_scan_is_bounded_to_the_local_subnet(self):
         candidates = self.tracker.mister_local_scan_candidates(
@@ -234,12 +420,54 @@ class MisterSupportTests(unittest.TestCase):
                     "Set Up MiSTer...",
                     "MiSTer Setup",
                     "Find & Set Up MiSTer",
-                    "Install / Repair Support",
+                    "Install Virtual Save State Slots",
                     "Save & Select MiSTer",
                     "Looking for MiSTer on your network...",
-                    "MiSTer is fully set up. The tracker found it, installed live tracking, created the game folders, enabled automatic login for this app, selected MiSTer, and verified the connection.",
+                    "MiSTer is fully set up. The tracker found it, installed live tracking and save states 5–11, created the game folders, enabled automatic login for this app, selected MiSTer, and verified the connection. MiSTer is restarting.",
+                    "MiSTer Save States 5–11",
+                    "Restore Previous MiSTer Version",
+                    "Restore the Previous MiSTer Version?",
+                    "Checking compatibility with this MiSTer...",
+                    "This MiSTer save-state build is not compatible with the system files on this MiSTer. The current MiSTer file was not changed.",
+                    "MiSTer support and save states 5–11 are installed. MiSTer is restarting. In the SNES core, use Alt+F5 through Alt+F11 to save and F5 through F11 to load states 5–11. F12 still opens the MiSTer menu.",
+                    "Your exact previous MiSTer file was restored and states 5–11 were disabled. MiSTer is restarting.",
                 ):
                     self.assertIn(text, translations)
+
+    def test_every_mister_save_state_message_is_translated(self):
+        language_columns = {
+            "au": 1,
+            "es": 2,
+            "fr": 3,
+            "de": 4,
+            "pt-BR": 5,
+        }
+        for row in self.tracker._MISTER_EXPERIMENT_LOCALIZATION_ROWS:
+            english_text = row[0]
+            for language, column in language_columns.items():
+                with self.subTest(text=english_text, language=language):
+                    self.assertEqual(
+                        self.tracker.UI_TRANSLATIONS[language][english_text],
+                        row[column],
+                    )
+
+    def test_normal_mister_setup_installs_states_without_experimental_button(self):
+        setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
+        self.assertEqual(setup_source.count("self._install_mister_virtual_states("), 2)
+        self.assertIn("Install Virtual Save State Slots", setup_source)
+        self.assertIn("Find & Set Up MiSTer", setup_source)
+        self.assertNotIn("Install Experimental States", setup_source)
+        self.assertNotIn("install_experimental_button", setup_source)
+        self.assertIn(
+            "restore_original_button = self._make_action_button(\n"
+            "            buttons,",
+            setup_source,
+        )
+        self.assertIn(
+            "install_button = self._make_action_button(\n"
+            "            virtual_states_buttons,",
+            setup_source,
+        )
 
 
 if __name__ == "__main__":

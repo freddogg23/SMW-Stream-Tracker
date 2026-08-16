@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - VOLLSTÄNDIGE EINRICHTUNGSANLEITUNG
-Version 1.1.0
+Version 1.1.1
 
 SPRACHEN
 English: README.en.txt
@@ -23,6 +23,25 @@ synchronisierte Fenster für Spiel- und Level-Timer sowie game_timer.txt und
 level_timer.txt für OBS bereit. Katalog, Patchen, FXPAK-Emoji-Aliase,
 Datenbank, Arbeitsmappen und OBS-Texte funktionieren unter Windows und Mac
 gleich.
+
+NEU IN VERSION 1.1.1
+
+* SMW Central hat jetzt eine integrierte Startseite mit Live-Inhaltskarten,
+  ausführlicheren Hack-Details, Tag-Suche, Screenshots sowie Konto- und
+  Kommentarwerkzeugen.
+* SMW Central Radio und die SPC-Wiedergabe besitzen einen kompakten Player, der
+  verschoben, skaliert, minimiert und neben dem Tracker geöffnet bleiben kann.
+* Der optionale OBS-Aufnahmemodus hält blaue Tracker-Fenster im Hauptfenster,
+  damit eine einzige OBS-Fensteraufnahme sie erfassen kann.
+* Der normale Windows-Build ergänzt kompatibilitätsgeprüfte MiSTer-Speicherstände
+  5–11 mit exakt wiederherstellbarer Sicherung. Native Plätze 1–4 bleiben
+  unverändert und F12 öffnet weiterhin das MiSTer-Menü.
+* Einrichtungs-, Anwendungs-, OBS- und LiveSplit-Menüs wurden neu geordnet, ohne
+  den Assistenten zu stören. Spielmodi kehrt nach dem Start zum Dashboard zurück.
+* Veraltete MiSTer-Verbindungsdaten beeinflussen RetroArch nicht mehr; außerdem
+  wurden Fenstergrößenänderungen und das Schließen von Google Sheets verbessert.
+* Jeder neue Text ist in alle sechs Sprachen übersetzt und wird durch eine
+  umfassendere automatische Übersetzungsprüfung abgesichert.
 
 NEU IN VERSION 1.1.0
 
@@ -116,7 +135,7 @@ SMW Stream Tracker enthält und lädt kein kommerzielles Basis-ROM herunter.
 
 2. PROGRAMM INSTALLIEREN
 
-1. Starten Sie SMWStreamTracker_Setup_1.1.0.exe.
+1. Starten Sie SMWStreamTracker_Setup_1.1.1.exe.
 2. Wählen Sie auf dem ersten Bildschirm eine Sprache.
 3. Lesen Sie den Hinweis zu optionaler Software und ROMs.
 4. Wählen Sie FXPAK Pro, RetroArch oder MiSTer als erste Plattform.
@@ -387,3 +406,13 @@ richtet eine eigene automatische App-Anmeldung ein und testet die Verbindung.
 Falls gefragt, lautet die SSH-Werksanmeldung root, Port 22, Passwort 1; das
 Passwort wird nie gespeichert. Hacks werden unter sicheren Dateinamen kopiert,
 während ihre echten Katalogtitel erhalten bleiben.
+
+Der normale Windows-Build installiert die MiSTer-Speicherstände 5–11 automatisch,
+wenn MiSTer suchen und einrichten oder Virtuelle Speicherplätze installieren
+ausgeführt wird. Alt+F5 bis Alt+F11 speichern, F5 bis F11 laden die Stände 5–11,
+F12 öffnet weiterhin das MiSTer-Menü und die
+nativen Plätze 1–4 bleiben unverändert. Tracker-Updates behalten diese Funktion und
+dürfen eine zuvor vom Tracker installierte Version sicher ersetzen. Wird MiSTer
+Main unabhängig aktualisiert, überschreibt der Tracker die unbekannte Datei
+nicht und führt kein Downgrade durch. Verwenden Sie vorher Vorherige
+MiSTer-Version wiederherstellen und danach einen Build für die neue Main-Version.

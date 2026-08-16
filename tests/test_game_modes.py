@@ -56,6 +56,21 @@ class GameModesTests(unittest.TestCase):
         self.assertIn('"<Leave>"', source)
         self.assertIn("description_var.set", source)
 
+    def test_game_mode_launch_returns_to_the_dashboard(self):
+        launch_source = inspect.getsource(
+            self.tracker.TrackerApp._launch_game_mode_hack
+        )
+        random_source = inspect.getsource(
+            self.tracker.TrackerApp._launch_filtered_random_main_hack
+        )
+        return_source = inspect.getsource(
+            self.tracker.TrackerApp._return_game_modes_to_dashboard
+        )
+        self.assertIn("_return_game_modes_to_dashboard", launch_source)
+        self.assertIn("_return_game_modes_to_dashboard", random_source)
+        self.assertIn('page.page_key == "game_modes"', return_source)
+        self.assertIn("page.request_close()", return_source)
+
     def test_new_game_mode_text_is_translated_in_every_language(self):
         phrases = (
             "Hack Draft",

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.1.0',
+    [string]$Version = '1.1.1',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -161,6 +161,10 @@ if (-not $SkipAppBuild) {
     if ($LASTEXITCODE -ne 0) {
         throw 'The selected Python environment cannot load Paramiko. Install the Windows release requirements before packaging MiSTer support.'
     }
+    & $pythonPath -m unittest tests.test_mister_support -v
+    if ($LASTEXITCODE -ne 0) {
+        throw 'MiSTer support validation failed. The release was stopped before packaging.'
+    }
     & $pythonPath -m PyInstaller --noconfirm --clean (Join-Path $projectRoot 'SMWStreamTracker.spec')
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
 }
@@ -277,6 +281,20 @@ New-Item -ItemType Directory -Path $sourceStaging | Out-Null
 foreach ($sourceItem in $sourceItems) {
     Copy-Item -LiteralPath $sourceItem -Destination $sourceStaging -Recurse -Force
 }
+$virtualStatesSourceRoot = Join-Path $projectRoot 'experiments\mister_instant_states'
+$virtualStatesStagingRoot = Join-Path $sourceStaging 'experiments\mister_instant_states'
+$virtualStatesVersionSource = Join-Path $virtualStatesSourceRoot 'Main_MiSTer_20260707'
+$virtualStatesVersionStaging = Join-Path $virtualStatesStagingRoot 'Main_MiSTer_20260707'
+$virtualStatesBinaryStaging = Join-Path $virtualStatesStagingRoot 'Main_MiSTer_20260707\bin_experimental'
+New-Item -ItemType Directory -Path $virtualStatesBinaryStaging -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $virtualStatesVersionStaging 'releases') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $virtualStatesSourceRoot 'README.md') -Destination $virtualStatesStagingRoot -Force
+Copy-Item -LiteralPath (Join-Path $virtualStatesSourceRoot 'UPSTREAM_SOURCE.txt') -Destination $virtualStatesStagingRoot -Force
+Copy-Item -LiteralPath (Join-Path $virtualStatesSourceRoot 'build_mister_experimental.ps1') -Destination $virtualStatesStagingRoot -Force
+Copy-Item -LiteralPath (Join-Path $virtualStatesSourceRoot 'Main_MiSTer_20260707\bin_experimental\MiSTer-SMW-Virtual-States') -Destination $virtualStatesBinaryStaging -Force
+Copy-Item -LiteralPath (Join-Path $virtualStatesVersionSource 'user_io.cpp') -Destination $virtualStatesVersionStaging -Force
+Copy-Item -LiteralPath (Join-Path $virtualStatesVersionSource 'LICENSE') -Destination $virtualStatesVersionStaging -Force
+Copy-Item -LiteralPath (Join-Path $virtualStatesVersionSource 'releases\MiSTer_20260707') -Destination (Join-Path $virtualStatesVersionStaging 'releases') -Force
 Get-ChildItem -LiteralPath $sourceStaging -Directory -Recurse -Force |
     Where-Object { $_.Name -eq '__pycache__' } |
     Remove-Item -Recurse -Force

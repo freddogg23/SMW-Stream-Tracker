@@ -48,6 +48,50 @@ class LocalizationCompletionTests(unittest.TestCase):
                 self.assertEqual(set(translations), expected)
                 self.assertTrue(all(value.strip() for value in translations.values()))
 
+    def test_literal_localization_requests_have_language_coverage(self):
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        requested = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute):
+                call_name = node.func.attr
+            elif isinstance(node.func, ast.Name):
+                call_name = node.func.id
+            else:
+                continue
+
+            value_node = None
+            if call_name in {"_translate_ui_text", "_format_ui_text"}:
+                if node.args:
+                    value_node = node.args[0]
+            elif call_name == "_localized_string_var":
+                if node.args:
+                    value_node = node.args[0]
+                else:
+                    value_node = next(
+                        (
+                            keyword.value
+                            for keyword in node.keywords
+                            if keyword.arg == "value"
+                        ),
+                        None,
+                    )
+
+            if (
+                isinstance(value_node, ast.Constant)
+                and isinstance(value_node.value, str)
+                and value_node.value.strip()
+            ):
+                requested.add(value_node.value.strip())
+
+        self.assertGreaterEqual(len(requested), 215)
+        for language in LOCALIZED_LANGUAGES:
+            translations = self.tracker.UI_TRANSLATIONS[language]
+            missing = requested.difference(translations)
+            with self.subTest(language=language):
+                self.assertEqual(missing, set())
+
     def test_australian_english_is_complete_and_playfully_distinct(self):
         translations = self.tracker.UI_TRANSLATIONS["au"]
         changed = {

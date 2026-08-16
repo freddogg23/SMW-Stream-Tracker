@@ -1,0 +1,9 @@
+Upstream repository: https://github.com/MiSTer-devel/Main_MiSTer.git
+Upstream commit: 93d13fb690db4581768389450fb639822ae88333
+Upstream release: 20260707
+
+The modified source file included with SMW Stream Tracker is:
+Main_MiSTer_20260707/user_io.cpp
+
+See README.md and build_mister_experimental.ps1 in this folder for the build
+and verification procedure.

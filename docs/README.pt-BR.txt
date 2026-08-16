@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUIA COMPLETO DE CONFIGURAÇÃO
-Versão 1.1.0
+Versão 1.1.1
 
 IDIOMAS
 English: README.en.txt
@@ -23,6 +23,25 @@ janelas sincronizadas para os cronômetros de jogo e fase, além de
 game_timer.txt e level_timer.txt para o OBS. Catálogo, patches, aliases de
 emojis no FXPAK, banco de dados, planilhas e textos do OBS mantêm o mesmo
 funcionamento no Windows e no Mac.
+
+NOVIDADES DA VERSÃO 1.1.1
+
+* O SMW Central agora possui uma página inicial integrada com cartões de
+  conteúdo ao vivo, detalhes ampliados de hacks, pesquisa por tags, capturas de
+  tela e ferramentas de conta e comentários.
+* O SMW Central Radio e a reprodução de SPC incluem um player compacto que pode
+  ser movido, redimensionado, minimizado e mantido aberto com o tracker.
+* O modo opcional de captura do OBS mantém as janelas azuis do tracker dentro da
+  janela principal para que uma única captura de janela do OBS possa incluí-las.
+* O build normal para Windows adiciona estados 5–11 do MiSTer com verificação de
+  compatibilidade e backup exato restaurável. Os slots nativos 1–4 permanecem
+  intactos e F12 continua abrindo o menu do MiSTer.
+* Os menus de configuração, aplicativo, OBS e LiveSplit foram reorganizados sem
+  prejudicar o guia. Modos de Jogo retorna ao painel depois de iniciar um hack.
+* Dados antigos de conexão do MiSTer não afetam mais o RetroArch; também foram
+  aprimorados o redimensionamento e o fechamento das configurações do Google Sheets.
+* Cada novo texto está traduzido nos seis idiomas e é verificado por uma
+  auditoria automática de tradução mais abrangente.
 
 NOVIDADES DA VERSÃO 1.1.0
 
@@ -116,7 +135,7 @@ O SMW Stream Tracker não inclui nem baixa uma ROM-base comercial.
 
 2. INSTALAR O PROGRAMA
 
-1. Execute SMWStreamTracker_Setup_1.1.0.exe.
+1. Execute SMWStreamTracker_Setup_1.1.1.exe.
 2. Escolha um idioma na primeira tela.
 3. Leia o aviso sobre software opcional e ROMs.
 4. Escolha FXPAK Pro, RetroArch ou MiSTer como plataforma inicial.
@@ -376,3 +395,13 @@ um login automático exclusivo para o aplicativo e testa a conexão final. Se fo
 solicitado, o login SSH de fábrica é root, porta 22, senha 1; a senha nunca é
 salva. Os hacks são copiados com nomes seguros sem alterar seus títulos reais no
 catálogo.
+
+A versão normal para Windows instala automaticamente os estados 5–11 do MiSTer
+ao executar Encontrar e configurar o MiSTer ou Instalar slots de estados virtuais.
+Alt+F5 até Alt+F11 salvam; F5 até F11 carregam os estados 5–11; F12 continua
+abrindo o menu do MiSTer; os slots
+nativos 1–4 permanecem intactos. As atualizações do tracker mantêm o recurso e podem substituir com
+segurança uma versão instalada anteriormente pelo tracker. Se o MiSTer Main for
+atualizado separadamente, o tracker se recusa a sobrescrever ou rebaixar o
+arquivo desconhecido. Use Restaurar a versão anterior do MiSTer antes de
+atualizar o Main e depois um build preparado para essa versão mais nova.

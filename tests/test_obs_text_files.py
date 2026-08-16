@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 import inspect
 from pathlib import Path
@@ -69,6 +70,77 @@ class ObsTextFileTests(unittest.TestCase):
             self.tracker.TrackerApp.open_guided_obs_text_setup
         )
         self.assertNotIn("chart_scale", source)
+
+    def test_obs_capture_mode_is_opt_in_and_saved_from_obs_settings(self):
+        self.assertIs(self.tracker.DEFAULT_CONFIG["obs_capture_mode"], False)
+        source = inspect.getsource(
+            self.tracker.TrackerApp.open_obs_settings_dialog
+        )
+        self.assertIn("obs_capture_mode_var = tk.BooleanVar", source)
+        self.assertIn("Show tracker popups inside the main app window", source)
+        self.assertIn(
+            '"obs_capture_mode": bool(obs_capture_mode_var.get())',
+            source,
+        )
+
+    def test_capture_mode_uses_in_app_dialog_factory(self):
+        factory_source = inspect.getsource(
+            self.tracker.TrackerApp._create_tracker_dialog
+        )
+        self.assertIn("InAppOverlayDialog", factory_source)
+        self.assertIn("obs_capture_mode", factory_source)
+        self.assertTrue(
+            issubclass(self.tracker.InAppOverlayDialog, self.tracker.tk.Frame)
+        )
+
+    def test_only_intentional_native_toplevels_bypass_capture_mode(self):
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        parent_by_node = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parent_by_node[child] = parent
+
+        native_callers = set()
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "tk"
+                and node.func.attr == "Toplevel"
+            ):
+                continue
+            owner = node
+            while owner is not None and not isinstance(
+                owner,
+                (ast.FunctionDef, ast.AsyncFunctionDef),
+            ):
+                owner = parent_by_node.get(owner)
+            native_callers.add(owner.name if owner is not None else "<module>")
+
+        self.assertEqual(
+            native_callers,
+            {
+                "_create_tracker_dialog",
+                "_post_main_hack_selector_popup",
+                "open_native_obs_timer_window",
+            },
+        )
+
+    def test_capture_mode_wording_is_translated_in_every_language(self):
+        keys = (
+            "OBS Capture Mode",
+            "Show tracker popups inside the main app window",
+            "One OBS Window Capture source will then include the tracker's blue popups.",
+            "External browsers, installers, and file pickers remain separate windows.",
+        )
+        for language in ("au", "es", "fr", "de", "pt-BR"):
+            with self.subTest(language=language):
+                for key in keys:
+                    self.assertIn(key, self.tracker.UI_TRANSLATIONS[language])
+                    self.assertTrue(
+                        self.tracker.UI_TRANSLATIONS[language][key].strip()
+                    )
 
     def test_all_obs_files_are_created_without_overwriting(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

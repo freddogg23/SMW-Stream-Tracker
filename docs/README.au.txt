@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.1.0
+Version 1.1.1
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -26,6 +26,24 @@ desktop LiveSplit is Windows-only, so the Mac app supplies synchronized Game
 Timer and Level Timer windows plus game_timer.txt and level_timer.txt for OBS.
 The catalogue, patching, FXPAK emoji aliases, database, workbooks, and OBS text
 files all work the same way. Crikey, that saves a bit of mucking about!
+
+WHAT'S NEW IN VERSION 1.1.1, MATE
+
+* SMW Central now has a proper home base with live cards, better hack details,
+  tag searching, screenshots, and account and comment gear. You beauty.
+* SMW Central Radio and SPC playback come with a compact player you can drag,
+  resize, minimise, and leave open while the tracker keeps humming, mate.
+* Optional OBS Capture Mode keeps the blue tracker popups in the main window so
+  one OBS Window Capture can grab the whole lot.
+* The normal Windows build adds MiSTer save states 5–11 with compatibility
+  checks and an exact backup you can restore. Native slots 1–4 stay put and F12
+  still opens the MiSTer menu—no funny business.
+* Setup, application, OBS, and LiveSplit menus are tidier without upsetting the
+  guided setup. Game Modes head home after launching a hack.
+* Stale MiSTer connection details no longer trip up RetroArch, and resizing and
+  Google Sheets settings shut down more cleanly.
+* Every new bit of text is sorted in all six languages, with a deeper automatic
+  translation check keeping an eye on things. Crikey.
 
 WHAT'S NEW IN VERSION 1.1.0, MATE
 
@@ -120,7 +138,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.1.0.exe a double-click.
+1. Give SMWStreamTracker_Setup_1.1.1.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro, RetroArch, or MiSTer as your first cab off the rank.
@@ -445,3 +463,12 @@ automatic login, and gives the finished connection a burl. If asked, the factory
 SSH login is root, port 22, password 1; the password is never saved. Hacks still
 copy over with safe filenames while their proper catalogue titles stay put.
 Crikey, that's the whole MiSTer sorted.
+
+The normal Windows build installs MiSTer save states 5–11 automatically whenever
+you run Find & Set Up MiSTer or Install Virtual Save State Slots, mate. Alt+F5 through
+Alt+F11 save, and F5 through F11 load states 5–11.
+Plain F12 still opens the MiSTer menu, and the native 1–4 slots stay put. Tracker
+updates keep the feature and can safely replace one the tracker installed
+earlier. If MiSTer Main changes on its own, the tracker will not bulldoze or
+downgrade it. Use Restore Previous MiSTer Version before updating MiSTer Main,
+then grab a tracker build made for that newer Main. Crikey, safety first.

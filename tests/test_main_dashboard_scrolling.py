@@ -51,6 +51,11 @@ class MainDashboardScrollingTests(unittest.TestCase):
         self.assertIn("if self.responsive_ui_after_id is not None", responsive_source)
         self.assertIn("remaining_seconds = 0.65 - quiet_seconds", quiet_source)
 
+    def test_full_size_dialog_destroy_callback_accepts_missing_event(self):
+        source = self.method_source("_activate_full_size_dialog_ui")
+        self.assertIn("lambda event=None, tracked=dialog", source)
+        self.assertIn('getattr(event, "widget", None) is tracked', source)
+
     def test_small_cross_monitor_scale_changes_do_not_rebuild(self):
         responsive_source = self.method_source("_apply_responsive_ui_scale")
         self.assertIn(

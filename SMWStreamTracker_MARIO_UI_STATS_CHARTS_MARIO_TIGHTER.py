@@ -8,6 +8,7 @@ import csv
 import hashlib
 import ipaddress
 import io
+import math
 from html import unescape
 from html.parser import HTMLParser
 from difflib import SequenceMatcher
@@ -376,8 +377,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "1.1.0"
-APP_BUILD_DATE = "2026-08-11"
+APP_VERSION = "1.1.1"
+APP_BUILD_DATE = "2026-08-16"
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
@@ -420,6 +421,11 @@ DISCORD_COMMUNITY_URL = "https://discord.gg/fHkTRgqjcr"
 FEEDBACK_WEBVIEW_ARGUMENT = "--embedded-feedback-form"
 FEEDBACK_APPEARANCE_ARGUMENT_PREFIX = "--feedback-appearance="
 FEEDBACK_LANGUAGE_ARGUMENT_PREFIX = "--feedback-language="
+SMWC_WEBVIEW_ARGUMENT = "--embedded-smwcentral-comments"
+SMWC_WEBVIEW_URL_ARGUMENT_PREFIX = "--smwcentral-url="
+SMWC_WEBVIEW_LANGUAGE_ARGUMENT_PREFIX = "--smwcentral-language="
+SMWC_WEBVIEW_MODE_ARGUMENT_PREFIX = "--smwcentral-mode="
+SMWC_WEBVIEW_PAYLOAD_ARGUMENT_PREFIX = "--smwcentral-payload="
 STARTUP_CHECK_ARGUMENT = "--startup-check"
 DEFAULT_UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/freddogg23/"
@@ -505,6 +511,75 @@ MISTER_UARTMODE_DOWNLOAD_SHA256 = (
     "25f4580d82bed9a902e929776d5c2435e0b9c4cb6485cd33e787bffcd5b539c8"
 )
 MISTER_UARTMODE_MAX_BYTES = 128 * 1024
+MISTER_VIRTUAL_STATES_BINARY_SHA256 = (
+    "696ce73f548ede2f66acb38781b2bd2962821fc4e1f7b9957d2a2f5c538f011b"
+)
+MISTER_VIRTUAL_STATES_MAX_BYTES = 64 * 1024 * 1024
+MISTER_VIRTUAL_STATES_UPSTREAM_COMMIT = (
+    "93d13fb690db4581768389450fb639822ae88333"
+)
+MISTER_VIRTUAL_STATES_BASE_VERSION = "20260707"
+MISTER_VIRTUAL_STATES_BASE_SHA256 = (
+    "7ca3cd2f224b9264d0889f593a0d77aafa5adda61910baba92c5ae401e26fcce"
+)
+MISTER_VIRTUAL_STATES_TOOLCHAIN_VERSION = "Arm GNU 10.2-2020.11"
+MISTER_VIRTUAL_STATES_REMOTE_FOLDER = "/media/fat/SMWStreamTracker"
+MISTER_VIRTUAL_STATES_BACKUP_FOLDER = (
+    MISTER_VIRTUAL_STATES_REMOTE_FOLDER + "/Backups"
+)
+MISTER_VIRTUAL_STATES_MARKER = (
+    MISTER_VIRTUAL_STATES_REMOTE_FOLDER + "/enable_virtual_states"
+)
+MISTER_VIRTUAL_STATES_MANIFEST = (
+    MISTER_VIRTUAL_STATES_REMOTE_FOLDER + "/experimental_manifest.json"
+)
+
+
+def mister_virtual_states_backup_path(original_sha256: str) -> str:
+    """Return the only permitted remote backup path for a MiSTer hash."""
+    normalized_hash = str(original_sha256).strip().casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized_hash):
+        raise ValueError("The original MiSTer backup hash is invalid.")
+    return (
+        f"{MISTER_VIRTUAL_STATES_BACKUP_FOLDER}/"
+        f"MiSTer.{normalized_hash}.original"
+    )
+
+
+def mister_virtual_states_manifest_backup_path(
+    manifest: dict[str, Any],
+) -> str:
+    """Validate restore metadata before it can select a remote file."""
+    if not isinstance(manifest, dict):
+        raise ValueError("The MiSTer restore information is invalid.")
+    original_sha256 = str(manifest.get("original_sha256", "")).casefold()
+    expected_path = mister_virtual_states_backup_path(original_sha256)
+    saved_path = str(manifest.get("backup_path", ""))
+    if saved_path != expected_path:
+        raise ValueError("The MiSTer restore path is invalid.")
+    return expected_path
+
+
+def mister_virtual_states_allowed_current_hashes(
+    manifest: dict[str, Any],
+    candidate_sha256: str,
+) -> frozenset[str]:
+    """Return hashes that a tracker update may safely replace on MiSTer.
+
+    A newer tracker build may replace its own previously installed Main or
+    reapply itself over the exact saved original. An unknown hash means MiSTer
+    Main was updated or changed independently and must never be downgraded.
+    """
+    if not isinstance(manifest, dict):
+        raise ValueError("The MiSTer save-state installation record is invalid.")
+    hashes = {
+        str(manifest.get("original_sha256", "")).strip().casefold(),
+        str(manifest.get("experimental_sha256", "")).strip().casefold(),
+        str(candidate_sha256 or "").strip().casefold(),
+    }
+    if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes):
+        raise ValueError("The MiSTer save-state installation hashes are invalid.")
+    return frozenset(hashes)
 
 
 def platform_family(platform_name: str | None = None) -> str:
@@ -2363,6 +2438,79 @@ def smwc_boolean_value(value: object) -> bool:
     }
 
 
+def catalog_tags_text(value: object) -> str:
+    """Return stable, readable tag text from API, JSON, or database values."""
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("["):
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, list):
+                value = decoded
+            else:
+                return text
+        else:
+            return text
+    if isinstance(value, (list, tuple, set)):
+        tags: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            tag = unescape(str(item or "")).strip()
+            folded = tag.casefold()
+            if tag and folded not in seen:
+                seen.add(folded)
+                tags.append(tag)
+        return ", ".join(tags)
+    return unescape(str(value)).strip()
+
+
+def catalog_screenshot_urls(value: object) -> list[str]:
+    """Normalize screenshot metadata without accepting non-web locations."""
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            decoded = [text]
+        value = decoded
+    if not isinstance(value, (list, tuple, set)):
+        value = [value]
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        url = str(item or "").strip()
+        parsed = urlparse(url)
+        if (
+            parsed.scheme.casefold() not in {"http", "https"}
+            or not parsed.netloc
+            or url.casefold() in seen
+        ):
+            continue
+        seen.add(url.casefold())
+        urls.append(url)
+    return urls
+
+
+def catalog_search_text(record: dict[str, Any]) -> str:
+    """Build the shared ROM-search index, including SMW Central tags."""
+    return " ".join(
+        (
+            str(record.get("title", "")),
+            str(record.get("author", "")),
+            str(record.get("smwc_id", "")),
+            str(record.get("difficulty", "")),
+            str(record.get("hack_type", "")),
+            catalog_tags_text(record.get("tags", "")),
+        )
+    ).casefold()
+
+
 def smwc_added_date(
     value: object,
 ) -> str:
@@ -2509,6 +2657,19 @@ def parse_smwcentral_api_game(
         ),
         "smwc_rating": rating,
         "rating": rating,
+        "tags": catalog_tags_text(hack.get("tags", [])),
+        "description": unescape(
+            str(
+                raw_fields.get(
+                    "description",
+                    hack.get("description", ""),
+                )
+                or ""
+            )
+        ).strip(),
+        "screenshots": catalog_screenshot_urls(
+            hack.get("images", hack.get("screenshots", []))
+        ),
         "page_url": page_url,
         "download_url": download_url,
         "is_custom": False,
@@ -2683,6 +2844,71 @@ def fetch_smwcentral_catalog(
         "pages_read": pages_read,
         "total_pages": last_page,
         "incremental": incremental,
+    }
+
+
+def fetch_smwcentral_hack_feature_metadata(
+    game: dict[str, Any],
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any] | None:
+    """Fetch the rich display fields for one SMW Central submission."""
+    title = str(game.get("title", "")).strip()
+    smwc_id = str(game.get("smwc_id", "")).strip()
+    if not title or not smwc_id:
+        return None
+
+    payload = smwc_api_json(
+        {
+            "a": "getsectionlist",
+            "s": "smwhacks",
+            "n": 1,
+            "u": "1" if game.get("is_waiting") else "0",
+            "f[name]": title,
+        },
+        cancel_event,
+    )
+    raw_games = payload.get("data", [])
+    if not isinstance(raw_games, list):
+        return None
+
+    exact_title_match: dict[str, Any] | None = None
+    for raw_game in raw_games:
+        if not isinstance(raw_game, dict):
+            continue
+        raw_id = str(raw_game.get("id", "")).strip()
+        if raw_id == smwc_id:
+            exact_title_match = raw_game
+            break
+        if (
+            exact_title_match is None
+            and normalize_title(raw_game.get("name", ""))
+            == normalize_title(title)
+        ):
+            exact_title_match = raw_game
+
+    if exact_title_match is None:
+        return None
+
+    raw_fields = exact_title_match.get("raw_fields", {})
+    if not isinstance(raw_fields, dict):
+        raw_fields = {}
+    return {
+        "tags": catalog_tags_text(exact_title_match.get("tags", [])),
+        "description": unescape(
+            str(
+                raw_fields.get(
+                    "description",
+                    exact_title_match.get("description", ""),
+                )
+                or ""
+            )
+        ).strip(),
+        "screenshots": catalog_screenshot_urls(
+            exact_title_match.get(
+                "images",
+                exact_title_match.get("screenshots", []),
+            )
+        ),
     }
 
 
@@ -3282,6 +3508,21 @@ def github_catalog_row_to_game(
         ),
         "smwc_rating": rating,
         "rating": rating,
+        "tags": (
+            catalog_tags_text(existing.get("tags", ""))
+            if existing is not None
+            else ""
+        ),
+        "description": (
+            str(existing.get("description", ""))
+            if existing is not None
+            else ""
+        ),
+        "screenshots": (
+            catalog_screenshot_urls(existing.get("screenshots", []))
+            if existing is not None
+            else []
+        ),
         "page_url": page_url,
         "download_url": row.get(
             "Direct Download URL",
@@ -4771,6 +5012,257 @@ class InAppPage(tk.Frame):
             super().destroy()
         finally:
             self._internal_destroy = False
+
+
+class InAppOverlayDialog(tk.Frame):
+    """Toplevel-compatible dialog rendered inside the captured main window."""
+
+    def __init__(self, parent: tk.Misc, app) -> None:
+        self._app = app
+        self._dialog_title = ""
+        self._protocols: dict[str, object] = {}
+        self._requested_width = 760
+        self._requested_height = 560
+        self._minimum_width = 320
+        self._minimum_height = 240
+        self._maximum_width = 100000
+        self._maximum_height = 100000
+        self._zoomed = False
+        self._destroying = False
+        super().__init__(
+            parent,
+            bg="#172235",
+            bd=0,
+            highlightbackground="#355A7C",
+            highlightthickness=1,
+        )
+        self.place(relx=0.5, rely=0.5, anchor="center")
+        self._host_configure_bind_id = parent.bind(
+            "<Configure>",
+            self._fit_to_backdrop,
+            add="+",
+        )
+        self.lift()
+        self.after_idle(self._focus_overlay)
+
+    def _focus_overlay(self) -> None:
+        try:
+            if self.winfo_exists():
+                self.lift()
+                self.focus_set()
+        except tk.TclError:
+            pass
+
+    def _fit_to_backdrop(self, _event=None) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+            if self._zoomed:
+                self.place_configure(
+                    x=0,
+                    y=0,
+                    relx=0,
+                    rely=0,
+                    anchor="nw",
+                    relwidth=1,
+                    relheight=1,
+                    width=0,
+                    height=0,
+                )
+                return
+            host = self.master
+            available_width = max(1, host.winfo_width() - 24)
+            available_height = max(1, host.winfo_height() - 24)
+            width = min(
+                available_width,
+                self._maximum_width,
+                max(self._minimum_width, self._requested_width),
+            )
+            height = min(
+                available_height,
+                self._maximum_height,
+                max(self._minimum_height, self._requested_height),
+            )
+            self.place_configure(
+                relx=0.5,
+                rely=0.5,
+                anchor="center",
+                relwidth=0,
+                relheight=0,
+                width=max(1, width),
+                height=max(1, height),
+            )
+        except tk.TclError:
+            pass
+
+    def title(self, value: str | None = None) -> str:
+        if value is not None:
+            self._dialog_title = str(value)
+        return self._dialog_title
+
+    wm_title = title
+
+    def geometry(self, value: str | None = None) -> str:
+        if value is not None:
+            match = re.match(r"^\s*(\d+)x(\d+)", str(value))
+            if match:
+                self._requested_width = max(1, int(match.group(1)))
+                self._requested_height = max(1, int(match.group(2)))
+                self._zoomed = False
+                self._fit_to_backdrop()
+        return (
+            f"{max(1, self.winfo_width())}x{max(1, self.winfo_height())}"
+            f"+{self.winfo_x()}+{self.winfo_y()}"
+        )
+
+    wm_geometry = geometry
+
+    def minsize(
+        self,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> tuple[int, int]:
+        if width is not None:
+            self._minimum_width = max(1, int(width))
+        if height is not None:
+            self._minimum_height = max(1, int(height))
+        self._fit_to_backdrop()
+        return self._minimum_width, self._minimum_height
+
+    wm_minsize = minsize
+
+    def maxsize(
+        self,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> tuple[int, int]:
+        if width is not None:
+            self._maximum_width = max(1, int(width))
+        if height is not None:
+            self._maximum_height = max(1, int(height))
+        self._fit_to_backdrop()
+        return self._maximum_width, self._maximum_height
+
+    wm_maxsize = maxsize
+
+    def resizable(
+        self,
+        _width: bool | None = None,
+        _height: bool | None = None,
+    ) -> tuple[bool, bool]:
+        return True, True
+
+    wm_resizable = resizable
+
+    def transient(self, _master=None):
+        return None
+
+    wm_transient = transient
+
+    def protocol(self, name: str, command=None):
+        if command is not None:
+            self._protocols[str(name)] = command
+        return self._protocols.get(str(name))
+
+    wm_protocol = protocol
+
+    def request_close(self) -> None:
+        handler = self._protocols.get("WM_DELETE_WINDOW")
+        if callable(handler):
+            handler()
+        elif self.winfo_exists():
+            self.destroy()
+
+    def state(self, value: str | None = None) -> str:
+        if value is not None:
+            selected = str(value).casefold()
+            self._zoomed = selected == "zoomed"
+            if selected in {"withdrawn", "iconic"}:
+                self.withdraw()
+            else:
+                self.deiconify()
+                self._fit_to_backdrop()
+        return "zoomed" if self._zoomed else "normal"
+
+    wm_state = state
+
+    def withdraw(self) -> None:
+        try:
+            self.place_forget()
+        except tk.TclError:
+            pass
+
+    wm_withdraw = withdraw
+
+    def deiconify(self) -> None:
+        try:
+            if not self.winfo_manager():
+                self.place(relx=0.5, rely=0.5, anchor="center")
+            self.lift()
+            self._fit_to_backdrop()
+        except tk.TclError:
+            pass
+
+    wm_deiconify = deiconify
+
+    def iconify(self) -> None:
+        self.withdraw()
+
+    wm_iconify = iconify
+
+    def lift(self, above_this=None) -> None:
+        try:
+            super().lift(above_this)
+        except tk.TclError:
+            pass
+
+    tkraise = lift
+
+    def focus_force(self) -> None:
+        self._focus_overlay()
+
+    def grab_set(self) -> None:
+        try:
+            super().grab_set()
+        except tk.TclError:
+            pass
+        self._focus_overlay()
+
+    def grab_release(self) -> None:
+        try:
+            super().grab_release()
+        except tk.TclError:
+            pass
+
+    def iconphoto(self, *_args, **_kwargs) -> None:
+        return None
+
+    wm_iconphoto = iconphoto
+
+    def attributes(self, *_args):
+        return None
+
+    wm_attributes = attributes
+
+    def overrideredirect(self, *_args):
+        return None
+
+    wm_overrideredirect = overrideredirect
+
+    def destroy(self) -> None:
+        if self._destroying:
+            return
+        self._destroying = True
+        try:
+            if self._host_configure_bind_id:
+                self.master.unbind(
+                    "<Configure>",
+                    self._host_configure_bind_id,
+                )
+        except tk.TclError:
+            pass
+        if self.winfo_exists():
+            super().destroy()
 
 
 class OutlinedLabel(tk.Canvas):
@@ -12449,6 +12941,9 @@ def rom_builder_write_reports(
 
 
 APP_DATA_DIR = platform_application_data_directory()
+SMWC_WEBVIEW_STORAGE_DIR = APP_DATA_DIR / "SMWCentralSession"
+SMWC_HOME_FEED_CACHE_PATH = APP_DATA_DIR / "SMWCentralHomeFeed.json"
+SMWC_HOME_CAROUSEL_INTERVAL_MS = 7000
 STATS_DB_FILE = APP_DATA_DIR / "SMWStreamTracker.db"
 STATS_BACKUP_DIR = APP_DATA_DIR / "Backups"
 AUTOMATIC_BACKUP_DIR = APP_DATA_DIR / "AutomaticBackups"
@@ -12866,6 +13361,9 @@ class TrackerDatabase:
                     hack_type TEXT NOT NULL DEFAULT 'Unknown',
                     added_date TEXT NOT NULL DEFAULT '',
                     smwc_rating REAL,
+                    tags TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    screenshots_json TEXT NOT NULL DEFAULT '[]',
                     page_url TEXT NOT NULL DEFAULT '',
                     download_url TEXT NOT NULL DEFAULT '',
                     is_custom INTEGER NOT NULL DEFAULT 0,
@@ -12956,6 +13454,20 @@ class TrackerDatabase:
                     "PRAGMA table_info(catalog_hacks)"
                 ).fetchall()
             }
+            added_feature_metadata_columns = False
+            for column_name, column_definition in (
+                ("tags", "TEXT NOT NULL DEFAULT ''"),
+                ("description", "TEXT NOT NULL DEFAULT ''"),
+                ("screenshots_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if column_name not in catalog_columns:
+                    connection.execute(
+                        "ALTER TABLE catalog_hacks ADD COLUMN "
+                        + column_name
+                        + " "
+                        + column_definition
+                    )
+                    added_feature_metadata_columns = True
             for column_name in (
                 "sa1",
                 "hall_of_fame",
@@ -12967,6 +13479,17 @@ class TrackerDatabase:
                         + column_name
                         + " INTEGER NOT NULL DEFAULT 0"
                     )
+            if added_feature_metadata_columns:
+                # Older databases may already be marked complete for the
+                # SA-1/Hall-of-Fame metadata pass. Force one full live refresh
+                # so every existing hack also receives tags and detail media.
+                connection.execute(
+                    """
+                    INSERT INTO app_metadata (key, value)
+                    VALUES ('SMWC Feature Metadata Complete', '0')
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """
+                )
             if "total_deaths" not in tracker_columns:
                 connection.execute(
                     "ALTER TABLE tracked_hacks ADD COLUMN total_deaths INTEGER"
@@ -13707,6 +14230,22 @@ class TrackerDatabase:
             if "smwc_rating" in prepared
             else prepared.get("rating")
         )
+        prepared["tags"] = catalog_tags_text(
+            prepared.get("tags", "")
+        )
+        prepared["description"] = str(
+            prepared.get("description") or ""
+        ).strip()
+        prepared["screenshots_json"] = json.dumps(
+            catalog_screenshot_urls(
+                prepared.get(
+                    "screenshots",
+                    prepared.get("screenshots_json", []),
+                )
+            ),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         prepared["page_url"] = str(
             prepared.get("page_url")
             or ""
@@ -13748,6 +14287,9 @@ class TrackerDatabase:
                 hack_type,
                 added_date,
                 smwc_rating,
+                tags,
+                description,
+                screenshots_json,
                 page_url,
                 download_url,
                 is_custom,
@@ -13768,6 +14310,9 @@ class TrackerDatabase:
                 :hack_type,
                 :added_date,
                 :smwc_rating,
+                :tags,
+                :description,
+                :screenshots_json,
                 :page_url,
                 :download_url,
                 :is_custom,
@@ -13788,6 +14333,9 @@ class TrackerDatabase:
                 hack_type = excluded.hack_type,
                 added_date = excluded.added_date,
                 smwc_rating = excluded.smwc_rating,
+                tags = excluded.tags,
+                description = excluded.description,
+                screenshots_json = excluded.screenshots_json,
                 page_url = excluded.page_url,
                 download_url = excluded.download_url,
                 is_custom = excluded.is_custom,
@@ -15386,6 +15934,9 @@ class TrackerDatabase:
                     hack_type,
                     added_date,
                     smwc_rating,
+                    tags,
+                    description,
+                    screenshots_json,
                     page_url,
                     download_url,
                     is_custom,
@@ -15437,6 +15988,11 @@ class TrackerDatabase:
                         if row["smwc_rating"]
                         is not None
                         else None
+                    ),
+                    "tags": catalog_tags_text(row["tags"]),
+                    "description": str(row["description"] or ""),
+                    "screenshots": catalog_screenshot_urls(
+                        row["screenshots_json"]
                     ),
                     "added_date": str(
                         row["added_date"] or ""
@@ -16254,6 +16810,9 @@ class TrackerDatabase:
                     catalog_hacks.smwc_id,
                     catalog_hacks.page_url,
                     catalog_hacks.download_url,
+                    catalog_hacks.tags,
+                    catalog_hacks.description,
+                    catalog_hacks.screenshots_json,
                     catalog_hacks.rom_path,
                     catalog_hacks.local_rom_path
                 FROM tracked_hacks
@@ -16282,6 +16841,10 @@ class TrackerDatabase:
                     )
                 )
             )
+            record["tags"] = catalog_tags_text(record.get("tags", ""))
+            record["screenshots"] = catalog_screenshot_urls(
+                record.pop("screenshots_json", "[]")
+            )
         return records
 
     def get_tracked(
@@ -16298,6 +16861,9 @@ class TrackerDatabase:
                     catalog_hacks.smwc_id,
                     catalog_hacks.page_url,
                     catalog_hacks.download_url,
+                    catalog_hacks.tags,
+                    catalog_hacks.description,
+                    catalog_hacks.screenshots_json,
                     catalog_hacks.rom_path,
                     catalog_hacks.local_rom_path
                 FROM tracked_hacks
@@ -16319,7 +16885,45 @@ class TrackerDatabase:
                 "Unknown",
             )
         )
+        record["tags"] = catalog_tags_text(record.get("tags", ""))
+        record["screenshots"] = catalog_screenshot_urls(
+            record.pop("screenshots_json", "[]")
+        )
         return record
+
+    def update_catalog_feature_metadata(
+        self,
+        catalog_key: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Cache tags, description, and screenshots for one catalog row."""
+        self.initialize()
+        tags = catalog_tags_text(metadata.get("tags", ""))
+        description = str(metadata.get("description", "") or "").strip()
+        screenshots_json = json.dumps(
+            catalog_screenshot_urls(metadata.get("screenshots", [])),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE catalog_hacks
+                SET
+                    tags = ?,
+                    description = ?,
+                    screenshots_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE catalog_key = ?
+                """,
+                (
+                    tags,
+                    description,
+                    screenshots_json,
+                    str(catalog_key),
+                ),
+            )
+        return self.get_catalog_game(catalog_key)
 
     def get_catalog_game(
         self,
@@ -18234,6 +18838,158 @@ for _language_code, _translations in _TRACKER_WORKFLOW_TRANSLATIONS.items():
 _TRACKER_CONTROL_LOCALIZATION_ROWS = (
     # English, Australian, Spanish, French, German, Portuguese (Brazil)
     (
+        "SMW Central",
+        "SMW Central",
+        "SMW Central",
+        "SMW Central",
+        "SMW Central",
+        "SMW Central",
+    ),
+    (
+        "SMW Central Updates",
+        "SMW Central Updates, Mate",
+        "Novedades de SMW Central",
+        "Actualités de SMW Central",
+        "SMW-Central-Neuigkeiten",
+        "Novidades do SMW Central",
+    ),
+    (
+        "SMW CENTRAL UPDATES",
+        "SMW CENTRAL UPDATES, MATE",
+        "NOVEDADES DE SMW CENTRAL",
+        "ACTUALITÉS DE SMW CENTRAL",
+        "SMW-CENTRAL-NEUIGKEITEN",
+        "NOVIDADES DO SMW CENTRAL",
+    ),
+    (
+        "Live events, news, and featured content from SMW Central.",
+        "Fresh events, news, and ripper content from SMW Central, mate.",
+        "Eventos, noticias y contenido destacado en vivo de SMW Central.",
+        "Événements, actualités et contenu vedette en direct de SMW Central.",
+        "Aktuelle Veranstaltungen, Nachrichten und empfohlene Inhalte von SMW Central.",
+        "Eventos, notícias e conteúdo em destaque ao vivo do SMW Central.",
+    ),
+    (
+        "Go to Dashboard",
+        "Head to the Dashboard, Mate",
+        "Ir al panel principal",
+        "Accéder au tableau de bord",
+        "Zum Dashboard",
+        "Ir para o painel",
+    ),
+    (
+        "SMW Central Radio",
+        "SMW Central Radio, Mate",
+        "Radio de SMW Central",
+        "Radio SMW Central",
+        "SMW-Central-Radio",
+        "Rádio do SMW Central",
+    ),
+    (
+        "Events",
+        "Events, Mate",
+        "Eventos",
+        "Événements",
+        "Veranstaltungen",
+        "Eventos",
+    ),
+    (
+        "Recent News",
+        "Fresh News, Mate",
+        "Noticias recientes",
+        "Actualités récentes",
+        "Neueste Nachrichten",
+        "Notícias recentes",
+    ),
+    (
+        "Latest Content",
+        "Latest Good Stuff, Mate",
+        "Contenido más reciente",
+        "Contenu récent",
+        "Neueste Inhalte",
+        "Conteúdo mais recente",
+    ),
+    (
+        "Content of the Day",
+        "Content of the Day, You Beauty",
+        "Contenido del día",
+        "Contenu du jour",
+        "Inhalt des Tages",
+        "Conteúdo do dia",
+    ),
+    (
+        "Loading the latest SMW Central updates...",
+        "Fetching the latest from SMW Central, mate...",
+        "Cargando las últimas novedades de SMW Central...",
+        "Chargement des dernières actualités de SMW Central...",
+        "Die neuesten SMW-Central-Neuigkeiten werden geladen...",
+        "Carregando as últimas novidades do SMW Central...",
+    ),
+    (
+        "The live SMW Central updates could not be refreshed. Showing the most recent saved copy.",
+        "Crikey, the live refresh had a wobble. Showing the latest saved copy, mate.",
+        "No se pudieron actualizar las novedades en vivo de SMW Central. Se muestra la copia guardada más reciente.",
+        "Impossible d’actualiser les nouveautés de SMW Central. La copie enregistrée la plus récente est affichée.",
+        "Die aktuellen SMW-Central-Neuigkeiten konnten nicht geladen werden. Die zuletzt gespeicherte Kopie wird angezeigt.",
+        "Não foi possível atualizar as novidades do SMW Central. A cópia salva mais recente está sendo exibida.",
+    ),
+    (
+        "There are no upcoming events.",
+        "No upcoming events right now, mate.",
+        "No hay próximos eventos.",
+        "Aucun événement à venir.",
+        "Es stehen keine Veranstaltungen an.",
+        "Não há próximos eventos.",
+    ),
+    (
+        "No items are available in this section.",
+        "Nothing in this section just yet, mate.",
+        "No hay elementos disponibles en esta sección.",
+        "Aucun élément n’est disponible dans cette section.",
+        "In diesem Bereich sind keine Einträge verfügbar.",
+        "Não há itens disponíveis nesta seção.",
+    ),
+    (
+        "Updated {time}",
+        "Updated {time}, mate",
+        "Actualizado: {time}",
+        "Mis à jour : {time}",
+        "Aktualisiert: {time}",
+        "Atualizado: {time}",
+    ),
+    (
+        "Posted by {author} on {date}",
+        "Posted by {author} on {date}, mate",
+        "Publicado por {author} el {date}",
+        "Publié par {author} le {date}",
+        "Veröffentlicht von {author} am {date}",
+        "Publicado por {author} em {date}",
+    ),
+    (
+        "Submitted by {author} on {date}",
+        "Submitted by {author} on {date}, mate",
+        "Enviado por {author} el {date}",
+        "Soumis par {author} le {date}",
+        "Eingereicht von {author} am {date}",
+        "Enviado por {author} em {date}",
+    ),
+    (
+        "Play in SPC Player",
+        "Spin This Tune in the SPC Player, Mate",
+        "Reproducir en el reproductor SPC",
+        "Lire dans le lecteur SPC",
+        "Im SPC-Player abspielen",
+        "Reproduzir no reprodutor SPC",
+    ),
+    (
+        "Loading the selected music file...",
+        "Loading the selected tune, mate...",
+        "Cargando el archivo de música seleccionado...",
+        "Chargement du fichier musical sélectionné...",
+        "Die ausgewählte Musikdatei wird geladen...",
+        "Carregando o arquivo de música selecionado...",
+    ),
+    (
         "Spreadsheet Settings",
         "Spreadsheet Settings, Mate",
         "Configuración de hojas de cálculo",
@@ -18256,6 +19012,14 @@ _TRACKER_CONTROL_LOCALIZATION_ROWS = (
         "Ouvrir SMW Central",
         "SMW Central öffnen",
         "Abrir SMW Central",
+    ),
+    (
+        "SMW Central home opened inside the app.",
+        "SMW Central home is open in the app, mate.",
+        "El inicio de SMW Central se abrió dentro de la aplicación.",
+        "L’accueil de SMW Central s’est ouvert dans l’application.",
+        "Die SMW-Central-Startseite wurde in der App geöffnet.",
+        "O início do SMW Central foi aberto dentro do aplicativo.",
     ),
     (
         "Import or export your tracker using an Excel workbook.",
@@ -18452,6 +19216,10 @@ _LOCALIZATION_COMPLETION_ROWS = (
     ("The selected-language Read Me could not be opened.", "No se pudo abrir el archivo Léame del idioma seleccionado.", "Le guide de la langue sélectionnée n’a pas pu être ouvert.", "Die Anleitung in der ausgewählten Sprache konnte nicht geöffnet werden.", "Não foi possível abrir o guia no idioma selecionado."),
     ("Optional", "Opcional", "Facultatif", "Optional", "Opcional"),
     ("OBS TEXT SETTINGS", "CONFIGURACIÓN DE TEXTO OBS", "PARAMÈTRES DES TEXTES OBS", "OBS-TEXTEINSTELLUNGEN", "CONFIGURAÇÕES DE TEXTO DO OBS"),
+    ("OBS Capture Mode", "Modo de captura de OBS", "Mode de capture OBS", "OBS-Aufnahmemodus", "Modo de captura do OBS"),
+    ("Show tracker popups inside the main app window", "Mostrar las ventanas del tracker dentro de la ventana principal", "Afficher les fenêtres du tracker dans la fenêtre principale", "Tracker-Dialoge im Hauptfenster anzeigen", "Mostrar as janelas do tracker dentro da janela principal"),
+    ("One OBS Window Capture source will then include the tracker's blue popups.", "Una sola fuente de Captura de ventana de OBS incluirá las ventanas azules del tracker.", "Une seule source Capture de fenêtre OBS inclura alors les fenêtres bleues du tracker.", "Eine einzige OBS-Fensteraufnahme erfasst dann auch die blauen Tracker-Dialoge.", "Uma única fonte de Captura de janela do OBS incluirá as janelas azuis do tracker."),
+    ("External browsers, installers, and file pickers remain separate windows.", "Los navegadores, instaladores y selectores de archivos externos seguirán siendo ventanas separadas.", "Les navigateurs, programmes d’installation et sélecteurs de fichiers externes restent des fenêtres distinctes.", "Externe Browser, Installationsprogramme und Dateiauswahlfenster bleiben separate Fenster.", "Navegadores, instaladores e seletores de arquivos externos continuam em janelas separadas."),
     ("SETUP & HEALTH CHECK", "CONFIGURACIÓN Y COMPROBACIÓN DEL SISTEMA", "CONFIGURATION ET VÉRIFICATION DU SYSTÈME", "EINRICHTUNG UND SYSTEMPRÜFUNG", "CONFIGURAÇÃO E VERIFICAÇÃO DO SISTEMA"),
     ("DIAGNOSTICS", "DIAGNÓSTICO", "DIAGNOSTIC", "DIAGNOSE", "DIAGNÓSTICO"),
     ("Tracker Statistics", "Estadísticas del tracker", "Statistiques du tracker", "Tracker-Statistiken", "Estatísticas do tracker"),
@@ -18682,7 +19450,7 @@ _MISTER_LOCALIZATION_ROWS = (
     ("SSH password:", "SSH password, mate:", "Contraseña SSH:", "Mot de passe SSH :", "SSH-Passwort:", "Senha SSH:"),
     ("Test Connection", "Give the connection a burl", "Probar conexión", "Tester la connexion", "Verbindung testen", "Testar conexão"),
     ("Find & Set Up MiSTer", "Find and sort out the MiSTer, mate", "Buscar y configurar MiSTer", "Rechercher et configurer le MiSTer", "MiSTer suchen und einrichten", "Encontrar e configurar o MiSTer"),
-    ("Install / Repair Support", "Install or patch her up", "Instalar / reparar soporte", "Installer / réparer la prise en charge", "Unterstützung installieren / reparieren", "Instalar / reparar suporte"),
+    ("Install Virtual Save State Slots", "Install virtual save slots, mate", "Instalar ranuras de estados virtuales", "Installer les emplacements d’état virtuels", "Virtuelle Speicherplätze installieren", "Instalar slots de estados virtuais"),
     ("Save & Select MiSTer", "Save it and pick MiSTer", "Guardar y seleccionar MiSTer", "Enregistrer et choisir MiSTer", "Speichern und MiSTer wählen", "Salvar e selecionar MiSTer"),
     ("Ready for MiSTer setup.", "Ready to sort out the MiSTer, mate.", "Listo para configurar MiSTer.", "Prêt pour la configuration du MiSTer.", "Bereit zur MiSTer-Einrichtung.", "Pronto para configurar o MiSTer."),
     ("Testing MiSTer connection...", "Giving the MiSTer connection a burl...", "Probando la conexión de MiSTer...", "Test de la connexion MiSTer...", "MiSTer-Verbindung wird getestet...", "Testando a conexão do MiSTer..."),
@@ -18694,7 +19462,7 @@ _MISTER_LOCALIZATION_ROWS = (
     ("Installing MiSTer SNES live tracking...", "Installing MiSTer SNES live tracking, you beauty...", "Instalando el seguimiento en vivo de SNES para MiSTer...", "Installation du suivi en direct SNES pour MiSTer...", "MiSTer-SNES-Live-Verfolgung wird installiert...", "Instalando o rastreamento ao vivo do SNES no MiSTer..."),
     ("Enabling automatic MiSTer login for this app...", "Giving this app its own automatic MiSTer login, mate...", "Habilitando el acceso automático a MiSTer para esta aplicación...", "Activation de la connexion automatique au MiSTer pour cette application...", "Automatische MiSTer-Anmeldung für diese App wird aktiviert...", "Ativando o login automático no MiSTer para este aplicativo..."),
     ("MiSTer settings saved.", "MiSTer settings saved, you beauty.", "Configuración de MiSTer guardada.", "Paramètres MiSTer enregistrés.", "MiSTer-Einstellungen gespeichert.", "Configurações do MiSTer salvas."),
-    ("MiSTer is fully set up. The tracker found it, installed live tracking, created the game folders, enabled automatic login for this app, selected MiSTer, and verified the connection.", "MiSTer is fully sorted, mate. The tracker found it, installed live tracking, made the game folders, set up its own automatic login, picked MiSTer, and gave the connection a burl. You beauty!", "MiSTer está completamente configurado. El tracker lo encontró, instaló el seguimiento en vivo, creó las carpetas de juegos, habilitó el acceso automático para esta aplicación, seleccionó MiSTer y verificó la conexión.", "Le MiSTer est entièrement configuré. Le tracker l’a trouvé, a installé le suivi en direct, créé les dossiers de jeux, activé la connexion automatique pour cette application, sélectionné MiSTer et vérifié la connexion.", "MiSTer ist vollständig eingerichtet. Der Tracker hat ihn gefunden, die Live-Verfolgung installiert, die Spieleordner erstellt, die automatische Anmeldung für diese App aktiviert, MiSTer ausgewählt und die Verbindung geprüft.", "O MiSTer está totalmente configurado. O tracker o encontrou, instalou o rastreamento ao vivo, criou as pastas de jogos, ativou o login automático para este aplicativo, selecionou o MiSTer e verificou a conexão."),
+    ("MiSTer is fully set up. The tracker found it, installed live tracking and save states 5–11, created the game folders, enabled automatic login for this app, selected MiSTer, and verified the connection. MiSTer is restarting.", "MiSTer is fully sorted, mate. The tracker found it, installed live tracking and states 5–11, made the game folders, set up its own automatic login, picked MiSTer, and gave the connection a burl. MiSTer is restarting. You beauty!", "MiSTer está completamente configurado. El tracker lo encontró, instaló el seguimiento en vivo y los estados 5–11, creó las carpetas de juegos, habilitó el acceso automático para esta aplicación, seleccionó MiSTer y verificó la conexión. MiSTer se está reiniciando.", "Le MiSTer est entièrement configuré. Le tracker l’a trouvé, a installé le suivi en direct et les états 5 à 11, créé les dossiers de jeux, activé la connexion automatique pour cette application, sélectionné MiSTer et vérifié la connexion. Le MiSTer redémarre.", "MiSTer ist vollständig eingerichtet. Der Tracker hat ihn gefunden, die Live-Verfolgung und Speicherstände 5–11 installiert, die Spieleordner erstellt, die automatische Anmeldung für diese App aktiviert, MiSTer ausgewählt und die Verbindung geprüft. MiSTer wird neu gestartet.", "O MiSTer está totalmente configurado. O tracker o encontrou, instalou o rastreamento ao vivo e os estados 5–11, criou as pastas de jogos, ativou o login automático para este aplicativo, selecionou o MiSTer e verificou a conexão. O MiSTer está reiniciando."),
     ("MiSTer Ready", "MiSTer is ready, you beauty", "MiSTer listo", "MiSTer prêt", "MiSTer bereit", "MiSTer pronto"),
     ("MiSTer Setup Failed", "MiSTer setup came a cropper", "Falló la configuración de MiSTer", "Échec de la configuration MiSTer", "MiSTer-Einrichtung fehlgeschlagen", "Falha na configuração do MiSTer"),
     ("Setup failed:", "Setup came a cropper:", "Error de configuración:", "Échec de la configuration :", "Einrichtung fehlgeschlagen:", "Falha na configuração:"),
@@ -18709,7 +19477,8 @@ _MISTER_LOCALIZATION_ROWS = (
     ("MiSTer could not be found on this local network. Make sure it is powered on, connected to the same router, and SSH is enabled, then try again.", "Couldn’t find the MiSTer on this network, mate. Make sure it’s switched on, on the same router, and SSH is enabled, then give it another burl.", "No se pudo encontrar MiSTer en esta red local. Asegúrate de que esté encendido, conectado al mismo router y que SSH esté habilitado; luego inténtalo de nuevo.", "Le MiSTer est introuvable sur ce réseau local. Vérifiez qu’il est allumé, connecté au même routeur et que SSH est activé, puis réessayez.", "MiSTer wurde in diesem lokalen Netzwerk nicht gefunden. Stelle sicher, dass er eingeschaltet, mit demselben Router verbunden und SSH aktiviert ist, und versuche es erneut.", "O MiSTer não foi encontrado nesta rede local. Verifique se ele está ligado, conectado ao mesmo roteador e com o SSH ativado; depois tente novamente."),
     ("The MiSTer SD card would not accept the live-tracking file. Make sure the SD card is inserted and is not write-protected, then try again.", "The MiSTer SD card wouldn’t take the live-tracking file, mate. Make sure it’s in, not write-protected, and give it another burl.", "La tarjeta SD de MiSTer no aceptó el archivo de seguimiento en vivo. Asegúrate de que esté insertada y no protegida contra escritura; luego inténtalo de nuevo.", "La carte SD du MiSTer n’a pas accepté le fichier de suivi en direct. Vérifiez qu’elle est insérée et non protégée en écriture, puis réessayez.", "Die MiSTer-SD-Karte hat die Live-Verfolgungsdatei nicht angenommen. Stelle sicher, dass sie eingesetzt und nicht schreibgeschützt ist, und versuche es erneut.", "O cartão SD do MiSTer não aceitou o arquivo de rastreamento ao vivo. Verifique se ele está inserido e sem proteção contra gravação; depois tente novamente."),
     ("MiSTer temporary storage would not accept the live-tracking launcher. Restart MiSTer and try again.", "MiSTer’s temporary storage wouldn’t take the live-tracking launcher, mate. Restart the MiSTer and have another go.", "El almacenamiento temporal de MiSTer no aceptó el iniciador de seguimiento en vivo. Reinicia MiSTer e inténtalo de nuevo.", "Le stockage temporaire du MiSTer n’a pas accepté le lanceur de suivi en direct. Redémarrez le MiSTer et réessayez.", "Der temporäre MiSTer-Speicher hat das Live-Verfolgungsprogramm nicht angenommen. Starte MiSTer neu und versuche es erneut.", "O armazenamento temporário do MiSTer não aceitou o iniciador de rastreamento ao vivo. Reinicie o MiSTer e tente novamente."),
-    ("1. Connect MiSTer to your router with Ethernet or Wi-Fi and power it on.\n2. Keep this computer on the same network.\n3. Enter MiSTer or its IP address below. The factory SSH login is root with password 1.\n4. Select Install / Repair Support. The tracker will install live tracking, create its SNES ROM folder, and select MiSTer as the platform.", "1. Hook MiSTer to your router by Ethernet or Wi-Fi and fire it up, mate.\n2. Keep this computer on the same network.\n3. Enter MiSTer or its IP below. The factory SSH login is root with password 1.\n4. Pick Install / Repair Support. The tracker will sort live tracking, make the SNES ROM folder, and pick MiSTer. Crikey, easy as.", "1. Conecta MiSTer al router por Ethernet o Wi-Fi y enciéndelo.\n2. Mantén este equipo en la misma red.\n3. Escribe MiSTer o su IP. El acceso SSH de fábrica es root con contraseña 1.\n4. Selecciona Instalar / reparar soporte. El tracker instalará el seguimiento en vivo, creará la carpeta de ROM de SNES y seleccionará MiSTer.", "1. Connectez le MiSTer au routeur par Ethernet ou Wi-Fi et allumez-le.\n2. Gardez cet ordinateur sur le même réseau.\n3. Saisissez MiSTer ou son adresse IP. L’accès SSH d’usine est root avec le mot de passe 1.\n4. Choisissez Installer / réparer. Le tracker installera le suivi en direct, créera le dossier ROM SNES et sélectionnera MiSTer.", "1. Verbinde MiSTer per Ethernet oder WLAN mit dem Router und schalte ihn ein.\n2. Dieser Computer muss im selben Netzwerk sein.\n3. Gib MiSTer oder seine IP ein. Die SSH-Werksanmeldung lautet root mit Passwort 1.\n4. Wähle Unterstützung installieren / reparieren. Der Tracker installiert Live-Verfolgung, erstellt den SNES-ROM-Ordner und wählt MiSTer aus.", "1. Conecte o MiSTer ao roteador por Ethernet ou Wi-Fi e ligue-o.\n2. Mantenha este computador na mesma rede.\n3. Digite MiSTer ou o IP. O login SSH de fábrica é root com senha 1.\n4. Selecione Instalar / reparar suporte. O tracker instalará o rastreamento ao vivo, criará a pasta de ROMs do SNES e selecionará o MiSTer."),
+    ("1. Connect MiSTer to your router with Ethernet or Wi-Fi and power it on.\n2. Keep this computer on the same network.\n3. Enter MiSTer or its IP address below. The factory SSH login is root with password 1.\n4. Select Install Virtual Save State Slots. The tracker will install or repair live tracking, create its SNES ROM folder, install virtual slots 5–11, and select MiSTer as the platform.", "1. Hook MiSTer to your router by Ethernet or Wi-Fi and fire it up, mate.\n2. Keep this computer on the same network.\n3. Enter MiSTer or its IP below. The factory SSH login is root with password 1.\n4. Pick Install Virtual Save State Slots. The tracker will sort live tracking, make the SNES ROM folder, install virtual slots 5–11, and pick MiSTer. Crikey, easy as.", "1. Conecta MiSTer al router por Ethernet o Wi-Fi y enciéndelo.\n2. Mantén este equipo en la misma red.\n3. Escribe MiSTer o su IP. El acceso SSH de fábrica es root con contraseña 1.\n4. Selecciona Instalar ranuras de estados virtuales. El tracker instalará o reparará el seguimiento en vivo, creará la carpeta de ROM de SNES, instalará las ranuras virtuales 5–11 y seleccionará MiSTer.", "1. Connectez le MiSTer au routeur par Ethernet ou Wi-Fi et allumez-le.\n2. Gardez cet ordinateur sur le même réseau.\n3. Saisissez MiSTer ou son adresse IP. L’accès SSH d’usine est root avec le mot de passe 1.\n4. Choisissez Installer les emplacements d’état virtuels. Le tracker installera ou réparera le suivi en direct, créera le dossier ROM SNES, installera les emplacements virtuels 5 à 11 et sélectionnera MiSTer.", "1. Verbinde MiSTer per Ethernet oder WLAN mit dem Router und schalte ihn ein.\n2. Dieser Computer muss im selben Netzwerk sein.\n3. Gib MiSTer oder seine IP ein. Die SSH-Werksanmeldung lautet root mit Passwort 1.\n4. Wähle Virtuelle Speicherplätze installieren. Der Tracker installiert oder repariert die Live-Verfolgung, erstellt den SNES-ROM-Ordner, installiert die virtuellen Plätze 5–11 und wählt MiSTer aus.", "1. Conecte o MiSTer ao roteador por Ethernet ou Wi-Fi e ligue-o.\n2. Mantenha este computador na mesma rede.\n3. Digite MiSTer ou o IP. O login SSH de fábrica é root com senha 1.\n4. Selecione Instalar slots de estados virtuais. O tracker instalará ou reparará o rastreamento ao vivo, criará a pasta de ROMs do SNES, instalará os slots virtuais 5–11 e selecionará o MiSTer."),
+    ("MiSTer SSH is connected. Install Virtual Save State Slots, then load the SNES core once to start live tracking.", "MiSTer SSH is connected, mate. Install Virtual Save State Slots, then load the SNES core once to kick off live tracking.", "SSH de MiSTer está conectado. Instala las ranuras de estados virtuales y luego carga una vez el núcleo SNES para iniciar el seguimiento en vivo.", "SSH MiSTer est connecté. Installez les emplacements d’état virtuels, puis chargez une fois le cœur SNES pour démarrer le suivi en direct.", "MiSTer-SSH ist verbunden. Installiere die virtuellen Speicherplätze und lade danach einmal den SNES-Core, um die Live-Verfolgung zu starten.", "O SSH do MiSTer está conectado. Instale os slots de estados virtuais e carregue o núcleo SNES uma vez para iniciar o rastreamento ao vivo."),
 )
 for (
     _english_text,
@@ -18719,6 +19488,128 @@ for (
     _german_text,
     _portuguese_text,
 ) in _MISTER_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
+_MISTER_EXPERIMENT_LOCALIZATION_ROWS = (
+    # English, Australian, Spanish, French, German, Portuguese (Brazil)
+    (
+        "MiSTer Save States 5–11",
+        "MiSTer save states 5–11, mate",
+        "Estados de guardado 5–11 de MiSTer",
+        "États de sauvegarde MiSTer 5 à 11",
+        "MiSTer-Speicherstände 5–11",
+        "Estados de salvamento 5–11 do MiSTer",
+    ),
+    (
+        "Installed automatically by Find & Set Up MiSTer or by selecting Install Virtual Save State Slots below. SNES only. Native states 1–4 stay unchanged. F5–F11 load states 5–11, and Alt+F5–Alt+F11 save states 5–11. F12 still opens the MiSTer menu. State 4 is used briefly as a bridge, and an exact backup is verified first.",
+        "Installed automatically by Find & Set Up MiSTer or by selecting Install Virtual Save State Slots below, mate. SNES only. Native states 1–4 stay put. F5–F11 load states 5–11, and Alt+F5–Alt+F11 save states 5–11. F12 still opens the MiSTer menu. State 4 is only borrowed for a tick, and we check an exact backup first. Crikey, safety first.",
+        "Se instala automáticamente con Buscar y configurar MiSTer o al seleccionar Instalar ranuras de estados virtuales abajo. Solo para SNES. Los estados nativos 1–4 no cambian. F5–F11 cargan los estados 5–11 y Alt+F5–Alt+F11 guardan los estados 5–11. F12 sigue abriendo el menú de MiSTer. El estado 4 se usa brevemente como puente y primero se verifica una copia exacta.",
+        "Installé automatiquement par Rechercher et configurer le MiSTer ou en sélectionnant Installer les emplacements d’état virtuels ci-dessous. SNES uniquement. Les états natifs 1 à 4 restent inchangés. F5 à F11 chargent les états 5 à 11 et Alt+F5 à Alt+F11 enregistrent les états 5 à 11. F12 ouvre toujours le menu MiSTer. L’état 4 sert brièvement de passerelle et une sauvegarde exacte est d’abord vérifiée.",
+        "Wird automatisch über MiSTer suchen und einrichten oder durch Auswahl von Virtuelle Speicherplätze installieren unten installiert. Nur SNES. Die nativen Speicherstände 1–4 bleiben unverändert. F5–F11 laden die Stände 5–11 und Alt+F5–Alt+F11 speichern die Stände 5–11. F12 öffnet weiterhin das MiSTer-Menü. Stand 4 wird kurz als Brücke verwendet und zuerst wird eine exakte Sicherung geprüft.",
+        "Instalado automaticamente por Encontrar e configurar o MiSTer ou ao selecionar Instalar slots de estados virtuais abaixo. Somente SNES. Os estados nativos 1–4 permanecem inalterados. F5–F11 carregam os estados 5–11 e Alt+F5–Alt+F11 salvam os estados 5–11. F12 continua abrindo o menu do MiSTer. O estado 4 é usado brevemente como ponte e uma cópia exata é verificada primeiro.",
+    ),
+    (
+        "Restore Previous MiSTer Version",
+        "Put the previous working MiSTer back",
+        "Restaurar la versión anterior de MiSTer",
+        "Restaurer la version précédente de MiSTer",
+        "Vorherige MiSTer-Version wiederherstellen",
+        "Restaurar a versão anterior do MiSTer",
+    ),
+    (
+        "Restore the Previous MiSTer Version?",
+        "Put the previous working MiSTer back, mate?",
+        "¿Restaurar la versión anterior de MiSTer?",
+        "Restaurer la version précédente de MiSTer ?",
+        "Die vorherige MiSTer-Version wiederherstellen?",
+        "Restaurar a versão anterior do MiSTer?",
+    ),
+    (
+        "This restores the exact MiSTer file saved before states 5–11 were enabled and restarts MiSTer. Native save states and ROM files are not removed.\n\nContinue with restoration?",
+        "This puts back the exact MiSTer file saved before states 5–11 were enabled and restarts the MiSTer. Native saves and ROMs stay put, mate.\n\nRestore it now?",
+        "Esto restaura el archivo MiSTer exacto guardado antes de activar los estados 5–11 y reinicia MiSTer. Los estados nativos y los archivos ROM no se eliminan.\n\n¿Continuar con la restauración?",
+        "Cette opération restaure le fichier MiSTer exact enregistré avant l’activation des états 5 à 11 et redémarre le MiSTer. Les sauvegardes natives et les ROM ne sont pas supprimées.\n\nContinuer la restauration ?",
+        "Damit wird die vor der Aktivierung der Stände 5–11 gesicherte exakte MiSTer-Datei wiederhergestellt und MiSTer neu gestartet. Native Speicherstände und ROM-Dateien werden nicht entfernt.\n\nMit der Wiederherstellung fortfahren?",
+        "Isso restaura o arquivo MiSTer exato salvo antes da ativação dos estados 5–11 e reinicia o MiSTer. Estados nativos e arquivos ROM não são removidos.\n\nContinuar com a restauração?",
+    ),
+    (
+        "Backing up the current MiSTer file...",
+        "Backing up the current MiSTer file, mate...",
+        "Creando copia del archivo MiSTer actual...",
+        "Sauvegarde du fichier MiSTer actuel...",
+        "Aktuelle MiSTer-Datei wird gesichert...",
+        "Fazendo backup do arquivo MiSTer atual...",
+    ),
+    (
+        "Installing MiSTer save states 5–11...",
+        "Installing MiSTer save states 5–11, mate...",
+        "Instalando estados de guardado 5–11 de MiSTer...",
+        "Installation des états MiSTer 5 à 11...",
+        "MiSTer-Speicherstände 5–11 werden installiert...",
+        "Instalando estados de salvamento 5–11 do MiSTer...",
+    ),
+    (
+        "Checking compatibility with this MiSTer...",
+        "Checking this build agrees with your MiSTer, mate...",
+        "Comprobando la compatibilidad con este MiSTer...",
+        "Vérification de la compatibilité avec ce MiSTer...",
+        "Kompatibilität mit diesem MiSTer wird geprüft...",
+        "Verificando a compatibilidade com este MiSTer...",
+    ),
+    (
+        "This MiSTer save-state build is not compatible with the system files on this MiSTer. The current MiSTer file was not changed.",
+        "Crikey, this save-state build does not agree with this MiSTer’s system files. Your current MiSTer file was left exactly as it was, mate.",
+        "Esta versión de estados no es compatible con los archivos del sistema de este MiSTer. El archivo MiSTer actual no se modificó.",
+        "Cette version des états n’est pas compatible avec les fichiers système de ce MiSTer. Le fichier MiSTer actuel n’a pas été modifié.",
+        "Dieser MiSTer-Speicherstand-Build ist nicht mit den Systemdateien dieses MiSTer kompatibel. Die aktuelle MiSTer-Datei wurde nicht geändert.",
+        "Esta versão de estados não é compatível com os arquivos de sistema deste MiSTer. O arquivo MiSTer atual não foi alterado.",
+    ),
+    (
+        "Verifying the saved original MiSTer file...",
+        "Checking the saved original MiSTer file, mate...",
+        "Verificando el archivo MiSTer original guardado...",
+        "Vérification du fichier MiSTer d’origine enregistré...",
+        "Gespeicherte Original-MiSTer-Datei wird geprüft...",
+        "Verificando o arquivo MiSTer original salvo...",
+    ),
+    (
+        "MiSTer support and save states 5–11 are installed. MiSTer is restarting. In the SNES core, use Alt+F5 through Alt+F11 to save and F5 through F11 to load states 5–11. F12 still opens the MiSTer menu.",
+        "MiSTer support and states 5–11 are installed, mate, and MiSTer is restarting. In the SNES core, Alt+F5 through Alt+F11 saves and F5 through F11 loads states 5–11. F12 still opens the MiSTer menu. You beauty!",
+        "El soporte de MiSTer y los estados 5–11 están instalados. MiSTer se está reiniciando. En el núcleo SNES, usa Alt+F5 a Alt+F11 para guardar y F5 a F11 para cargar los estados 5–11. F12 sigue abriendo el menú de MiSTer.",
+        "La prise en charge MiSTer et les états 5 à 11 sont installés. Le MiSTer redémarre. Dans le cœur SNES, utilisez Alt+F5 à Alt+F11 pour enregistrer et F5 à F11 pour charger les états 5 à 11. F12 ouvre toujours le menu MiSTer.",
+        "MiSTer-Unterstützung und die Speicherstände 5–11 sind installiert. MiSTer wird neu gestartet. Im SNES-Core speichern Alt+F5 bis Alt+F11 und F5 bis F11 laden die Stände 5–11. F12 öffnet weiterhin das MiSTer-Menü.",
+        "O suporte ao MiSTer e os estados 5–11 estão instalados. O MiSTer está reiniciando. No núcleo SNES, use Alt+F5 até Alt+F11 para salvar e F5 até F11 para carregar os estados 5–11. F12 continua abrindo o menu do MiSTer.",
+    ),
+    (
+        "Your exact previous MiSTer file was restored and states 5–11 were disabled. MiSTer is restarting.",
+        "Your exact previous MiSTer file is back and states 5–11 are switched off, mate. MiSTer is restarting.",
+        "Se restauró el archivo MiSTer anterior exacto y se desactivaron los estados 5–11. MiSTer se está reiniciando.",
+        "Votre fichier MiSTer précédent exact a été restauré et les états 5 à 11 ont été désactivés. Le MiSTer redémarre.",
+        "Ihre exakte vorherige MiSTer-Datei wurde wiederhergestellt und die Speicherstände 5–11 wurden deaktiviert. MiSTer wird neu gestartet.",
+        "Seu arquivo MiSTer anterior exato foi restaurado e os estados 5–11 foram desativados. O MiSTer está reiniciando.",
+    ),
+    (
+        "MiSTer Main has been updated or changed since save states 5–11 were installed. This tracker will not overwrite or downgrade it. Restore the original MiSTer file, or install a tracker build made for the new MiSTer Main version.",
+        "MiSTer Main has changed since states 5–11 were installed, mate. The tracker won’t clobber or downgrade it. Put the original MiSTer file back, or use a tracker build made for the new MiSTer Main—crikey, safety first.",
+        "MiSTer Main se actualizó o cambió desde que se instalaron los estados 5–11. Este tracker no lo sobrescribirá ni instalará una versión anterior. Restaura el archivo MiSTer original o instala una versión del tracker creada para la nueva versión de MiSTer Main.",
+        "MiSTer Main a été mis à jour ou modifié depuis l’installation des états 5 à 11. Ce tracker ne l’écrasera pas et ne reviendra pas à une version antérieure. Restaurez le fichier MiSTer d’origine ou installez une version du tracker conçue pour la nouvelle version de MiSTer Main.",
+        "MiSTer Main wurde seit der Installation der Speicherstände 5–11 aktualisiert oder geändert. Dieser Tracker wird die Datei weder überschreiben noch herabstufen. Stelle die ursprüngliche MiSTer-Datei wieder her oder installiere einen Tracker-Build für die neue MiSTer-Main-Version.",
+        "O MiSTer Main foi atualizado ou alterado desde a instalação dos estados 5–11. Este tracker não o substituirá nem fará downgrade. Restaure o arquivo MiSTer original ou instale uma versão do tracker criada para a nova versão do MiSTer Main.",
+    ),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _MISTER_EXPERIMENT_LOCALIZATION_ROWS:
     UI_TRANSLATIONS["au"][_english_text] = _australian_text
     UI_TRANSLATIONS["es"][_english_text] = _spanish_text
     UI_TRANSLATIONS["fr"][_english_text] = _french_text
@@ -19327,6 +20218,10 @@ _AUSTRALIAN_UI_OVERRIDES = {
     "Open Database Folder": "Crack open the database folder",
     "Test Selected Platform": "Give the selected rig a test run",
     "OBS Settings": "OBS bits and bobs",
+    "OBS Capture Mode": "One-window OBS capture, mate",
+    "Show tracker popups inside the main app window": "Keep the tracker's blue popups in the main window, mate",
+    "One OBS Window Capture source will then include the tracker's blue popups.": "One OBS Window Capture will grab the blue popups too — beauty!",
+    "External browsers, installers, and file pickers remain separate windows.": "Browsers, installers, and file pickers still do their own walkabout.",
     "Restore Previous App Version...": "Wind back to the previous app version...",
     "Download & Patch Missing Hacks…": "Grab and patch the missing hacks…",
     "Download & Patch All Matching Hacks": "Grab and patch every matching hack",
@@ -19381,8 +20276,41 @@ for _english_text in _all_ui_translation_keys:
 UI_TRANSLATIONS["au"].update(_AUSTRALIAN_UI_OVERRIDES)
 
 _RUNTIME_LOCALIZATION_ROWS = (
+    (
+        "The random button applies its own Rating, Difficulty, Type, Released, and Hall of Fame filters, then launches the selected ROM.",
+        "The random button uses its own Rating, Difficulty, Type, Released, and Hall of Fame filters, then fires up the selected ROM, mate.",
+        "El botón aleatorio aplica sus propios filtros de puntuación, dificultad, tipo, fecha de publicación y Salón de la Fama, y luego inicia la ROM seleccionada.",
+        "Le bouton aléatoire applique ses propres filtres de note, difficulté, type, date de sortie et Temple de la renommée, puis lance la ROM sélectionnée.",
+        "Die Zufallstaste verwendet eigene Filter für Bewertung, Schwierigkeit, Typ, Veröffentlichung und Ruhmeshalle und startet dann die ausgewählte ROM.",
+        "O botão aleatório aplica seus próprios filtros de avaliação, dificuldade, tipo, lançamento e Hall da Fama e inicia a ROM selecionada.",
+    ),
+    ("App Settings", "App settings, mate", "Configuración de la aplicación", "Paramètres de l’application", "App-Einstellungen", "Configurações do aplicativo"),
+    ("Connection & Emulator", "Connection and emulator gear, mate", "Conexión y emulador", "Connexion et émulateur", "Verbindung und Emulator", "Conexão e emulador"),
+    ("Application", "Application setup, mate", "Aplicación", "Configuration de l’application", "Anwendung", "Aplicativo"),
+    ("LiveSplit Timers", "LiveSplit timers, mate", "Temporizadores LiveSplit", "Chronomètres LiveSplit", "LiveSplit-Timer", "Cronômetros LiveSplit"),
     ("Database Tools", "Database gear, mate", "Herramientas de base de datos", "Outils de base de données", "Datenbankwerkzeuge", "Ferramentas do banco de dados"),
     ("Automatic Backups", "Automatic backups, mate", "Copias de seguridad automáticas", "Sauvegardes automatiques", "Automatische Sicherungen", "Backups automáticos"),
+    ("SMW Central Account & Comments...", "SMW Central account and comments, mate...", "Cuenta y comentarios de SMW Central...", "Compte et commentaires SMW Central...", "SMW-Central-Konto und Kommentare...", "Conta e comentários do SMW Central..."),
+    ("Log In to SMW Central...", "Log in to SMW Central, mate...", "Iniciar sesión en SMW Central...", "Se connecter à SMW Central...", "Bei SMW Central anmelden...", "Entrar no SMW Central..."),
+    ("Log In to SMW Central", "Log in to SMW Central, mate", "Iniciar sesión en SMW Central", "Se connecter à SMW Central", "Bei SMW Central anmelden", "Entrar no SMW Central"),
+    ("Automatic SMW Central Login", "Automatic SMW Central login, mate", "Inicio de sesión automático en SMW Central", "Connexion automatique à SMW Central", "Automatische SMW-Central-Anmeldung", "Login automático no SMW Central"),
+    ("Automatically reuse my SMW Central login", "Reuse my SMW Central login automatically, mate", "Reutilizar automáticamente mi sesión de SMW Central", "Réutiliser automatiquement ma connexion SMW Central", "Meine SMW-Central-Anmeldung automatisch wiederverwenden", "Reutilizar automaticamente meu login do SMW Central"),
+    ("Private tracker notes:", "Private tracker notes, mate:", "Notas privadas del tracker:", "Notes privées du tracker :", "Private Tracker-Notizen:", "Observações privadas do tracker:"),
+    ("SMW Central comment (optional):", "SMW Central comment (if you fancy it):", "Comentario de SMW Central (opcional):", "Commentaire SMW Central (facultatif) :", "SMW-Central-Kommentar (optional):", "Comentário do SMW Central (opcional):"),
+    ("This comment will be public on the hack's SMW Central page.", "This yarn will be public on the hack's SMW Central page, mate.", "Este comentario será público en la página del hack en SMW Central.", "Ce commentaire sera public sur la page SMW Central du hack.", "Dieser Kommentar ist öffentlich auf der SMW-Central-Seite des Hacks sichtbar.", "Este comentário será público na página do hack no SMW Central."),
+    ("Personal Rating (1-5, decimals allowed):", "Personal score (1-5, decimals are fair dinkum):", "Puntuación personal (1-5, se permiten decimales):", "Note personnelle (1-5, décimales autorisées) :", "Persönliche Bewertung (1-5, Dezimalzahlen erlaubt):", "Avaliação pessoal (1-5, decimais permitidos):"),
+    ("SMW Central Rating (1-5, no decimals allowed):", "SMW Central score (1-5, whole numbers only, mate):", "Puntuación de SMW Central (1-5, no se permiten decimales):", "Note SMW Central (1-5, décimales interdites) :", "SMW-Central-Bewertung (1-5, keine Dezimalzahlen erlaubt):", "Avaliação do SMW Central (1-5, decimais não permitidos):"),
+    ("Post my rating and comment to SMW Central", "Post my score and comment to SMW Central, mate", "Publicar mi puntuación y comentario en SMW Central", "Publier ma note et mon commentaire sur SMW Central", "Meine Bewertung und meinen Kommentar bei SMW Central veröffentlichen", "Publicar minha avaliação e meu comentário no SMW Central"),
+    ("SMW Central Submission", "SMW Central post, mate", "Publicación en SMW Central", "Publication SMW Central", "SMW-Central-Beitrag", "Publicação no SMW Central"),
+    ("SMW Central ratings must be whole numbers from 1 through 5.", "SMW Central scores need to be whole numbers from 1 through 5, mate.", "Las puntuaciones de SMW Central deben ser números enteros del 1 al 5.", "Les notes SMW Central doivent être des nombres entiers de 1 à 5.", "SMW-Central-Bewertungen müssen ganze Zahlen von 1 bis 5 sein.", "As avaliações do SMW Central devem ser números inteiros de 1 a 5."),
+    ("This hack does not have a valid SMW Central page for comments.", "Crikey! This hack has no proper SMW Central page for comments.", "Este hack no tiene una página válida de SMW Central para comentarios.", "Ce hack ne possède pas de page SMW Central valide pour les commentaires.", "Dieser Hack hat keine gültige SMW-Central-Seite für Kommentare.", "Este hack não tem uma página válida do SMW Central para comentários."),
+    ("SMW Central will handle your password and session. SMW Stream Tracker never reads your password.", "SMW Central handles your password and login session, mate. The tracker never has a squiz at your password.", "SMW Central gestionará tu contraseña y sesión. SMW Stream Tracker nunca lee tu contraseña.", "SMW Central gère votre mot de passe et votre session. SMW Stream Tracker ne lit jamais votre mot de passe.", "SMW Central verwaltet Ihr Passwort und Ihre Sitzung. SMW Stream Tracker liest Ihr Passwort niemals.", "O SMW Central gerencia sua senha e sessão. O SMW Stream Tracker nunca lê sua senha."),
+    ("Your local completion was saved. Review the prefilled rating and comment in SMW Central, then use SMW Central's own submit controls to publish them.", "Your local finish is saved, mate. Check the prefilled score and comment in SMW Central, then use its own buttons to send them through.", "Tu finalización local se guardó. Revisa la puntuación y el comentario rellenados en SMW Central y usa sus propios controles para publicarlos.", "Votre progression locale a été enregistrée. Vérifiez la note et le commentaire préremplis dans SMW Central, puis utilisez ses propres commandes pour les publier.", "Ihr lokaler Abschluss wurde gespeichert. Prüfen Sie die vorausgefüllte Bewertung und den Kommentar bei SMW Central und verwenden Sie dann die dortigen Schaltflächen zum Veröffentlichen.", "Sua conclusão local foi salva. Revise a avaliação e o comentário preenchidos no SMW Central e use os próprios controles do site para publicá-los."),
+    ("SMW Central Could Not Be Opened", "Crikey! SMW Central wouldn’t open", "No se pudo abrir SMW Central", "Impossible d’ouvrir SMW Central", "SMW Central konnte nicht geöffnet werden", "Não foi possível abrir o SMW Central"),
+    ("This is not a valid SMW Central page.", "Yeah, nah — that isn’t a proper SMW Central page, mate.", "Esta no es una página válida de SMW Central.", "Cette page SMW Central n’est pas valide.", "Dies ist keine gültige SMW-Central-Seite.", "Esta não é uma página válida do SMW Central."),
+    ("This is not a valid SMW Central hack page.", "Yeah, nah — that isn’t a proper SMW Central hack page, mate.", "Esta no es una página válida de un hack de SMW Central.", "Cette page de hack SMW Central n’est pas valide.", "Dies ist keine gültige SMW-Central-Hackseite.", "Esta não é uma página válida de hack do SMW Central."),
+    ("SMW Central opened inside the app. Sign in there to post comments.", "SMW Central is open in the app, mate. Sign in there and have your say.", "SMW Central se abrió dentro de la aplicación. Inicia sesión allí para publicar comentarios.", "SMW Central s’est ouvert dans l’application. Connectez-vous pour publier des commentaires.", "SMW Central wurde in der App geöffnet. Melden Sie sich dort an, um Kommentare zu veröffentlichen.", "O SMW Central foi aberto dentro do aplicativo. Entre na sua conta para publicar comentários."),
+    ("SMW Central could not be opened inside the app.", "Crikey! SMW Central couldn’t be opened inside the app.", "SMW Central no se pudo abrir dentro de la aplicación.", "SMW Central n’a pas pu être ouvert dans l’application.", "SMW Central konnte nicht in der App geöffnet werden.", "Não foi possível abrir o SMW Central dentro do aplicativo."),
     ("FXPAK Pro uses QUsb2Snes for live memory tracking. The workbook remains optional after import.", "FXPAK Pro uses QUsb2Snes for live tracking, mate. The workbook is still optional after import.", "FXPAK Pro usa QUsb2Snes para el seguimiento de memoria en vivo. El libro sigue siendo opcional después de importarlo.", "FXPAK Pro utilise QUsb2Snes pour le suivi mémoire en direct. Le classeur reste facultatif après l’importation.", "FXPAK Pro verwendet QUsb2Snes für die Live-Speicherverfolgung. Die Arbeitsmappe bleibt nach dem Import optional.", "O FXPAK Pro usa o QUsb2Snes para rastreamento de memória ao vivo. A pasta de trabalho continua opcional após a importação."),
     ("RetroArch uses SNI for live memory tracking and also needs Network Commands enabled. The workbook remains optional after import.", "RetroArch uses SNI for live tracking and needs Network Commands switched on, mate. The workbook is still optional after import.", "RetroArch usa SNI para el seguimiento de memoria en vivo y también necesita los comandos de red activados. El libro sigue siendo opcional después de importarlo.", "RetroArch utilise SNI pour le suivi mémoire en direct et nécessite aussi l’activation des commandes réseau. Le classeur reste facultatif après l’importation.", "RetroArch verwendet SNI für die Live-Speicherverfolgung und benötigt außerdem aktivierte Netzwerkbefehle. Die Arbeitsmappe bleibt nach dem Import optional.", "O RetroArch usa o SNI para rastreamento de memória ao vivo e também precisa dos Comandos de Rede ativados. A pasta de trabalho continua opcional após a importação."),
     ("MiSTer uses its local network connection for live memory tracking. The workbook remains optional after import.", "MiSTer uses your local network for live tracking, mate. The workbook is still optional after import. Too easy!", "MiSTer usa la conexión de red local para el seguimiento de memoria en vivo. El libro sigue siendo opcional después de importarlo.", "MiSTer utilise la connexion au réseau local pour le suivi mémoire en direct. Le classeur reste facultatif après l’importation.", "MiSTer verwendet die lokale Netzwerkverbindung für die Live-Speicherverfolgung. Die Arbeitsmappe bleibt nach dem Import optional.", "O MiSTer usa a conexão de rede local para rastreamento de memória ao vivo. A pasta de trabalho continua opcional após a importação."),
@@ -19391,6 +20319,7 @@ _RUNTIME_LOCALIZATION_ROWS = (
     ("This removes personal progress, rating, playtime, and notes. The game stays in the catalog and game library.", "This clears your progress, score, playtime, and notes, mate. The game stays put in the catalogue and game library.", "Esto elimina el progreso personal, la puntuación, el tiempo de juego y las notas. El juego permanece en el catálogo y en la biblioteca de juegos.", "Cette action supprime la progression personnelle, la note, le temps de jeu et les notes. Le jeu reste dans le catalogue et la bibliothèque de jeux.", "Dadurch werden persönlicher Fortschritt, Bewertung, Spielzeit und Notizen entfernt. Das Spiel bleibt im Katalog und in der Spielebibliothek.", "Isso remove o progresso pessoal, a avaliação, o tempo de jogo e as observações. O jogo permanece no catálogo e na biblioteca de jogos."),
     ("Add Hack to Tracker", "Chuck a hack in the tracker, mate", "Añadir hack al tracker", "Ajouter un hack au tracker", "Hack zum Tracker hinzufügen", "Adicionar hack ao tracker"),
     ("Hack Details", "Hack details, mate", "Detalles del hack", "Détails du hack", "Hack-Details", "Detalhes do hack"),
+    ("View Hack Details", "Have a squiz at the hack details, mate", "Ver detalles del hack", "Afficher les détails du hack", "Hack-Details anzeigen", "Ver detalhes do hack"),
     ("Tracker Details", "Tracker details, mate", "Detalles del tracker", "Détails du tracker", "Tracker-Details", "Detalhes do tracker"),
     ("ROM Hack Title:", "ROM hack title, mate:", "Título del hack de ROM:", "Titre du hack ROM :", "ROM-Hack-Titel:", "Título do hack de ROM:"),
     ("Created By:", "Knocked together by:", "Creado por:", "Créé par :", "Erstellt von:", "Criado por:"),
@@ -19399,6 +20328,23 @@ _RUNTIME_LOCALIZATION_ROWS = (
     ("Difficulty:", "How rough is it?:", "Dificultad:", "Difficulté :", "Schwierigkeit:", "Dificuldade:"),
     ("Type:", "Hack type, mate:", "Tipo:", "Type :", "Typ:", "Tipo:"),
     ("Hack Type:", "Hack type, mate:", "Tipo de hack:", "Type de hack :", "Hack-Typ:", "Tipo de hack:"),
+    ("Search title, creator, or tag", "Search title, creator, or tag, mate", "Buscar título, creador o etiqueta", "Rechercher un titre, un créateur ou un tag", "Titel, Ersteller oder Tag suchen", "Pesquisar título, criador ou tag"),
+    ("Search title, creator, or tag:", "Search title, creator, or tag, mate:", "Buscar título, creador o etiqueta:", "Rechercher un titre, un créateur ou un tag :", "Titel, Ersteller oder Tag suchen:", "Pesquisar título, criador ou tag:"),
+    ("Description", "The good oil", "Descripción", "Description", "Beschreibung", "Descrição"),
+    ("Screenshots", "Screenshots, mate", "Capturas de pantalla", "Captures d’écran", "Screenshots", "Capturas de tela"),
+    ("Tags:", "Tags, mate:", "Etiquetas:", "Tags :", "Tags:", "Tags:"),
+    ("No description is available for this hack.", "No description for this hack yet, mate.", "No hay una descripción disponible para este hack.", "Aucune description n’est disponible pour ce hack.", "Für diesen Hack ist keine Beschreibung verfügbar.", "Nenhuma descrição está disponível para este hack."),
+    ("No screenshots are available for this hack.", "No screenshots for this hack yet, mate.", "No hay capturas de pantalla disponibles para este hack.", "Aucune capture d’écran n’est disponible pour ce hack.", "Für diesen Hack sind keine Screenshots verfügbar.", "Nenhuma captura de tela está disponível para este hack."),
+    ("Loading screenshots…", "Fetching the screenshots, mate…", "Cargando capturas de pantalla…", "Chargement des captures d’écran…", "Screenshots werden geladen…", "Carregando capturas de tela…"),
+    ("Loading the description, tags, and screenshots from SMW Central…", "Fetching the description, tags, and screenshots from SMW Central, mate…", "Cargando la descripción, las etiquetas y las capturas de pantalla desde SMW Central…", "Chargement de la description, des tags et des captures d’écran depuis SMW Central…", "Beschreibung, Tags und Screenshots werden von SMW Central geladen…", "Carregando a descrição, as tags e as capturas de tela do SMW Central…"),
+    ("The full hack details could not be loaded from SMW Central.", "The full hack details went walkabout at SMW Central, mate.", "No se pudieron cargar los detalles completos del hack desde SMW Central.", "Les détails complets du hack n’ont pas pu être chargés depuis SMW Central.", "Die vollständigen Hack-Details konnten nicht von SMW Central geladen werden.", "Não foi possível carregar os detalhes completos do hack do SMW Central."),
+    ("Some screenshots could not be loaded.", "A few screenshots went walkabout, mate.", "No se pudieron cargar algunas capturas de pantalla.", "Certaines captures d’écran n’ont pas pu être chargées.", "Einige Screenshots konnten nicht geladen werden.", "Não foi possível carregar algumas capturas de tela."),
+    ("Click any screenshot to enlarge it.", "Give any screenshot a click for a bigger squiz, mate.", "Haz clic en cualquier captura para ampliarla.", "Cliquez sur une capture d’écran pour l’agrandir.", "Klicken Sie auf einen Screenshot, um ihn zu vergrößern.", "Clique em qualquer captura de tela para ampliá-la."),
+    ("Screenshot Viewer", "Big screenshot viewer, mate", "Visor de capturas de pantalla", "Visionneuse de captures d’écran", "Screenshot-Anzeige", "Visualizador de capturas de tela"),
+    ("Previous Screenshot", "Previous screenshot, mate", "Captura anterior", "Capture précédente", "Vorheriger Screenshot", "Captura anterior"),
+    ("Next Screenshot", "Next screenshot, mate", "Captura siguiente", "Capture suivante", "Nächster Screenshot", "Próxima captura"),
+    ("Screenshot {current} of {total}", "Screenshot {current} of {total}, mate", "Captura {current} de {total}", "Capture {current} sur {total}", "Screenshot {current} von {total}", "Captura {current} de {total}"),
+    ("Type part of a title, author, tag, difficulty, or hack type, then choose a hack from the drop-down list.", "Type part of a title, creator, tag, difficulty, or hack type, then pick your hack from the list, mate.", "Escribe parte de un título, autor, etiqueta, dificultad o tipo de hack y luego elige un hack de la lista desplegable.", "Saisissez une partie du titre, de l’auteur, d’un tag, de la difficulté ou du type de hack, puis choisissez un hack dans la liste déroulante.", "Geben Sie einen Teil des Titels, Erstellers, Tags, Schwierigkeitsgrads oder Hack-Typs ein und wählen Sie dann einen Hack aus der Liste.", "Digite parte do título, autor, tag, dificuldade ou tipo de hack e escolha um hack na lista suspensa."),
     ("SMWC ID (optional):", "SMWC ID (if you've got it):", "ID de SMWC (opcional):", "Identifiant SMWC (facultatif) :", "SMWC-ID (optional):", "ID do SMWC (opcional):"),
     ("Status:", "Where's it at?:", "Estado:", "Statut :", "Status:", "Status:"),
     ("Total deaths:", "Total mishaps:", "Muertes totales:", "Morts totales :", "Tode insgesamt:", "Mortes totais:"),
@@ -20504,6 +21450,10 @@ DEFAULT_CONFIG = {
     "obs_exits_text_format": "Exits: {completed} / {total}",
     "obs_deaths_text_format": "Level Deaths: {deaths}",
     "obs_total_deaths_text_format": "Total Deaths: {total_deaths}",
+    # Keep tracker-owned dialogs inside the main window so a single OBS
+    # Window Capture source can include them.  Native OS and third-party
+    # windows (browsers, installers, file pickers) intentionally stay native.
+    "obs_capture_mode": False,
     # timer_grace_seconds supersedes the original overworld-only setting.
     # Keep overworld_idle_seconds as a compatibility mirror for existing
     # installations and older updater builds.
@@ -20547,6 +21497,7 @@ DEFAULT_CONFIG = {
     "google_sheets_web_app_url": "",
     "google_sheets_source_url": "",
     "google_sheets_sheet_base_name": "SMW Stream Tracker",
+    "smwc_automatic_login": True,
     "tracker_column_styles": DEFAULT_TRACKER_COLUMN_STYLES,
     "tracker_difficulty_colors": DEFAULT_TRACKER_DIFFICULTY_COLORS,
     "statistics_table_styles": {},
@@ -20703,10 +21654,7 @@ def selected_platform_websocket_url(config: dict[str, Any]) -> str:
     if str(config.get("selected_platform", "FXPAK Pro")).strip() == "MiSTer":
         return mister_websocket_url(config)
     return str(
-        config.get(
-            "platform_websocket_url",
-            config.get("fxpak_websocket_url", QUSB2SNES_URL),
-        )
+        config.get("fxpak_websocket_url", QUSB2SNES_URL)
     ).strip() or QUSB2SNES_URL
 
 
@@ -25280,7 +26228,7 @@ finally {
         game_seconds = max(0, int(self.game_elapsed))
 
         if action_key == "finish":
-            if rating < 1 or rating > 5:
+            if not math.isfinite(rating) or rating < 1 or rating > 5:
                 raise RuntimeError(
                     "Rating must be a number from 1 through 5."
                 )
@@ -25956,6 +26904,9 @@ finally {
                 difficulty=hack.get("difficulty", "Unknown"),
                 hack_type=hack.get("hack_type", "Unknown"),
                 rating=hack.get("rating"),
+                tags=hack.get("tags", ""),
+                description=hack.get("description", ""),
+                screenshots=hack.get("screenshots", []),
                 added_date=hack.get("added_date", ""),
             )
             self.log(
@@ -25995,6 +26946,9 @@ finally {
                 difficulty="Unknown",
                 hack_type="Unknown",
                 rating=None,
+                tags="",
+                description="",
+                screenshots=[],
                 added_date="",
             )
             self.log(
@@ -28458,6 +29412,13 @@ class TrackerApp:
                 + self._translate_ui_text("Unrated")
             )
         )
+        self.hack_type_var = tk.StringVar(
+            value=(
+                self._translate_ui_text("Type:")
+                + " "
+                + self._translate_ui_text("Unknown")
+            )
+        )
         self.game_timer_var = tk.StringVar(
             value="00:00"
         )
@@ -28630,6 +29591,11 @@ class TrackerApp:
         self.readme_dialog: tk.Toplevel | None = None
         self.feedback_dialog: tk.Toplevel | None = None
         self.feedback_webview_process: subprocess.Popen | None = None
+        self.smwcentral_webview_process: subprocess.Popen | None = None
+        self.smwcentral_spc_overlay_host: tk.Frame | None = None
+        self.smwcentral_spc_overlay_poll_after_id: str | None = None
+        self.smwcentral_home_feed_process: subprocess.Popen | None = None
+        self.pending_smwcentral_completion: dict[str, Any] | None = None
         self.obs_settings_dialog: tk.Toplevel | None = None
         self.welcome_setup_dialog: tk.Toplevel | None = None
         self.guided_setup_dialog: tk.Toplevel | None = None
@@ -28710,6 +29676,9 @@ class TrackerApp:
         )
         self.level_livesplit_port_var = tk.StringVar(
             value=str(self.config.get("level_livesplit_port", 16835))
+        )
+        self.smwc_automatic_login_var = tk.BooleanVar(
+            value=bool(self.config.get("smwc_automatic_login", True))
         )
 
         self._build_ui()
@@ -29131,6 +30100,20 @@ class TrackerApp:
                             localized_message,
                             parent=self.root,
                         )
+                if _name == "askyesno":
+                    parent = options.pop("parent", None)
+                    try:
+                        return self._ask_localized_yes_no(
+                            localized_title,
+                            localized_message,
+                            parent=parent,
+                        )
+                    except (tk.TclError, AttributeError):
+                        return _original(
+                            localized_title,
+                            localized_message,
+                            parent=self.root,
+                        )
                 return _original(
                     localized_title,
                     localized_message,
@@ -29152,7 +30135,7 @@ class TrackerApp:
 
     def _localize_widget_tree(self, widget) -> None:
         try:
-            if isinstance(widget, (tk.Tk, tk.Toplevel)):
+            if isinstance(widget, (tk.Tk, tk.Toplevel, InAppOverlayDialog)):
                 current_title = widget.title()
                 widget.title(self._translate_ui_text(current_title))
 
@@ -29220,6 +30203,16 @@ class TrackerApp:
                 max(self.root.winfo_width(), self._ui_px(min_width or width)),
                 max(self.root.winfo_height(), self._ui_px(min_height or height)),
             )
+        if isinstance(dialog, InAppOverlayDialog):
+            target_width = self._ui_px(width)
+            target_height = self._ui_px(height)
+            if min_width is not None and min_height is not None:
+                dialog.minsize(
+                    self._ui_px(min_width),
+                    self._ui_px(min_height),
+                )
+            dialog.geometry(f"{target_width}x{target_height}")
+            return target_width, target_height
         self._activate_full_size_dialog_ui(dialog)
         screen_width = max(800, dialog.winfo_screenwidth())
         screen_height = max(600, dialog.winfo_screenheight())
@@ -29308,7 +30301,7 @@ class TrackerApp:
 
     def _activate_full_size_dialog_ui(self, dialog: tk.Toplevel) -> None:
         """Keep a maximized child readable when the main window is compact."""
-        if isinstance(dialog, InAppPage):
+        if isinstance(dialog, (InAppPage, InAppOverlayDialog)):
             return
         try:
             window_key = str(dialog)
@@ -29321,9 +30314,10 @@ class TrackerApp:
             self._dialog_scale_windows.add(window_key)
             dialog.bind(
                 "<Destroy>",
-                lambda event, tracked=dialog: (
+                lambda event=None, tracked=dialog: (
                     self._release_full_size_dialog_ui(tracked)
-                    if event.widget is tracked
+                    if event is None
+                    or getattr(event, "widget", None) is tracked
                     else None
                 ),
                 add="+",
@@ -29332,7 +30326,7 @@ class TrackerApp:
             pass
 
     def _release_full_size_dialog_ui(self, dialog: tk.Toplevel) -> None:
-        if isinstance(dialog, InAppPage):
+        if isinstance(dialog, (InAppPage, InAppOverlayDialog)):
             return
         self._dialog_scale_windows.discard(str(dialog))
         if self._dialog_scale_windows:
@@ -29753,6 +30747,7 @@ class TrackerApp:
             ("exits_var", "Exits:"),
             ("difficulty_var", "Difficulty:"),
             ("smwc_rating_var", "SMWCentral Rating:"),
+            ("hack_type_var", "Type:"),
         ):
             variable = getattr(self, variable_name, None)
             if variable is None:
@@ -29874,6 +30869,8 @@ class TrackerApp:
         self,
         page_key: str,
         title: str,
+        *,
+        home_text: str | None = None,
     ) -> InAppPage:
         """Replace the dashboard with one browser-style application page."""
         active_page = getattr(self, "active_in_app_page", None)
@@ -29944,7 +30941,7 @@ class TrackerApp:
 
         home_button = self._make_action_button(
             navigation,
-            text=self._translate_ui_text("Home"),
+            text=self._translate_ui_text(home_text or "Home"),
             command=page.request_close,
             bg=THEME["blue"],
             active_bg=THEME["navy"],
@@ -30000,6 +30997,26 @@ class TrackerApp:
 
         page.after_idle(localize_completed_page)
         return page
+
+    def _obs_capture_mode_enabled(self) -> bool:
+        """Return whether tracker dialogs should stay inside the main window."""
+        return bool(self.config.get("obs_capture_mode", False))
+
+    def _create_tracker_dialog(
+        self,
+        owner: tk.Misc | None = None,
+        *,
+        force_native: bool = False,
+    ) -> tk.Toplevel | InAppOverlayDialog:
+        """Create a tracker dialog suitable for one-source OBS capture.
+
+        Only tracker-owned windows use this factory.  Operating-system file
+        pickers, web browsers, third-party installers, and the purpose-built
+        OBS timer output remain native windows.
+        """
+        if self._obs_capture_mode_enabled() and not force_native:
+            return InAppOverlayDialog(self.root, self)
+        return tk.Toplevel(owner or self.root)
 
     def _close_in_app_page(self, page: InAppPage | None = None) -> None:
         active_page = getattr(self, "active_in_app_page", None)
@@ -30771,7 +31788,7 @@ class TrackerApp:
         )
         identity_text.columnconfigure(0, weight=1)
         identity_text.rowconfigure(0, weight=1)
-        identity_text.rowconfigure(6, weight=1)
+        identity_text.rowconfigure(7, weight=1)
 
         self.current_hack_title_label = tk.Label(
             identity_text,
@@ -30793,6 +31810,13 @@ class TrackerApp:
         self.current_hack_title_label.bind(
             "<Button-1>",
             self.open_current_hack_page,
+        )
+        self.current_hack_title_label.bind(
+            "<Button-3>",
+            lambda event: self._show_hack_details_context_menu(
+                event,
+                self.current_hack_record,
+            ),
         )
         self.current_hack_title_label.bind(
             "<Configure>",
@@ -30878,6 +31902,21 @@ class TrackerApp:
         ).pack(
             side="left",
             padx=(self._ui_px(2), 0),
+        )
+        tk.Label(
+            identity_text,
+            textvariable=self.hack_type_var,
+            font=("Segoe UI", 8, "bold"),
+            fg=THEME["navy"],
+            bg="#DCEEFF",
+            padx=self._ui_px(7),
+            pady=self._ui_px(1),
+            anchor="center",
+            justify="center",
+        ).grid(
+            row=6,
+            column=0,
+            pady=(0, self._ui_px(7)),
         )
         (
             self.current_hack_total_death_panel,
@@ -31010,6 +32049,13 @@ class TrackerApp:
         self.main_hack_selector_combo.bind(
             "<Button-1>",
             self._click_main_hack_selector,
+        )
+        self.main_hack_selector_combo.bind(
+            "<Button-3>",
+            lambda event: self._show_hack_details_context_menu(
+                event,
+                self._main_hack_from_selector(),
+            ),
         )
         self.main_hack_selector_combo.bind(
             "<KeyPress-Down>",
@@ -31980,88 +33026,6 @@ class TrackerApp:
         settings_menu.add_separator()
         add_mario_command(
             settings_menu,
-            "Settings",
-            protected_menu_action(
-                "settings_files",
-                "Settings and file tools",
-                "Settings",
-                self._open_settings_dialog,
-            ),
-            "yoshi",
-        )
-        add_mario_command(
-            settings_menu,
-            "Test Selected Platform",
-            self._test_selected_platform,
-            "star",
-        )
-        settings_menu.add_separator()
-
-        obs_menu = tk.Menu(
-            settings_menu,
-            tearoff=False,
-            bg=colors["bg"],
-            fg=colors["fg"],
-            activebackground=THEME["purple"],
-            activeforeground="white",
-            disabledforeground=colors["disabled_fg"],
-            selectcolor=colors["select"],
-            relief="solid",
-            bd=1,
-            font=("Segoe UI", 10, "bold"),
-        )
-        add_mario_command(
-            obs_menu,
-            "Edit OBS Text Settings...",
-            protected_menu_action(
-                "settings_files",
-                "Settings and file tools",
-                "OBS Text Settings",
-                self.open_obs_settings_dialog,
-            ),
-            "sheet",
-        )
-        add_mario_command(
-            obs_menu,
-            "Open OBS Text Folder",
-            protected_menu_action(
-                "settings_files",
-                "Settings and file tools",
-                "Open OBS Text Folder",
-                self.open_output_folder,
-            ),
-            "mario",
-        )
-        settings_menu.add_cascade(
-            label="OBS Settings",
-            menu=obs_menu,
-        )
-        settings_menu.add_separator()
-        add_mario_command(
-            settings_menu,
-            "Setup & Health Check...",
-            protected_menu_action(
-                "settings_files",
-                "Settings and file tools",
-                "Setup & Health Check",
-                self.open_setup_health_check,
-            ),
-            "one_up",
-        )
-        add_mario_command(
-            settings_menu,
-            "Diagnostics...",
-            protected_menu_action(
-                "settings_files",
-                "Settings and file tools",
-                "Diagnostics",
-                self.open_diagnostics,
-            ),
-            "block",
-        )
-        settings_menu.add_separator()
-        add_mario_command(
-            settings_menu,
             "Restore Previous App Version...",
             protected_menu_action(
                 "settings_files",
@@ -32088,7 +33052,7 @@ class TrackerApp:
 
         self.downloads_menu_button, downloads_menu = (
             create_menu_button(
-                "Downloads",
+                "Setup",
                 THEME["orange"],
                 "peach",
             )
@@ -32175,10 +33139,121 @@ class TrackerApp:
             connection_option_names
         )
         downloads_menu.add_cascade(
-            label="Connection & Emulator Setup",
+            label="Connection & Emulator",
             menu=software_menu,
         )
         self.connection_setup_menu_index = downloads_menu.index("end")
+
+        application_setup_menu = tk.Menu(
+            downloads_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["orange"],
+            activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        add_mario_command(
+            application_setup_menu,
+            self._setup_guide_text("app_setup"),
+            self.start_guided_app_setup,
+            "star",
+        )
+        add_mario_command(
+            application_setup_menu,
+            "App Settings",
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "App Settings",
+                self._open_settings_dialog,
+            ),
+            "yoshi",
+        )
+        application_setup_menu.add_separator()
+        add_mario_command(
+            application_setup_menu,
+            self._setup_guide_text("obs_setup"),
+            self.open_guided_obs_text_setup,
+            "sheet",
+        )
+
+        obs_menu = tk.Menu(
+            application_setup_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["purple"],
+            activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        add_mario_command(
+            obs_menu,
+            "Edit OBS Text Settings...",
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "OBS Text Settings",
+                self.open_obs_settings_dialog,
+            ),
+            "sheet",
+        )
+        add_mario_command(
+            obs_menu,
+            "Open OBS Text Folder",
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "Open OBS Text Folder",
+                self.open_output_folder,
+            ),
+            "mario",
+        )
+        application_setup_menu.add_cascade(
+            label="OBS Settings",
+            menu=obs_menu,
+        )
+        downloads_menu.add_cascade(
+            label="Application",
+            menu=application_setup_menu,
+        )
+
+        livesplit_setup_menu = tk.Menu(
+            downloads_menu,
+            tearoff=False,
+            bg=colors["bg"],
+            fg=colors["fg"],
+            activebackground=THEME["orange"],
+            activeforeground="white",
+            disabledforeground=colors["disabled_fg"],
+            selectcolor=colors["select"],
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10, "bold"),
+        )
+        timer_setup_label = self._setup_guide_text("livesplit_setup")
+        if IS_MACOS:
+            timer_setup_label = self._setup_guide_text(
+                "mac_timer_obs_button"
+            )
+        add_mario_command(
+            livesplit_setup_menu,
+            timer_setup_label,
+            self.open_livesplit_obs_setup_guide,
+            "clock",
+        )
+        downloads_menu.add_cascade(
+            label="LiveSplit Timers",
+            menu=livesplit_setup_menu,
+        )
         downloads_menu.add_separator()
 
         if selected_platform == "FXPAK Pro":
@@ -32257,15 +33332,42 @@ class TrackerApp:
         self.smwcentral_catalog_menu_index = downloads_menu.index("end")
         self.catalog_menu = catalog_menu
         self._update_catalog_menu_labels()
-        downloads_menu.add_separator()
-        add_mario_command(
-            downloads_menu,
-            "Visit SMW Central Website...",
-            lambda: webbrowser.open(SMW_CENTRAL_WEBSITE_URL),
-            "star",
-        )
         self.downloads_menu_button.configure(
             command=self._guided_downloads_menu_button_clicked
+        )
+
+        self.smwcentral_menu_button, smwcentral_menu = (
+            create_menu_button(
+                "SMW Central",
+                THEME["blue"],
+                "star",
+            )
+        )
+        add_mario_command(
+            smwcentral_menu,
+            "SMW Central Updates",
+            self.open_smwcentral_home,
+            "toad",
+        )
+        add_mario_command(
+            smwcentral_menu,
+            "SMW Central Radio",
+            self._open_smwcentral_radio,
+            "music",
+        )
+        smwcentral_menu.add_separator()
+        add_mario_command(
+            smwcentral_menu,
+            "Log In to SMW Central...",
+            self.open_smwcentral_account,
+            "one_up",
+        )
+        smwcentral_menu.add_separator()
+        add_mario_command(
+            smwcentral_menu,
+            "Visit SMW Central",
+            lambda: webbrowser.open(SMW_CENTRAL_WEBSITE_URL),
+            "star",
         )
 
         self.help_menu_button, help_menu = (
@@ -32287,45 +33389,34 @@ class TrackerApp:
             self.open_feedback_dialog,
             "one_up",
         )
-        setup_guide_menu = tk.Menu(
-            help_menu,
-            tearoff=False,
-            bg=colors["bg"],
-            fg=colors["fg"],
-            activebackground=THEME["blue"],
-            activeforeground="white",
-            disabledforeground=colors["disabled_fg"],
-            selectcolor=colors["select"],
-            relief="solid",
-            bd=1,
-            font=("Segoe UI", 10, "bold"),
-        )
+        help_menu.add_separator()
         add_mario_command(
-            setup_guide_menu,
-            self._setup_guide_text("app_setup"),
-            self.start_guided_app_setup,
+            help_menu,
+            "Test Selected Platform",
+            self._test_selected_platform,
             "star",
         )
         add_mario_command(
-            setup_guide_menu,
-            self._setup_guide_text("obs_setup"),
-            self.open_guided_obs_text_setup,
-            "sheet",
+            help_menu,
+            "Setup & Health Check...",
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "Setup & Health Check",
+                self.open_setup_health_check,
+            ),
+            "one_up",
         )
-        timer_setup_label = self._setup_guide_text("livesplit_setup")
-        if IS_MACOS:
-            timer_setup_label = self._setup_guide_text(
-                "mac_timer_obs_button"
-            )
         add_mario_command(
-            setup_guide_menu,
-            timer_setup_label,
-            self.open_livesplit_obs_setup_guide,
-            "clock",
-        )
-        help_menu.add_cascade(
-            label=self._setup_guide_text("setup_menu"),
-            menu=setup_guide_menu,
+            help_menu,
+            "Diagnostics...",
+            protected_menu_action(
+                "settings_files",
+                "Settings and file tools",
+                "Diagnostics",
+                self.open_diagnostics,
+            ),
+            "block",
         )
         help_menu.add_separator()
         add_mario_command(
@@ -32391,7 +33482,10 @@ class TrackerApp:
         self.platform_menu = platform_menu
         self.obs_menu = obs_menu
         self.downloads_menu = downloads_menu
+        self.smwcentral_menu = smwcentral_menu
         self.software_menu = software_menu
+        self.application_setup_menu = application_setup_menu
+        self.livesplit_setup_menu = livesplit_setup_menu
         # FXPAK Pro now opens its game library directly, so the former
         # Downloads submenu no longer exists. Keep the optional theme hook
         # explicitly empty instead of referring to that removed local.
@@ -32658,7 +33752,7 @@ class TrackerApp:
         header_text: str = "CONNECTION & EMULATOR SETUP",
     ) -> tuple[tk.Toplevel, tk.StringVar]:
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         dialog.title(title)
         self._size_dialog_for_ui(dialog, 680, 250, 620, 230)
         dialog.configure(bg=palette["window"])
@@ -33516,6 +34610,427 @@ class TrackerApp:
         with sftp.open(remote_path, "wb") as remote_file:
             remote_file.write(payload)
 
+    @staticmethod
+    def _mister_sftp_read(
+        sftp,
+        remote_path: str,
+        *,
+        maximum_bytes: int,
+    ) -> bytes:
+        remote_size = int(sftp.stat(remote_path).st_size)
+        if remote_size < 1 or remote_size > maximum_bytes:
+            raise RuntimeError(
+                f"The MiSTer file at {remote_path} has an unexpected size."
+            )
+        with sftp.open(remote_path, "rb") as remote_file:
+            payload = remote_file.read(remote_size + 1)
+        if len(payload) != remote_size:
+            raise RuntimeError(
+                f"The MiSTer file at {remote_path} could not be read completely."
+            )
+        return payload
+
+    @staticmethod
+    def _mister_run_checked(client, command: str, failure_message: str) -> None:
+        _stdin, stdout, stderr = client.exec_command(command, timeout=25)
+        exit_status = stdout.channel.recv_exit_status()
+        output = stdout.read().decode("utf-8", errors="replace").strip()
+        error_output = stderr.read().decode(
+            "utf-8", errors="replace"
+        ).strip()
+        if exit_status != 0:
+            detail = error_output or output or f"exit code {exit_status}"
+            raise RuntimeError(f"{failure_message} {detail}")
+
+    @staticmethod
+    def _restart_mister_after_experimental_change(client) -> None:
+        # Delay rebooting so SSH can acknowledge the request cleanly.
+        client.exec_command(
+            "sync; nohup sh -c 'sleep 2; reboot' "
+            ">/tmp/smw-stream-tracker-reboot.log 2>&1 </dev/null &",
+            timeout=6,
+        )
+
+    def _install_mister_virtual_states(
+        self,
+        host: str,
+        user: str,
+        port: int,
+        password: str,
+        status_variable: tk.StringVar,
+    ) -> dict[str, str]:
+        """Install the opt-in Main binary while preserving an exact restore."""
+        experimental_path = bundled_resource_path(
+            "mister_experimental",
+            "MiSTer-SMW-Virtual-States",
+        )
+        if not experimental_path.is_file():
+            raise RuntimeError(
+                "The MiSTer save-state file is missing from this tracker build."
+            )
+        experimental_payload = experimental_path.read_bytes()
+        experimental_sha256 = hashlib.sha256(
+            experimental_payload
+        ).hexdigest()
+        if experimental_sha256 != MISTER_VIRTUAL_STATES_BINARY_SHA256:
+            raise RuntimeError(
+                "The MiSTer save-state file failed its safety check."
+            )
+
+        self._set_optional_install_status(
+            status_variable,
+            "Backing up the current MiSTer file...",
+        )
+        client = self._open_mister_ssh_client(
+            host,
+            user,
+            port,
+            password,
+        )
+        try:
+            self._verified_mister_peer(client)
+            sftp = client.open_sftp()
+            try:
+                self._mister_sftp_makedirs(
+                    sftp,
+                    MISTER_VIRTUAL_STATES_BACKUP_FOLDER,
+                )
+                current_payload = self._mister_sftp_read(
+                    sftp,
+                    "/media/fat/MiSTer",
+                    maximum_bytes=MISTER_VIRTUAL_STATES_MAX_BYTES,
+                )
+                current_sha256 = hashlib.sha256(current_payload).hexdigest()
+                manifest = None
+                try:
+                    manifest_payload = self._mister_sftp_read(
+                        sftp,
+                        MISTER_VIRTUAL_STATES_MANIFEST,
+                        maximum_bytes=64 * 1024,
+                    )
+                    manifest = json.loads(manifest_payload.decode("utf-8"))
+                except FileNotFoundError:
+                    manifest = None
+                except OSError as error:
+                    if getattr(error, "errno", None) == 2:
+                        manifest = None
+                    else:
+                        raise
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise RuntimeError(
+                        "The MiSTer restore information is damaged. "
+                        "The current MiSTer file was not changed."
+                    ) from error
+
+                if manifest is not None:
+                    backup_path = mister_virtual_states_manifest_backup_path(
+                        manifest
+                    )
+                    original_sha256 = str(
+                        manifest["original_sha256"]
+                    ).casefold()
+                    backup_payload = self._mister_sftp_read(
+                        sftp,
+                        backup_path,
+                        maximum_bytes=MISTER_VIRTUAL_STATES_MAX_BYTES,
+                    )
+                    if hashlib.sha256(backup_payload).hexdigest() != original_sha256:
+                        raise RuntimeError(
+                            "The saved original MiSTer file failed verification. "
+                            "The current MiSTer file was not changed."
+                        )
+                    try:
+                        allowed_current_hashes = (
+                            mister_virtual_states_allowed_current_hashes(
+                                manifest,
+                                experimental_sha256,
+                            )
+                        )
+                    except ValueError as error:
+                        raise RuntimeError(
+                            "The MiSTer restore information is "
+                            "damaged. The current MiSTer file was not changed."
+                        ) from error
+                    if current_sha256 not in allowed_current_hashes:
+                        raise RuntimeError(
+                            self._translate_dialog_text(
+                                "MiSTer Main has been updated or changed since "
+                                "save states 5–11 were installed. This tracker "
+                                "will not overwrite or downgrade it. Restore "
+                                "the original MiSTer file, or install a tracker "
+                                "build made for the new MiSTer Main version."
+                            )
+                        )
+                else:
+                    original_payload = current_payload
+                    original_sha256 = hashlib.sha256(
+                        original_payload
+                    ).hexdigest()
+                    if original_sha256 == experimental_sha256:
+                        raise RuntimeError(
+                            "The MiSTer save-state file is already active, "
+                            "but its restore information is missing. No files "
+                            "were changed."
+                        )
+                    if original_sha256 != MISTER_VIRTUAL_STATES_BASE_SHA256:
+                        raise RuntimeError(
+                            self._translate_dialog_text(
+                                "MiSTer Main has been updated or changed since "
+                                "save states 5–11 were installed. This tracker "
+                                "will not overwrite or downgrade it. Restore "
+                                "the original MiSTer file, or install a tracker "
+                                "build made for the new MiSTer Main version."
+                            )
+                        )
+                    backup_path = mister_virtual_states_backup_path(
+                        original_sha256
+                    )
+                    try:
+                        existing_backup = self._mister_sftp_read(
+                            sftp,
+                            backup_path,
+                            maximum_bytes=MISTER_VIRTUAL_STATES_MAX_BYTES,
+                        )
+                    except OSError as error:
+                        if getattr(error, "errno", None) == 2:
+                            existing_backup = b""
+                        else:
+                            raise
+                    if existing_backup:
+                        if hashlib.sha256(existing_backup).hexdigest() != original_sha256:
+                            raise RuntimeError(
+                                "An existing original MiSTer backup failed "
+                                "verification. No files were changed."
+                            )
+                    else:
+                        staged_backup = backup_path + ".new"
+                        self._mister_sftp_write(
+                            sftp,
+                            staged_backup,
+                            original_payload,
+                        )
+                        sftp.chmod(staged_backup, 0o755)
+                        sftp.rename(staged_backup, backup_path)
+                        saved_backup = self._mister_sftp_read(
+                            sftp,
+                            backup_path,
+                            maximum_bytes=MISTER_VIRTUAL_STATES_MAX_BYTES,
+                        )
+                        if hashlib.sha256(saved_backup).hexdigest() != original_sha256:
+                            raise RuntimeError(
+                                "The original MiSTer backup could not be verified. "
+                                "The current MiSTer file was not changed."
+                            )
+
+                staged_binary = "/media/fat/.MiSTer-smw-virtual-states-new"
+                staged_manifest = MISTER_VIRTUAL_STATES_MANIFEST + ".new"
+                staged_marker = MISTER_VIRTUAL_STATES_MARKER + ".new"
+                for staged_path in (
+                    staged_binary,
+                    staged_manifest,
+                    staged_marker,
+                ):
+                    try:
+                        sftp.remove(staged_path)
+                    except OSError:
+                        pass
+                self._set_optional_install_status(
+                    status_variable,
+                    "Installing MiSTer save states 5–11...",
+                )
+                self._mister_sftp_write(
+                    sftp,
+                    staged_binary,
+                    experimental_payload,
+                )
+                sftp.chmod(staged_binary, 0o755)
+                uploaded_payload = self._mister_sftp_read(
+                    sftp,
+                    staged_binary,
+                    maximum_bytes=MISTER_VIRTUAL_STATES_MAX_BYTES,
+                )
+                if hashlib.sha256(uploaded_payload).hexdigest() != experimental_sha256:
+                    raise RuntimeError(
+                        "The MiSTer save-state upload failed verification. "
+                        "The current MiSTer file was not changed."
+                    )
+                install_manifest = {
+                    "format": 1,
+                    "installed_at": datetime.now(timezone.utc).isoformat(),
+                    "original_sha256": original_sha256,
+                    "experimental_sha256": experimental_sha256,
+                    "backup_path": backup_path,
+                    "upstream_commit": MISTER_VIRTUAL_STATES_UPSTREAM_COMMIT,
+                    "base_version": MISTER_VIRTUAL_STATES_BASE_VERSION,
+                    "base_sha256": MISTER_VIRTUAL_STATES_BASE_SHA256,
+                    "toolchain_version": MISTER_VIRTUAL_STATES_TOOLCHAIN_VERSION,
+                    "virtual_state_slots": "5-11",
+                }
+                self._mister_sftp_write(
+                    sftp,
+                    staged_manifest,
+                    json.dumps(
+                        install_manifest,
+                        indent=2,
+                        sort_keys=True,
+                    ).encode("utf-8"),
+                )
+                self._mister_sftp_write(
+                    sftp,
+                    staged_marker,
+                    b"SMW Stream Tracker virtual states 5-11 enabled\n",
+                )
+            finally:
+                sftp.close()
+
+            self._set_optional_install_status(
+                status_variable,
+                "Checking compatibility with this MiSTer...",
+            )
+            compatibility_error = self._translate_dialog_text(
+                "This MiSTer save-state build is not compatible with the "
+                "system files on this MiSTer. The current MiSTer file was "
+                "not changed."
+            )
+            compatibility_log = "/tmp/smw-mister-candidate.ldd"
+            self._mister_run_checked(
+                client,
+                "set -e; "
+                "chmod 755 /media/fat/.MiSTer-smw-virtual-states-new; "
+                "if ! ldd /media/fat/.MiSTer-smw-virtual-states-new "
+                f">{compatibility_log} 2>&1; then "
+                f"cat {compatibility_log} >&2; "
+                "rm -f /media/fat/.MiSTer-smw-virtual-states-new "
+                f"{MISTER_VIRTUAL_STATES_MANIFEST}.new "
+                f"{MISTER_VIRTUAL_STATES_MARKER}.new {compatibility_log}; "
+                "exit 86; fi; "
+                f"if grep -E 'not found|version .* not found' {compatibility_log} "
+                ">/dev/null 2>&1; then "
+                f"cat {compatibility_log} >&2; "
+                "rm -f /media/fat/.MiSTer-smw-virtual-states-new "
+                f"{MISTER_VIRTUAL_STATES_MANIFEST}.new "
+                f"{MISTER_VIRTUAL_STATES_MARKER}.new {compatibility_log}; "
+                "exit 86; fi; "
+                f"rm -f {compatibility_log}",
+                compatibility_error,
+            )
+
+            self._mister_run_checked(
+                client,
+                "set -e; "
+                "chmod 755 /media/fat/.MiSTer-smw-virtual-states-new; "
+                f"mv -f {MISTER_VIRTUAL_STATES_MANIFEST}.new "
+                f"{MISTER_VIRTUAL_STATES_MANIFEST}; "
+                f"mv -f {MISTER_VIRTUAL_STATES_MARKER}.new "
+                f"{MISTER_VIRTUAL_STATES_MARKER}; "
+                "mv -f /media/fat/.MiSTer-smw-virtual-states-new "
+                "/media/fat/MiSTer; sync",
+                "The MiSTer save-state file could not be activated.",
+            )
+            self._restart_mister_after_experimental_change(client)
+        finally:
+            client.close()
+        return {
+            "original_sha256": original_sha256,
+            "experimental_sha256": experimental_sha256,
+        }
+
+    def _restore_mister_before_virtual_states(
+        self,
+        host: str,
+        user: str,
+        port: int,
+        password: str,
+        status_variable: tk.StringVar,
+    ) -> dict[str, str]:
+        """Restore the exact MiSTer binary saved before states 5–11 were enabled."""
+        self._set_optional_install_status(
+            status_variable,
+            "Verifying the saved original MiSTer file...",
+        )
+        client = self._open_mister_ssh_client(
+            host,
+            user,
+            port,
+            password,
+        )
+        try:
+            self._verified_mister_peer(client)
+            sftp = client.open_sftp()
+            try:
+                try:
+                    manifest_payload = self._mister_sftp_read(
+                        sftp,
+                        MISTER_VIRTUAL_STATES_MANIFEST,
+                        maximum_bytes=64 * 1024,
+                    )
+                except OSError as error:
+                    raise RuntimeError(
+                        "No previous MiSTer version was found to restore."
+                    ) from error
+                try:
+                    manifest = json.loads(manifest_payload.decode("utf-8"))
+                    backup_path = mister_virtual_states_manifest_backup_path(
+                        manifest
+                    )
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                    raise RuntimeError(
+                        "The MiSTer restore information is damaged. "
+                        "No files were changed."
+                    ) from error
+                original_sha256 = str(
+                    manifest["original_sha256"]
+                ).casefold()
+                backup_payload = self._mister_sftp_read(
+                    sftp,
+                    backup_path,
+                    maximum_bytes=MISTER_VIRTUAL_STATES_MAX_BYTES,
+                )
+                if hashlib.sha256(backup_payload).hexdigest() != original_sha256:
+                    raise RuntimeError(
+                        "The saved original MiSTer file failed verification. "
+                        "No files were changed."
+                    )
+                staged_restore = "/media/fat/.MiSTer-smw-original-new"
+                try:
+                    sftp.remove(staged_restore)
+                except OSError:
+                    pass
+                self._mister_sftp_write(
+                    sftp,
+                    staged_restore,
+                    backup_payload,
+                )
+                sftp.chmod(staged_restore, 0o755)
+                restored_payload = self._mister_sftp_read(
+                    sftp,
+                    staged_restore,
+                    maximum_bytes=MISTER_VIRTUAL_STATES_MAX_BYTES,
+                )
+                if hashlib.sha256(restored_payload).hexdigest() != original_sha256:
+                    raise RuntimeError(
+                        "The original MiSTer restore upload failed verification. "
+                        "No files were changed."
+                    )
+            finally:
+                sftp.close()
+
+            self._mister_run_checked(
+                client,
+                "set -e; chmod 755 /media/fat/.MiSTer-smw-original-new; "
+                "mv -f /media/fat/.MiSTer-smw-original-new /media/fat/MiSTer; "
+                f"rm -f {MISTER_VIRTUAL_STATES_MARKER} "
+                f"{MISTER_VIRTUAL_STATES_MANIFEST}; sync",
+                "The original MiSTer file could not be restored.",
+            )
+            self._restart_mister_after_experimental_change(client)
+        finally:
+            client.close()
+        return {
+            "original_sha256": original_sha256,
+            "backup_path": backup_path,
+        }
+
     def _install_mister_support(
         self,
         host: str,
@@ -33687,7 +35202,7 @@ class TrackerApp:
     ) -> bool:
         owner = parent or self.root
         palette = self._library_palette()
-        dialog = tk.Toplevel(owner)
+        dialog = self._create_tracker_dialog(owner)
         dialog.title(self._translate_ui_text("MiSTer Login"))
         self._size_dialog_for_ui(dialog, 660, 360, 600, 330)
         dialog.resizable(False, False)
@@ -33792,11 +35307,11 @@ class TrackerApp:
                 pass
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.mister_setup_dialog = dialog
         dialog.title(self._translate_ui_text("MiSTer Setup"))
-        self._size_dialog_for_ui(dialog, 940, 740, 780, 660)
-        dialog.minsize(self._ui_px(760), self._ui_px(560))
+        self._size_dialog_for_ui(dialog, 940, 900, 780, 740)
+        dialog.minsize(self._ui_px(760), self._ui_px(660))
         dialog.transient(self.root)
         dialog.configure(bg=palette["window"])
 
@@ -33939,6 +35454,55 @@ class TrackerApp:
         buttons = tk.Frame(body, bg=palette["panel"])
         buttons.grid(row=9, column=0, columnspan=3, sticky="ew")
 
+        virtual_states_frame = tk.Frame(
+            body,
+            bg=palette["panel"],
+            highlightbackground=THEME["blue"],
+            highlightthickness=1,
+            padx=self._ui_px(14),
+            pady=self._ui_px(10),
+        )
+        virtual_states_frame.grid(
+            row=10,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(16, 0),
+        )
+        tk.Label(
+            virtual_states_frame,
+            text=self._translate_ui_text(
+                "MiSTer Save States 5–11"
+            ),
+            font=("Segoe UI", 11, "bold"),
+            fg="#59A5FF",
+            bg=palette["panel"],
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            virtual_states_frame,
+            text=self._translate_ui_text(
+                "Installed automatically by Find & Set Up MiSTer or by "
+                "selecting Install Virtual Save State Slots below. SNES only. "
+                "Native states 1–4 stay "
+                "unchanged. F5–F11 load states 5–11, and Alt+F5–Alt+F11 "
+                "save states 5–11. F12 still opens "
+                "the MiSTer menu. State 4 is used briefly as a bridge, and an exact "
+                "backup is verified first."
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["text"],
+            bg=palette["panel"],
+            anchor="w",
+            justify="left",
+            wraplength=self._ui_px(820),
+        ).pack(fill="x", pady=(4, 8))
+        virtual_states_buttons = tk.Frame(
+            virtual_states_frame,
+            bg=palette["panel"],
+        )
+        virtual_states_buttons.pack(fill="x")
+
         busy_buttons: list[tk.Widget] = []
 
         def saved_values(select_platform: bool = False):
@@ -33998,7 +35562,7 @@ class TrackerApp:
                     message = (
                         "MiSTer SSH is connected. SNES live tracking is ready."
                         if live_ready
-                        else "MiSTer SSH is connected. Install / Repair Support, then load the SNES core once to start live tracking."
+                        else "MiSTer SSH is connected. Install Virtual Save State Slots, then load the SNES core once to start live tracking."
                     )
                     self.root.after(0, lambda: finish_task(message))
                 except Exception as error:
@@ -34027,10 +35591,19 @@ class TrackerApp:
                         password_var.get(),
                         status_var,
                     )
+                    self._install_mister_virtual_states(
+                        host,
+                        user,
+                        port,
+                        password_var.get(),
+                        status_var,
+                    )
                     message = (
-                        "MiSTer support is installed. Load the SNES core once, "
-                        "then select Refresh in the tracker. Games launched by "
-                        "the app will be copied to the MiSTer automatically."
+                        "MiSTer support and save states 5–11 are installed. "
+                        "MiSTer is restarting. In the SNES core, use Alt+F5 "
+                        "through Alt+F11 to save and F5 through F11 to load "
+                        "states 5–11. F12 still "
+                        "opens the MiSTer menu."
                     )
                     self.root.after(0, lambda: finish_task(message))
                 except Exception as error:
@@ -34094,6 +35667,15 @@ class TrackerApp:
                         timeout=6,
                     )
                     self._verified_mister_peer(key_client)
+                    key_client.close()
+                    key_client = None
+                    self._install_mister_virtual_states(
+                        host,
+                        user,
+                        port,
+                        password,
+                        status_var,
+                    )
 
                     def complete() -> None:
                         host_var.set(host)
@@ -34106,9 +35688,10 @@ class TrackerApp:
                         )
                         finish_task(
                             "MiSTer is fully set up. The tracker found it, "
-                            "installed live tracking, created the game "
-                            "folders, enabled automatic login for this app, "
-                            "selected MiSTer, and verified the connection."
+                            "installed live tracking and save states 5–11, "
+                            "created the game folders, enabled automatic "
+                            "login for this app, selected MiSTer, and verified "
+                            "the connection. MiSTer is restarting."
                         )
                         self._guided_optional_software_completed("mister")
                         if self._guided_setup_stage != "connection":
@@ -34138,6 +35721,57 @@ class TrackerApp:
                 return
             status_var.set(self._translate_ui_text("MiSTer settings saved."))
 
+        def restore_original_mister() -> None:
+            confirmed = self._ask_localized_yes_no(
+                "Restore the Previous MiSTer Version?",
+                "This restores the exact MiSTer file saved before states "
+                "5–11 were enabled and restarts MiSTer. Native save states "
+                "and ROM files are not removed.\n\nContinue with "
+                "restoration?",
+                parent=dialog,
+            )
+            if not confirmed:
+                return
+            try:
+                host, user, port = saved_values(True)
+            except Exception as error:
+                finish_task("", str(error))
+                return
+            set_busy(True)
+            status_var.set(
+                self._translate_ui_text(
+                    "Verifying the saved original MiSTer file..."
+                )
+            )
+
+            def worker() -> None:
+                try:
+                    self._restore_mister_before_virtual_states(
+                        host,
+                        user,
+                        port,
+                        password_var.get(),
+                        status_var,
+                    )
+                    self.root.after(
+                        0,
+                        lambda: finish_task(
+                            "Your exact previous MiSTer file was restored "
+                            "and states 5–11 were disabled. MiSTer is restarting."
+                        ),
+                    )
+                except Exception as error:
+                    append_error_log(
+                        "Original MiSTer restoration failed",
+                        traceback.format_exc(),
+                    )
+                    self.root.after(
+                        0,
+                        lambda detail=str(error): finish_task("", detail),
+                    )
+
+            threading.Thread(target=worker, daemon=True).start()
+
         automatic_button = self._make_action_button(
             one_click_button_frame,
             self._translate_ui_text("Find & Set Up MiSTer"),
@@ -34157,15 +35791,15 @@ class TrackerApp:
             width=15,
         )
         test_button.pack(side="left", padx=(0, 8))
-        install_button = self._make_action_button(
+        restore_original_button = self._make_action_button(
             buttons,
-            self._translate_ui_text("Install / Repair Support"),
-            install_support,
-            THEME["green"],
-            "#208A39",
-            width=21,
+            self._translate_ui_text("Restore Previous MiSTer Version"),
+            restore_original_mister,
+            "#63788F",
+            "#4A6078",
+            width=23,
         )
-        install_button.pack(side="left")
+        restore_original_button.pack(side="left")
         save_button = self._make_action_button(
             buttons,
             self._translate_ui_text("Save & Select MiSTer"),
@@ -34184,8 +35818,23 @@ class TrackerApp:
             width=10,
         )
         close_button.pack(side="right")
+        install_button = self._make_action_button(
+            virtual_states_buttons,
+            self._translate_ui_text("Install Virtual Save State Slots"),
+            install_support,
+            THEME["green"],
+            "#208A39",
+            width=27,
+        )
+        install_button.pack(side="left")
         busy_buttons.extend(
-            (automatic_button, test_button, install_button, save_button)
+            (
+                automatic_button,
+                test_button,
+                install_button,
+                save_button,
+                restore_original_button,
+            )
         )
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         self._apply_widget_appearance(
@@ -34246,7 +35895,7 @@ class TrackerApp:
         action_label: str,
     ) -> bool:
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         dialog.title(
             self._translate_ui_text(
                 "Streamer Privacy Warning"
@@ -35017,7 +36666,7 @@ class TrackerApp:
         dialog: tk.Toplevel,
         _background: str,
     ) -> None:
-        if isinstance(dialog, InAppPage):
+        if isinstance(dialog, (InAppPage, InAppOverlayDialog)):
             return
         # Making the dialog resizable gives its native Windows title bar one
         # clean Minimize / Maximize-Restore / Close set. Do not draw a second
@@ -35602,7 +37251,7 @@ class TrackerApp:
         owner = parent or self.root
         palette = self._library_palette()
         answer = {"confirmed": False}
-        dialog = tk.Toplevel(owner)
+        dialog = self._create_tracker_dialog(owner)
         # Treat confirmations as complete dialog text.  This avoids the
         # phrase-by-phrase fallback producing mixed-language sentences when
         # an older localized fragment is still present after a language
@@ -35738,7 +37387,7 @@ class TrackerApp:
         except (AttributeError, tk.TclError):
             owner = self.root
         palette = self._library_palette()
-        dialog = tk.Toplevel(owner)
+        dialog = self._create_tracker_dialog(owner)
         localized_title = self._translate_dialog_text(title)
         localized_message = self._translate_dialog_text(message)
         dialog.title(localized_title)
@@ -36003,7 +37652,7 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.catalog_refresh_dialog = dialog
         localized_refresh_title = self._translate_ui_text(refresh_title)
         dialog.title(localized_refresh_title)
@@ -42105,6 +43754,23 @@ class TrackerApp:
             except tk.TclError:
                 selected_column = ""
 
+        if table_key == "recent" and iid:
+            tracked_ids = getattr(tree, "_smw_tracked_ids", {})
+            tracked_id = tracked_ids.get(iid)
+            record = (
+                self.stats_db.get_tracked(int(tracked_id))
+                if tracked_id is not None
+                else None
+            )
+            if isinstance(record, dict):
+                menu.add_command(
+                    label=self._translate_ui_text("View Hack Details"),
+                    command=lambda selected=dict(record): (
+                        self.open_hack_details(selected)
+                    ),
+                )
+                menu.add_separator()
+
         if table_key == "difficulty" and selected_column == "#0":
             selected_difficulty = ""
             if iid:
@@ -43667,6 +45333,7 @@ class TrackerApp:
 
         def populate_recent_activity() -> None:
             recent_tree.delete(*recent_tree.get_children(""))
+            recent_tree._smw_tracked_ids = {}
             selected_letter = recent_filter_var.get()
             rows = [
                 row
@@ -43676,7 +45343,7 @@ class TrackerApp:
                 == selected_letter
             ]
             for row_index, row in enumerate(rows):
-                recent_tree.insert(
+                iid = recent_tree.insert(
                     "",
                     "end",
                     text=str(row["title"]),
@@ -43688,6 +45355,7 @@ class TrackerApp:
                     ),
                     tags=("even" if row_index % 2 == 0 else "odd",),
                 )
+                recent_tree._smw_tracked_ids[iid] = int(row["id"])
             self._reapply_treeview_sorting(recent_tree)
             self._apply_statistics_table_colors(recent_tree, "recent")
 
@@ -43847,7 +45515,7 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.spreadsheet_settings_dialog = dialog
         dialog.title("Spreadsheet Settings")
         self._size_dialog_for_ui(
@@ -44186,7 +45854,10 @@ class TrackerApp:
             pady=(5, 0),
         )
         count_var = self._localized_string_var(
-            value="0 hacks",
+            value=self._format_ui_text(
+                "{count} hack(s)",
+                count=0,
+            ),
             master=dialog,
         )
         yoshi_header_photo = (
@@ -44268,7 +45939,7 @@ class TrackerApp:
 
         OutlinedLabel(
             filters,
-            text="Search title or creator",
+            text="Search title, creator, or tag",
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
@@ -44598,7 +46269,10 @@ class TrackerApp:
             padx=(0, self._ui_px(12)),
         )
         remove_selection_var = self._localized_string_var(
-            value="0 hack(s) selected",
+            value=self._format_ui_text(
+                "{count} hack(s) selected",
+                count=0,
+            ),
             master=dialog,
         )
         remove_mode_count_label = tk.Label(
@@ -45311,11 +46985,7 @@ class TrackerApp:
         visible = 0
 
         for record in self.stats_db.list_tracked():
-            haystack = (
-                str(record["title"])
-                + " "
-                + str(record["author"])
-            ).casefold()
+            haystack = catalog_search_text(record)
 
             if search_text and search_text not in haystack:
                 continue
@@ -46232,6 +47902,33 @@ class TrackerApp:
             activeforeground="#FFFFFF",
             font=("Segoe UI", 10),
         )
+        forced_iid = str(getattr(event, "_smw_forced_iid", "") or "")
+        try:
+            iid = forced_iid or str(tree.identify_row(event.y) or "")
+            if iid:
+                tree.selection_set(iid)
+                tree.focus(iid)
+        except tk.TclError:
+            iid = forced_iid
+        details_resolver = getattr(
+            tree,
+            "_smw_hack_details_resolver",
+            None,
+        )
+        game = None
+        if iid and callable(details_resolver):
+            try:
+                game = details_resolver(iid)
+            except (KeyError, TypeError, ValueError):
+                game = None
+        if isinstance(game, dict):
+            menu.add_command(
+                label=self._translate_ui_text("View Hack Details"),
+                command=lambda selected=dict(game): self.open_hack_details(
+                    selected
+                ),
+            )
+            menu.add_separator()
         self._add_table_appearance_menu_items(menu, tree, table_key)
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -46248,10 +47945,12 @@ class TrackerApp:
         table_key: str,
         *,
         after_style=None,
+        details_resolver=None,
     ) -> None:
         """Enable persistent right-click colors for an application table."""
         tree._smw_table_style_key = table_key
         tree._smw_after_table_style = after_style
+        tree._smw_hack_details_resolver = details_resolver
         tree.bind(
             "<Button-3>",
             lambda event: self._show_table_appearance_menu(
@@ -46803,6 +48502,15 @@ class TrackerApp:
             font=("Segoe UI", 10),
         )
         if iid:
+            selected_record = self.tracker_list_records.get(iid)
+            if isinstance(selected_record, dict):
+                menu.add_command(
+                    label=self._translate_ui_text("View Hack Details"),
+                    command=lambda record=dict(selected_record): (
+                        self.open_hack_details(record)
+                    ),
+                )
+                menu.add_separator()
             menu.add_command(
                 label="Copy cell",
                 accelerator="Ctrl+C",
@@ -48216,7 +49924,7 @@ class TrackerApp:
         """Open the blue manual-entry form and add a real My Tracker row."""
         owner = self.tracker_list_dialog or self.root
         palette = self._library_palette()
-        dialog = tk.Toplevel(owner)
+        dialog = self._create_tracker_dialog(owner)
         dialog.title(
             self._translate_ui_text("Add Hack to Tracker")
         )
@@ -48787,7 +50495,7 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(
+        dialog = self._create_tracker_dialog(
             self.tracker_list_dialog or self.root
         )
         dialog.title("Edit Tracker Record")
@@ -49315,7 +51023,7 @@ class TrackerApp:
             )
             return
 
-        webbrowser.open_new_tab(page_url)
+        self.open_smwcentral_comments(page_url)
 
     def _launch_selected_tracker_game(self) -> None:
         record = self._selected_tracker_record()
@@ -49388,7 +51096,10 @@ class TrackerApp:
             bg=THEME["purple"],
         ).pack(side="left")
         count_var = self._localized_string_var(
-            value="0 unmoderated hacks",
+            value=self._format_ui_text(
+                "{count} unmoderated hack(s)",
+                count=0,
+            ),
             master=dialog,
         )
         OutlinedLabel(
@@ -49411,7 +51122,7 @@ class TrackerApp:
         search_panel.columnconfigure(0, weight=1)
         OutlinedLabel(
             search_panel,
-            text="Search title or creator:",
+            text="Search title, creator, or tag:",
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
@@ -49550,6 +51261,7 @@ class TrackerApp:
         self._register_customizable_table(
             tree,
             "unmoderated_hacks",
+            details_resolver=lambda iid: self.custom_hacks_records.get(iid),
         )
 
         scrollbar = ttk.Scrollbar(
@@ -49680,11 +51392,7 @@ class TrackerApp:
                 record
                 for record in records
                 if search_text
-                in (
-                    str(record.get("title", ""))
-                    + " "
-                    + str(record.get("author", ""))
-                ).casefold()
+                in catalog_search_text(record)
             ]
 
         letter_filter = str(
@@ -51137,7 +52845,7 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.google_sheet_link_dialog = dialog
         dialog.title("Sync from Google Sheets")
         self._size_dialog_for_ui(
@@ -51610,7 +53318,7 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.google_sheets_dialog = dialog
         dialog.title("Google Sheets Sync")
         self._size_dialog_for_ui(
@@ -51954,6 +53662,10 @@ class TrackerApp:
                 )
             return True
 
+        def close_dialog() -> None:
+            dialog.destroy()
+            self.google_sheets_dialog = None
+
         self._make_action_button(
             button_bar,
             text="Copy Script Code",
@@ -52009,6 +53721,15 @@ class TrackerApp:
 
         self._make_action_button(
             button_bar,
+            text="Close",
+            command=close_dialog,
+            bg="#60758D",
+            active_bg="#40566E",
+            width=10,
+            pad_y=5,
+        ).pack(side="right", padx=(8, 0))
+        self._make_action_button(
+            button_bar,
             text="Save & Sync Now",
             command=lambda: save_google_settings(
                 True
@@ -52030,13 +53751,13 @@ class TrackerApp:
             pad_y=5,
         ).pack(side="right", padx=(0, 8))
 
-        def close_dialog() -> None:
-            dialog.destroy()
-            self.google_sheets_dialog = None
-
         dialog.protocol(
             "WM_DELETE_WINDOW",
             close_dialog,
+        )
+        dialog.bind(
+            "<Escape>",
+            lambda _event: close_dialog(),
         )
         self._apply_widget_appearance(
             dialog,
@@ -52133,6 +53854,10 @@ class TrackerApp:
             self._start_filtered_hack_download(
                 games_override=[dict(game)]
             )
+            return "break"
+
+        if column == "page_link":
+            self.open_smwcentral_comments(url)
             return "break"
 
         try:
@@ -52944,7 +54669,7 @@ class TrackerApp:
 
         OutlinedLabel(
             filter_panel,
-            text="Search title or creator",
+            text="Search title, creator, or tag",
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
@@ -53375,6 +55100,10 @@ class TrackerApp:
             tree,
             downloader_table_key,
             after_style=self._schedule_downloader_difficulty_overlays,
+            details_resolver=lambda iid: self.downloader_widgets.get(
+                "games_by_iid",
+                {},
+            ).get(iid),
         )
         tree.bind(
             "<Configure>",
@@ -54386,7 +56115,7 @@ class TrackerApp:
                     {
                         "catalog_index": catalog_index,
                         "game": game,
-                        "search_text": f"{title} {author}".casefold(),
+                        "search_text": catalog_search_text(game),
                         "letter": self._alphabet_segment(title),
                         "title_sort": (
                             self._title_without_leading_article(title).casefold(),
@@ -55049,17 +56778,9 @@ class TrackerApp:
             )
             overlay.bind(
                 "<Button-3>",
-                lambda event: self._show_table_appearance_menu(
+                lambda event: self._show_downloader_overlay_context_menu(
                     event,
-                    tree,
-                    (
-                        "complete_catalog"
-                        if self.downloader_widgets.get(
-                            "catalog_view_only",
-                            False,
-                        )
-                        else "missing_hacks"
-                    ),
+                    title_overlay=False,
                 ),
             )
             for wheel_event in (
@@ -55320,10 +57041,9 @@ class TrackerApp:
             )
             overlay.bind(
                 "<Button-3>",
-                lambda event: self._show_table_appearance_menu(
+                lambda event: self._show_downloader_overlay_context_menu(
                     event,
-                    tree,
-                    table_key,
+                    title_overlay=True,
                 ),
             )
             for wheel_event in (
@@ -55436,6 +57156,38 @@ class TrackerApp:
             tree.focus(iid)
             self._schedule_downloader_difficulty_overlays()
         return "break"
+
+    def _show_downloader_overlay_context_menu(
+        self,
+        event,
+        *,
+        title_overlay: bool,
+    ) -> str:
+        tree = self.downloader_widgets.get("tree")
+        if tree is None:
+            return "break"
+        iid = (
+            self._downloader_title_overlay_iid(event)
+            if title_overlay
+            else self._downloader_overlay_iid(event)
+        )
+        if iid:
+            try:
+                tree.selection_set(iid)
+                tree.focus(iid)
+            except tk.TclError:
+                pass
+        event._smw_forced_iid = iid
+        table_key = (
+            "complete_catalog"
+            if self.downloader_widgets.get("catalog_view_only", False)
+            else "missing_hacks"
+        )
+        return self._show_table_appearance_menu(
+            event,
+            tree,
+            table_key,
+        )
 
     def _launch_downloader_catalog_game_event(self, event=None):
         if not bool(
@@ -56938,13 +58690,7 @@ class TrackerApp:
         waiting_value: str = "Any",
     ) -> bool:
         if search_text:
-            haystack = " ".join(
-                (
-                    str(game.get("title", "")),
-                    str(game.get("author", "")),
-                    str(game.get("smwc_id", "")),
-                )
-            ).casefold()
+            haystack = catalog_search_text(game)
             if search_text.casefold() not in haystack:
                 return False
 
@@ -57056,16 +58802,7 @@ class TrackerApp:
             game = self.main_hack_selector_games[
                 label
             ]
-            search_text = " ".join(
-                (
-                    label,
-                    str(game.get("title", "")),
-                    str(game.get("author", "")),
-                    str(game.get("difficulty", "")),
-                    str(game.get("hack_type", "")),
-                    str(game.get("smwc_id", "")),
-                )
-            ).casefold()
+            search_text = label.casefold() + " " + catalog_search_text(game)
 
             if all(
                 token in search_text
@@ -58088,7 +59825,7 @@ class TrackerApp:
             messagebox.showinfo(
                 "Play a Hack",
                 (
-                    "Type part of a title, author, difficulty, "
+                    "Type part of a title, author, tag, difficulty, "
                     "or hack type, then choose a hack from the "
                     "drop-down list."
                 ),
@@ -58770,7 +60507,7 @@ class TrackerApp:
         self._close_game_mode_dialog()
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.game_mode_dialog = dialog
         self.game_mode_dialog_key = key
         dialog.title(self._translate_ui_text(title))
@@ -58858,8 +60595,16 @@ class TrackerApp:
         self.main_hack_selector_var.set(selected_label)
         self.main_hack_selector_selected_label = selected_label
         self._align_main_hack_selector_text(selected_label)
+        if not self._launch_catalog_game(game):
+            return
         self._close_game_mode_dialog()
-        self._launch_catalog_game(game)
+        self._return_game_modes_to_dashboard()
+
+    def _return_game_modes_to_dashboard(self) -> None:
+        """Close Game Modes after a launch begins and reveal the dashboard."""
+        page = getattr(self, "active_in_app_page", None)
+        if isinstance(page, InAppPage) and page.page_key == "game_modes":
+            page.request_close()
 
     def _open_hack_draft(self) -> None:
         ready = self._game_mode_ready_hacks()
@@ -58901,7 +60646,7 @@ class TrackerApp:
                 display_title = (
                     title if len(title) <= 58 else title[:55].rstrip() + "..."
                 )
-                self._make_action_button(
+                hack_button = self._make_action_button(
                     row,
                     display_title,
                     lambda selected=game: self._launch_game_mode_hack(selected),
@@ -58910,7 +60655,15 @@ class TrackerApp:
                     width=36,
                     font_size=12,
                     pad_y=9,
-                ).pack(fill="x")
+                )
+                hack_button.pack(fill="x")
+                hack_button.bind(
+                    "<Button-3>",
+                    lambda event, selected=game: (
+                        self._show_hack_details_context_menu(event, selected)
+                    ),
+                    add="+",
+                )
                 tk.Label(
                     row,
                     text=self._game_mode_metadata_text(game),
@@ -59068,6 +60821,14 @@ class TrackerApp:
 
         group_combo.bind("<<ComboboxSelected>>", update_hacks)
         hack_combo.bind("<<ComboboxSelected>>", update_metadata)
+        hack_combo.bind(
+            "<Button-3>",
+            lambda event: self._show_hack_details_context_menu(
+                event,
+                selected_game(),
+            ),
+            add="+",
+        )
         actions = tk.Frame(dialog, bg=palette["window"])
         actions.pack(fill="x", padx=self._ui_px(20), pady=(0, self._ui_px(16)))
         self._make_action_button(
@@ -59244,7 +61005,7 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.hack_gauntlet_dialog = dialog
         dialog.title(self._translate_ui_text("Hack Gauntlet Maker"))
         dialog.configure(bg=palette["window"])
@@ -59559,7 +61320,7 @@ class TrackerApp:
 
     def _show_hack_gauntlet_status(self) -> None:
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.hack_gauntlet_status_dialog = dialog
         dialog.title(self._translate_ui_text("Hack Gauntlet"))
         dialog.configure(bg=palette["window"])
@@ -59923,9 +61684,11 @@ class TrackerApp:
         self.main_hack_selector_var.set(selected_label)
         self.main_hack_selector_selected_label = selected_label
         self._align_main_hack_selector_text(selected_label)
+        if not self._launch_catalog_game(game):
+            return
         dialog.destroy()
         self.random_hack_dialog = None
-        self._launch_catalog_game(game)
+        self._return_game_modes_to_dashboard()
 
     def _play_random_main_hack(self) -> None:
         if (
@@ -59956,7 +61719,7 @@ class TrackerApp:
             return
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.random_hack_dialog = dialog
         dialog.title("Random Hack Filters")
         dialog.configure(bg=palette["window"])
@@ -60271,7 +62034,7 @@ class TrackerApp:
                 ),
             )
 
-        add_filter_label(0, "Search")
+        add_filter_label(0, "Search title, creator, or tag")
         add_filter_label(2, "SMWC Rating", dropdown=True)
         add_filter_label(3, "Difficulty", dropdown=True)
         add_filter_label(4, "Type", dropdown=True)
@@ -60715,6 +62478,9 @@ class TrackerApp:
             tree,
             "game_library",
             after_style=self._schedule_game_library_difficulty_overlays,
+            details_resolver=lambda iid: self.game_library_games_by_iid.get(
+                iid
+            ),
         )
         tree.bind(
             "<<TreeviewSelect>>",
@@ -61603,11 +63369,7 @@ class TrackerApp:
             )
             overlay.bind(
                 "<Button-3>",
-                lambda event: self._show_table_appearance_menu(
-                    event,
-                    tree,
-                    "game_library",
-                ),
+                self._show_game_library_overlay_context_menu,
             )
             overlay.bind(
                 "<Double-1>",
@@ -61729,6 +63491,24 @@ class TrackerApp:
                 pass
         return "break"
 
+    def _show_game_library_overlay_context_menu(self, event) -> str:
+        tree = self.game_library_widgets.get("tree")
+        if tree is None:
+            return "break"
+        iid = self._game_library_overlay_iid(event)
+        if iid:
+            try:
+                tree.selection_set(iid)
+                tree.focus(iid)
+            except tk.TclError:
+                pass
+        event._smw_forced_iid = iid
+        return self._show_table_appearance_menu(
+            event,
+            tree,
+            "game_library",
+        )
+
     def _launch_game_library_overlay_event(self, event) -> str:
         self._select_game_library_overlay_event(event)
         self._launch_selected_library_game()
@@ -61806,7 +63586,7 @@ class TrackerApp:
             )
             return
 
-        webbrowser.open_new_tab(page_url)
+        self.open_smwcentral_comments(page_url)
 
     def _launch_selected_library_game(self, event=None) -> None:
         game = self._selected_library_game()
@@ -62096,7 +63876,7 @@ class TrackerApp:
     def _launch_catalog_game(
         self,
         game: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
         if (
             selected_platform == "MiSTer"
@@ -62105,14 +63885,14 @@ class TrackerApp:
                 parent=self.game_library_dialog or self.root,
             )
         ):
-            return
+            return False
         if self.game_library_launching:
             messagebox.showinfo(
                 selected_platform,
                 "A game launch is already in progress.",
                 parent=self.game_library_dialog or self.root,
             )
-            return
+            return False
 
         title = str(game.get("title", "Unknown"))
         self.game_library_launching = True
@@ -62130,6 +63910,7 @@ class TrackerApp:
             daemon=True,
         )
         launch_thread.start()
+        return True
 
     def _pause_tracker_bridge_for_fxpak_files(
         self,
@@ -63373,7 +65154,7 @@ class TrackerApp:
         )
         OutlinedLabel(
             controls,
-            text="Search:",
+            text="Search title, creator, or tag:",
             font=("Segoe UI", 9, "bold"),
             fg=palette["text"],
             bg=palette["panel"],
@@ -63508,7 +65289,14 @@ class TrackerApp:
         tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         self._bind_fast_vertical_scroll(tree)
-        self._register_customizable_table(tree, "fxpak_sd")
+        self._register_customizable_table(
+            tree,
+            "fxpak_sd",
+            details_resolver=lambda iid: self.fxpak_sd_widgets.get(
+                "records_by_iid",
+                {},
+            ).get(iid),
+        )
 
         status_panel = tk.Frame(
             dialog,
@@ -63735,8 +65523,79 @@ class TrackerApp:
         root_folder: str,
     ) -> None:
         if not self.fxpak_sd_widgets:
-            return
+            return False
         self.fxpak_sd_scan_thread = None
+        search_text_by_path: dict[str, str] = {}
+        search_text_by_filename: dict[str, str] = {}
+        catalog_game_by_path: dict[str, dict[str, Any]] = {}
+        catalog_game_by_filename: dict[str, dict[str, Any]] = {}
+        configured_mappings = self.config.get("fxpak_rom_mappings", {})
+        runtime_mappings = getattr(self, "fxpak_path_map", {})
+        mapping_sources = tuple(
+            mapping
+            for mapping in (configured_mappings, runtime_mappings)
+            if isinstance(mapping, dict)
+        )
+        for game in self.hack_catalog:
+            indexed_text = catalog_search_text(game)
+            candidate_paths = {str(game.get("rom_path", "")).strip()}
+            mapping_keys = {
+                str(game.get("mapping_key", "")).casefold().strip(),
+                self._catalog_mapping_key(game).casefold().strip(),
+            }
+            smwc_id = str(game.get("smwc_id", "")).strip()
+            if smwc_id:
+                mapping_keys.add(("smwc:" + smwc_id).casefold())
+            title = str(game.get("title", "")).strip()
+            if title:
+                mapping_keys.add(("title:" + title).casefold())
+            mapping_keys.discard("")
+            for mapping in mapping_sources:
+                for mapping_key in mapping_keys:
+                    candidate_paths.add(str(mapping.get(mapping_key, "")).strip())
+            try:
+                candidate_paths.add(
+                    "/"
+                    + rom_builder_fxpak_relative_rom_path(game)
+                    .as_posix()
+                    .lstrip("/")
+                )
+            except (AttributeError, TypeError, ValueError):
+                pass
+            for candidate_path in candidate_paths:
+                if not candidate_path:
+                    continue
+                normalized_path = self._normalize_fxpak_sd_path(
+                    candidate_path
+                ).casefold()
+                search_text_by_path[normalized_path] = indexed_text
+                catalog_game_by_path[normalized_path] = game
+                filename_key = PurePosixPath(normalized_path).name.casefold()
+                if filename_key:
+                    search_text_by_filename.setdefault(filename_key, indexed_text)
+                    catalog_game_by_filename.setdefault(filename_key, game)
+        for record in records:
+            normalized_path = self._normalize_fxpak_sd_path(
+                record.get("path", "")
+            ).casefold()
+            filename_key = str(record.get("filename", "")).casefold()
+            record["catalog_search_text"] = (
+                search_text_by_path.get(normalized_path)
+                or search_text_by_filename.get(filename_key)
+                or ""
+            )
+            catalog_game = (
+                catalog_game_by_path.get(normalized_path)
+                or catalog_game_by_filename.get(filename_key)
+            )
+            if catalog_game is not None:
+                record.update(
+                    {
+                        key: value
+                        for key, value in catalog_game.items()
+                        if key not in {"rom_path", "local_rom_path"}
+                    }
+                )
         self.fxpak_sd_records = sorted(
             records,
             key=lambda record: (
@@ -63785,7 +65644,8 @@ class TrackerApp:
             record
             for record in self.fxpak_sd_records
             if not query
-            or query in " ".join(record.values()).casefold()
+            or query
+            in " ".join(str(value) for value in record.values()).casefold()
         ]
         if letter_filter != "All":
             visible = [
@@ -64759,42 +66619,1009 @@ class TrackerApp:
         self,
         event=None,
     ) -> None:
-        page_url = self.current_hack_url.strip()
+        self.open_hack_details(
+            self.current_hack_record,
+            page_action=self.open_smwcentral_comments,
+        )
 
-        if not page_url:
-            messagebox.showerror(
-                APP_NAME,
-                (
-                    "No SMWCentral page is available for the "
-                    "currently detected hack."
-                ),
-                parent=self.root,
-            )
+    def _resolved_hack_details_record(
+        self,
+        game: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        record = dict(game or {})
+        catalog_key = str(record.get("catalog_key", "")).strip()
+        smwc_id = str(record.get("smwc_id", "")).strip()
+        title_key = normalize_title(record.get("title", ""))
+        if not catalog_key:
+            for catalog_game in self.hack_catalog:
+                if (
+                    smwc_id
+                    and str(catalog_game.get("smwc_id", "")).strip()
+                    == smwc_id
+                ) or (
+                    title_key
+                    and normalize_title(catalog_game.get("title", ""))
+                    == title_key
+                ):
+                    catalog_key = str(
+                        catalog_game.get("catalog_key", "")
+                    ).strip()
+                    break
+        if catalog_key:
+            stored = self.stats_db.get_catalog_game(catalog_key)
+            if stored is not None:
+                stored.update(
+                    {
+                        key: value
+                        for key, value in record.items()
+                        if value not in (None, "", [], {})
+                    }
+                )
+                record = stored
+        return record
+
+    def open_hack_details(
+        self,
+        game: dict[str, Any] | None,
+        *,
+        page_action: Callable[[str], None] | None = None,
+    ) -> None:
+        record = self._resolved_hack_details_record(game)
+        if not record:
             return
+        self._show_hack_details_popup(
+            record,
+            page_action=page_action or self.open_smwcentral_comments,
+        )
 
+    def _show_hack_details_context_menu(
+        self,
+        event,
+        game: dict[str, Any] | None,
+    ) -> str:
+        if not game:
+            return "break"
+        palette = self._library_palette()
+        menu = tk.Menu(
+            self.root,
+            tearoff=False,
+            bg=palette["panel"],
+            fg=palette["text"],
+            activebackground=THEME["blue"],
+            activeforeground="#FFFFFF",
+            font=("Segoe UI", 10),
+        )
+        menu.add_command(
+            label=self._translate_ui_text("View Hack Details"),
+            command=lambda: self.open_hack_details(game),
+        )
         try:
-            opened = webbrowser.open_new_tab(
-                page_url
-            )
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except tk.TclError:
+                pass
+        return "break"
 
-            if not opened:
-                raise OSError(
-                    "The default browser did not accept the link."
+    def _show_hack_details_popup(
+        self,
+        game: dict[str, Any],
+        *,
+        page_action: Callable[[str], None] | None = None,
+    ) -> None:
+        """Show locally stored SMW Central details in the app's blue popup."""
+        existing = getattr(self, "hack_details_dialog", None)
+        try:
+            if existing is not None and existing.winfo_exists():
+                existing.destroy()
+        except tk.TclError:
+            pass
+
+        palette = self._library_palette()
+        dialog = self._create_tracker_dialog(self.root)
+        self.hack_details_dialog = dialog
+        dialog.title(self._translate_ui_text("Hack Details"))
+        self._size_dialog_for_ui(dialog, 1080, 790, 860, 650)
+        dialog.minsize(self._ui_px(760), self._ui_px(560))
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.configure(bg=palette["window"])
+        metadata_key = (
+            str(game.get("catalog_key", "")).strip()
+            or "SMWC:" + str(game.get("smwc_id", "")).strip()
+        )
+        loaded_metadata = getattr(
+            self,
+            "_hack_feature_metadata_loaded",
+            set(),
+        )
+        metadata_missing = bool(
+            str(game.get("smwc_id", "")).strip()
+            and metadata_key not in loaded_metadata
+            and (
+                not str(game.get("description", "")).strip()
+                or not catalog_screenshot_urls(game.get("screenshots", []))
+                or not catalog_tags_text(game.get("tags", ""))
+            )
+        )
+        dialog._hack_details_catalog_key = metadata_key
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["blue"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(12),
+        )
+        title_bar.pack(fill="x")
+        self._add_dialog_window_controls(
+            title_bar,
+            dialog,
+            THEME["blue"],
+        )
+        OutlinedLabel(
+            title_bar,
+            text=self._translate_ui_text("Hack Details").upper(),
+            font=("Segoe UI", 15, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            anchor="center",
+            justify="center",
+        ).pack(fill="x")
+
+        summary = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=self._ui_px(20),
+            pady=self._ui_px(14),
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        summary.pack(
+            fill="x",
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(10)),
+        )
+        OutlinedLabel(
+            summary,
+            text=str(game.get("title", "Untitled")),
+            font=("Segoe UI", 17, "bold"),
+            fg=THEME["blue"],
+            bg=palette["panel"],
+            anchor="center",
+            justify="center",
+            wraplength=self._ui_px(980),
+        ).pack(fill="x")
+        tk.Label(
+            summary,
+            text=(
+                self._translate_ui_text("By:")
+                + " "
+                + smwc_author_text(game.get("author", "Unknown"))
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["muted"],
+            bg=palette["panel"],
+        ).pack(pady=(self._ui_px(3), self._ui_px(8)))
+
+        badges = tk.Frame(summary, bg=palette["panel"])
+        badges.pack(anchor="center")
+        rating = game.get("rating", game.get("smwc_rating"))
+        rating_text = (
+            f"{float(rating):.2f}".rstrip("0").rstrip(".") + "/5"
+            if rating not in (None, "")
+            else self._translate_ui_text("Unrated")
+        )
+        badge_specs = (
+            (
+                self._translate_ui_text("Difficulty:")
+                + " "
+                + str(game.get("difficulty", "Unknown")),
+                "#FFF2CC",
+                "#7F6000",
+            ),
+            (
+                self._translate_ui_text("SMWCentral Rating:")
+                + " "
+                + rating_text,
+                "#E4DFEC",
+                "#5F497A",
+            ),
+            (
+                self._translate_ui_text("Type:")
+                + " "
+                + str(game.get("hack_type", "Unknown")),
+                "#DCEEFF",
+                THEME["navy"],
+            ),
+        )
+        for badge_text, badge_bg, badge_fg in badge_specs:
+            tk.Label(
+                badges,
+                text=badge_text,
+                font=("Segoe UI", 9, "bold"),
+                fg=badge_fg,
+                bg=badge_bg,
+                padx=self._ui_px(8),
+                pady=self._ui_px(3),
+            ).pack(side="left", padx=self._ui_px(3))
+
+        tags_text = catalog_tags_text(game.get("tags", ""))
+        if tags_text:
+            tk.Label(
+                summary,
+                text=self._translate_ui_text("Tags:") + " " + tags_text,
+                font=("Segoe UI", 9),
+                fg=palette["text"],
+                bg=palette["panel"],
+                justify="center",
+                wraplength=self._ui_px(970),
+            ).pack(fill="x", pady=(self._ui_px(9), 0))
+
+        metadata_status_label = None
+        if metadata_missing:
+            metadata_status_label = tk.Label(
+                summary,
+                text=self._translate_ui_text(
+                    "Loading the description, tags, and screenshots "
+                    "from SMW Central…"
+                ),
+                font=("Segoe UI", 9, "bold"),
+                fg=THEME["blue"],
+                bg=palette["panel"],
+                justify="center",
+                wraplength=self._ui_px(950),
+            )
+            metadata_status_label.pack(
+                fill="x",
+                pady=(self._ui_px(8), 0),
+            )
+            dialog._hack_details_metadata_status = metadata_status_label
+
+        scroll_shell = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        scroll_shell.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(10)),
+        )
+        canvas = tk.Canvas(
+            scroll_shell,
+            bg=palette["panel"],
+            bd=0,
+            highlightthickness=0,
+            yscrollincrement=max(12, self._ui_px(24)),
+        )
+        scrollbar = YellowCanvasScrollbar(
+            scroll_shell,
+            orient=tk.VERTICAL,
+            command=canvas.yview,
+            bg=THEME["yellow"],
+            activebackground="#FFE56B",
+            troughcolor="#17243A",
+            width=16,
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        content = tk.Frame(
+            canvas,
+            bg=palette["panel"],
+            padx=self._ui_px(20),
+            pady=self._ui_px(16),
+        )
+        content_window = canvas.create_window(
+            (0, 0),
+            window=content,
+            anchor="nw",
+        )
+        content.columnconfigure(0, weight=1)
+        content.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+            add="+",
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(
+                content_window,
+                width=max(1, event.width),
+            ),
+            add="+",
+        )
+
+        wheel_binding_token = id(dialog)
+
+        def scroll_hack_details(event) -> str:
+            """Scroll from any control inside the in-app details overlay."""
+            units = self._fast_scroll_units(event, rows_per_notch=2)
+            if units:
+                try:
+                    canvas.yview_scroll(units, "units")
+                except tk.TclError:
+                    pass
+            return "break"
+
+        def bind_hack_details_wheel(widget) -> None:
+            """Apply wheel bindings to this widget and its descendants."""
+            try:
+                if getattr(
+                    widget,
+                    "_hack_details_wheel_binding_token",
+                    None,
+                ) != wheel_binding_token:
+                    for wheel_event in (
+                        "<MouseWheel>",
+                        "<Button-4>",
+                        "<Button-5>",
+                    ):
+                        widget.bind(
+                            wheel_event,
+                            scroll_hack_details,
+                            add="+",
+                        )
+                    widget._hack_details_wheel_binding_token = (
+                        wheel_binding_token
+                    )
+                children = widget.winfo_children()
+            except (AttributeError, tk.TclError):
+                return
+            for child in children:
+                bind_hack_details_wheel(child)
+
+        OutlinedLabel(
+            content,
+            text=self._translate_ui_text("Description").upper(),
+            font=("Segoe UI", 12, "bold"),
+            fg=THEME["blue"],
+            bg=palette["panel"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        description = str(game.get("description", "")).strip()
+        tk.Label(
+            content,
+            text=(
+                description
+                or self._translate_ui_text(
+                    "No description is available for this hack."
+                )
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="nw",
+            justify="left",
+            wraplength=self._ui_px(950),
+            padx=self._ui_px(14),
+            pady=self._ui_px(12),
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        ).grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(self._ui_px(7), self._ui_px(16)),
+        )
+
+        OutlinedLabel(
+            content,
+            text=self._translate_ui_text("Screenshots").upper(),
+            font=("Segoe UI", 12, "bold"),
+            fg=THEME["blue"],
+            bg=palette["panel"],
+            anchor="w",
+        ).grid(row=2, column=0, sticky="ew")
+        gallery = tk.Frame(content, bg=palette["panel"])
+        gallery.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            pady=(self._ui_px(7), 0),
+        )
+        gallery.columnconfigure(0, weight=1)
+        gallery.columnconfigure(1, weight=1)
+        screenshot_urls = catalog_screenshot_urls(
+            game.get("screenshots", [])
+        )
+        screenshot_status = tk.Label(
+            gallery,
+            text=self._translate_ui_text(
+                "Loading screenshots…"
+                if screenshot_urls
+                else "No screenshots are available for this hack."
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["muted"],
+            bg=palette["panel"],
+        )
+        screenshot_status.grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=self._ui_px(12),
+        )
+
+        footer = tk.Frame(dialog, bg=palette["window"])
+        footer.pack(
+            fill="x",
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(12)),
+        )
+        page_url = str(game.get("page_url", "")).strip()
+        if page_url:
+            open_page = page_action or self.open_smwcentral_comments
+            self._make_action_button(
+                footer,
+                text=self._translate_ui_text("Open SMWCentral"),
+                command=lambda: open_page(page_url),
+                bg=THEME["blue"],
+                active_bg=THEME["navy"],
+                width=20,
+                pad_y=6,
+            ).pack(side="left")
+        self._make_action_button(
+            footer,
+            text=self._translate_ui_text("Close"),
+            command=dialog.destroy,
+            bg=THEME["green"],
+            active_bg=THEME["green_dark"],
+            width=12,
+            pad_y=6,
+        ).pack(side="right")
+
+        dialog._hack_detail_photos = []
+
+        def show_screenshots(
+            loaded: list[tuple[str, bytes]],
+            failures: int,
+        ) -> None:
+            try:
+                if not dialog.winfo_exists():
+                    return
+                screenshot_status.destroy()
+                row = 0
+                column = 0
+                if loaded:
+                    tk.Label(
+                        gallery,
+                        text=self._translate_ui_text(
+                            "Click any screenshot to enlarge it."
+                        ),
+                        font=("Segoe UI", 9, "bold"),
+                        fg=THEME["blue"],
+                        bg=palette["panel"],
+                    ).grid(
+                        row=0,
+                        column=0,
+                        columnspan=2,
+                        sticky="ew",
+                        pady=(0, self._ui_px(7)),
+                    )
+                    row = 1
+                for index, (_url, image_bytes) in enumerate(loaded, start=1):
+                    if Image is None or ImageTk is None:
+                        break
+                    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                    resampling = getattr(Image, "Resampling", Image)
+                    resample_filter = getattr(resampling, "LANCZOS", 1)
+                    image.thumbnail(
+                        (self._ui_px(430), self._ui_px(320)),
+                        resample_filter,
+                    )
+                    photo = ImageTk.PhotoImage(image, master=dialog)
+                    dialog._hack_detail_photos.append(photo)
+                    card = tk.Frame(
+                        gallery,
+                        bg=palette["panel_alt"],
+                        highlightbackground=palette["border"],
+                        highlightthickness=1,
+                        padx=self._ui_px(7),
+                        pady=self._ui_px(7),
+                    )
+                    card.grid(
+                        row=row,
+                        column=column,
+                        sticky="n",
+                        padx=self._ui_px(5),
+                        pady=self._ui_px(5),
+                    )
+                    image_label = tk.Label(
+                        card,
+                        image=photo,
+                        bg=palette["panel_alt"],
+                        cursor="hand2",
+                    )
+                    image_label.pack()
+                    caption = tk.Label(
+                        card,
+                        text=f"{self._translate_ui_text('Screenshots')} {index}",
+                        font=("Segoe UI", 8, "bold"),
+                        fg=palette["muted"],
+                        bg=palette["panel_alt"],
+                        cursor="hand2",
+                    )
+                    caption.pack(pady=(self._ui_px(5), 0))
+                    viewer_index = index - 1
+                    open_viewer = lambda _event, selected=viewer_index: (
+                        self._show_hack_screenshot_viewer(
+                            game,
+                            loaded,
+                            selected,
+                        )
+                    )
+                    card.configure(cursor="hand2")
+                    card.bind("<Button-1>", open_viewer, add="+")
+                    image_label.bind("<Button-1>", open_viewer, add="+")
+                    caption.bind("<Button-1>", open_viewer, add="+")
+                    column += 1
+                    if column >= 2:
+                        column = 0
+                        row += 1
+                if not loaded:
+                    tk.Label(
+                        gallery,
+                        text=self._translate_ui_text(
+                            "No screenshots are available for this hack."
+                        ),
+                        font=("Segoe UI", 10),
+                        fg=palette["muted"],
+                        bg=palette["panel"],
+                    ).grid(row=0, column=0, columnspan=2, pady=self._ui_px(12))
+                elif failures:
+                    tk.Label(
+                        gallery,
+                        text=self._translate_ui_text(
+                            "Some screenshots could not be loaded."
+                        ),
+                        font=("Segoe UI", 9),
+                        fg=THEME["warning"],
+                        bg=palette["panel"],
+                    ).grid(
+                        row=row + (1 if column else 0),
+                        column=0,
+                        columnspan=2,
+                        pady=self._ui_px(8),
+                    )
+                bind_hack_details_wheel(gallery)
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            except (OSError, ValueError, tk.TclError):
+                return
+
+        def load_screenshots() -> None:
+            def download_one(
+                screenshot_index: int,
+                screenshot_url: str,
+            ) -> tuple[int, str, bytes]:
+                request = Request(
+                    screenshot_url,
+                    headers={"User-Agent": "SMW-Stream-Tracker/1.1"},
+                )
+                with urlopen(request, timeout=20) as response:
+                    image_bytes = response.read(8 * 1024 * 1024 + 1)
+                if len(image_bytes) > 8 * 1024 * 1024:
+                    raise ValueError("Screenshot exceeds 8 MB")
+                return screenshot_index, screenshot_url, image_bytes
+
+            indexed_loaded: list[tuple[int, str, bytes]] = []
+            failures = 0
+            worker_count = max(1, min(4, len(screenshot_urls)))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {
+                    executor.submit(download_one, index, screenshot_url)
+                    for index, screenshot_url in enumerate(screenshot_urls)
+                }
+                for future in as_completed(futures):
+                    try:
+                        indexed_loaded.append(future.result())
+                    except (OSError, HTTPError, URLError, ValueError):
+                        failures += 1
+            loaded = [
+                (screenshot_url, image_bytes)
+                for _index, screenshot_url, image_bytes in sorted(
+                    indexed_loaded,
+                    key=lambda item: item[0],
+                )
+            ]
+            try:
+                self.root.after(0, lambda: show_screenshots(loaded, failures))
+            except tk.TclError:
+                pass
+
+        if screenshot_urls and Image is not None and ImageTk is not None:
+            threading.Thread(
+                target=load_screenshots,
+                name="HackDetailScreenshots",
+                daemon=True,
+            ).start()
+        elif screenshot_urls:
+            show_screenshots([], len(screenshot_urls))
+
+        if metadata_missing:
+            self._start_hack_feature_metadata_fetch(game)
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        self._apply_widget_appearance(
+            dialog,
+            dark=self.appearance_var.get() == "dark",
+        )
+        bind_hack_details_wheel(dialog)
+        dialog.after_idle(lambda: self._localize_widget_tree(dialog))
+
+    def _show_hack_screenshot_viewer(
+        self,
+        game: dict[str, Any],
+        screenshots: list[tuple[str, bytes]],
+        initial_index: int = 0,
+    ) -> None:
+        """Open a reusable, keyboard-accessible viewer for hack screenshots."""
+        if not screenshots or Image is None or ImageTk is None:
+            return
+        existing = getattr(self, "hack_screenshot_viewer_dialog", None)
+        try:
+            if existing is not None and existing.winfo_exists():
+                existing.destroy()
+        except tk.TclError:
+            pass
+
+        palette = self._library_palette()
+        dialog = self._create_tracker_dialog(self.root)
+        self.hack_screenshot_viewer_dialog = dialog
+        dialog.title(self._translate_ui_text("Screenshot Viewer"))
+        self._size_dialog_for_ui(dialog, 1180, 860, 900, 660)
+        dialog.minsize(self._ui_px(760), self._ui_px(560))
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.configure(bg=palette["window"])
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["blue"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(10),
+        )
+        title_bar.pack(fill="x")
+        self._add_dialog_window_controls(
+            title_bar,
+            dialog,
+            THEME["blue"],
+        )
+        OutlinedLabel(
+            title_bar,
+            text=self._translate_ui_text("Screenshot Viewer").upper(),
+            font=("Segoe UI", 15, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            anchor="center",
+            justify="center",
+        ).pack(fill="x")
+
+        hack_title = str(game.get("title", "")).strip()
+        if hack_title:
+            OutlinedLabel(
+                dialog,
+                text=hack_title,
+                font=("Segoe UI", 13, "bold"),
+                fg=THEME["blue"],
+                bg=palette["window"],
+                anchor="center",
+                justify="center",
+            ).pack(fill="x", padx=self._ui_px(18), pady=self._ui_px(8))
+
+        image_panel = tk.Frame(
+            dialog,
+            bg="#050A12",
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        image_panel.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(14),
+            pady=(0, self._ui_px(10)),
+        )
+        image_panel.columnconfigure(1, weight=1)
+        image_panel.rowconfigure(0, weight=1)
+        image_label = tk.Label(image_panel, bg="#050A12")
+        image_label.grid(row=0, column=1, sticky="nsew")
+
+        footer = tk.Frame(dialog, bg=palette["window"])
+        footer.pack(
+            fill="x",
+            padx=self._ui_px(14),
+            pady=(0, self._ui_px(12)),
+        )
+        footer.columnconfigure(0, weight=1, uniform="screenshot_footer")
+        footer.columnconfigure(1, weight=1, uniform="screenshot_footer")
+        footer.columnconfigure(2, weight=1, uniform="screenshot_footer")
+
+        current = {"index": max(0, min(int(initial_index), len(screenshots) - 1))}
+        resize_after = {"id": None}
+        source_images: dict[int, Any] = {}
+        counter_var = tk.StringVar()
+
+        counter = tk.Label(
+            footer,
+            textvariable=counter_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["window"],
+        )
+
+        def render_current() -> None:
+            resize_after["id"] = None
+            try:
+                if not dialog.winfo_exists():
+                    return
+                selected = current["index"]
+                source_image = source_images.get(selected)
+                if source_image is None:
+                    source_image = Image.open(
+                        io.BytesIO(screenshots[selected][1])
+                    ).convert("RGB")
+                    source_images[selected] = source_image
+                image = source_image.copy()
+                available_width = max(
+                    self._ui_px(320),
+                    image_label.winfo_width() - self._ui_px(16),
+                )
+                available_height = max(
+                    self._ui_px(260),
+                    image_label.winfo_height() - self._ui_px(16),
+                )
+                resampling = getattr(Image, "Resampling", Image)
+                fit_scale = min(
+                    available_width / max(1, source_image.width),
+                    available_height / max(1, source_image.height),
+                )
+                if fit_scale >= 2:
+                    # SNES screenshots are normally 256x224. Enlarge them at
+                    # an integer multiple so the picture fills the viewer
+                    # while every source pixel stays crisp and evenly sized.
+                    integer_scale = max(2, int(fit_scale))
+                    image = image.resize(
+                        (
+                            source_image.width * integer_scale,
+                            source_image.height * integer_scale,
+                        ),
+                        getattr(resampling, "NEAREST", 0),
+                    )
+                else:
+                    image.thumbnail(
+                        (available_width, available_height),
+                        getattr(resampling, "LANCZOS", 1),
+                    )
+                photo = ImageTk.PhotoImage(image, master=dialog)
+                dialog._hack_screenshot_viewer_photo = photo
+                image_label.configure(image=photo)
+                counter_var.set(
+                    self._translate_ui_text(
+                        "Screenshot {current} of {total}"
+                    ).format(
+                        current=selected + 1,
+                        total=len(screenshots),
+                    )
+                )
+            except (OSError, ValueError, tk.TclError):
+                return
+
+        def move(step: int) -> None:
+            current["index"] = (current["index"] + step) % len(screenshots)
+            render_current()
+
+        previous_button = self._make_action_button(
+            image_panel,
+            text="◀",
+            command=lambda: move(-1),
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=3,
+            pad_y=14,
+            font_size=22,
+            fixed_pixel_width=self._ui_px(68),
+        )
+        previous_button.grid(
+            row=0,
+            column=0,
+            padx=(self._ui_px(12), self._ui_px(8)),
+        )
+        next_button = self._make_action_button(
+            image_panel,
+            text="▶",
+            command=lambda: move(1),
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=3,
+            pad_y=14,
+            font_size=22,
+            fixed_pixel_width=self._ui_px(68),
+        )
+        next_button.grid(
+            row=0,
+            column=2,
+            padx=(self._ui_px(8), self._ui_px(12)),
+        )
+        counter.grid(row=0, column=1, sticky="ew", padx=5)
+        self._make_action_button(
+            footer,
+            text=self._translate_ui_text("Close"),
+            command=dialog.destroy,
+            bg=THEME["green"],
+            active_bg=THEME["green_dark"],
+            pad_y=7,
+        ).grid(row=0, column=2, sticky="e", padx=(5, 0))
+        if len(screenshots) <= 1:
+            previous_button.configure(state="disabled")
+            next_button.configure(state="disabled")
+
+        def schedule_render(event: tk.Event | None = None) -> None:
+            if event is not None and event.widget is not dialog:
+                return
+            pending = resize_after.get("id")
+            if pending is not None:
+                try:
+                    dialog.after_cancel(pending)
+                except tk.TclError:
+                    pass
+            resize_after["id"] = dialog.after(120, render_current)
+
+        dialog.bind("<Configure>", schedule_render, add="+")
+        dialog.bind("<Left>", lambda _event: move(-1))
+        dialog.bind("<Right>", lambda _event: move(1))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        self._apply_widget_appearance(
+            dialog,
+            dark=self.appearance_var.get() == "dark",
+        )
+        dialog.after_idle(render_current)
+        dialog.after_idle(lambda: self._localize_widget_tree(dialog))
+
+    def _start_hack_feature_metadata_fetch(
+        self,
+        game: dict[str, Any],
+    ) -> None:
+        metadata_key = (
+            str(game.get("catalog_key", "")).strip()
+            or "SMWC:" + str(game.get("smwc_id", "")).strip()
+        )
+        if metadata_key == "SMWC:":
+            return
+        loaded = getattr(self, "_hack_feature_metadata_loaded", None)
+        if not isinstance(loaded, set):
+            loaded = set()
+            self._hack_feature_metadata_loaded = loaded
+        fetching = getattr(self, "_hack_feature_metadata_fetching", None)
+        if not isinstance(fetching, set):
+            fetching = set()
+            self._hack_feature_metadata_fetching = fetching
+        if metadata_key in loaded or metadata_key in fetching:
+            return
+        fetching.add(metadata_key)
+        source_game = dict(game)
+
+        def finish(
+            metadata: dict[str, Any] | None,
+            failed: bool,
+        ) -> None:
+            fetching.discard(metadata_key)
+            current_dialog = getattr(self, "hack_details_dialog", None)
+            current_matches = False
+            try:
+                current_matches = bool(
+                    current_dialog is not None
+                    and current_dialog.winfo_exists()
+                    and getattr(
+                        current_dialog,
+                        "_hack_details_catalog_key",
+                        "",
+                    )
+                    == metadata_key
+                )
+            except tk.TclError:
+                current_matches = False
+            if failed or metadata is None:
+                if current_matches:
+                    status_label = getattr(
+                        current_dialog,
+                        "_hack_details_metadata_status",
+                        None,
+                    )
+                    try:
+                        if status_label is not None:
+                            status_label.configure(
+                                text=self._translate_ui_text(
+                                    "The full hack details could not be "
+                                    "loaded from SMW Central."
+                                ),
+                                fg=THEME["red"],
+                            )
+                    except tk.TclError:
+                        pass
+                return
+
+            loaded.add(metadata_key)
+            catalog_key = str(source_game.get("catalog_key", "")).strip()
+            updated = None
+            if catalog_key:
+                try:
+                    updated = self.stats_db.update_catalog_feature_metadata(
+                        catalog_key,
+                        metadata,
+                    )
+                except (OSError, sqlite3.Error, ValueError):
+                    updated = None
+            if updated is None:
+                updated = dict(source_game)
+                updated.update(metadata)
+
+            updated_id = str(updated.get("smwc_id", "")).strip()
+            for catalog_game in self.hack_catalog:
+                if (
+                    catalog_key
+                    and str(catalog_game.get("catalog_key", "")).strip()
+                    == catalog_key
+                    or (
+                        updated_id
+                        and str(catalog_game.get("smwc_id", "")).strip()
+                        == updated_id
+                    )
+                ):
+                    catalog_game.update(metadata)
+            current_record = self.current_hack_record
+            if isinstance(current_record, dict) and (
+                catalog_key
+                and str(current_record.get("catalog_key", "")).strip()
+                == catalog_key
+                or (
+                    updated_id
+                    and str(current_record.get("smwc_id", "")).strip()
+                    == updated_id
+                )
+            ):
+                current_record.update(metadata)
+
+            if current_matches:
+                try:
+                    current_dialog.destroy()
+                except tk.TclError:
+                    pass
+                self._show_hack_details_popup(
+                    updated,
+                    page_action=self.open_smwcentral_comments,
                 )
 
-            self.status_var.set(
-                "Opening the current hack on SMWCentral…"
-            )
+        def worker() -> None:
+            metadata = None
+            failed = False
+            try:
+                metadata = fetch_smwcentral_hack_feature_metadata(
+                    source_game,
+                    threading.Event(),
+                )
+                failed = metadata is None
+            except Exception:
+                failed = True
+            try:
+                self.root.after(
+                    0,
+                    lambda: finish(metadata, failed),
+                )
+            except tk.TclError:
+                pass
 
-        except OSError as error:
-            messagebox.showerror(
-                APP_NAME,
-                (
-                    "Could not open the SMWCentral page:\n\n"
-                    + str(error)
-                ),
-                parent=self.root,
-            )
+        threading.Thread(
+            target=worker,
+            name="SMWCHackDetails",
+            daemon=True,
+        ).start()
 
     def _report_tk_callback_exception(
         self,
@@ -65411,7 +68238,7 @@ class TrackerApp:
                 pass
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.welcome_setup_dialog = dialog
         dialog.title(self._setup_guide_text("welcome_title"))
         dialog.configure(bg=palette["window"])
@@ -65542,7 +68369,7 @@ class TrackerApp:
                 pass
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.guided_setup_dialog = dialog
         dialog.title(self._setup_guide_text("guide_title"))
         dialog.configure(bg=palette["window"])
@@ -66072,7 +68899,7 @@ class TrackerApp:
 
     def _prompt_guided_obs_setup(self) -> None:
         palette = self._library_palette()
-        prompt = tk.Toplevel(self.root)
+        prompt = self._create_tracker_dialog(self.root)
         prompt.title(self._setup_guide_text("setup_complete_title"))
         prompt.configure(bg=palette["window"])
         prompt.transient(self.root)
@@ -66149,7 +68976,7 @@ class TrackerApp:
                 pass
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.obs_setup_choice_dialog = dialog
         dialog.title(self._setup_guide_text("obs_choice_title"))
         dialog.configure(bg=palette["window"])
@@ -66301,7 +69128,7 @@ class TrackerApp:
             self._select_guided_obs_text_folder()
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.guided_obs_dialog = dialog
         dialog.title(self._setup_guide_text("obs_title"))
         dialog.configure(bg=palette["window"])
@@ -66927,7 +69754,7 @@ class TrackerApp:
         )
 
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.livesplit_obs_guide_dialog = dialog
         guide_title_key = (
             "mac_timer_obs_title" if IS_MACOS else "livesplit_obs_title"
@@ -67505,7 +70332,7 @@ class TrackerApp:
             except tk.TclError:
                 pass
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.update_dialog = dialog
         dialog.title("SMW Stream Tracker Update")
         dialog.configure(bg=palette["window"])
@@ -67965,6 +70792,1685 @@ class TrackerApp:
             dark=(self.appearance_var.get() == "dark"),
         )
 
+    def _stop_smwcentral_webview_process(self) -> None:
+        overlay_poll_after_id = self.smwcentral_spc_overlay_poll_after_id
+        self.smwcentral_spc_overlay_poll_after_id = None
+        if overlay_poll_after_id is not None:
+            try:
+                self.root.after_cancel(overlay_poll_after_id)
+            except tk.TclError:
+                pass
+
+        smwcentral_process = self.smwcentral_webview_process
+        self.smwcentral_webview_process = None
+        if smwcentral_process is not None and smwcentral_process.poll() is None:
+            try:
+                smwcentral_process.terminate()
+                smwcentral_process.wait(timeout=2)
+            except Exception:
+                try:
+                    smwcentral_process.kill()
+                except Exception:
+                    pass
+
+        overlay_host = self.smwcentral_spc_overlay_host
+        self.smwcentral_spc_overlay_host = None
+        if overlay_host is not None:
+            try:
+                if overlay_host.winfo_exists():
+                    overlay_host.destroy()
+            except tk.TclError:
+                pass
+
+    def _create_smwcentral_spc_popup_payload(self) -> dict[str, Any]:
+        """Position the frameless player over the app's bottom-right corner."""
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            return {}
+        try:
+            root_x = int(self.root.winfo_rootx())
+            root_y = int(self.root.winfo_rooty())
+            root_width = max(1, int(self.root.winfo_width()))
+            root_height = max(1, int(self.root.winfo_height()))
+        except tk.TclError:
+            return {}
+
+        margin = self._ui_px(14)
+        work_left, work_top, work_right, work_bottom = (
+            self._monitor_work_area_for_widget(self.root)
+        )
+        usable_width = max(1, work_right - work_left - (margin * 2))
+        usable_height = max(1, work_bottom - work_top - (margin * 2))
+        player_width = min(
+            usable_width,
+            max(520, min(820, root_width - (margin * 2))),
+        )
+        player_height = min(
+            usable_height,
+            max(400, min(420, root_height - (margin * 2))),
+        )
+        # Clamp to the monitor's usable work area instead of the full desktop
+        # bounds so the taskbar never covers or pushes the player off-screen.
+        fallback_x = min(
+            max(work_left + margin, root_x + root_width - player_width - margin),
+            work_right - player_width - margin,
+        )
+        fallback_y = min(
+            max(work_top + margin, root_y + root_height - player_height - margin),
+            work_bottom - player_height - margin,
+        )
+        return {
+            "embed_width": player_width,
+            "embed_height": player_height,
+            "embed_background": "#0F1B2D",
+            "popup_x": fallback_x,
+            "popup_y": fallback_y,
+        }
+
+    def _watch_smwcentral_spc_player_process(self) -> None:
+        """Clean up the frameless player's process after its window closes."""
+        self.smwcentral_spc_overlay_poll_after_id = None
+        process = self.smwcentral_webview_process
+        if process is None or process.poll() is not None:
+            self._stop_smwcentral_webview_process()
+            return
+        self.smwcentral_spc_overlay_poll_after_id = self.root.after(
+            400,
+            self._watch_smwcentral_spc_player_process,
+        )
+
+    def _stop_smwcentral_home_feed_process(self) -> None:
+        feed_process = self.smwcentral_home_feed_process
+        self.smwcentral_home_feed_process = None
+        if feed_process is None or feed_process.poll() is not None:
+            return
+        try:
+            feed_process.terminate()
+            feed_process.wait(timeout=2)
+        except Exception:
+            try:
+                feed_process.kill()
+            except Exception:
+                pass
+
+    def _save_smwcentral_login_preference(self) -> None:
+        automatic_login = bool(self.smwc_automatic_login_var.get())
+        self.config["smwc_automatic_login"] = automatic_login
+        try:
+            save_config(self.config)
+        except OSError as error:
+            messagebox.showerror(
+                APP_NAME,
+                str(error),
+                parent=self.root,
+            )
+            return
+        if self.worker is not None:
+            self.worker.config["smwc_automatic_login"] = automatic_login
+
+    def _open_smwcentral_webview(
+        self,
+        target_url: str,
+        *,
+        mode: str = "browse",
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        normalized_mode = str(mode or "browse").strip().casefold()
+        validator = (
+            _validated_smwcentral_home_link_url
+            if normalized_mode == "feed_link"
+            else _validated_smwcentral_webview_url
+        )
+        safe_url = validator(target_url)
+        if not safe_url:
+            messagebox.showerror(
+                "SMW Central Could Not Be Opened",
+                "This is not a valid SMW Central page.",
+                parent=self.root,
+            )
+            return
+
+        self._stop_smwcentral_webview_process()
+        launch_payload = dict(payload or {})
+        if normalized_mode in {"spc_player", "radio"}:
+            launch_payload.update(
+                self._create_smwcentral_spc_popup_payload()
+            )
+        environment = os.environ.copy()
+        for variable_name in tuple(environment):
+            if variable_name.startswith("_PYI_"):
+                environment.pop(variable_name, None)
+        environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        try:
+            self.smwcentral_webview_process = subprocess.Popen(
+                _smwcentral_webview_command(
+                    safe_url,
+                    self.app_language,
+                    mode=mode,
+                    payload=launch_payload,
+                ),
+                env=environment,
+                creationflags=getattr(
+                    subprocess,
+                    "CREATE_NO_WINDOW",
+                    0,
+                ),
+            )
+            self.status_var.set(
+                "SMW Central opened inside the app. Sign in there to post comments."
+            )
+            if normalized_mode in {"spc_player", "radio"}:
+                self._watch_smwcentral_spc_player_process()
+        except OSError as error:
+            self.smwcentral_webview_process = None
+            self._stop_smwcentral_webview_process()
+            messagebox.showerror(
+                "SMW Central Could Not Be Opened",
+                "SMW Central could not be opened inside the app.\n\n"
+                + str(error),
+                parent=self.root,
+            )
+
+    def _open_smwcentral_home_link(self, target_url: object) -> None:
+        """Open a deliberately selected feed link in the embedded browser."""
+        safe_url = _validated_smwcentral_home_link_url(target_url)
+        if not safe_url:
+            return
+        self._open_smwcentral_webview(safe_url, mode="feed_link")
+
+    def _open_smwcentral_music_player(self, target_url: object) -> None:
+        """Play one SMW Central music submission in the embedded SPC player."""
+        safe_url = _validated_smwcentral_webview_url(target_url)
+        if not safe_url:
+            return
+        self._open_smwcentral_webview(safe_url, mode="spc_player")
+
+    def _open_smwcentral_radio(self) -> None:
+        """Open SMW Central's continuously playing music view in the app."""
+        self._open_smwcentral_webview(
+            urljoin(
+                SMW_CENTRAL_WEBSITE_URL,
+                "?p=section&s=smwmusic",
+            ),
+            mode="radio",
+        )
+
+    def _ensure_smwcentral_home_image_cache(
+        self,
+    ) -> tuple[dict[str, bytes], dict[str, threading.Event], threading.Lock]:
+        cache = getattr(self, "_smwc_home_asset_byte_cache", None)
+        in_flight = getattr(self, "_smwc_home_asset_in_flight", None)
+        cache_lock = getattr(self, "_smwc_home_asset_cache_lock", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._smwc_home_asset_byte_cache = cache
+        if not isinstance(in_flight, dict):
+            in_flight = {}
+            self._smwc_home_asset_in_flight = in_flight
+        if cache_lock is None:
+            cache_lock = threading.Lock()
+            self._smwc_home_asset_cache_lock = cache_lock
+        return cache, in_flight, cache_lock
+
+    def _load_smwcentral_home_image_bytes(self, safe_url: str) -> bytes:
+        """Download one preview once and share it across carousel renders."""
+        cache, in_flight, cache_lock = (
+            self._ensure_smwcentral_home_image_cache()
+        )
+        fetch_event: threading.Event | None = None
+        should_fetch = False
+        with cache_lock:
+            if safe_url in cache:
+                return cache[safe_url]
+            fetch_event = in_flight.get(safe_url)
+            if fetch_event is None:
+                fetch_event = threading.Event()
+                in_flight[safe_url] = fetch_event
+                should_fetch = True
+
+        if not should_fetch:
+            fetch_event.wait(timeout=24)
+            with cache_lock:
+                return cache.get(safe_url, b"")
+
+        image_bytes = b""
+        try:
+            request = Request(
+                safe_url,
+                headers={"User-Agent": "SMW-Stream-Tracker/1.1"},
+            )
+            with urlopen(request, timeout=20) as response:
+                image_bytes = response.read(8 * 1024 * 1024 + 1)
+            if len(image_bytes) > 8 * 1024 * 1024:
+                image_bytes = b""
+        except (OSError, HTTPError, URLError, ValueError):
+            image_bytes = b""
+        finally:
+            with cache_lock:
+                if image_bytes:
+                    cache[safe_url] = image_bytes
+                    while len(cache) > 24:
+                        cache.pop(next(iter(cache)))
+                else:
+                    cache.pop(safe_url, None)
+                completed_event = in_flight.pop(safe_url, fetch_event)
+                completed_event.set()
+        return image_bytes
+
+    def _prefetch_smwcentral_home_images(
+        self,
+        items: Iterable[dict[str, Any]],
+    ) -> None:
+        """Warm carousel preview downloads before their rows rotate in."""
+        urls: list[str] = []
+        for item in items:
+            safe_url = _validated_smwcentral_asset_url(
+                item.get("image_url", "")
+            )
+            if safe_url and safe_url not in urls:
+                urls.append(safe_url)
+        if not urls:
+            return
+        self._ensure_smwcentral_home_image_cache()
+
+        def worker() -> None:
+            for safe_url in urls:
+                self._load_smwcentral_home_image_bytes(safe_url)
+
+        threading.Thread(
+            target=worker,
+            name="SMWCentralHomeImagePrefetch",
+            daemon=True,
+        ).start()
+
+    def _queue_smwcentral_home_image(
+        self,
+        owner: tk.Misc,
+        image_label: tk.Label,
+        image_url: object,
+        maximum_size: tuple[int, int],
+        on_ready: Callable[[], None] | None = None,
+    ) -> None:
+        safe_url = _validated_smwcentral_asset_url(image_url)
+        if not safe_url or Image is None or ImageTk is None:
+            if on_ready is not None:
+                try:
+                    self.root.after_idle(on_ready)
+                except tk.TclError:
+                    pass
+            return
+
+        self._ensure_smwcentral_home_image_cache()
+
+        def worker() -> None:
+            prepared_frames: list[Any] = []
+            frame_delays: list[int] = []
+            try:
+                image_bytes = self._load_smwcentral_home_image_bytes(
+                    safe_url
+                )
+                if not image_bytes:
+                    raise ValueError("SMW Central preview was unavailable.")
+                source_image = Image.open(io.BytesIO(image_bytes))
+                resampling = getattr(Image, "Resampling", Image)
+                target_size = (
+                    max(1, int(maximum_size[0])),
+                    max(1, int(maximum_size[1])),
+                )
+                frame_count = min(
+                    max(1, int(getattr(source_image, "n_frames", 1))),
+                    180,
+                )
+                for frame_index in range(frame_count):
+                    source_image.seek(frame_index)
+                    frame = source_image.convert("RGBA")
+                    frame_width, frame_height = frame.size
+                    if frame_width > 0 and frame_height > 0:
+                        scale = min(
+                            target_size[0] / frame_width,
+                            target_size[1] / frame_height,
+                        )
+                        fitted_size = (
+                            max(1, int(round(frame_width * scale))),
+                            max(1, int(round(frame_height * scale))),
+                        )
+                        if fitted_size != frame.size:
+                            frame = frame.resize(
+                                fitted_size,
+                                getattr(resampling, "LANCZOS", 1),
+                            )
+                    prepared_frames.append(frame.copy())
+                    raw_delay = source_image.info.get("duration", 100)
+                    try:
+                        delay = int(raw_delay)
+                    except (TypeError, ValueError):
+                        delay = 100
+                    frame_delays.append(max(40, min(delay, 2000)))
+            except (OSError, HTTPError, URLError, ValueError, EOFError):
+                prepared_frames.clear()
+                frame_delays.clear()
+
+            def show_image() -> None:
+                try:
+                    if not owner.winfo_exists() or not image_label.winfo_exists():
+                        return
+                    photos = [
+                        ImageTk.PhotoImage(frame, master=owner)
+                        for frame in prepared_frames
+                    ]
+                    if not photos:
+                        return
+                    image_label._smwc_home_photos = photos
+                    image_label._smwc_home_frame_index = 0
+                    image_label.configure(image=photos[0])
+
+                    if len(photos) <= 1:
+                        return
+
+                    def advance_frame() -> None:
+                        try:
+                            if (
+                                not owner.winfo_exists()
+                                or not image_label.winfo_exists()
+                            ):
+                                return
+                            next_index = (
+                                int(image_label._smwc_home_frame_index) + 1
+                            ) % len(photos)
+                            image_label._smwc_home_frame_index = next_index
+                            image_label.configure(image=photos[next_index])
+                            image_label._smwc_home_animation_after = (
+                                self.root.after(
+                                    frame_delays[next_index],
+                                    advance_frame,
+                                )
+                            )
+                        except (tk.TclError, RuntimeError, AttributeError):
+                            return
+
+                    image_label._smwc_home_animation_after = self.root.after(
+                        frame_delays[0],
+                        advance_frame,
+                    )
+                except (tk.TclError, RuntimeError, MemoryError):
+                    return
+                finally:
+                    if on_ready is not None:
+                        try:
+                            on_ready()
+                        except (tk.TclError, RuntimeError):
+                            pass
+
+            try:
+                self.root.after(0, show_image)
+            except tk.TclError:
+                pass
+
+        threading.Thread(
+            target=worker,
+            name="SMWCentralHomeImage",
+            daemon=True,
+        ).start()
+
+    def _render_smwcentral_home_carousel_card(
+        self,
+        page: InAppPage,
+        host: tk.Frame,
+        item: dict[str, Any],
+        item_kind: str,
+        palette: dict[str, str],
+        *,
+        on_ready: Callable[[], None] | None = None,
+    ) -> None:
+        """Render the large preview for one SMW Central carousel entry."""
+        card = tk.Frame(
+            host,
+            bg="#151D2B",
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=self._ui_px(12),
+            pady=self._ui_px(10),
+        )
+        card.pack(fill="both", expand=True)
+
+        title_text = str(item.get("title", "")).strip()
+        primary_url = str(item.get("url", "")).strip()
+        title_widget = tk.Label(
+            card,
+            text=title_text,
+            font=("Segoe UI", 17, "bold"),
+            fg="#F39A67" if primary_url else palette["text"],
+            bg="#151D2B",
+            anchor="w",
+            justify="left",
+            wraplength=self._ui_px(650),
+            cursor="hand2" if primary_url else "arrow",
+        )
+        title_widget.pack(fill="x")
+        if primary_url:
+            title_widget.bind(
+                "<Button-1>",
+                lambda _event, url=primary_url: (
+                    self._open_smwcentral_home_link(url)
+                ),
+            )
+
+        author = str(item.get("author", "")).strip()
+        date_text = str(item.get("date", "")).strip()
+        category = str(item.get("category", "")).strip()
+        meta_parts: list[str] = []
+        if category:
+            meta_parts.append(category)
+        if author or date_text:
+            template = (
+                "Posted by {author} on {date}"
+                if item_kind == "news"
+                else "Submitted by {author} on {date}"
+            )
+            meta_parts.append(
+                self._translate_ui_text(template).format(
+                    author=author or "SMW Central",
+                    date=date_text or "—",
+                )
+            )
+        if meta_parts:
+            tk.Label(
+                card,
+                text="  •  ".join(meta_parts),
+                font=("Segoe UI", 11, "bold"),
+                fg="#AFC8EA",
+                bg="#151D2B",
+                anchor="w",
+                justify="left",
+            ).pack(fill="x", pady=(self._ui_px(3), 0))
+
+        body = tk.Frame(card, bg="#151D2B")
+        body.pack(fill="both", expand=True, pady=(self._ui_px(7), 0))
+        image_url = str(item.get("image_url", "")).strip()
+        if image_url:
+            image_slot = tk.Frame(
+                body,
+                bg="#08101B",
+                width=self._ui_px(440),
+                height=self._ui_px(310),
+            )
+            image_slot.pack(
+                anchor="center",
+                pady=(0, self._ui_px(10)),
+            )
+            image_slot.pack_propagate(False)
+            image_label = tk.Label(
+                image_slot,
+                bg="#08101B",
+                cursor="hand2" if primary_url else "arrow",
+            )
+            image_label.place(relx=0.5, rely=0.5, anchor="center")
+            self._queue_smwcentral_home_image(
+                page,
+                image_label,
+                image_url,
+                (self._ui_px(440), self._ui_px(310)),
+                on_ready=on_ready,
+            )
+            if primary_url:
+                image_label.bind(
+                    "<Button-1>",
+                    lambda _event, url=primary_url: (
+                        self._open_smwcentral_home_link(url)
+                    ),
+                )
+        elif on_ready is not None:
+            try:
+                host.after_idle(on_ready)
+            except tk.TclError:
+                pass
+
+        description = str(item.get("text", "")).strip()
+        if len(description) > 520:
+            description = description[:517].rstrip() + "..."
+        if description:
+            tk.Label(
+                body,
+                text=description,
+                font=("Segoe UI", 12),
+                fg=palette["text"],
+                bg="#151D2B",
+                anchor="nw",
+                justify="left",
+                wraplength=self._ui_px(660),
+            ).pack(fill="x")
+
+        if _smwcentral_home_item_is_music(item):
+            # Keep this independent from the packed text and link widgets so
+            # it remains at the exact horizontal and vertical center.
+            tile_size = self._ui_px(74)
+            play_tile = tk.Canvas(
+                body,
+                width=tile_size,
+                height=tile_size,
+                bg="#151D2B",
+                bd=0,
+                highlightthickness=0,
+                cursor="hand2",
+                takefocus=1,
+            )
+            play_tile.place(relx=0.5, rely=0.5, anchor="center")
+
+            def draw_play_tile(fill_color: str) -> object | None:
+                if Image is None or ImageDraw is None or ImageTk is None:
+                    return None
+                supersample = 5
+                high_size = tile_size * supersample
+                inset = max(2, round(high_size * 0.035))
+                image = Image.new(
+                    "RGBA",
+                    (high_size, high_size),
+                    (0, 0, 0, 0),
+                )
+                draw = ImageDraw.Draw(image)
+                draw.rounded_rectangle(
+                    (inset, inset, high_size - inset - 1, high_size - inset - 1),
+                    radius=round(high_size * 0.075),
+                    fill=fill_color,
+                    outline="#6E7889",
+                    width=max(supersample, round(high_size * 0.012)),
+                )
+                center_x = high_size * 0.51
+                center_y = high_size * 0.50
+                triangle_width = high_size * 0.30
+                triangle_height = high_size * 0.38
+                draw.polygon(
+                    (
+                        (center_x - triangle_width * 0.38, center_y - triangle_height / 2),
+                        (center_x - triangle_width * 0.38, center_y + triangle_height / 2),
+                        (center_x + triangle_width * 0.62, center_y),
+                    ),
+                    fill="#F4F7FB",
+                )
+                image = image.resize(
+                    (tile_size, tile_size),
+                    Image.Resampling.LANCZOS,
+                )
+                return ImageTk.PhotoImage(image, master=play_tile)
+
+            normal_photo = draw_play_tile("#454D5B")
+            hover_photo = draw_play_tile("#566477")
+            if normal_photo is not None and hover_photo is not None:
+                image_item = play_tile.create_image(
+                    tile_size / 2,
+                    tile_size / 2,
+                    image=normal_photo,
+                    anchor="center",
+                )
+                play_tile._smwc_play_photos = (normal_photo, hover_photo)
+                play_tile.bind(
+                    "<Enter>",
+                    lambda _event: play_tile.itemconfigure(
+                        image_item,
+                        image=hover_photo,
+                    ),
+                )
+                play_tile.bind(
+                    "<Leave>",
+                    lambda _event: play_tile.itemconfigure(
+                        image_item,
+                        image=normal_photo,
+                    ),
+                )
+            else:
+                play_tile.create_rectangle(
+                    1,
+                    1,
+                    tile_size - 2,
+                    tile_size - 2,
+                    fill="#454D5B",
+                    outline="#6E7889",
+                )
+                play_tile.create_text(
+                    tile_size / 2,
+                    tile_size / 2,
+                    text="▶",
+                    fill="white",
+                    font=("Segoe UI Symbol", 27, "bold"),
+                )
+
+            def open_music_player(_event: object | None = None) -> None:
+                self._open_smwcentral_music_player(primary_url)
+
+            play_tile.bind("<Button-1>", open_music_player)
+            play_tile.bind("<Return>", open_music_player)
+            play_tile.bind("<space>", open_music_player)
+
+        links = item.get("links", [])
+        shown_urls = {primary_url} if primary_url else set()
+        visible_links: list[dict[str, Any]] = []
+        if isinstance(links, list):
+            for link in links:
+                if not isinstance(link, dict):
+                    continue
+                link_url = str(link.get("url", "")).strip()
+                if not link_url or link_url in shown_urls:
+                    continue
+                shown_urls.add(link_url)
+                visible_links.append(link)
+        if visible_links:
+            link_frame = tk.Frame(card, bg="#151D2B")
+            link_frame.pack(fill="x", pady=(self._ui_px(7), 0))
+            link_frame.columnconfigure(0, weight=1)
+            link_frame.columnconfigure(1, weight=1)
+            for link_index, link in enumerate(visible_links):
+                self._make_action_button(
+                    link_frame,
+                    text=str(link.get("label", "Open"))[:45],
+                    command=lambda url=str(link.get("url", "")): (
+                        self._open_smwcentral_home_link(url)
+                    ),
+                    bg=THEME["blue"],
+                    active_bg=THEME["navy"],
+                    width=17,
+                    pad_y=4,
+                    font_size=10,
+                ).grid(
+                    row=link_index // 2,
+                    column=link_index % 2,
+                    sticky="ew",
+                    padx=(
+                        0 if link_index % 2 == 0 else self._ui_px(3),
+                        self._ui_px(3) if link_index % 2 == 0 else 0,
+                    ),
+                    pady=(0, self._ui_px(4)),
+                )
+
+    def _render_smwcentral_home_feed(
+        self,
+        page: InAppPage,
+        host: tk.Frame,
+        feed: dict[str, Any],
+    ) -> None:
+        if page is not getattr(self, "active_in_app_page", None):
+            return
+        try:
+            if not page.winfo_exists() or not host.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        for child in host.winfo_children():
+            child.destroy()
+        palette = self._library_palette()
+        host.configure(bg=palette["window"])
+        host.columnconfigure(0, weight=1, uniform="smwc_home_columns")
+        host.columnconfigure(1, weight=1, uniform="smwc_home_columns")
+
+        def section(
+            title: str,
+            items: list[dict[str, Any]],
+            row: int,
+            column: int,
+            *,
+            empty_text: str,
+            item_kind: str,
+            carousel: bool = False,
+        ) -> None:
+            panel = tk.Frame(
+                host,
+                bg=palette["panel"],
+                highlightbackground=palette["border"],
+                highlightthickness=1,
+            )
+            panel.grid(
+                row=row,
+                column=column,
+                sticky="nsew",
+                padx=(
+                    self._ui_px(12) if column == 0 else self._ui_px(6),
+                    self._ui_px(6) if column == 0 else self._ui_px(12),
+                ),
+                pady=(self._ui_px(10), self._ui_px(4)),
+            )
+            if carousel:
+                # Keep both rotating dashboard sections exactly the same size.
+                # Replacing one detail card must never reflow Events or News.
+                panel.configure(height=self._ui_px(720))
+                panel.pack_propagate(False)
+            heading = tk.Frame(
+                panel,
+                bg="#3B4A60",
+                padx=self._ui_px(14),
+                pady=self._ui_px(9),
+            )
+            heading.pack(fill="x")
+            tk.Label(
+                heading,
+                text=self._translate_ui_text(title),
+                font=("Segoe UI", 17 if carousel else 15, "bold"),
+                fg="white",
+                bg="#3B4A60",
+                anchor="w",
+            ).pack(fill="x")
+            cards = tk.Frame(
+                panel,
+                bg=palette["panel"],
+                padx=self._ui_px(10),
+                pady=self._ui_px(8),
+            )
+            cards.pack(fill="both", expand=True)
+            if not items:
+                tk.Label(
+                    cards,
+                    text=self._translate_ui_text(empty_text),
+                    font=("Segoe UI", 11),
+                    fg=palette["muted"],
+                    bg=palette["panel"],
+                    anchor="center",
+                    justify="center",
+                    pady=self._ui_px(20),
+                ).pack(fill="x")
+                return
+
+            if carousel:
+                carousel_host = tk.Frame(
+                    cards,
+                    bg=palette["panel"],
+                    height=self._ui_px(550),
+                )
+                carousel_host.pack(fill="x")
+                carousel_host.grid_propagate(False)
+                carousel_host.columnconfigure(0, minsize=self._ui_px(235))
+                carousel_host.columnconfigure(1, weight=1)
+                carousel_host.rowconfigure(0, weight=1)
+
+                selector_host = tk.Frame(
+                    carousel_host,
+                    bg="#30313A",
+                    highlightbackground=palette["border"],
+                    highlightthickness=1,
+                    padx=self._ui_px(7),
+                    pady=self._ui_px(7),
+                )
+                selector_host.grid(
+                    row=0,
+                    column=0,
+                    sticky="nsew",
+                    padx=(0, self._ui_px(9)),
+                )
+                detail_host = tk.Frame(
+                    carousel_host,
+                    bg=palette["panel"],
+                )
+                detail_host.grid(row=0, column=1, sticky="nsew")
+                detail_host.pack_propagate(False)
+
+                controls = tk.Frame(cards, bg=palette["panel"])
+                controls.pack(fill="x", pady=(self._ui_px(8), 0))
+                controls.columnconfigure(1, weight=1)
+                position_var = tk.StringVar()
+                carousel_state: dict[str, Any] = {
+                    "index": 0,
+                    "after": None,
+                    "paused": False,
+                    "generation": 0,
+                }
+                selector_labels: list[tk.Label] = []
+
+                for selector_index, item in enumerate(items):
+                    full_title = str(item.get("title", "")).strip()
+                    display_title = full_title
+                    if len(display_title) > 34:
+                        display_title = display_title[:31].rstrip() + "..."
+                    selector = tk.Label(
+                        selector_host,
+                        text=display_title,
+                        font=("Segoe UI", 11, "bold"),
+                        fg="#B7BAC3",
+                        bg="#30313A",
+                        anchor="w",
+                        justify="left",
+                        wraplength=self._ui_px(205),
+                        padx=self._ui_px(9),
+                        pady=self._ui_px(10),
+                        cursor="hand2",
+                    )
+                    selector.pack(fill="x", pady=(0, self._ui_px(3)))
+                    selector.bind(
+                        "<Button-1>",
+                        lambda _event, index=selector_index: show_item(index),
+                    )
+                    selector_labels.append(selector)
+
+                def cancel_rotation() -> None:
+                    after_id = carousel_state.get("after")
+                    carousel_state["after"] = None
+                    if after_id is None:
+                        return
+                    try:
+                        self.root.after_cancel(after_id)
+                    except tk.TclError:
+                        pass
+
+                def is_visible() -> bool:
+                    try:
+                        return bool(
+                            page
+                            is getattr(self, "active_in_app_page", None)
+                            and panel.winfo_exists()
+                            and detail_host.winfo_exists()
+                        )
+                    except tk.TclError:
+                        return False
+
+                def schedule_rotation() -> None:
+                    cancel_rotation()
+                    if (
+                        carousel_state["paused"]
+                        or len(items) <= 1
+                        or not is_visible()
+                    ):
+                        return
+                    carousel_state["after"] = self.root.after(
+                        SMWC_HOME_CAROUSEL_INTERVAL_MS,
+                        lambda: show_item(
+                            int(carousel_state["index"]) + 1
+                        ),
+                    )
+
+                def show_item(index: int) -> None:
+                    if not is_visible():
+                        return
+                    cancel_rotation()
+                    normalized_index = int(index) % len(items)
+                    carousel_state["index"] = normalized_index
+                    carousel_state["generation"] = (
+                        int(carousel_state["generation"]) + 1
+                    )
+                    render_generation = int(
+                        carousel_state["generation"]
+                    )
+                    for selector_index, selector in enumerate(
+                        selector_labels
+                    ):
+                        selected = selector_index == normalized_index
+                        selector.configure(
+                            bg="#5B5D68" if selected else "#30313A",
+                            fg="white" if selected else "#B7BAC3",
+                            relief="solid" if selected else "flat",
+                            borderwidth=1 if selected else 0,
+                        )
+                    for child in detail_host.winfo_children():
+                        child.destroy()
+                    item = items[normalized_index]
+
+                    def preview_ready(
+                        generation: int = render_generation,
+                    ) -> None:
+                        if (
+                            generation
+                            != int(carousel_state["generation"])
+                            or not is_visible()
+                        ):
+                            return
+                        schedule_rotation()
+
+                    self._render_smwcentral_home_carousel_card(
+                        page,
+                        detail_host,
+                        item,
+                        item_kind,
+                        palette,
+                        on_ready=preview_ready,
+                    )
+                    position_var.set(
+                        f"{normalized_index + 1} / {len(items)}  •  "
+                        f"{str(item.get('title', '')).strip()}"
+                    )
+
+                self._make_action_button(
+                    controls,
+                    text="◀",
+                    command=lambda: show_item(
+                        int(carousel_state["index"]) - 1
+                    ),
+                    bg=THEME["blue"],
+                    active_bg=THEME["navy"],
+                    width=5,
+                    pad_y=4,
+                    font_size=11,
+                ).grid(row=0, column=0, sticky="w")
+                tk.Label(
+                    controls,
+                    textvariable=position_var,
+                    font=("Segoe UI", 11, "bold"),
+                    fg=palette["muted"],
+                    bg=palette["panel"],
+                    anchor="center",
+                    justify="center",
+                    wraplength=self._ui_px(540),
+                    height=2,
+                ).grid(
+                    row=0,
+                    column=1,
+                    sticky="ew",
+                    padx=self._ui_px(8),
+                )
+                self._make_action_button(
+                    controls,
+                    text="▶",
+                    command=lambda: show_item(
+                        int(carousel_state["index"]) + 1
+                    ),
+                    bg=THEME["blue"],
+                    active_bg=THEME["navy"],
+                    width=5,
+                    pad_y=4,
+                    font_size=11,
+                ).grid(row=0, column=2, sticky="e")
+
+                def pause_rotation(_event: tk.Event) -> None:
+                    carousel_state["paused"] = True
+                    cancel_rotation()
+
+                def resume_rotation(_event: tk.Event) -> None:
+                    carousel_state["paused"] = False
+                    schedule_rotation()
+
+                panel.bind("<Enter>", pause_rotation, add="+")
+                panel.bind("<Leave>", resume_rotation, add="+")
+                show_item(0)
+                return
+
+            for item_index, item in enumerate(items):
+                card = tk.Frame(
+                    cards,
+                    bg="#151D2B",
+                    highlightbackground=palette["border"],
+                    highlightthickness=1,
+                    padx=self._ui_px(12),
+                    pady=self._ui_px(10),
+                )
+                card.pack(
+                    fill="x",
+                    pady=(0, self._ui_px(8)),
+                )
+                title_text = str(item.get("title", "")).strip()
+                primary_url = str(item.get("url", "")).strip()
+                title_widget = tk.Label(
+                    card,
+                    text=title_text,
+                    font=("Segoe UI", 13, "bold"),
+                    fg="#F39A67" if primary_url else palette["text"],
+                    bg="#151D2B",
+                    anchor="w",
+                    justify="left",
+                    wraplength=self._ui_px(650),
+                    cursor="hand2" if primary_url else "arrow",
+                )
+                title_widget.pack(fill="x")
+                if primary_url:
+                    title_widget.bind(
+                        "<Button-1>",
+                        lambda _event, url=primary_url: (
+                            self._open_smwcentral_home_link(url)
+                        ),
+                    )
+
+                author = str(item.get("author", "")).strip()
+                date_text = str(item.get("date", "")).strip()
+                category = str(item.get("category", "")).strip()
+                meta_parts: list[str] = []
+                if category:
+                    meta_parts.append(category)
+                if author or date_text:
+                    template = (
+                        "Posted by {author} on {date}"
+                        if item_kind == "news"
+                        else "Submitted by {author} on {date}"
+                    )
+                    meta_parts.append(
+                        self._translate_ui_text(template).format(
+                            author=author or "SMW Central",
+                            date=date_text or "—",
+                        )
+                    )
+                if meta_parts:
+                    tk.Label(
+                        card,
+                        text="  •  ".join(meta_parts),
+                        font=("Segoe UI", 9, "bold"),
+                        fg="#AFC8EA",
+                        bg="#151D2B",
+                        anchor="w",
+                        justify="left",
+                    ).pack(fill="x", pady=(self._ui_px(3), 0))
+
+                body = tk.Frame(card, bg="#151D2B")
+                body.pack(fill="x", pady=(self._ui_px(7), 0))
+                image_url = str(item.get("image_url", "")).strip()
+                text_column = 0
+                if image_url:
+                    image_slot = tk.Frame(
+                        body,
+                        bg="#08101B",
+                        width=self._ui_px(260),
+                        height=self._ui_px(180),
+                    )
+                    image_slot.grid(
+                        row=0,
+                        column=0,
+                        sticky="nw",
+                        padx=(0, self._ui_px(10)),
+                    )
+                    image_slot.grid_propagate(False)
+                    image_label = tk.Label(
+                        image_slot,
+                        bg="#08101B",
+                        cursor="hand2" if primary_url else "arrow",
+                    )
+                    image_label.place(relx=0.5, rely=0.5, anchor="center")
+                    self._queue_smwcentral_home_image(
+                        page,
+                        image_label,
+                        image_url,
+                        (self._ui_px(260), self._ui_px(180)),
+                    )
+                    if primary_url:
+                        image_label.bind(
+                            "<Button-1>",
+                            lambda _event, url=primary_url: (
+                                self._open_smwcentral_home_link(url)
+                            ),
+                        )
+                    text_column = 1
+                body.columnconfigure(text_column, weight=1)
+                description = str(item.get("text", "")).strip()
+                if len(description) > 650:
+                    description = description[:647].rstrip() + "..."
+                if description:
+                    description_widget = tk.Label(
+                        body,
+                        text=description,
+                        font=("Segoe UI", 10),
+                        fg=palette["text"],
+                        bg="#151D2B",
+                        anchor="nw",
+                        justify="left",
+                        wraplength=self._ui_px(600),
+                    )
+                    description_widget.grid(
+                        row=0,
+                        column=text_column,
+                        sticky="new",
+                    )
+
+                    def fit_description_to_card(
+                        event: tk.Event,
+                        *,
+                        label: tk.Label = description_widget,
+                        reserves_image: bool = bool(image_url),
+                    ) -> None:
+                        reserved_width = (
+                            self._ui_px(270) if reserves_image else 0
+                        )
+                        available_width = max(
+                            self._ui_px(280),
+                            int(event.width)
+                            - reserved_width
+                            - self._ui_px(8),
+                        )
+                        try:
+                            label.configure(wraplength=available_width)
+                        except tk.TclError:
+                            pass
+
+                    body.bind(
+                        "<Configure>",
+                        fit_description_to_card,
+                        add="+",
+                    )
+
+                links = item.get("links", [])
+                shown_urls: set[str] = set()
+                if primary_url:
+                    shown_urls.add(primary_url)
+                link_frame = tk.Frame(card, bg="#151D2B")
+                visible_links = []
+                if isinstance(links, list):
+                    for link in links:
+                        if not isinstance(link, dict):
+                            continue
+                        link_url = str(link.get("url", "")).strip()
+                        if not link_url or link_url in shown_urls:
+                            continue
+                        shown_urls.add(link_url)
+                        visible_links.append(link)
+                if visible_links:
+                    link_frame.pack(fill="x", pady=(self._ui_px(8), 0))
+                    link_frame.columnconfigure(0, weight=1)
+                    link_frame.columnconfigure(1, weight=1)
+                    for link_index, link in enumerate(visible_links):
+                        self._make_action_button(
+                            link_frame,
+                            text=str(link.get("label", "Open"))[:50],
+                            command=lambda url=str(link.get("url", "")): (
+                                self._open_smwcentral_home_link(url)
+                            ),
+                            bg=THEME["blue"],
+                            active_bg=THEME["navy"],
+                            width=18,
+                            pad_y=4,
+                            font_size=9,
+                        ).grid(
+                            row=link_index // 2,
+                            column=link_index % 2,
+                            sticky="ew",
+                            padx=(
+                                0
+                                if link_index % 2 == 0
+                                else self._ui_px(3),
+                                self._ui_px(3)
+                                if link_index % 2 == 0
+                                else 0,
+                            ),
+                            pady=(0, self._ui_px(4)),
+                        )
+
+        latest_items = list(feed.get("latest_content", []))
+        daily_items = list(feed.get("content_of_day", []))
+        self._prefetch_smwcentral_home_images(latest_items)
+        self._prefetch_smwcentral_home_images(daily_items)
+
+        section(
+            "Events",
+            list(feed.get("events", [])),
+            0,
+            0,
+            empty_text="There are no upcoming events.",
+            item_kind="event",
+        )
+        section(
+            "Recent News",
+            list(feed.get("news", [])),
+            1,
+            0,
+            empty_text="No items are available in this section.",
+            item_kind="news",
+        )
+        section(
+            "Latest Content",
+            latest_items,
+            0,
+            1,
+            empty_text="No items are available in this section.",
+            item_kind="submission",
+            carousel=True,
+        )
+        section(
+            "Content of the Day",
+            daily_items,
+            1,
+            1,
+            empty_text="No items are available in this section.",
+            item_kind="submission",
+            carousel=True,
+        )
+        page.after_idle(lambda: self._localize_widget_tree(page))
+
+    def _refresh_smwcentral_home_feed(
+        self,
+        page: InAppPage,
+        host: tk.Frame,
+        status_var: tk.StringVar,
+    ) -> None:
+        self._stop_smwcentral_home_feed_process()
+        status_var.set(
+            self._translate_ui_text(
+                "Loading the latest SMW Central updates..."
+            )
+        )
+        environment = os.environ.copy()
+        for variable_name in tuple(environment):
+            if variable_name.startswith("_PYI_"):
+                environment.pop(variable_name, None)
+        environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        try:
+            process = subprocess.Popen(
+                _smwcentral_webview_command(
+                    SMW_CENTRAL_WEBSITE_URL,
+                    self.app_language,
+                    mode="home_feed",
+                ),
+                env=environment,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError:
+            status_var.set(
+                self._translate_ui_text(
+                    "The live SMW Central updates could not be refreshed. "
+                    "Showing the most recent saved copy."
+                )
+            )
+            return
+        self.smwcentral_home_feed_process = process
+
+        def wait_for_feed() -> None:
+            try:
+                process.wait(timeout=45)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.terminate()
+                    process.wait(timeout=3)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+
+            def finish() -> None:
+                if self.smwcentral_home_feed_process is process:
+                    self.smwcentral_home_feed_process = None
+                if page is not getattr(self, "active_in_app_page", None):
+                    return
+                feed = _read_smwcentral_home_feed_cache()
+                if feed:
+                    self._render_smwcentral_home_feed(page, host, feed)
+                    fetched_at = str(feed.get("fetched_at", "")).strip()
+                    display_time = fetched_at
+                    try:
+                        display_time = datetime.fromisoformat(
+                            fetched_at.replace("Z", "+00:00")
+                        ).astimezone().strftime("%b %d, %Y %I:%M %p")
+                    except (TypeError, ValueError):
+                        pass
+                    status_var.set(
+                        self._translate_ui_text("Updated {time}").format(
+                            time=display_time or "SMW Central"
+                        )
+                    )
+                else:
+                    status_var.set(
+                        self._translate_ui_text(
+                            "The live SMW Central updates could not be "
+                            "refreshed. Showing the most recent saved copy."
+                        )
+                    )
+
+            try:
+                self.root.after(0, finish)
+            except tk.TclError:
+                pass
+
+        threading.Thread(
+            target=wait_for_feed,
+            name="SMWCentralHomeFeed",
+            daemon=True,
+        ).start()
+
+    def open_smwcentral_home(self) -> None:
+        """Show SMW Central highlights as a native in-app launch page."""
+        palette = self._library_palette()
+        page = self._open_in_app_page(
+            "smwcentral_home",
+            "SMW Central Updates",
+            home_text="Go to Dashboard",
+        )
+        page.configure(bg=palette["window"])
+
+        title_panel = tk.Frame(page, bg=THEME["blue"])
+        title_panel.pack(fill="x")
+        tk.Label(
+            title_panel,
+            text=self._translate_ui_text("SMW CENTRAL UPDATES"),
+            font=("Segoe UI", 25, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            pady=self._ui_px(10),
+        ).pack(fill="x")
+        subtitle_label = tk.Label(
+            title_panel,
+            text=self._translate_ui_text(
+                "Live events, news, and featured content from SMW Central."
+            ),
+            font=("Segoe UI", 11, "bold"),
+            fg="#DCEEFF",
+            bg=THEME["blue"],
+        )
+        subtitle_label.pack(
+            fill="x",
+            pady=(0, self._ui_px(10)),
+        )
+
+        controls = tk.Frame(
+            page,
+            bg=palette["panel"],
+            padx=self._ui_px(14),
+            pady=self._ui_px(7),
+        )
+        controls.pack(fill="x")
+        status_var = tk.StringVar(
+            value=self._translate_ui_text(
+                "Loading the latest SMW Central updates..."
+            )
+        )
+        tk.Label(
+            controls,
+            textvariable=status_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        viewport = tk.Frame(page, bg=palette["window"])
+        viewport.pack(fill="both", expand=True)
+        viewport.rowconfigure(0, weight=1)
+        viewport.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(
+            viewport,
+            bg=palette["window"],
+            bd=0,
+            highlightthickness=0,
+            yscrollincrement=max(12, self._ui_px(24)),
+        )
+        scrollbar = ttk.Scrollbar(
+            viewport,
+            orient="vertical",
+            command=canvas.yview,
+            style="Mario.Vertical.TScrollbar",
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        content_host = tk.Frame(canvas, bg=palette["window"])
+        content_window = canvas.create_window(
+            (0, 0),
+            window=content_host,
+            anchor="nw",
+        )
+
+        def sync_scrollregion(_event=None) -> None:
+            try:
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            except tk.TclError:
+                pass
+
+        def size_content(event) -> None:
+            try:
+                canvas.itemconfigure(
+                    content_window,
+                    width=max(1, int(event.width)),
+                )
+                sync_scrollregion()
+            except (tk.TclError, TypeError, ValueError):
+                pass
+
+        content_host.bind("<Configure>", sync_scrollregion, add="+")
+        canvas.bind("<Configure>", size_content, add="+")
+
+        def scroll_feed(event) -> str | None:
+            try:
+                first, last = canvas.yview()
+                if first <= 0.0 and last >= 1.0:
+                    return None
+                units = self._fast_scroll_units(event, rows_per_notch=3)
+                if not units:
+                    return None
+                canvas.yview_scroll(units, "units")
+                return "break"
+            except (tk.TclError, TypeError, ValueError):
+                return None
+
+        wheel_bindings: dict[str, str] = {}
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            bind_id = self.root.bind(sequence, scroll_feed, add="+")
+            if bind_id:
+                wheel_bindings[sequence] = bind_id
+
+        def cleanup_page() -> None:
+            for sequence, bind_id in tuple(wheel_bindings.items()):
+                try:
+                    self.root.unbind(sequence, bind_id)
+                except tk.TclError:
+                    pass
+            wheel_bindings.clear()
+            self._stop_smwcentral_home_feed_process()
+
+        page.protocol("WM_DELETE_WINDOW", cleanup_page)
+        refresh_button = self._make_action_button(
+            controls,
+            text=self._translate_ui_text("Refresh"),
+            command=lambda: self._refresh_smwcentral_home_feed(
+                page,
+                content_host,
+                status_var,
+            ),
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=12,
+            pad_y=5,
+        )
+        refresh_button.pack(side="right", padx=(self._ui_px(8), 0))
+        cached_feed = _read_smwcentral_home_feed_cache()
+        if cached_feed:
+            self._render_smwcentral_home_feed(
+                page,
+                content_host,
+                cached_feed,
+            )
+        else:
+            tk.Label(
+                content_host,
+                text=self._translate_ui_text(
+                    "Loading the latest SMW Central updates..."
+                ),
+                font=("Segoe UI", 14, "bold"),
+                fg=palette["muted"],
+                bg=palette["window"],
+                pady=self._ui_px(80),
+            ).pack(fill="x")
+        self._refresh_smwcentral_home_feed(
+            page,
+            content_host,
+            status_var,
+        )
+
+    def open_smwcentral_account(self) -> None:
+        """Confirm login preferences, then open SMW Central authentication."""
+        palette = self._library_palette()
+        dialog = self._create_tracker_dialog(self.root)
+        title = self._translate_ui_text("Log In to SMW Central")
+        dialog.title(title)
+        self._size_dialog_for_ui(dialog, 760, 430, 660, 380)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.configure(bg=palette["window"])
+
+        title_bar = tk.Frame(
+            dialog,
+            bg=THEME["blue"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(12),
+        )
+        title_bar.pack(fill="x")
+        OutlinedLabel(
+            title_bar,
+            text=title.upper(),
+            font=("Segoe UI", 14, "bold"),
+            fg="white",
+            bg=THEME["blue"],
+            anchor="center",
+            justify="center",
+        ).pack(fill="x")
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            padx=self._ui_px(26),
+            pady=self._ui_px(24),
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(12),
+            pady=(0, self._ui_px(12)),
+        )
+        privacy_text = self._translate_ui_text(
+            "SMW Central will handle your password and session. "
+            "SMW Stream Tracker never reads your password."
+        )
+        tk.Label(
+            body,
+            text=privacy_text,
+            font=("Segoe UI", 11),
+            fg=palette["text"],
+            bg=palette["panel"],
+            justify="left",
+            anchor="nw",
+            wraplength=self._ui_px(670),
+        ).pack(fill="x", pady=(0, self._ui_px(18)))
+
+        automatic_login_var = tk.BooleanVar(
+            value=bool(self.smwc_automatic_login_var.get())
+        )
+        tk.Checkbutton(
+            body,
+            text=self._translate_ui_text("Automatic SMW Central Login"),
+            variable=automatic_login_var,
+            font=("Segoe UI", 11, "bold"),
+            fg=palette["text"],
+            bg=palette["panel"],
+            activebackground=palette["panel"],
+            activeforeground=palette["text"],
+            selectcolor=palette["window"],
+            anchor="w",
+            highlightthickness=0,
+        ).pack(fill="x")
+
+        confirmed = {"value": False}
+
+        def finish(should_login: bool) -> None:
+            if should_login:
+                self.smwc_automatic_login_var.set(
+                    bool(automatic_login_var.get())
+                )
+                self._save_smwcentral_login_preference()
+                confirmed["value"] = True
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
+        button_bar = tk.Frame(body, bg=palette["panel"])
+        button_bar.pack(fill="x", side="bottom", pady=(self._ui_px(24), 0))
+        buttons = tk.Frame(button_bar, bg=palette["panel"])
+        buttons.pack(anchor="center")
+        cancel_button = self._make_action_button(
+            buttons,
+            text=self._translate_ui_text("Cancel"),
+            command=lambda: finish(False),
+            bg="#63788F",
+            active_bg="#4A6078",
+            width=14,
+            pad_y=6,
+            fixed_pixel_width=self._ui_px(180),
+        )
+        cancel_button.pack(side="left", padx=self._ui_px(7))
+        login_button = self._make_action_button(
+            buttons,
+            text=title,
+            command=lambda: finish(True),
+            bg=THEME["blue"],
+            active_bg="#0F66B3",
+            width=18,
+            pad_y=6,
+            fixed_pixel_width=self._ui_px(250),
+        )
+        login_button.pack(side="left", padx=self._ui_px(7))
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        dialog.bind("<Escape>", lambda _event: finish(False))
+        dialog.bind("<Return>", lambda _event: finish(True))
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        dialog.grab_set()
+        login_button.focus_set()
+        self.root.wait_window(dialog)
+        if not confirmed["value"]:
+            return
+
+        self._open_smwcentral_webview(
+            urljoin(SMW_CENTRAL_WEBSITE_URL, "?p=login"),
+            mode="login",
+            payload={
+                "automatic_login": bool(
+                    self.smwc_automatic_login_var.get()
+                )
+            },
+        )
+
+    def open_smwcentral_comments(self, page_url: object) -> None:
+        """Open a hack's real SMW Central comment form inside the app."""
+        comments_url = _smwcentral_comments_url(page_url)
+        if not comments_url:
+            messagebox.showerror(
+                "SMW Central Could Not Be Opened",
+                "This is not a valid SMW Central hack page.",
+                parent=self.root,
+            )
+            return
+        self._open_smwcentral_webview(comments_url)
+
+    def open_smwcentral_completion_review(
+        self,
+        page_url: object,
+        rating: object,
+        comment: object,
+    ) -> None:
+        """Open the real hack page and prefill a public rating/comment."""
+        comments_url = _smwcentral_comments_url(page_url)
+        if not comments_url:
+            messagebox.showerror(
+                "SMW Central Submission",
+                "This hack does not have a valid SMW Central page for comments.",
+                parent=self.root,
+            )
+            return
+
+        try:
+            smwc_rating = _smwcentral_submission_rating(rating)
+        except ValueError as error:
+            messagebox.showerror(
+                "SMW Central Submission",
+                str(error),
+                parent=self.root,
+            )
+            return
+
+        automatic_login = bool(self.smwc_automatic_login_var.get())
+        initial_url = (
+            comments_url
+            if automatic_login
+            else urljoin(SMW_CENTRAL_WEBSITE_URL, "?p=login")
+        )
+        self._open_smwcentral_webview(
+            initial_url,
+            mode="review",
+            payload={
+                "target_url": comments_url,
+                "rating": smwc_rating,
+                "comment": str(comment or "").strip(),
+                "automatic_login": automatic_login,
+            },
+        )
+        self.status_var.set(
+            "Your local completion was saved. Review the prefilled rating "
+            "and comment in SMW Central, then use SMW Central's own submit "
+            "controls to publish them."
+        )
+
     def _stop_feedback_webview_process(self) -> None:
         feedback_process = self.feedback_webview_process
         self.feedback_webview_process = None
@@ -68092,7 +72598,7 @@ class TrackerApp:
             except tk.TclError:
                 pass
         palette = self._library_palette()
-        dialog = tk.Toplevel(self.root)
+        dialog = self._create_tracker_dialog(self.root)
         self.about_dialog = dialog
         dialog.title("About & Updates - SMW Stream Tracker")
         dialog.configure(bg=palette["window"])
@@ -68447,6 +72953,9 @@ class TrackerApp:
                 )
             )
         )
+        obs_capture_mode_var = tk.BooleanVar(
+            value=bool(self.config.get("obs_capture_mode", False))
+        )
         author_preview_var = tk.StringVar()
         exits_preview_var = tk.StringVar()
         deaths_preview_var = tk.StringVar()
@@ -68568,6 +73077,70 @@ class TrackerApp:
             bg=palette["panel"],
             anchor="w",
         ).grid(row=8, column=1, sticky="ew", pady=(0, 8))
+
+        capture_panel = tk.Frame(
+            body,
+            bg=palette["panel_alt"],
+            highlightbackground=THEME["blue"],
+            highlightthickness=1,
+            padx=14,
+            pady=10,
+        )
+        capture_panel.grid(
+            row=9,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(8, 4),
+        )
+        capture_panel.columnconfigure(0, weight=1)
+        tk.Label(
+            capture_panel,
+            text="OBS Capture Mode",
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        tk.Checkbutton(
+            capture_panel,
+            text="Show tracker popups inside the main app window",
+            variable=obs_capture_mode_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            activeforeground=palette["text"],
+            activebackground=palette["panel_alt"],
+            selectcolor=palette["entry"],
+            anchor="w",
+            justify="left",
+            highlightthickness=0,
+            bd=0,
+        ).grid(row=1, column=0, sticky="ew", pady=(7, 2))
+        tk.Label(
+            capture_panel,
+            text=(
+                "One OBS Window Capture source will then include the "
+                "tracker's blue popups."
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+            justify="left",
+        ).grid(row=2, column=0, sticky="ew")
+        tk.Label(
+            capture_panel,
+            text=(
+                "External browsers, installers, and file pickers remain "
+                "separate windows."
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+            justify="left",
+        ).grid(row=3, column=0, sticky="ew")
 
         preview = tk.Frame(
             body,
@@ -68776,6 +73349,7 @@ class TrackerApp:
                     "obs_exits_text_format": exits_template,
                     "obs_deaths_text_format": deaths_template,
                     "obs_total_deaths_text_format": total_deaths_template,
+                    "obs_capture_mode": bool(obs_capture_mode_var.get()),
                 }
             )
             try:
@@ -69259,6 +73833,7 @@ class TrackerApp:
         )
 
     def complete_in_spreadsheet(self) -> None:
+        self.pending_smwcentral_completion = None
         if not self.worker:
             messagebox.showerror(
                 APP_NAME,
@@ -69279,11 +73854,11 @@ class TrackerApp:
             )
             return
 
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_in_app_page(
+            "complete_hack",
+            "Complete Hack",
+        )
         dialog.title("Complete Hack")
-        dialog.transient(self.root)
-        dialog.resizable(False, False)
-        dialog.grab_set()
         dialog.configure(bg=THEME["sky_dark"])
 
         title_bar = tk.Frame(
@@ -69311,67 +73886,235 @@ class TrackerApp:
             pady=10,
         )
 
-        container = tk.Frame(
+        content_frame = tk.Frame(
             dialog,
+            bg=THEME["sky_dark"],
+        )
+        content_frame.pack(fill="both", expand=True)
+        content_frame.rowconfigure(0, weight=1)
+        content_frame.columnconfigure(0, weight=1)
+
+        content_canvas = tk.Canvas(
+            content_frame,
+            bg=THEME["sky_dark"],
+            bd=0,
+            highlightthickness=0,
+            yscrollincrement=max(12, self._ui_px(24)),
+        )
+        content_scrollbar = ttk.Scrollbar(
+            content_frame,
+            orient="vertical",
+            command=content_canvas.yview,
+            style="Mario.Vertical.TScrollbar",
+        )
+        content_canvas.configure(yscrollcommand=content_scrollbar.set)
+        content_canvas.grid(row=0, column=0, sticky="nsew")
+        content_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        form_host = tk.Frame(
+            content_canvas,
+            bg=THEME["sky_dark"],
+        )
+        form_host.rowconfigure(0, weight=1)
+        form_host.columnconfigure(0, weight=1)
+        form_window = content_canvas.create_window(
+            (0, 0),
+            window=form_host,
+            anchor="n",
+        )
+
+        container = tk.Frame(
+            form_host,
             bg=THEME["panel"],
             padx=18,
             pady=16,
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
         )
-        container.pack(
-            fill="both",
-            expand=True,
-            padx=4,
-            pady=(0, 4),
-        )
-
-        OutlinedLabel(
-            container,
-            text="Rating (1–5):",
-            font=("Segoe UI", 10, "bold"),
-            fg=THEME["text"],
-            bg=THEME["panel"],
-        ).grid(
+        container.grid(
             row=0,
             column=0,
-            sticky="w",
+            sticky="ew",
+            padx=self._ui_px(40),
+            pady=self._ui_px(24),
+        )
+        container.columnconfigure(
+            0,
+            weight=1,
+            uniform="complete_hack_fields",
+        )
+        container.columnconfigure(
+            1,
+            weight=1,
+            uniform="complete_hack_fields",
+        )
+        def sync_complete_page_scrollregion(_event=None) -> None:
+            try:
+                content_canvas.configure(
+                    scrollregion=content_canvas.bbox("all")
+                )
+            except tk.TclError:
+                pass
+
+        def size_complete_page_content(event) -> None:
+            try:
+                horizontal_pad = max(
+                    self._ui_px(40),
+                    int(event.width * 0.12),
+                )
+                container.grid_configure(
+                    padx=horizontal_pad,
+                )
+                requested_height = max(
+                    1,
+                    int(form_host.winfo_reqheight()),
+                )
+                content_canvas.itemconfigure(
+                    form_window,
+                    width=max(1, int(event.width)),
+                    height=max(
+                        requested_height,
+                        int(event.height),
+                    ),
+                )
+                sync_complete_page_scrollregion()
+            except (tk.TclError, TypeError, ValueError):
+                pass
+
+        form_host.bind(
+            "<Configure>",
+            sync_complete_page_scrollregion,
+            add="+",
+        )
+        content_canvas.bind(
+            "<Configure>",
+            size_complete_page_content,
+            add="+",
         )
 
-        rating_var = tk.StringVar()
-        rating_entry = tk.Entry(
+        personal_rating_var = tk.StringVar()
+        smwc_rating_var = tk.StringVar()
+        rating_panel = tk.Frame(
             container,
-            textvariable=rating_var,
-            width=10,
-            font=("Segoe UI", 11, "bold"),
-            bg="#FFF9EA",
-            fg=THEME["text"],
-            relief="flat",
-            highlightbackground=THEME["yellow"],
-            highlightcolor=THEME["orange"],
-            highlightthickness=2,
+            bg=THEME["panel"],
         )
-        rating_entry.grid(
-            row=1,
+        rating_panel.grid(
+            row=0,
             column=0,
-            sticky="w",
-            pady=(4, 12),
+            columnspan=2,
+            sticky="ew",
+            pady=(0, self._ui_px(16)),
+        )
+        rating_panel.columnconfigure(
+            0,
+            weight=1,
+            uniform="complete_hack_ratings",
+        )
+        rating_panel.columnconfigure(
+            1,
+            weight=1,
+            uniform="complete_hack_ratings",
+        )
+
+        def build_rating_field(
+            column: int,
+            label_text: str,
+            variable: tk.StringVar,
+            border_color: str,
+        ) -> tk.Entry:
+            field_panel = tk.Frame(
+                rating_panel,
+                bg=THEME["navy"],
+                padx=self._ui_px(18),
+                pady=self._ui_px(12),
+                highlightbackground=border_color,
+                highlightthickness=1,
+            )
+            field_panel.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(
+                    (0, self._ui_px(8))
+                    if column == 0
+                    else (self._ui_px(8), 0)
+                ),
+            )
+            field_panel.columnconfigure(1, weight=1)
+            OutlinedLabel(
+                field_panel,
+                text="★",
+                font=("Segoe UI Symbol", 24, "bold"),
+                fg=THEME["yellow"],
+                bg=THEME["navy"],
+            ).grid(
+                row=0,
+                column=0,
+                rowspan=2,
+                sticky="w",
+                padx=(0, self._ui_px(14)),
+            )
+            OutlinedLabel(
+                field_panel,
+                text=label_text,
+                font=("Segoe UI", 11, "bold"),
+                fg=THEME["text"],
+                bg=THEME["navy"],
+                anchor="w",
+            ).grid(
+                row=0,
+                column=1,
+                sticky="ew",
+            )
+            entry = tk.Entry(
+                field_panel,
+                textvariable=variable,
+                width=12,
+                font=("Segoe UI", 12, "bold"),
+                bg="#FFF9EA",
+                fg=THEME["text"],
+                relief="flat",
+                highlightbackground=border_color,
+                highlightcolor=THEME["orange"],
+                highlightthickness=2,
+            )
+            entry.grid(
+                row=1,
+                column=1,
+                sticky="w",
+                pady=(4, 0),
+            )
+            return entry
+
+        rating_entry = build_rating_field(
+            0,
+            "Personal Rating (1-5, decimals allowed):",
+            personal_rating_var,
+            THEME["purple"],
+        )
+        smwc_rating_entry = build_rating_field(
+            1,
+            "SMW Central Rating (1-5, no decimals allowed):",
+            smwc_rating_var,
+            THEME["blue"],
         )
 
         OutlinedLabel(
             container,
-            text="Notes:",
+            text="Private tracker notes:",
             font=("Segoe UI", 10, "bold"),
             fg=THEME["text"],
             bg=THEME["panel"],
         ).grid(
-            row=2,
+            row=1,
             column=0,
             sticky="w",
         )
 
         notes_box = tk.Text(
             container,
-            width=52,
-            height=8,
+            width=42,
+            height=10,
             wrap="word",
             font=("Segoe UI", 10),
             bg="#FFFDF7",
@@ -69383,11 +74126,136 @@ class TrackerApp:
             highlightthickness=2,
         )
         notes_box.grid(
+            row=2,
+            column=0,
+            sticky="nsew",
+            padx=(0, self._ui_px(10)),
+            pady=(4, 12),
+        )
+
+        OutlinedLabel(
+            container,
+            text="SMW Central comment (optional):",
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["text"],
+            bg=THEME["panel"],
+        ).grid(
+            row=1,
+            column=1,
+            sticky="w",
+            padx=(self._ui_px(10), 0),
+        )
+
+        smwc_comment_box = tk.Text(
+            container,
+            width=42,
+            height=10,
+            wrap="word",
+            font=("Segoe UI", 10),
+            bg="#FFFDF7",
+            fg=THEME["text"],
+            insertbackground=THEME["text"],
+            relief="flat",
+            highlightbackground=THEME["blue"],
+            highlightcolor=THEME["blue"],
+            highlightthickness=2,
+        )
+        smwc_comment_box.grid(
+            row=2,
+            column=1,
+            sticky="nsew",
+            padx=(self._ui_px(10), 0),
+            pady=(4, 4),
+        )
+
+        OutlinedLabel(
+            container,
+            text=(
+                "This comment will be public on the hack's SMW Central page."
+            ),
+            font=("Segoe UI", 9, "bold"),
+            fg=THEME["orange"],
+            bg=THEME["panel"],
+        ).grid(
             row=3,
+            column=1,
+            sticky="w",
+            padx=(self._ui_px(10), 0),
+            pady=(0, 6),
+        )
+
+        submission_panel = tk.Frame(
+            container,
+            bg=THEME["sky_dark"],
+            padx=self._ui_px(16),
+            pady=self._ui_px(12),
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
+        )
+        submission_panel.grid(
+            row=4,
             column=0,
             columnspan=2,
-            sticky="nsew",
-            pady=(4, 12),
+            sticky="ew",
+            pady=(self._ui_px(12), self._ui_px(14)),
+        )
+        submission_panel.columnconfigure(0, weight=1)
+
+        submit_to_smwc_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            submission_panel,
+            text="Post my rating and comment to SMW Central",
+            variable=submit_to_smwc_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["text"],
+            bg=THEME["sky_dark"],
+            activebackground=THEME["sky_dark"],
+            activeforeground=THEME["text"],
+            selectcolor=THEME["navy"],
+            anchor="w",
+            highlightthickness=0,
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+
+        tk.Checkbutton(
+            submission_panel,
+            text="Automatically reuse my SMW Central login",
+            variable=self.smwc_automatic_login_var,
+            command=self._save_smwcentral_login_preference,
+            font=("Segoe UI", 10, "bold"),
+            fg=THEME["text"],
+            bg=THEME["sky_dark"],
+            activebackground=THEME["sky_dark"],
+            activeforeground=THEME["text"],
+            selectcolor=THEME["navy"],
+            anchor="w",
+            highlightthickness=0,
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(self._ui_px(4), 0),
+        )
+
+        OutlinedLabel(
+            submission_panel,
+            text=(
+                "SMW Central will handle your password and session. "
+                "SMW Stream Tracker never reads your password."
+            ),
+            font=("Segoe UI", 8, "bold"),
+            fg=THEME["muted"],
+            bg=THEME["sky_dark"],
+            justify="left",
+            wraplength=1100,
+        ).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=(self._ui_px(5), 0),
         )
 
         button_frame = tk.Frame(
@@ -69395,19 +74263,26 @@ class TrackerApp:
             bg=THEME["panel"],
         )
         button_frame.grid(
-            row=4,
+            row=5,
             column=0,
             columnspan=2,
-            sticky="e",
+            sticky="ew",
         )
+        for button_column in range(3):
+            button_frame.columnconfigure(
+                button_column,
+                weight=1,
+                uniform="complete_hack_actions",
+            )
 
         def cancel_completion() -> None:
+            self.pending_smwcentral_completion = None
             dialog.destroy()
 
         def save_completion() -> None:
             try:
                 rating = float(
-                    rating_var.get().strip()
+                    personal_rating_var.get().strip()
                 )
             except ValueError:
                 messagebox.showerror(
@@ -69421,7 +74296,7 @@ class TrackerApp:
                 rating_entry.focus_set()
                 return
 
-            if rating < 1 or rating > 5:
+            if not math.isfinite(rating) or rating < 1 or rating > 5:
                 messagebox.showerror(
                     "Invalid Rating",
                     (
@@ -69437,6 +74312,40 @@ class TrackerApp:
                 "1.0",
                 "end-1c",
             )
+            smwc_comment = smwc_comment_box.get(
+                "1.0",
+                "end-1c",
+            ).strip()
+            if submit_to_smwc_var.get():
+                if not _smwcentral_comments_url(self.current_hack_url):
+                    messagebox.showerror(
+                        "SMW Central Submission",
+                        (
+                            "This hack does not have a valid SMW Central "
+                            "page for comments."
+                        ),
+                        parent=dialog,
+                    )
+                    return
+                try:
+                    smwc_rating = _smwcentral_submission_rating(
+                        smwc_rating_var.get().strip()
+                    )
+                except ValueError as error:
+                    messagebox.showerror(
+                        "SMW Central Submission",
+                        self._translate_ui_text(str(error)),
+                        parent=dialog,
+                    )
+                    smwc_rating_entry.focus_set()
+                    return
+                self.pending_smwcentral_completion = {
+                    "page_url": self.current_hack_url,
+                    "rating": smwc_rating,
+                    "comment": smwc_comment,
+                }
+            else:
+                self.pending_smwcentral_completion = None
             dialog.destroy()
 
             if self.worker:
@@ -69451,14 +74360,17 @@ class TrackerApp:
 
         self._make_action_button(
             button_frame,
-            text="Cancel",
-            command=cancel_completion,
-            bg=THEME["muted"],
-            active_bg="#384D65",
-            width=11,
+            text="Log In to SMW Central",
+            command=self.open_smwcentral_account,
+            bg=THEME["blue"],
+            active_bg=THEME["navy"],
+            width=21,
             pad_y=6,
-        ).pack(
-            side="right",
+        ).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, self._ui_px(6)),
         )
 
         self._make_action_button(
@@ -69469,35 +74381,33 @@ class TrackerApp:
             active_bg="#6037AA",
             width=23,
             pad_y=6,
-        ).pack(
-            side="right",
-            padx=(0, 8),
+        ).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=self._ui_px(6),
+        )
+
+        self._make_action_button(
+            button_frame,
+            text="Cancel",
+            command=cancel_completion,
+            bg=THEME["muted"],
+            active_bg="#384D65",
+            width=11,
+            pad_y=6,
+        ).grid(
+            row=0,
+            column=2,
+            sticky="ew",
+            padx=(self._ui_px(6), 0),
         )
 
         dialog.protocol(
             "WM_DELETE_WINDOW",
             cancel_completion,
         )
-        rating_entry.focus_set()
 
-        dialog.update_idletasks()
-        x = (
-            self.root.winfo_rootx()
-            + (
-                self.root.winfo_width()
-                - dialog.winfo_width()
-            ) // 2
-        )
-        y = (
-            self.root.winfo_rooty()
-            + (
-                self.root.winfo_height()
-                - dialog.winfo_height()
-            ) // 2
-        )
-        dialog.geometry(
-            f"+{max(0, x)}+{max(0, y)}"
-        )
         self._apply_widget_appearance(
             dialog,
             dark=(
@@ -69506,7 +74416,8 @@ class TrackerApp:
             ),
         )
         self._localize_widget_tree(dialog)
-        self.root.wait_window(dialog)
+        self._set_in_app_page_title("Complete Hack")
+        rating_entry.focus_set()
 
     def add_current_hack_to_tracker(self) -> None:
         if not self.worker:
@@ -69734,14 +74645,27 @@ class TrackerApp:
                             else self._translate_ui_text("Unrated")
                         )
                     )
+                    hack_type_text = str(
+                        event.get("hack_type", "Unknown") or "Unknown"
+                    )
+                    self.hack_type_var.set(
+                        self._translate_ui_text("Type:")
+                        + " "
+                        + hack_type_text
+                    )
                     self.current_hack_record = {
                         "catalog_key": str(event.get("catalog_key", "")),
                         "title": str(event.get("title", "")),
                         "author": event_author,
                         "total_exits": event.get("total", 0),
                         "difficulty": difficulty_text,
-                        "hack_type": str(event.get("hack_type", "Unknown")),
+                        "hack_type": hack_type_text,
                         "rating": rating_value,
+                        "tags": catalog_tags_text(event.get("tags", "")),
+                        "description": str(event.get("description", "")),
+                        "screenshots": catalog_screenshot_urls(
+                            event.get("screenshots", [])
+                        ),
                         "added_date": str(event.get("added_date", "")),
                         "smwc_id": str(event.get("smwc_id", "")),
                         "page_url": self.current_hack_url,
@@ -69896,6 +74820,12 @@ class TrackerApp:
                         )
 
                     elif success and action == "finish":
+                        pending_smwc_submission = (
+                            dict(self.pending_smwcentral_completion)
+                            if self.pending_smwcentral_completion
+                            else None
+                        )
+                        self.pending_smwcentral_completion = None
                         completed = int(event.get("completed", 0))
                         total = int(event.get("total", 0))
                         percentage = int(event.get("percentage", 0))
@@ -69945,8 +74875,21 @@ class TrackerApp:
                             message,
                             parent=self.root,
                         )
+                        if pending_smwc_submission is not None:
+                            self.root.after(
+                                100,
+                                lambda submission=pending_smwc_submission: (
+                                    self.open_smwcentral_completion_review(
+                                        submission.get("page_url", ""),
+                                        submission.get("rating", ""),
+                                        submission.get("comment", ""),
+                                    )
+                                ),
+                            )
 
                     else:
+                        if action == "finish":
+                            self.pending_smwcentral_completion = None
                         error_text = str(event.get("error", "Unknown database error."))
                         message = (
                             "Could not update My Tracker.\n\n"
@@ -70188,6 +75131,8 @@ class TrackerApp:
                 pass
 
         self._stop_feedback_webview_process()
+        self._stop_smwcentral_home_feed_process()
+        self._stop_smwcentral_webview_process()
 
         self.root.destroy()
 
@@ -70257,6 +75202,3184 @@ def _readme_toc_targets(readme_text: str) -> list[tuple[int, int]]:
                 links.append((toc_line_index + 1, heading_line_index + 1))
                 break
     return links
+
+
+def _validated_smwcentral_webview_url(value: object) -> str:
+    """Allow only HTTPS pages owned by SMW Central in the account webview."""
+    candidate = str(value or "").strip()
+    parsed = urlparse(candidate)
+    if parsed.scheme.casefold() != "https":
+        return ""
+    if str(parsed.hostname or "").casefold() not in {
+        "smwc.me",
+        "smwcentral.net",
+        "www.smwcentral.net",
+    }:
+        return ""
+    return parsed.geturl()
+
+
+def _validated_smwcentral_home_link_url(value: object) -> str:
+    """Allow a user-selected public HTTPS link from the homepage feed."""
+    candidate = str(value or "").strip()
+    parsed = urlparse(candidate)
+    if parsed.scheme.casefold() != "https" or not parsed.hostname:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    return parsed.geturl()
+
+
+def _validated_smwcentral_asset_url(value: object) -> str:
+    """Accept only HTTPS images served from SMW Central-owned hosts."""
+    candidate = str(value or "").strip()
+    parsed = urlparse(candidate)
+    hostname = str(parsed.hostname or "").casefold()
+    if parsed.scheme.casefold() != "https":
+        return ""
+    if str(parsed.path or "") in {"", "/"}:
+        return ""
+    if hostname != "smwcentral.net" and not hostname.endswith(
+        ".smwcentral.net"
+    ):
+        return ""
+    return parsed.geturl()
+
+
+def _normalized_smwcentral_home_feed(value: object) -> dict[str, Any]:
+    """Validate the small public homepage snapshot before rendering it."""
+    if not isinstance(value, dict):
+        return {}
+
+    def clean_text(raw: object, maximum: int) -> str:
+        return " ".join(str(raw or "").split())[:maximum]
+
+    def clean_item(raw: object) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        title = clean_text(raw.get("title", ""), 220)
+        text = clean_text(raw.get("text", ""), 1600)
+        if not title and not text:
+            return None
+        links: list[dict[str, str]] = []
+        raw_links = raw.get("links", [])
+        if isinstance(raw_links, list):
+            for raw_link in raw_links[:8]:
+                if not isinstance(raw_link, dict):
+                    continue
+                link_url = _validated_smwcentral_home_link_url(
+                    raw_link.get("url", "")
+                )
+                if not link_url:
+                    continue
+                links.append(
+                    {
+                        "label": clean_text(
+                            raw_link.get("label", "") or "Open",
+                            100,
+                        ),
+                        "url": link_url,
+                    }
+                )
+        primary_url = _validated_smwcentral_home_link_url(
+            raw.get("url", "")
+        )
+        if not primary_url and links:
+            primary_url = links[0]["url"]
+        return {
+            "title": title,
+            "author": clean_text(raw.get("author", ""), 100),
+            "date": clean_text(raw.get("date", ""), 100),
+            "category": clean_text(raw.get("category", ""), 100),
+            "text": text,
+            "url": primary_url,
+            "image_url": _validated_smwcentral_asset_url(
+                raw.get("image_url", "")
+            ),
+            "links": links[:8],
+        }
+
+    limits = {
+        "events": 8,
+        "news": 6,
+        "latest_content": 8,
+        "content_of_day": 8,
+    }
+    normalized: dict[str, Any] = {
+        "fetched_at": clean_text(value.get("fetched_at", ""), 100),
+    }
+    for section_name, maximum in limits.items():
+        normalized_items: list[dict[str, Any]] = []
+        raw_items = value.get(section_name, [])
+        if isinstance(raw_items, list):
+            for raw_item in raw_items[:maximum]:
+                item = clean_item(raw_item)
+                if item is not None:
+                    normalized_items.append(item)
+        normalized[section_name] = normalized_items
+    return normalized
+
+
+def _smwcentral_home_item_is_music(value: object) -> bool:
+    """Recognize current and future SMW Central music feed entries."""
+    if not isinstance(value, dict):
+        return False
+    primary_url = _validated_smwcentral_webview_url(value.get("url", ""))
+    if not primary_url:
+        return False
+    category = " ".join(str(value.get("category", "")).casefold().split())
+    if category in {"music", "smw music"}:
+        return True
+    links = value.get("links", [])
+    if not isinstance(links, list):
+        return False
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        link_url = _validated_smwcentral_webview_url(link.get("url", ""))
+        if link_url and "s=smwmusic" in link_url.casefold():
+            return True
+    return False
+
+
+def _read_smwcentral_home_feed_cache() -> dict[str, Any]:
+    try:
+        payload = json.loads(
+            SMWC_HOME_FEED_CACHE_PATH.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return _normalized_smwcentral_home_feed(payload)
+
+
+def _write_smwcentral_home_feed_cache(value: object) -> None:
+    payload = _normalized_smwcentral_home_feed(value)
+    if not payload:
+        raise ValueError("SMW Central returned an invalid homepage feed.")
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temporary_path = SMWC_HOME_FEED_CACHE_PATH.with_suffix(".tmp")
+    temporary_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, SMWC_HOME_FEED_CACHE_PATH)
+
+
+def _smwcentral_comments_url(value: object) -> str:
+    """Point a stored hack page at SMW Central's on-page comments section."""
+    safe_url = _validated_smwcentral_webview_url(value)
+    if not safe_url:
+        return ""
+    return urlparse(safe_url)._replace(fragment="comments").geturl()
+
+
+def _smwcentral_submission_rating(value: object) -> int:
+    try:
+        rating = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "SMW Central ratings must be whole numbers from 1 through 5."
+        ) from error
+    if (
+        not math.isfinite(rating)
+        or not rating.is_integer()
+        or not 1 <= rating <= 5
+    ):
+        raise ValueError(
+            "SMW Central ratings must be whole numbers from 1 through 5."
+        )
+    return int(rating)
+
+
+def _smwcentral_window_title(
+    language: object,
+    mode: object = "browse",
+) -> str:
+    language_code = _normalize_feedback_language(language)
+    normalized_mode = str(mode or "browse").strip().casefold()
+    titles = {
+        "browse": {
+            "en": "SMW Central Account & Comments - SMW Stream Tracker",
+            "au": "SMW Central Account & Comments, Mate - SMW Stream Tracker",
+            "es": "Cuenta y comentarios de SMW Central - SMW Stream Tracker",
+            "fr": "Compte et commentaires SMW Central - SMW Stream Tracker",
+            "de": "SMW-Central-Konto und Kommentare - SMW Stream Tracker",
+            "pt-BR": "Conta e comentários do SMW Central - SMW Stream Tracker",
+        },
+        "login": {
+            "en": "Log In to SMW Central - SMW Stream Tracker",
+            "au": "Log In to SMW Central, Mate - SMW Stream Tracker",
+            "es": "Iniciar sesión en SMW Central - SMW Stream Tracker",
+            "fr": "Connexion à SMW Central - SMW Stream Tracker",
+            "de": "Bei SMW Central anmelden - SMW Stream Tracker",
+            "pt-BR": "Entrar no SMW Central - SMW Stream Tracker",
+        },
+        "review": {
+            "en": "Review SMW Central Comment - SMW Stream Tracker",
+            "au": "Check Your SMW Central Yarn, Mate - SMW Stream Tracker",
+            "es": "Revisar comentario de SMW Central - SMW Stream Tracker",
+            "fr": "Vérifier le commentaire SMW Central - SMW Stream Tracker",
+            "de": "SMW-Central-Kommentar prüfen - SMW Stream Tracker",
+            "pt-BR": "Revisar comentário do SMW Central - SMW Stream Tracker",
+        },
+        "spc_player": {
+            "en": "SPC Player - SMW Stream Tracker",
+            "au": "SPC Player, Mate - SMW Stream Tracker",
+            "es": "Reproductor SPC - SMW Stream Tracker",
+            "fr": "Lecteur SPC - SMW Stream Tracker",
+            "de": "SPC-Player - SMW Stream Tracker",
+            "pt-BR": "Reprodutor SPC - SMW Stream Tracker",
+        },
+        "radio": {
+            "en": "SMW Central Radio - SMW Stream Tracker",
+            "au": "SMW Central Radio, Mate - SMW Stream Tracker",
+            "es": "Radio de SMW Central - SMW Stream Tracker",
+            "fr": "Radio SMW Central - SMW Stream Tracker",
+            "de": "SMW-Central-Radio - SMW Stream Tracker",
+            "pt-BR": "Rádio do SMW Central - SMW Stream Tracker",
+        },
+    }
+    selected_titles = titles.get(normalized_mode, titles["browse"])
+    return selected_titles[language_code]
+
+
+def _smwcentral_review_texts(language: object) -> dict[str, str]:
+    language_code = _normalize_feedback_language(language)
+    translations = {
+        "en": {
+            "heading": "SMW Stream Tracker completion",
+            "ready": (
+                "Your rating and comment were prefilled where SMW Central "
+                "provided matching fields. Review them, then use SMW "
+                "Central's own submit controls to publish."
+            ),
+            "partial": (
+                "SMW Central's page changed or did not expose every field. "
+                "Review the information below and enter anything that was "
+                "not prefilled before submitting on SMW Central."
+            ),
+            "rating": "Rating",
+            "comment": "Comment",
+        },
+        "au": {
+            "heading": "SMW Stream Tracker finish, mate",
+            "ready": (
+                "Your score and yarn were filled in where SMW Central had "
+                "matching fields. Give them a squiz, then use SMW Central's "
+                "own buttons to send them through."
+            ),
+            "partial": (
+                "Crikey, SMW Central did not show every field. Check the "
+                "details below and fill in anything missing before posting."
+            ),
+            "rating": "Score",
+            "comment": "Comment",
+        },
+        "es": {
+            "heading": "Finalización de SMW Stream Tracker",
+            "ready": (
+                "La puntuación y el comentario se rellenaron donde SMW "
+                "Central proporcionó campos compatibles. Revísalos y usa "
+                "los controles de SMW Central para publicarlos."
+            ),
+            "partial": (
+                "La página de SMW Central cambió o no mostró todos los "
+                "campos. Revisa la información siguiente y completa lo que "
+                "falte antes de publicarla."
+            ),
+            "rating": "Puntuación",
+            "comment": "Comentario",
+        },
+        "fr": {
+            "heading": "Progression SMW Stream Tracker",
+            "ready": (
+                "La note et le commentaire ont été préremplis lorsque SMW "
+                "Central proposait les champs correspondants. Vérifiez-les, "
+                "puis utilisez les commandes de SMW Central pour publier."
+            ),
+            "partial": (
+                "La page SMW Central a changé ou n'a pas affiché tous les "
+                "champs. Vérifiez les informations ci-dessous et complétez "
+                "ce qui manque avant de publier."
+            ),
+            "rating": "Note",
+            "comment": "Commentaire",
+        },
+        "de": {
+            "heading": "SMW-Stream-Tracker-Abschluss",
+            "ready": (
+                "Bewertung und Kommentar wurden in passende SMW-Central-"
+                "Felder eingetragen. Prüfen Sie alles und verwenden Sie die "
+                "Schaltflächen von SMW Central zum Veröffentlichen."
+            ),
+            "partial": (
+                "Die SMW-Central-Seite wurde geändert oder zeigte nicht "
+                "alle Felder. Prüfen Sie die Angaben unten und tragen Sie "
+                "Fehlendes vor dem Veröffentlichen ein."
+            ),
+            "rating": "Bewertung",
+            "comment": "Kommentar",
+        },
+        "pt-BR": {
+            "heading": "Conclusão do SMW Stream Tracker",
+            "ready": (
+                "A avaliação e o comentário foram preenchidos onde o SMW "
+                "Central forneceu campos compatíveis. Revise-os e use os "
+                "controles do SMW Central para publicar."
+            ),
+            "partial": (
+                "A página do SMW Central mudou ou não mostrou todos os "
+                "campos. Revise as informações abaixo e preencha o que "
+                "faltar antes de publicar."
+            ),
+            "rating": "Avaliação",
+            "comment": "Comentário",
+        },
+    }
+    return translations[language_code]
+
+
+def _smwcentral_webview_command(
+    target_url: object,
+    language: object = "en",
+    *,
+    mode: object = "browse",
+    payload: dict[str, Any] | None = None,
+) -> list[str]:
+    normalized_mode = str(mode or "browse").strip().casefold()
+    if normalized_mode not in {
+        "browse", "feed_link", "home_feed", "login", "review",
+        "spc_player", "radio",
+    }:
+        normalized_mode = "browse"
+    validator = (
+        _validated_smwcentral_home_link_url
+        if normalized_mode == "feed_link"
+        else _validated_smwcentral_webview_url
+    )
+    safe_url = validator(target_url)
+    if not safe_url:
+        raise ValueError("A valid embedded-browser URL is required.")
+    arguments = [
+        SMWC_WEBVIEW_ARGUMENT,
+        SMWC_WEBVIEW_URL_ARGUMENT_PREFIX + safe_url,
+        (
+            SMWC_WEBVIEW_LANGUAGE_ARGUMENT_PREFIX
+            + _normalize_feedback_language(language)
+        ),
+        SMWC_WEBVIEW_MODE_ARGUMENT_PREFIX + normalized_mode,
+    ]
+    if payload:
+        encoded_payload = base64.urlsafe_b64encode(
+            json.dumps(
+                dict(payload),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).decode("ascii")
+        arguments.append(
+            SMWC_WEBVIEW_PAYLOAD_ARGUMENT_PREFIX + encoded_payload
+        )
+    if getattr(sys, "frozen", False):
+        return [sys.executable, *arguments]
+    return [sys.executable, str(Path(__file__).resolve()), *arguments]
+
+
+def _smwcentral_webview_values_from_arguments(
+    arguments: list[str],
+) -> tuple[str, str, str, dict[str, Any]]:
+    raw_target_url = ""
+    language = "en"
+    mode = "browse"
+    payload: dict[str, Any] = {}
+    for argument in arguments:
+        if argument.startswith(SMWC_WEBVIEW_URL_ARGUMENT_PREFIX):
+            raw_target_url = argument.removeprefix(
+                SMWC_WEBVIEW_URL_ARGUMENT_PREFIX
+            )
+        elif argument.startswith(SMWC_WEBVIEW_LANGUAGE_ARGUMENT_PREFIX):
+            language = _normalize_feedback_language(
+                argument.removeprefix(SMWC_WEBVIEW_LANGUAGE_ARGUMENT_PREFIX)
+            )
+        elif argument.startswith(SMWC_WEBVIEW_MODE_ARGUMENT_PREFIX):
+            candidate_mode = argument.removeprefix(
+                SMWC_WEBVIEW_MODE_ARGUMENT_PREFIX
+            ).strip().casefold()
+            if candidate_mode in {
+                "browse", "feed_link", "home_feed", "login", "review",
+                "spc_player", "radio",
+            }:
+                mode = candidate_mode
+        elif argument.startswith(SMWC_WEBVIEW_PAYLOAD_ARGUMENT_PREFIX):
+            encoded_payload = argument.removeprefix(
+                SMWC_WEBVIEW_PAYLOAD_ARGUMENT_PREFIX
+            )
+            try:
+                decoded_payload = json.loads(
+                    base64.urlsafe_b64decode(
+                        encoded_payload.encode("ascii")
+                    ).decode("utf-8")
+                )
+                if isinstance(decoded_payload, dict):
+                    payload = decoded_payload
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                payload = {}
+    validator = (
+        _validated_smwcentral_home_link_url
+        if mode == "feed_link"
+        else _validated_smwcentral_webview_url
+    )
+    return validator(raw_target_url), language, mode, payload
+
+
+def _smwcentral_login_state_javascript() -> str:
+    return r"""
+(() => {
+    const href = String(window.location.href || '');
+    const current = new URL(href);
+    const onLoginPage = current.searchParams.get('p') === 'login';
+    const loginForm = Boolean(
+        document.querySelector('form input[type="password"]')
+    );
+    const loginLink = Boolean(
+        document.querySelector('a[href*="p=login"]')
+    );
+    const logoutLink = Boolean(
+        document.querySelector('a[href*="p=logout"]')
+    );
+    return {
+        url: href,
+        onLoginPage,
+        authenticated: logoutLink || (!onLoginPage && !loginForm && !loginLink)
+    };
+})()
+"""
+
+
+def _smwcentral_radio_javascript() -> str:
+    """Switch the SMW music section to its official Radio view once ready."""
+    return r"""
+(() => {
+    const activeRadioPlayer = () => Boolean(
+        document.body?.classList?.contains('spc-radio-enabled') &&
+        document.querySelector(
+            '#spc-player-interface.shown, .spc-player.shown'
+        )
+    );
+    if (window.__smwTrackerRadioActivated && activeRadioPlayer()) return true;
+    window.__smwTrackerRadioActivated = false;
+    if (window.__smwTrackerRadioTimer) return true;
+    let attempts = 0;
+    const isVisible = (element) => {
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 &&
+            style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const activate = () => {
+        attempts += 1;
+        if (activeRadioPlayer()) {
+            window.__smwTrackerRadioActivated = true;
+            window.clearInterval(window.__smwTrackerRadioTimer);
+            window.__smwTrackerRadioTimer = null;
+            return true;
+        }
+        const officialButtons = Array.from(
+            document.querySelectorAll('[data-spc-radio="enable-button"]')
+        );
+        const fallbackButtons = Array.from(
+            document.querySelectorAll(
+                'a, button, input[type="button"], [role="button"]'
+            )
+        ).filter((element) => {
+            const label = String(
+                element.textContent || element.value ||
+                element.getAttribute('aria-label') || element.title || ''
+            ).trim();
+            return /(^|\s)radio(\s|$)/i.test(label);
+        });
+        const candidates = [...officialButtons, ...fallbackButtons];
+        const radio = candidates.find(isVisible) || candidates[0];
+        if (!radio) {
+            if (attempts >= 120) {
+                window.clearInterval(window.__smwTrackerRadioTimer);
+                window.__smwTrackerRadioTimer = null;
+            }
+            return false;
+        }
+        try {
+            radio.click();
+        } catch (_error) {
+            radio.dispatchEvent(new MouseEvent('click', {
+                bubbles: true,
+                cancelable: true,
+                view: window
+            }));
+        }
+        return false;
+    };
+    if (!activate()) {
+        window.__smwTrackerRadioTimer = window.setInterval(activate, 250);
+    }
+    return true;
+})()
+"""
+
+
+def _smwcentral_home_feed_javascript() -> str:
+    """Collect only the four public homepage sections used by the app."""
+    return r"""
+(() => {
+    const clean = (value) => String(value || '')
+        .replace(/\s+/g, ' ').trim();
+    const absolute = (value) => {
+        if (!String(value || '').trim()) return '';
+        try {
+            return new URL(String(value || ''), window.location.href).href;
+        } catch (_error) {
+            return '';
+        }
+    };
+    const safeLink = (value) => {
+        const url = absolute(value);
+        try {
+            const parsed = new URL(url);
+            return parsed.protocol === 'https:'
+                && Boolean(parsed.hostname)
+                && !parsed.username
+                && !parsed.password
+                ? url
+                : '';
+        } catch (_error) {
+            return '';
+        }
+    };
+    const safeImage = (value) => {
+        const url = absolute(value);
+        try {
+            const parsed = new URL(url);
+            const host = parsed.hostname.toLowerCase();
+            return parsed.protocol === 'https:' && (
+                host === 'smwcentral.net' || host.endsWith('.smwcentral.net')
+            ) ? url : '';
+        } catch (_error) {
+            return '';
+        }
+    };
+    const linksFrom = (node) => {
+        const anchorLinks = Array.from(
+            node?.querySelectorAll?.('a[href]') || []
+        ).map((link) => ({
+            label: clean(link.textContent) || 'Open',
+            url: safeLink(link.href),
+        }));
+        const plainUrls = (
+            String(node?.innerText || node?.textContent || '').match(
+                /https:\/\/[^\s<>"')\]]+/gi
+            ) || []
+        ).map((url) => {
+            const cleanedUrl = String(url).replace(/[.,;:!?]+$/, '');
+            return {
+                label: cleanedUrl,
+                url: safeLink(cleanedUrl),
+            };
+        });
+        const seen = new Set();
+        return [...anchorLinks, ...plainUrls].filter((link) => {
+            if (
+                !link.url
+                || /[?&]p=profile(?:&|$)/.test(link.url)
+                || seen.has(link.url)
+            ) {
+                return false;
+            }
+            seen.add(link.url);
+            return true;
+        });
+    };
+    const articleItem = (article, kind) => {
+        const titleNode = article.querySelector(
+            'h3 a, h3 .title, h3, .title, strong'
+        );
+        const itemLinks = linksFrom(article);
+        const headingLink = article.querySelector('h3 a[href]');
+        const textNode = article.querySelector('.text');
+        const image = article.querySelector('img[src]');
+        const categoryLink = article.querySelector(
+            '.secondary-info > a[href]:first-child'
+        );
+        const author = article.querySelector('.secondary-info .un');
+        const date = article.querySelector('time');
+        return {
+            title: clean(titleNode?.textContent),
+            author: clean(author?.textContent),
+            date: clean(date?.textContent),
+            category: clean(categoryLink?.textContent),
+            text: clean(textNode?.innerText || textNode?.textContent),
+            url: safeLink(headingLink?.href) || itemLinks[0]?.url || '',
+            image_url: safeImage(image?.currentSrc || image?.src),
+            links: itemLinks,
+            kind,
+        };
+    };
+    const articleItems = (selector, kind) => {
+        const section = document.querySelector(selector);
+        if (!section) return null;
+        return Array.from(section.querySelectorAll('article.content'))
+            .map((article) => articleItem(article, kind))
+            .filter((item) => item.title || item.text);
+    };
+    const calendar = document.querySelector('#calendar');
+    const news = articleItems('#recent-news', 'news');
+    const latest = articleItems('#new-submissions', 'submission');
+    const featured = articleItems(
+        '#featured-submissions', 'submission'
+    );
+    if (!calendar || !news || !latest || !featured) return null;
+
+    const eventNodes = Array.from(
+        calendar.querySelectorAll('article li, article .event')
+    );
+    const events = eventNodes.map((node) => {
+        const itemLinks = linksFrom(node);
+        const titleNode = node.querySelector('h3, strong, a[href]');
+        const dateNode = node.querySelector('time');
+        const image = node.querySelector('img[src]');
+        return {
+            title: clean(titleNode?.textContent),
+            author: '',
+            date: clean(dateNode?.textContent),
+            category: '',
+            text: clean(node.innerText || node.textContent),
+            url: itemLinks[0]?.url || '',
+            image_url: safeImage(image?.currentSrc || image?.src),
+            links: itemLinks,
+            kind: 'event',
+        };
+    }).filter((item) => item.title && !/no upcoming events/i.test(item.text));
+
+    return {
+        fetched_at: new Date().toISOString(),
+        events,
+        news,
+        latest_content: latest,
+        content_of_day: featured,
+    };
+})()
+"""
+
+
+def _smwcentral_prefill_javascript(
+    rating: object,
+    comment: object,
+    language: object = "en",
+) -> str:
+    smwc_rating = _smwcentral_submission_rating(rating)
+    comment_text = str(comment or "").strip()
+    text = _smwcentral_review_texts(language)
+    values = {
+        "ratingValue": smwc_rating,
+        "commentValue": comment_text,
+        "heading": text["heading"],
+        "ready": text["ready"],
+        "partial": text["partial"],
+        "ratingLabel": text["rating"],
+        "commentLabel": text["comment"],
+    }
+    payload_json = json.dumps(values, ensure_ascii=True)
+    return r"""
+(() => {
+    const data = """ + payload_json + r""";
+    const visible = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const setNativeValue = (element, value) => {
+        const prototype = Object.getPrototypeOf(element);
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+        if (descriptor && descriptor.set) descriptor.set.call(element, value);
+        else element.value = value;
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const contextText = (element) => String(
+        [element.name, element.id, element.className,
+         element.getAttribute('aria-label'),
+         element.closest('form')?.textContent]
+            .filter(Boolean).join(' ')
+    ).toLowerCase();
+
+    const textareas = Array.from(document.querySelectorAll('textarea'))
+        .filter(visible);
+    const commentField = textareas.find((element) =>
+        /(comment|message|body|text)/.test(contextText(element))
+    ) || textareas[0] || null;
+    let commentFilled = !data.commentValue;
+    if (commentField && data.commentValue) {
+        setNativeValue(commentField, data.commentValue);
+        commentFilled = true;
+    }
+
+    let ratingFilled = false;
+    const numericValue = (element) => Number.parseInt(
+        String(element.value || element.getAttribute('data-rating') || ''),
+        10
+    );
+    const ratingRadios = Array.from(
+        document.querySelectorAll('input[type="radio"]')
+    ).filter((element) =>
+        numericValue(element) === data.ratingValue &&
+        /(rating|rate|score|stars?)/.test(contextText(element))
+    );
+    if (ratingRadios.length) {
+        ratingRadios[0].checked = true;
+        ratingRadios[0].dispatchEvent(new Event('input', { bubbles: true }));
+        ratingRadios[0].dispatchEvent(new Event('change', { bubbles: true }));
+        ratingFilled = true;
+    }
+    if (!ratingFilled) {
+        const ratingSelect = Array.from(document.querySelectorAll('select'))
+            .find((element) =>
+                visible(element) &&
+                /(rating|rate|score|stars?)/.test(contextText(element)) &&
+                Array.from(element.options).some((option) =>
+                    Number.parseInt(option.value, 10) === data.ratingValue
+                )
+            );
+        if (ratingSelect) {
+            const option = Array.from(ratingSelect.options).find((candidate) =>
+                Number.parseInt(candidate.value, 10) === data.ratingValue
+            );
+            setNativeValue(ratingSelect, option.value);
+            ratingFilled = true;
+        }
+    }
+    if (!ratingFilled) {
+        const ratingInput = Array.from(
+            document.querySelectorAll('input[type="number"], input[type="range"]')
+        ).find((element) =>
+            visible(element) &&
+            /(rating|rate|score|stars?)/.test(contextText(element))
+        );
+        if (ratingInput) {
+            setNativeValue(ratingInput, String(data.ratingValue));
+            ratingFilled = true;
+        }
+    }
+
+    document.getElementById('smw-stream-tracker-smwc-review')?.remove();
+    const panel = document.createElement('section');
+    panel.id = 'smw-stream-tracker-smwc-review';
+    panel.style.cssText = [
+        'position:sticky', 'top:0', 'z-index:2147483647',
+        'margin:0 0 14px 0', 'padding:16px 20px',
+        'background:#1976D2', 'color:white',
+        'border:2px solid #8CC8FF', 'font:16px/1.45 Segoe UI,sans-serif',
+        'box-shadow:0 4px 14px rgba(0,0,0,.35)'
+    ].join(';');
+    const heading = document.createElement('strong');
+    heading.textContent = data.heading;
+    heading.style.cssText = 'display:block;font-size:20px;margin-bottom:5px';
+    panel.appendChild(heading);
+    const message = document.createElement('div');
+    message.textContent = (commentFilled && ratingFilled) ? data.ready : data.partial;
+    panel.appendChild(message);
+    const details = document.createElement('div');
+    details.style.cssText = 'margin-top:8px;white-space:pre-wrap;user-select:text';
+    details.textContent = data.ratingLabel + ': ' + data.ratingValue + '/5' +
+        (data.commentValue
+            ? '\n' + data.commentLabel + ': ' + data.commentValue
+            : '');
+    panel.appendChild(details);
+    document.body.prepend(panel);
+    commentField?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return { commentFilled, ratingFilled };
+})()
+"""
+
+
+def _smwcentral_legacy_spc_player_javascript(
+    language: object = "en",
+    background_color: object = "#0F1B2D",
+    launch_preview: object = True,
+) -> str:
+    """Isolate SMW Central's official SPC controls in a compact app window."""
+    language_code = _normalize_feedback_language(language)
+    translations = {
+        "en": {
+            "player": "SPC Player",
+            "loading": "Loading the selected music file...",
+            "unavailable": "This music file could not be played.",
+            "toggle": "Expand or collapse player",
+            "play": "Play",
+            "pause": "Pause",
+            "loop": "Repeat",
+            "volume": "Volume",
+            "up_next": "Up Next:",
+            "minimize": "Minimize SPC Player",
+            "restore": "Restore SPC Player",
+        },
+        "au": {
+            "player": "SPC Player, Mate",
+            "loading": "Loading the selected tune, mate...",
+            "unavailable": "Crikey, this tune could not be played.",
+            "toggle": "Open or tuck away the player",
+            "play": "Have a listen",
+            "pause": "Hold up",
+            "loop": "Go around again",
+            "volume": "How loud she goes",
+            "up_next": "Up Next, Mate:",
+            "minimize": "Tuck away the SPC Player, mate",
+            "restore": "Bring back the SPC Player, mate",
+        },
+        "es": {
+            "player": "Reproductor SPC",
+            "loading": "Cargando el archivo de música seleccionado...",
+            "unavailable": "No se pudo reproducir este archivo de música.",
+            "toggle": "Expandir o contraer el reproductor",
+            "play": "Reproducir",
+            "pause": "Pausar",
+            "loop": "Repetir",
+            "volume": "Volumen",
+            "up_next": "A continuación:",
+            "minimize": "Minimizar el reproductor SPC",
+            "restore": "Restaurar el reproductor SPC",
+        },
+        "fr": {
+            "player": "Lecteur SPC",
+            "loading": "Chargement du fichier musical sélectionné...",
+            "unavailable": "Impossible de lire ce fichier musical.",
+            "toggle": "Développer ou réduire le lecteur",
+            "play": "Lire",
+            "pause": "Pause",
+            "loop": "Répéter",
+            "volume": "Volume",
+            "up_next": "À suivre :",
+            "minimize": "Réduire le lecteur SPC",
+            "restore": "Restaurer le lecteur SPC",
+        },
+        "de": {
+            "player": "SPC-Player",
+            "loading": "Die ausgewählte Musikdatei wird geladen...",
+            "unavailable": "Diese Musikdatei konnte nicht abgespielt werden.",
+            "toggle": "Player ein- oder ausklappen",
+            "play": "Abspielen",
+            "pause": "Pause",
+            "loop": "Wiederholen",
+            "volume": "Lautstärke",
+            "up_next": "Als Nächstes:",
+            "minimize": "SPC-Player minimieren",
+            "restore": "SPC-Player wiederherstellen",
+        },
+        "pt-BR": {
+            "player": "Reprodutor SPC",
+            "loading": "Carregando o arquivo de música selecionado...",
+            "unavailable": "Não foi possível reproduzir este arquivo de música.",
+            "toggle": "Expandir ou recolher o reprodutor",
+            "play": "Reproduzir",
+            "pause": "Pausar",
+            "loop": "Repetir",
+            "volume": "Volume",
+            "up_next": "A seguir:",
+            "minimize": "Minimizar o reprodutor SPC",
+            "restore": "Restaurar o reprodutor SPC",
+        },
+    }
+    safe_background = str(background_color or "#0F1B2D").strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", safe_background):
+        safe_background = "#0F1B2D"
+    payload_json = json.dumps(translations[language_code], ensure_ascii=True)
+    background_json = json.dumps(safe_background)
+    launch_preview_json = json.dumps(bool(launch_preview))
+    return r"""
+(() => {
+    const text = """ + payload_json + r""";
+    const trackerBackground = """ + background_json + r""";
+    const launchPreview = """ + launch_preview_json + r""";
+    if (window.__smwStreamTrackerSpcPlayer) return true;
+    window.__smwStreamTrackerSpcPlayer = true;
+
+    const style = document.createElement('style');
+    style.id = 'smw-stream-tracker-spc-style';
+    style.textContent = `
+        html, body {
+            margin: 0 !important;
+            min-width: 100% !important;
+            min-height: 100% !important;
+            overflow: hidden !important;
+            background: transparent !important;
+            color: #FFFFFF !important;
+        }
+        body > *:not(#spc-player-container):not(#spc-player-interface):not(#smw-tracker-spc-status):not(#smw-tracker-spc-close):not(#smw-tracker-spc-minimize) {
+            display: none !important;
+        }
+        #spc-player-container {
+            display: flex !important;
+            position: fixed !important;
+            inset: 0 !important;
+            width: auto !important;
+            height: auto !important;
+            align-items: flex-end !important;
+            justify-content: flex-end !important;
+            padding: 0 !important;
+            box-sizing: border-box !important;
+            background: transparent !important;
+            pointer-events: none !important;
+        }
+        #spc-player-interface {
+            display: block !important;
+            position: fixed !important;
+            inset: auto 0 0 auto !important;
+            width: min(800px, 100vw) !important;
+            height: 100% !important;
+            max-width: none !important;
+            margin: 0 !important;
+            border: 2px solid #35516F !important;
+            border-radius: 24px !important;
+            box-shadow: 0 14px 36px rgba(0, 0, 0, .48) !important;
+            overflow: hidden !important;
+            box-sizing: border-box !important;
+            pointer-events: auto !important;
+            background: #101214 !important;
+        }
+        #spc-player-interface,
+        #spc-player-interface * {
+            box-sizing: border-box !important;
+        }
+        #spc-player-header {
+            position: relative !important;
+            min-width: 0 !important;
+            overflow: hidden !important;
+            padding-right: 104px !important;
+        }
+        #spc-player-header > *,
+        #spc-player-interface .track-info {
+            min-width: 0 !important;
+            max-width: 100% !important;
+        }
+        #spc-player-interface .track-info .title {
+            display: -webkit-box !important;
+            max-width: 100% !important;
+            max-height: 2.35em !important;
+            overflow: hidden !important;
+            overflow-wrap: anywhere !important;
+            white-space: normal !important;
+            text-overflow: ellipsis !important;
+            -webkit-box-orient: vertical !important;
+            -webkit-line-clamp: 2 !important;
+            font-size: clamp(21px, 3.7vw, 27px) !important;
+            line-height: 1.15 !important;
+        }
+        #spc-player-interface .track-info .subtitle {
+            display: -webkit-box !important;
+            max-width: 100% !important;
+            max-height: 2.5em !important;
+            overflow: hidden !important;
+            overflow-wrap: anywhere !important;
+            white-space: normal !important;
+            text-overflow: ellipsis !important;
+            -webkit-box-orient: vertical !important;
+            -webkit-line-clamp: 2 !important;
+            font-size: clamp(15px, 2.7vw, 19px) !important;
+            line-height: 1.2 !important;
+        }
+        #spc-player-interface .details {
+            max-width: 100% !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+            font-size: 15px !important;
+        }
+        #smw-tracker-spc-status {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 30px;
+            box-sizing: border-box;
+            background: transparent;
+            color: white;
+            font: 700 21px/1.4 Segoe UI, sans-serif;
+            text-align: center;
+        }
+        #smw-tracker-spc-close {
+            position: absolute !important;
+            z-index: 2147483647 !important;
+            top: 50% !important;
+            right: 14px !important;
+            width: 38px !important;
+            height: 38px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            transform: translateY(-50%) !important;
+            border: 0 !important;
+            border-radius: 8px !important;
+            background: transparent !important;
+            color: #FFFFFF !important;
+            font: 300 34px/34px Segoe UI, sans-serif !important;
+            text-align: center !important;
+            cursor: pointer !important;
+        }
+        #smw-tracker-spc-close:hover {
+            background: rgba(255, 255, 255, .12);
+        }
+        #smw-tracker-spc-minimize {
+            position: absolute !important;
+            z-index: 2147483647 !important;
+            top: 50% !important;
+            right: 56px !important;
+            width: 38px !important;
+            height: 38px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            transform: translateY(-50%) !important;
+            border: 0 !important;
+            border-radius: 8px !important;
+            background: transparent !important;
+            color: #FFFFFF !important;
+            font: 600 27px/34px Segoe UI, sans-serif !important;
+            text-align: center !important;
+            cursor: pointer !important;
+        }
+        #smw-tracker-spc-minimize:hover {
+            background: rgba(255, 255, 255, .12);
+        }
+    `;
+    document.head.appendChild(style);
+
+    const status = document.createElement('div');
+    status.id = 'smw-tracker-spc-status';
+    status.textContent = text.loading;
+    document.body.appendChild(status);
+
+    let attempts = 0;
+    const prepare = () => {
+        attempts += 1;
+        const playerContainer = document.getElementById('spc-player-container');
+        const playerInterface = document.getElementById('spc-player-interface');
+        const player = playerInterface || playerContainer;
+        const preview = document.getElementById('file-preview-button');
+        const radioReady = launchPreview || (
+            document.body.classList.contains('spc-radio-enabled') &&
+            playerInterface && playerInterface.classList.contains('shown')
+        );
+        if (!player || (launchPreview && !preview) || !radioReady) {
+            if (attempts >= 120) status.textContent = text.unavailable;
+            return false;
+        }
+        document.body.appendChild(player);
+        const playerHeader = player.querySelector('#spc-player-header');
+        if (playerHeader) playerHeader.classList.add('pywebview-drag-region');
+        const header = player.querySelector('#spc-player-header span');
+        if (header) header.textContent = text.player;
+        const toggle = player.querySelector('label[for="spc-player-toggle"]');
+        const play = player.querySelector('.play');
+        const pause = player.querySelector('.pause');
+        const loop = player.querySelector('label[for="spc-player-loop"]');
+        const volume = player.querySelector('#volume-slider');
+        const upNext = player.querySelector('#spc-player-up-next > span');
+        if (toggle) toggle.title = text.toggle;
+        if (play) play.title = text.play;
+        if (pause) pause.title = text.pause;
+        if (loop) loop.title = text.loop;
+        if (volume) volume.title = text.volume;
+        if (upNext) upNext.textContent = text.up_next + ' ';
+        Array.from(player.querySelectorAll('a, button, label, span')).forEach(
+            (candidate) => {
+                if (candidate.id === 'smw-tracker-spc-close' ||
+                        candidate.id === 'smw-tracker-spc-minimize' ||
+                        candidate === toggle) {
+                    return;
+                }
+                const marker = String([
+                    candidate.textContent,
+                    candidate.id,
+                    candidate.className,
+                    candidate.getAttribute('aria-label'),
+                    candidate.getAttribute('title'),
+                ].filter(Boolean).join(' ')).trim();
+                if (/(^|\s)(close|dismiss)(\s|$)/i.test(marker) ||
+                        /^[×✕✖]$/.test(String(candidate.textContent || '').trim())) {
+                    candidate.style.setProperty('display', 'none', 'important');
+                }
+            }
+        );
+        let closeButton = document.getElementById('smw-tracker-spc-close');
+        if (!closeButton) {
+            closeButton = document.createElement('button');
+            closeButton.id = 'smw-tracker-spc-close';
+            closeButton.type = 'button';
+            closeButton.textContent = '×';
+            closeButton.setAttribute('aria-label', 'Close');
+            closeButton.addEventListener('click', () => {
+                try {
+                    const closing = window.pywebview?.api?.close_spc_player?.();
+                    if (closing?.catch) closing.catch(() => window.close());
+                    else if (!closing) window.close();
+                } catch (_error) {
+                    window.close();
+                }
+            });
+            (playerHeader || player).appendChild(closeButton);
+        }
+        let minimizeButton = document.getElementById('smw-tracker-spc-minimize');
+        if (!minimizeButton) {
+            minimizeButton = document.createElement('button');
+            minimizeButton.id = 'smw-tracker-spc-minimize';
+            minimizeButton.type = 'button';
+            minimizeButton.textContent = '—';
+            minimizeButton.setAttribute('aria-label', text.minimize);
+            minimizeButton.title = text.minimize;
+            minimizeButton.addEventListener('click', () => {
+                try {
+                    const minimizing = (
+                        window.pywebview?.api?.minimize_spc_player?.()
+                    );
+                    if (minimizing?.catch) minimizing.catch(() => {});
+                } catch (_error) {}
+            });
+            (playerHeader || player).appendChild(minimizeButton);
+        }
+        status.remove();
+        if (launchPreview) window.setTimeout(() => {
+            try {
+                preview.dispatchEvent(new window.MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                }));
+            } catch (_error) {
+                try { preview.click(); } catch (_ignored) {}
+            }
+        }, 120);
+        return true;
+    };
+    if (!prepare()) {
+        const timer = window.setInterval(() => {
+            if (prepare() || attempts >= 120) window.clearInterval(timer);
+        }, 250);
+    }
+    return true;
+})()
+"""
+
+
+def _smwcentral_spc_player_javascript(
+    language: object = "en",
+    background_color: object = "#0F1B2D",
+    launch_preview: object = True,
+    radio_mode: object = False,
+) -> str:
+    """Render the tracker-owned SPC/radio player over the hidden audio engine."""
+    language_code = _normalize_feedback_language(language)
+    translations = {
+        "en": {
+            "player": "SPC Player",
+            "radio": "SMW Central Radio",
+            "loading": "Loading music...",
+            "unavailable": "This music could not be played.",
+            "play": "Play",
+            "pause": "Pause",
+            "skip": "Next track",
+            "restart": "Restart track",
+            "loop": "Repeat",
+            "volume": "Volume",
+            "up_next": "Up Next:",
+            "minimize": "Minimize to the taskbar",
+            "close": "Close player",
+            "resize": "Resize player",
+        },
+        "au": {
+            "player": "SPC Player, Mate",
+            "radio": "SMW Central Radio, Mate",
+            "loading": "Loading the tunes, mate...",
+            "unavailable": "Crikey, this tune could not be played.",
+            "play": "Have a listen",
+            "pause": "Hold up",
+            "skip": "Next tune",
+            "restart": "Give it another go",
+            "loop": "Go around again",
+            "volume": "How loud she goes",
+            "up_next": "Up Next, Mate:",
+            "minimize": "Tuck it into the taskbar",
+            "close": "Close the player",
+            "resize": "Resize the player, mate",
+        },
+        "es": {
+            "player": "Reproductor SPC",
+            "radio": "Radio de SMW Central",
+            "loading": "Cargando música...",
+            "unavailable": "No se pudo reproducir esta música.",
+            "play": "Reproducir",
+            "pause": "Pausar",
+            "skip": "Siguiente pista",
+            "restart": "Reiniciar pista",
+            "loop": "Repetir",
+            "volume": "Volumen",
+            "up_next": "A continuación:",
+            "minimize": "Minimizar a la barra de tareas",
+            "close": "Cerrar reproductor",
+            "resize": "Cambiar el tamaño del reproductor",
+        },
+        "fr": {
+            "player": "Lecteur SPC",
+            "radio": "Radio SMW Central",
+            "loading": "Chargement de la musique...",
+            "unavailable": "Impossible de lire cette musique.",
+            "play": "Lire",
+            "pause": "Pause",
+            "skip": "Piste suivante",
+            "restart": "Recommencer la piste",
+            "loop": "Répéter",
+            "volume": "Volume",
+            "up_next": "À suivre :",
+            "minimize": "Réduire dans la barre des tâches",
+            "close": "Fermer le lecteur",
+            "resize": "Redimensionner le lecteur",
+        },
+        "de": {
+            "player": "SPC-Player",
+            "radio": "SMW-Central-Radio",
+            "loading": "Musik wird geladen...",
+            "unavailable": "Diese Musik konnte nicht abgespielt werden.",
+            "play": "Abspielen",
+            "pause": "Pause",
+            "skip": "Nächster Titel",
+            "restart": "Titel neu starten",
+            "loop": "Wiederholen",
+            "volume": "Lautstärke",
+            "up_next": "Als Nächstes:",
+            "minimize": "In die Taskleiste minimieren",
+            "close": "Player schließen",
+            "resize": "Playergröße ändern",
+        },
+        "pt-BR": {
+            "player": "Reprodutor SPC",
+            "radio": "Rádio SMW Central",
+            "loading": "Carregando música...",
+            "unavailable": "Não foi possível reproduzir esta música.",
+            "play": "Reproduzir",
+            "pause": "Pausar",
+            "skip": "Próxima faixa",
+            "restart": "Reiniciar faixa",
+            "loop": "Repetir",
+            "volume": "Volume",
+            "up_next": "A seguir:",
+            "minimize": "Minimizar para a barra de tarefas",
+            "close": "Fechar reprodutor",
+            "resize": "Redimensionar reprodutor",
+        },
+    }
+    safe_background = str(background_color or "#0F1B2D").strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", safe_background):
+        safe_background = "#0F1B2D"
+    payload_json = json.dumps(translations[language_code], ensure_ascii=True)
+    background_json = json.dumps(safe_background)
+    launch_preview_json = json.dumps(bool(launch_preview))
+    radio_mode_json = json.dumps(bool(radio_mode))
+    return r"""
+(() => {
+    const text = """ + payload_json + r""";
+    const trackerBackground = """ + background_json + r""";
+    const launchPreview = """ + launch_preview_json + r""";
+    const radioMode = """ + radio_mode_json + r""";
+    if (window.__smwTrackerOwnedPlayer &&
+            document.getElementById('smw-tracker-owned-player')) return true;
+    window.__smwTrackerOwnedPlayer = true;
+
+    const svg = (path) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"></path></svg>`;
+    const icons = {
+        play: svg('M8 5v14l11-7z'),
+        pause: svg('M6 5h4v14H6zm8 0h4v14h-4z'),
+        next: svg('M6 5v14l9-7zm10 0h2v14h-2z'),
+        restart: svg('M12 5V2L7 7l5 5V8c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z'),
+        loop: svg('M17 1l4 4-4 4V6H7a4 4 0 0 0-4 4v1H1v-1a6 6 0 0 1 6-6h10V1zM7 23l-4-4 4-4v3h10a4 4 0 0 0 4-4v-1h2v1a6 6 0 0 1-6 6H7v3z'),
+        volume: svg('M3 9v6h4l5 5V4L7 9H3zm11 1.24v3.52A2 2 0 0 0 14 10.24zm0-4.27v2.06A4.5 4.5 0 0 1 16.5 12 4.5 4.5 0 0 1 14 15.97v2.06A6.5 6.5 0 0 0 18.5 12 6.5 6.5 0 0 0 14 5.97z'),
+    };
+
+    const style = document.createElement('style');
+    style.id = 'smw-tracker-owned-player-style';
+    style.textContent = `
+        html, body {
+            margin: 0 !important;
+            width: 100% !important;
+            height: 100% !important;
+            min-width: 0 !important;
+            min-height: 0 !important;
+            overflow: hidden !important;
+            background: transparent !important;
+        }
+        body > *:not(#smw-tracker-owned-player) {
+            visibility: hidden !important;
+            pointer-events: none !important;
+        }
+        #smw-tracker-owned-player,
+        #smw-tracker-owned-player * {
+            visibility: visible !important;
+            box-sizing: border-box !important;
+            font-family: "Segoe UI", Arial, sans-serif !important;
+        }
+        #smw-tracker-owned-player {
+            position: fixed !important;
+            inset: 0 !important;
+            z-index: 2147483647 !important;
+            display: grid !important;
+            grid-template-rows: 72px minmax(0, 1fr) !important;
+            width: 100% !important;
+            height: 100% !important;
+            overflow: hidden !important;
+            border: 3px solid #35516F !important;
+            border-radius: 26px !important;
+            background: #101214 !important;
+            color: #FFFFFF !important;
+            box-shadow: none !important;
+        }
+        #smw-tracker-player-header {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) auto !important;
+            align-items: center !important;
+            min-width: 0 !important;
+            padding: 0 12px 0 48px !important;
+            border-bottom: 1px solid #34383D !important;
+            background: #101214 !important;
+            cursor: grab !important;
+            touch-action: none !important;
+            -webkit-user-select: none !important;
+            user-select: none !important;
+        }
+        #smw-tracker-player-header:active {
+            cursor: grabbing !important;
+        }
+        #smw-tracker-player-brand {
+            min-width: 0 !important;
+            overflow: hidden !important;
+            color: #FFFFFF !important;
+            font-size: 23px !important;
+            font-weight: 750 !important;
+            line-height: 1 !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+        }
+        #smw-tracker-player-window-actions {
+            display: flex !important;
+            align-items: center !important;
+            gap: 4px !important;
+        }
+        .smw-tracker-window-button {
+            display: grid !important;
+            width: 46px !important;
+            height: 46px !important;
+            place-items: center !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
+            border-radius: 9px !important;
+            background: transparent !important;
+            color: #FFFFFF !important;
+            cursor: pointer !important;
+            font-size: 34px !important;
+            font-weight: 300 !important;
+            line-height: 1 !important;
+        }
+        .smw-tracker-window-button:hover {
+            background: #292D31 !important;
+        }
+        #smw-tracker-player-content {
+            display: grid !important;
+            grid-template-rows: minmax(0, 1fr) auto auto auto !important;
+            min-width: 0 !important;
+            min-height: 0 !important;
+            padding: 18px 20px 16px !important;
+            background: #101214 !important;
+        }
+        #smw-tracker-player-track-info {
+            min-width: 0 !important;
+            min-height: 0 !important;
+            overflow: hidden !important;
+        }
+        #smw-tracker-player-title {
+            display: -webkit-box !important;
+            max-height: 2.35em !important;
+            margin: 0 0 6px !important;
+            overflow: hidden !important;
+            color: #FFFFFF !important;
+            font-size: 28px !important;
+            font-weight: 750 !important;
+            line-height: 1.15 !important;
+            overflow-wrap: anywhere !important;
+            -webkit-box-orient: vertical !important;
+            -webkit-line-clamp: 2 !important;
+        }
+        #smw-tracker-player-subtitle {
+            display: -webkit-box !important;
+            max-height: 2.4em !important;
+            margin: 0 0 3px !important;
+            overflow: hidden !important;
+            color: #D6D7DA !important;
+            font-size: 19px !important;
+            line-height: 1.2 !important;
+            overflow-wrap: anywhere !important;
+            -webkit-box-orient: vertical !important;
+            -webkit-line-clamp: 2 !important;
+        }
+        #smw-tracker-player-details {
+            overflow: hidden !important;
+            color: #95979A !important;
+            font-size: 16px !important;
+            line-height: 1.25 !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+        }
+        #smw-tracker-player-seek-row {
+            display: grid !important;
+            grid-template-columns: auto minmax(0, 1fr) auto !important;
+            align-items: center !important;
+            gap: 12px !important;
+            min-width: 0 !important;
+            padding: 10px 2px 12px !important;
+            color: #FFFFFF !important;
+            font-size: 16px !important;
+            font-variant-numeric: tabular-nums !important;
+        }
+        #smw-tracker-player-seek,
+        #smw-tracker-player-volume {
+            height: 22px !important;
+            margin: 0 !important;
+            accent-color: #1F86E5 !important;
+            cursor: pointer !important;
+        }
+        #smw-tracker-player-controls {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) auto !important;
+            align-items: center !important;
+            gap: 16px !important;
+            min-width: 0 !important;
+            padding-top: 12px !important;
+            border-top: 1px solid #34383D !important;
+        }
+        #smw-tracker-player-transport,
+        #smw-tracker-player-volume-group {
+            display: flex !important;
+            align-items: center !important;
+            gap: 10px !important;
+            min-width: 0 !important;
+        }
+        .smw-tracker-control-button {
+            display: grid !important;
+            width: 52px !important;
+            height: 50px !important;
+            place-items: center !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: 1px solid #3B4046 !important;
+            border-radius: 10px !important;
+            background: #303236 !important;
+            color: #FFFFFF !important;
+            cursor: pointer !important;
+        }
+        .smw-tracker-control-button:hover,
+        .smw-tracker-control-button.active {
+            border-color: #4B87AA !important;
+            background: #274A5D !important;
+        }
+        .smw-tracker-control-button svg {
+            width: 29px !important;
+            height: 29px !important;
+            fill: currentColor !important;
+        }
+        #smw-tracker-player-volume-label {
+            min-width: 48px !important;
+            color: #FFFFFF !important;
+            font-size: 18px !important;
+            font-weight: 700 !important;
+            text-align: right !important;
+            font-variant-numeric: tabular-nums !important;
+        }
+        #smw-tracker-player-volume-icon {
+            display: grid !important;
+            width: 31px !important;
+            height: 31px !important;
+            place-items: center !important;
+        }
+        #smw-tracker-player-volume-icon svg {
+            width: 29px !important;
+            height: 29px !important;
+            fill: #FFFFFF !important;
+        }
+        #smw-tracker-player-volume {
+            width: 154px !important;
+        }
+        #smw-tracker-player-up-next {
+            min-width: 0 !important;
+            padding-top: 10px !important;
+            overflow: hidden !important;
+            color: #D8D9DB !important;
+            font-size: 15px !important;
+            line-height: 1.2 !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+        }
+        #smw-tracker-player-up-next strong {
+            color: #FFFFFF !important;
+        }
+        .smw-tracker-player-resize-handle {
+            position: absolute !important;
+            z-index: 8 !important;
+            border: 0 !important;
+            background-color: transparent !important;
+            touch-action: none !important;
+            user-select: none !important;
+        }
+        #smw-tracker-player-resize {
+            position: absolute !important;
+            right: 5px !important;
+            bottom: 5px !important;
+            z-index: 9 !important;
+            width: 24px !important;
+            height: 24px !important;
+            border: 0 !important;
+            background:
+                linear-gradient(135deg, transparent 0 48%, #87A9CB 49% 55%, transparent 56%)
+                right bottom / 10px 10px no-repeat,
+                linear-gradient(135deg, transparent 0 48%, #50779E 49% 55%, transparent 56%)
+                right bottom / 17px 17px no-repeat !important;
+            cursor: nwse-resize !important;
+            touch-action: none !important;
+        }
+        #smw-tracker-player-resize-top-left {
+            position: absolute !important;
+            top: 5px !important;
+            left: 5px !important;
+            z-index: 5 !important;
+            width: 28px !important;
+            height: 28px !important;
+            border: 0 !important;
+            background:
+                linear-gradient(315deg, transparent 0 48%, #87A9CB 49% 55%, transparent 56%)
+                left top / 11px 11px no-repeat,
+                linear-gradient(315deg, transparent 0 48%, #50779E 49% 55%, transparent 56%)
+                left top / 19px 19px no-repeat !important;
+            cursor: nwse-resize !important;
+            touch-action: none !important;
+        }
+        #smw-tracker-player-resize-top,
+        #smw-tracker-player-resize-bottom {
+            left: 24px !important;
+            right: 24px !important;
+            height: 9px !important;
+            cursor: ns-resize !important;
+        }
+        #smw-tracker-player-resize-top {
+            top: 0 !important;
+        }
+        #smw-tracker-player-resize-bottom {
+            bottom: 0 !important;
+        }
+        #smw-tracker-player-resize-left,
+        #smw-tracker-player-resize-right {
+            top: 24px !important;
+            bottom: 24px !important;
+            width: 9px !important;
+            cursor: ew-resize !important;
+        }
+        #smw-tracker-player-resize-left {
+            left: 0 !important;
+        }
+        #smw-tracker-player-resize-right {
+            right: 0 !important;
+        }
+        #smw-tracker-player-resize-top-right,
+        #smw-tracker-player-resize-bottom-left {
+            width: 24px !important;
+            height: 24px !important;
+        }
+        #smw-tracker-player-resize-top-right {
+            top: 0 !important;
+            right: 0 !important;
+            cursor: nesw-resize !important;
+        }
+        #smw-tracker-player-resize-bottom-left {
+            bottom: 0 !important;
+            left: 0 !important;
+            cursor: nesw-resize !important;
+        }
+        @media (max-height: 360px) {
+            #smw-tracker-owned-player {
+                grid-template-rows: 52px minmax(0, 1fr) !important;
+                border-radius: 18px !important;
+            }
+            #smw-tracker-player-header {
+                padding: 0 8px 0 40px !important;
+            }
+            #smw-tracker-player-brand {
+                font-size: 22px !important;
+            }
+            .smw-tracker-window-button {
+                width: 40px !important;
+                height: 38px !important;
+                font-size: 30px !important;
+            }
+            #smw-tracker-player-content {
+                grid-template-rows: minmax(0, auto) auto auto auto !important;
+                gap: 3px !important;
+                padding: 7px 14px 9px !important;
+            }
+            #smw-tracker-player-track-info {
+                display: grid !important;
+                grid-template-columns: minmax(0, 1fr) !important;
+                align-content: start !important;
+                min-height: 0 !important;
+            }
+            #smw-tracker-player-title,
+            #smw-tracker-player-subtitle,
+            #smw-tracker-player-details {
+                display: block !important;
+                max-height: none !important;
+                overflow: hidden !important;
+                text-overflow: ellipsis !important;
+                white-space: nowrap !important;
+                -webkit-line-clamp: unset !important;
+            }
+            #smw-tracker-player-title {
+                margin: 0 0 2px !important;
+                font-size: 20px !important;
+                line-height: 1.1 !important;
+            }
+            #smw-tracker-player-subtitle {
+                margin: 0 0 1px !important;
+                font-size: 14px !important;
+                line-height: 1.1 !important;
+            }
+            #smw-tracker-player-details {
+                font-size: 12px !important;
+                line-height: 1.1 !important;
+            }
+            #smw-tracker-player-seek-row {
+                gap: 8px !important;
+                padding: 2px 2px 3px !important;
+                font-size: 14px !important;
+            }
+            #smw-tracker-player-seek,
+            #smw-tracker-player-volume {
+                height: 18px !important;
+            }
+            #smw-tracker-player-controls {
+                gap: 10px !important;
+                padding-top: 5px !important;
+            }
+            #smw-tracker-player-transport,
+            #smw-tracker-player-volume-group {
+                gap: 6px !important;
+            }
+            .smw-tracker-control-button {
+                width: 42px !important;
+                height: 40px !important;
+                border-radius: 8px !important;
+            }
+            .smw-tracker-control-button svg {
+                width: 24px !important;
+                height: 24px !important;
+            }
+            #smw-tracker-player-volume-label {
+                min-width: 43px !important;
+                font-size: 15px !important;
+            }
+            #smw-tracker-player-volume-icon,
+            #smw-tracker-player-volume-icon svg {
+                width: 24px !important;
+                height: 24px !important;
+            }
+            #smw-tracker-player-volume {
+                width: clamp(60px, 16vw, 105px) !important;
+            }
+            #smw-tracker-player-up-next {
+                display: block !important;
+                padding-top: 3px !important;
+                font-size: 12px !important;
+                line-height: 1.1 !important;
+            }
+            #smw-tracker-player-resize-top-left,
+            #smw-tracker-player-resize-top-right,
+            #smw-tracker-player-resize-bottom-left,
+            #smw-tracker-player-resize {
+                width: 21px !important;
+                height: 21px !important;
+            }
+        }
+    `;
+    document.head.appendChild(style);
+
+    const root = document.createElement('section');
+    root.id = 'smw-tracker-owned-player';
+    root.innerHTML = `
+        <header id="smw-tracker-player-header">
+            <div id="smw-tracker-player-brand"></div>
+            <div id="smw-tracker-player-window-actions">
+                <button id="smw-tracker-player-minimize" class="smw-tracker-window-button" type="button">−</button>
+                <button id="smw-tracker-player-close" class="smw-tracker-window-button" type="button">×</button>
+            </div>
+        </header>
+        <main id="smw-tracker-player-content">
+            <div id="smw-tracker-player-track-info">
+                <h1 id="smw-tracker-player-title"></h1>
+                <div id="smw-tracker-player-subtitle"></div>
+                <div id="smw-tracker-player-details"></div>
+            </div>
+            <div id="smw-tracker-player-seek-row">
+                <span id="smw-tracker-player-elapsed">0:00</span>
+                <input id="smw-tracker-player-seek" type="range" min="0" max="1000" step="1" value="0">
+                <span id="smw-tracker-player-duration">0:00</span>
+            </div>
+            <div id="smw-tracker-player-controls">
+                <div id="smw-tracker-player-transport">
+                    <button id="smw-tracker-player-play" class="smw-tracker-control-button" type="button"></button>
+                    <button id="smw-tracker-player-next" class="smw-tracker-control-button" type="button"></button>
+                    <button id="smw-tracker-player-restart" class="smw-tracker-control-button" type="button"></button>
+                    <button id="smw-tracker-player-loop" class="smw-tracker-control-button" type="button"></button>
+                </div>
+                <div id="smw-tracker-player-volume-group">
+                    <span id="smw-tracker-player-volume-label">100%</span>
+                    <span id="smw-tracker-player-volume-icon"></span>
+                    <input id="smw-tracker-player-volume" type="range" min="0" max="150" step="1" value="100">
+                </div>
+            </div>
+            <div id="smw-tracker-player-up-next"><strong></strong> <span></span></div>
+        </main>
+        <div id="smw-tracker-player-resize-top-left" class="smw-tracker-player-resize-handle" data-edge="nw" role="button" tabindex="0"></div>
+        <div id="smw-tracker-player-resize-top" class="smw-tracker-player-resize-handle" data-edge="n" role="button" tabindex="0"></div>
+        <div id="smw-tracker-player-resize-top-right" class="smw-tracker-player-resize-handle" data-edge="ne" role="button" tabindex="0"></div>
+        <div id="smw-tracker-player-resize-right" class="smw-tracker-player-resize-handle" data-edge="e" role="button" tabindex="0"></div>
+        <div id="smw-tracker-player-resize" class="smw-tracker-player-resize-handle" data-edge="se" role="button" tabindex="0"></div>
+        <div id="smw-tracker-player-resize-bottom" class="smw-tracker-player-resize-handle" data-edge="s" role="button" tabindex="0"></div>
+        <div id="smw-tracker-player-resize-bottom-left" class="smw-tracker-player-resize-handle" data-edge="sw" role="button" tabindex="0"></div>
+        <div id="smw-tracker-player-resize-left" class="smw-tracker-player-resize-handle" data-edge="w" role="button" tabindex="0"></div>
+    `;
+    document.body.appendChild(root);
+
+    const element = (id) => document.getElementById(id);
+    const title = element('smw-tracker-player-title');
+    const subtitle = element('smw-tracker-player-subtitle');
+    const details = element('smw-tracker-player-details');
+    const elapsed = element('smw-tracker-player-elapsed');
+    const duration = element('smw-tracker-player-duration');
+    const seek = element('smw-tracker-player-seek');
+    const playButton = element('smw-tracker-player-play');
+    const nextButton = element('smw-tracker-player-next');
+    const restartButton = element('smw-tracker-player-restart');
+    const loopButton = element('smw-tracker-player-loop');
+    const volume = element('smw-tracker-player-volume');
+    const volumeLabel = element('smw-tracker-player-volume-label');
+    const upNext = element('smw-tracker-player-up-next');
+    const brand = element('smw-tracker-player-brand');
+    const header = element('smw-tracker-player-header');
+    const playerName = radioMode ? text.radio : text.player;
+    brand.textContent = playerName;
+    title.textContent = text.loading;
+    upNext.querySelector('strong').textContent = text.up_next;
+    playButton.innerHTML = icons.play;
+    nextButton.innerHTML = icons.next;
+    restartButton.innerHTML = icons.restart;
+    loopButton.innerHTML = icons.loop;
+    element('smw-tracker-player-volume-icon').innerHTML = icons.volume;
+    playButton.title = text.play;
+    nextButton.title = text.skip;
+    restartButton.title = text.restart;
+    loopButton.title = text.loop;
+    volume.title = text.volume;
+    seek.title = text.play;
+    element('smw-tracker-player-minimize').title = text.minimize;
+    element('smw-tracker-player-minimize').setAttribute('aria-label', text.minimize);
+    element('smw-tracker-player-close').title = text.close;
+    element('smw-tracker-player-close').setAttribute('aria-label', text.close);
+    const resizeHandles = Array.from(
+        root.querySelectorAll('.smw-tracker-player-resize-handle')
+    );
+    resizeHandles.forEach((handle) => {
+        handle.title = text.resize;
+        handle.setAttribute('aria-label', text.resize);
+    });
+
+    const enginePlayer = () => {
+        const players = Array.from(
+            document.querySelectorAll('#spc-player-interface')
+        );
+        return players.find((candidate) => {
+            const trackInfo = candidate.querySelector('.track-info');
+            return Boolean(trackInfo && trackInfo.textContent?.trim());
+        }) || players[0] || null;
+    };
+    const engineElement = (selector) => enginePlayer()?.querySelector(selector) || null;
+    const cleanText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const mojibakeScore = (value) => {
+        const matches = String(value || '').match(/[\u00C2\u00C3\u00C6\u00E6\uFFFD]|â[\u0080-\u00BF]/g);
+        return matches ? matches.length : 0;
+    };
+    const repairText = (value) => {
+        const original = cleanText(value);
+        if (!original || mojibakeScore(original) === 0) return original;
+        try {
+            const cp1252 = {
+                '€': 0x80, '‚': 0x82, 'ƒ': 0x83, '„': 0x84,
+                '…': 0x85, '†': 0x86, '‡': 0x87, 'ˆ': 0x88,
+                '‰': 0x89, 'Š': 0x8A, '‹': 0x8B, 'Œ': 0x8C,
+                'Ž': 0x8E, '‘': 0x91, '’': 0x92, '“': 0x93,
+                '”': 0x94, '•': 0x95, '–': 0x96, '—': 0x97,
+                '˜': 0x98, '™': 0x99, 'š': 0x9A, '›': 0x9B,
+                'œ': 0x9C, 'ž': 0x9E, 'Ÿ': 0x9F,
+            };
+            const bytes = Uint8Array.from(original, (character) => {
+                if (Object.prototype.hasOwnProperty.call(cp1252, character)) {
+                    return cp1252[character];
+                }
+                const code = character.charCodeAt(0);
+                return code <= 0xFF ? code : 0x3F;
+            });
+            const decoded = cleanText(
+                new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+            );
+            const introducedQuestions = (
+                (decoded.match(/\?/g) || []).length >
+                (original.match(/\?/g) || []).length
+            );
+            if (decoded && !decoded.includes('\uFFFD') && !introducedQuestions &&
+                    mojibakeScore(decoded) < mojibakeScore(original)) {
+                return decoded;
+            }
+        } catch (_error) {}
+        return original;
+    };
+    const engineText = (selectors, placeholder = '') => {
+        const player = enginePlayer();
+        if (!player) return '';
+        for (const selector of selectors) {
+            const candidates = Array.from(player.querySelectorAll(selector));
+            for (const candidate of candidates) {
+                const value = repairText(candidate.textContent);
+                if (value && value !== placeholder) return value;
+            }
+        }
+        return '';
+    };
+    const clickEngine = (selector) => {
+        const control = engineElement(selector);
+        if (!control) return false;
+        try { control.click(); return true; } catch (_error) { return false; }
+    };
+    const timeSeconds = (value) => {
+        const pieces = String(value || '').trim().split(':').map(Number);
+        if (!pieces.length || pieces.some((part) => !Number.isFinite(part))) return 0;
+        return pieces.reduce((total, part) => total * 60 + part, 0);
+    };
+    let draggingSeek = false;
+    let launched = false;
+    let attempts = 0;
+    let lastGoodTitle = '';
+
+    const sync = () => {
+        attempts += 1;
+        const player = enginePlayer();
+        if (!player) {
+            if (attempts > 120) title.textContent = text.unavailable;
+            return;
+        }
+        if (launchPreview && !launched) {
+            const preview = document.getElementById('file-preview-button');
+            if (preview) {
+                launched = true;
+                window.setTimeout(() => {
+                    try { preview.click(); } catch (_error) {}
+                }, 80);
+            }
+        }
+        const currentTitle = engineText([
+            '.track-info h2.title',
+            '.track-info .title a',
+            '.track-info .title',
+            '.title',
+        ], 'Song Title');
+        const currentSubtitle = engineText(['.track-info .subtitle']);
+        const currentDetails = engineText(['.track-info .details']);
+        const elapsedValue = engineElement('.track-time-elapsed')?.textContent?.trim() || '0:00';
+        const durationValue = engineElement('.track-duration')?.textContent?.trim() || '0:00';
+        if (currentTitle && currentTitle !== text.loading) {
+            lastGoodTitle = currentTitle;
+        }
+        title.textContent = lastGoodTitle || text.loading;
+        subtitle.textContent = currentSubtitle;
+        details.textContent = currentDetails;
+        elapsed.textContent = elapsedValue;
+        duration.textContent = durationValue;
+        if (!draggingSeek) {
+            const totalSeconds = timeSeconds(durationValue);
+            const elapsedSeconds = timeSeconds(elapsedValue);
+            seek.value = totalSeconds > 0
+                ? String(Math.max(0, Math.min(1000, Math.round(elapsedSeconds * 1000 / totalSeconds))))
+                : '0';
+        }
+        const enginePause = engineElement('.pause');
+        const playing = Boolean(enginePause && !enginePause.classList.contains('hidden'));
+        playButton.innerHTML = playing ? icons.pause : icons.play;
+        playButton.title = playing ? text.pause : text.play;
+        playButton.setAttribute('aria-label', playing ? text.pause : text.play);
+        const engineLoop = document.getElementById('spc-player-loop');
+        loopButton.classList.toggle('active', Boolean(engineLoop?.checked));
+        const engineVolume = document.getElementById('volume-slider');
+        if (engineVolume && document.activeElement !== volume) {
+            const percentage = Math.max(0, Math.min(150, Math.round(Number(engineVolume.value || 1) * 100)));
+            volume.value = String(percentage);
+            volumeLabel.textContent = `${percentage}%`;
+        }
+        const nextText = repairText(
+            document.getElementById('spc-player-up-next-link')?.textContent
+        );
+        upNext.querySelector('span').textContent = nextText;
+        upNext.style.display = nextText ? 'block' : 'none';
+    };
+
+    playButton.addEventListener('click', () => {
+        const pause = engineElement('.pause');
+        const playing = Boolean(pause && !pause.classList.contains('hidden'));
+        clickEngine(playing ? '.pause' : '.play');
+        window.setTimeout(sync, 40);
+    });
+    nextButton.addEventListener('click', () => clickEngine('#spc-player-skip'));
+    restartButton.addEventListener('click', () => clickEngine('.restart'));
+    loopButton.addEventListener('click', () => {
+        const control = document.querySelector('label[for="spc-player-loop"]');
+        try { control?.click(); } catch (_error) {}
+        window.setTimeout(sync, 40);
+    });
+    volume.addEventListener('input', () => {
+        const engineVolume = document.getElementById('volume-slider');
+        const percentage = Math.max(0, Math.min(150, Number(volume.value || 0)));
+        volumeLabel.textContent = `${Math.round(percentage)}%`;
+        if (!engineVolume) return;
+        engineVolume.value = String(percentage / 100);
+        engineVolume.dispatchEvent(new Event('input', { bubbles: true }));
+        engineVolume.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    seek.addEventListener('pointerdown', () => { draggingSeek = true; });
+    const commitSeek = () => {
+        draggingSeek = false;
+        const engineSeek = engineElement('.seek');
+        if (!engineSeek) return;
+        const rect = engineSeek.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, Number(seek.value || 0) / 1000));
+        try {
+            engineSeek.dispatchEvent(new MouseEvent('click', {
+                bubbles: true,
+                cancelable: true,
+                clientX: rect.left + Math.max(1, rect.width) * ratio,
+                clientY: rect.top + Math.max(1, rect.height) / 2,
+                view: window,
+            }));
+        } catch (_error) {}
+        window.setTimeout(sync, 40);
+    };
+    seek.addEventListener('change', commitSeek);
+    seek.addEventListener('pointerup', commitSeek);
+    element('smw-tracker-player-close').addEventListener('click', () => {
+        try {
+            const closing = window.pywebview?.api?.close_spc_player?.();
+            if (closing?.catch) closing.catch(() => window.close());
+            else if (!closing) window.close();
+        } catch (_error) { window.close(); }
+    });
+    element('smw-tracker-player-minimize').addEventListener('click', () => {
+        try {
+            const minimizing = window.pywebview?.api?.minimize_spc_player?.();
+            if (minimizing?.catch) minimizing.catch(() => {});
+        } catch (_error) {}
+    });
+
+    let windowGesture = null;
+    let windowGestureFrame = 0;
+    let pendingWindowGesture = null;
+    let windowGestureInFlight = false;
+    let windowGestureFinishRequested = false;
+    const interactiveSelector = [
+        'button', 'input', 'select', 'textarea', 'a',
+        '[role="button"]', '.smw-tracker-player-resize-handle',
+    ].join(',');
+    // The direct pointer handler below owns title-bar dragging. Keep the
+    // window buttons out of all window-gesture handling.
+    root.addEventListener('mousedown', (event) => {
+        if (event.button !== 0) return;
+        if (event.target.closest(interactiveSelector)) {
+            event.stopPropagation();
+        }
+    });
+
+    const finishNativeWindowGesture = () => {
+        windowGestureFinishRequested = false;
+        try {
+            const finished = window.pywebview?.api?.finish_spc_player_gesture?.();
+            if (finished?.catch) finished.catch(() => {});
+        } catch (_error) {}
+    };
+
+    const queueWindowGesture = (request = null) => {
+        if (request) pendingWindowGesture = request;
+        if (windowGestureInFlight) return;
+        if (windowGestureFrame) return;
+        windowGestureFrame = window.requestAnimationFrame(() => {
+            windowGestureFrame = 0;
+            const requested = pendingWindowGesture;
+            pendingWindowGesture = null;
+            if (!requested) {
+                if (windowGestureFinishRequested) finishNativeWindowGesture();
+                return;
+            }
+            try {
+                let action = null;
+                if (requested.kind === 'move') {
+                    action = window.pywebview?.api?.move_spc_player?.(
+                        requested.x,
+                        requested.y
+                    );
+                } else if (requested.edge === 'se') {
+                    action = window.pywebview?.api?.resize_spc_player?.(
+                        requested.width,
+                        requested.height
+                    );
+                } else if (requested.edge === 'nw') {
+                    action = (
+                        window.pywebview?.api?.resize_spc_player_from_top_left?.(
+                            requested.width,
+                            requested.height
+                        )
+                    );
+                } else {
+                    action = (
+                        window.pywebview?.api?.resize_spc_player_from_edges?.(
+                            requested.width,
+                            requested.height,
+                            requested.edge
+                        )
+                    );
+                }
+                if (action?.then) {
+                    windowGestureInFlight = true;
+                    action.catch(() => {}).finally(() => {
+                        windowGestureInFlight = false;
+                        if (pendingWindowGesture) queueWindowGesture();
+                        else if (windowGestureFinishRequested) {
+                            finishNativeWindowGesture();
+                        }
+                    });
+                } else if (pendingWindowGesture) {
+                    queueWindowGesture();
+                } else if (windowGestureFinishRequested) {
+                    finishNativeWindowGesture();
+                }
+            } catch (_error) {
+                windowGestureInFlight = false;
+                if (pendingWindowGesture) queueWindowGesture();
+                else if (windowGestureFinishRequested) {
+                    finishNativeWindowGesture();
+                }
+            }
+        });
+    };
+
+    const finishWindowGesture = (event) => {
+        if (!windowGesture) return;
+        try { root.releasePointerCapture(event.pointerId); } catch (_error) {}
+        resizeHandles.forEach((handle) => {
+            try { handle.releasePointerCapture(event.pointerId); } catch (_error) {}
+        });
+        windowGesture = null;
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        windowGestureFinishRequested = true;
+        if (!windowGestureInFlight && !windowGestureFrame && !pendingWindowGesture) {
+            finishNativeWindowGesture();
+        } else {
+            queueWindowGesture();
+        }
+    };
+
+    header.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || event.target.closest(interactiveSelector)) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        windowGesture = {
+            kind: 'move',
+            offsetX: event.clientX,
+            offsetY: event.clientY,
+        };
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'grabbing';
+        try { header.setPointerCapture(event.pointerId); } catch (_error) {}
+    });
+    header.addEventListener('pointermove', (event) => {
+        if (!windowGesture || windowGesture.kind !== 'move') return;
+        event.preventDefault();
+        event.stopPropagation();
+        queueWindowGesture({
+            kind: 'move',
+            x: Math.round(event.screenX - windowGesture.offsetX),
+            y: Math.round(event.screenY - windowGesture.offsetY),
+        });
+    });
+    header.addEventListener('pointerup', finishWindowGesture);
+    header.addEventListener('pointercancel', finishWindowGesture);
+
+    resizeHandles.forEach((handle) => {
+        handle.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const edge = String(handle.dataset.edge || 'se');
+            windowGesture = {
+                kind: 'resize',
+                edge,
+                x: event.screenX,
+                y: event.screenY,
+                width: window.innerWidth,
+                height: window.innerHeight,
+            };
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = getComputedStyle(handle).cursor;
+            try { handle.setPointerCapture(event.pointerId); } catch (_error) {}
+        });
+        handle.addEventListener('pointermove', (event) => {
+            if (!windowGesture || windowGesture.kind !== 'resize') return;
+            event.preventDefault();
+            event.stopPropagation();
+            const dx = event.screenX - windowGesture.x;
+            const dy = event.screenY - windowGesture.y;
+            const edge = windowGesture.edge;
+            const fromLeft = edge.includes('w');
+            const fromRight = edge.includes('e');
+            const fromTop = edge.includes('n');
+            const fromBottom = edge.includes('s');
+            const requestedWidth = fromLeft
+                ? windowGesture.width - dx
+                : (fromRight ? windowGesture.width + dx : windowGesture.width);
+            const requestedHeight = fromTop
+                ? windowGesture.height - dy
+                : (fromBottom ? windowGesture.height + dy : windowGesture.height);
+            queueWindowGesture({
+                kind: 'resize',
+                edge,
+                width: Math.max(400, Math.round(requestedWidth)),
+                height: Math.max(220, Math.round(requestedHeight)),
+            });
+        });
+        handle.addEventListener('pointerup', finishWindowGesture);
+        handle.addEventListener('pointercancel', finishWindowGesture);
+    });
+
+    root.addEventListener('pointerup', finishWindowGesture);
+    root.addEventListener('pointercancel', finishWindowGesture);
+
+    sync();
+    window.setInterval(sync, 250);
+    window.setInterval(() => {
+        if (!root.isConnected && document.body) {
+            document.body.appendChild(root);
+        }
+    }, 250);
+    return true;
+})()
+"""
+
+
+class _SpcPlayerWebviewApi:
+    """Bridge for the frameless SPC popup's native window controls."""
+
+    def __init__(self) -> None:
+        self.window: Any | None = None
+        self._gesture_lock = threading.RLock()
+
+    def close_spc_player(self) -> bool:
+        try:
+            if self.window is not None:
+                self.window.destroy()
+            return True
+        except Exception:
+            return False
+
+    def minimize_spc_player(self) -> bool:
+        try:
+            if self.window is not None:
+                self.window.minimize()
+            return True
+        except Exception:
+            return False
+
+    def resize_spc_player(self, width: object, height: object) -> bool:
+        try:
+            with self._gesture_lock:
+                if self.window is None:
+                    return False
+                safe_width = max(400, min(4000, int(float(width))))
+                safe_height = max(220, min(2400, int(float(height))))
+                self.window.resize(safe_width, safe_height)
+            return True
+        except Exception:
+            return False
+
+    def resize_spc_player_from_top_left(
+        self,
+        width: object,
+        height: object,
+    ) -> bool:
+        try:
+            with self._gesture_lock:
+                if self.window is None:
+                    return False
+                from webview.window import FixPoint
+
+                safe_width = max(400, min(4000, int(float(width))))
+                safe_height = max(220, min(2400, int(float(height))))
+                self.window.resize(
+                    safe_width,
+                    safe_height,
+                    FixPoint.EAST | FixPoint.SOUTH,
+                )
+            return True
+        except Exception:
+            return False
+
+    def resize_spc_player_from_edges(
+        self,
+        width: object,
+        height: object,
+        edge: object,
+    ) -> bool:
+        """Resize from any edge while pinning the opposite side."""
+        try:
+            with self._gesture_lock:
+                if self.window is None:
+                    return False
+                from webview.window import FixPoint
+
+                safe_width = max(400, min(4000, int(float(width))))
+                safe_height = max(220, min(2400, int(float(height))))
+                normalized_edge = str(edge or "se").strip().lower()
+                fixed_points = {
+                    "n": FixPoint.SOUTH | FixPoint.WEST,
+                    "ne": FixPoint.SOUTH | FixPoint.WEST,
+                    "e": FixPoint.NORTH | FixPoint.WEST,
+                    "se": FixPoint.NORTH | FixPoint.WEST,
+                    "s": FixPoint.NORTH | FixPoint.WEST,
+                    "sw": FixPoint.NORTH | FixPoint.EAST,
+                    "w": FixPoint.NORTH | FixPoint.EAST,
+                    "nw": FixPoint.SOUTH | FixPoint.EAST,
+                }
+                self.window.resize(
+                    safe_width,
+                    safe_height,
+                    fixed_points.get(
+                        normalized_edge,
+                        FixPoint.NORTH | FixPoint.WEST,
+                    ),
+                )
+            return True
+        except Exception:
+            return False
+
+    def move_spc_player(self, x: object, y: object) -> bool:
+        """Move the player directly so every empty surface can be draggable."""
+        try:
+            with self._gesture_lock:
+                if self.window is None:
+                    return False
+                safe_x = max(-100000, min(100000, int(float(x))))
+                safe_y = max(-100000, min(100000, int(float(y))))
+                native_window = getattr(self.window, "native", None)
+                if IS_WINDOWS and native_window is not None:
+                    native_handle = native_window.Handle
+                    try:
+                        handle = int(native_handle.ToInt64())
+                    except AttributeError:
+                        handle = int(native_handle)
+                    if handle <= 0:
+                        return False
+                    user32 = ctypes.windll.user32
+                    try:
+                        dpi = max(96, int(user32.GetDpiForWindow(handle)))
+                    except Exception:
+                        dpi = 96
+                    scale = dpi / 96.0
+                    physical_x = int(round(safe_x * scale))
+                    physical_y = int(round(safe_y * scale))
+                    moved = user32.SetWindowPos(
+                        handle,
+                        None,
+                        physical_x,
+                        physical_y,
+                        0,
+                        0,
+                        0x0001 | 0x0004 | 0x0010 | 0x0040,
+                        # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                        # SWP_SHOWWINDOW
+                    )
+                    return bool(moved)
+                self.window.move(safe_x, safe_y)
+            return True
+        except Exception:
+            return False
+
+    def begin_spc_player_drag(self) -> bool:
+        """Hand the active pointer gesture to Windows' native move loop."""
+        if not IS_WINDOWS:
+            return False
+        try:
+            with self._gesture_lock:
+                if self.window is None:
+                    return False
+                native_handle = self.window.native.Handle
+                try:
+                    handle = int(native_handle.ToInt64())
+                except AttributeError:
+                    handle = int(native_handle)
+                if handle <= 0:
+                    return False
+                user32 = ctypes.windll.user32
+                user32.ReleaseCapture()
+                # SendMessage is intentional here.  PostMessage returns to the
+                # asynchronous pywebview bridge before Windows has entered its
+                # modal move loop, which lets WebView2 consume the held mouse
+                # press.  The synchronous title-bar message hands that same
+                # press to Windows and remains in the normal move loop until
+                # the user releases the button.
+                user32.SendMessageW(
+                    handle,
+                    0x00A1,  # WM_NCLBUTTONDOWN
+                    2,  # HTCAPTION
+                    0,
+                )
+                return True
+        except Exception:
+            return False
+
+    def finish_spc_player_gesture(self) -> bool:
+        """Reapply the native rounded region and keep the player on-screen."""
+        try:
+            with self._gesture_lock:
+                if self.window is None:
+                    return False
+                if IS_WINDOWS:
+                    _configure_windows_spc_player_window(self.window)
+            return True
+        except Exception:
+            return False
+
+
+def _configure_windows_spc_player_identity() -> None:
+    """Give WebView2 a distinct Windows identity for audio routing."""
+    if not IS_WINDOWS:
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "SMWStreamTracker.SPCPlayer"
+        )
+    except Exception:
+        pass
+
+
+_SPC_PLAYER_NATIVE_WNDPROCS: dict[int, tuple[Any, int]] = {}
+
+
+def _install_windows_spc_player_hit_test(
+    handle: int,
+    dpi: int = 96,
+) -> bool:
+    """Give the frameless player a real draggable header and resize border."""
+    if not IS_WINDOWS or handle <= 0:
+        return False
+    if handle in _SPC_PLAYER_NATIVE_WNDPROCS:
+        return True
+    try:
+        user32 = ctypes.windll.user32
+        comctl32 = ctypes.windll.comctl32
+        subclass_id = 0x534D5752  # "SMWR"
+        callback_type = ctypes.WINFUNCTYPE(
+            ctypes.c_ssize_t,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+        )
+        comctl32.SetWindowSubclass.argtypes = [
+            wintypes.HWND,
+            callback_type,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+        ]
+        comctl32.SetWindowSubclass.restype = wintypes.BOOL
+        comctl32.DefSubclassProc.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        comctl32.DefSubclassProc.restype = ctypes.c_ssize_t
+        comctl32.RemoveWindowSubclass.argtypes = [
+            wintypes.HWND,
+            callback_type,
+            ctypes.c_size_t,
+        ]
+        comctl32.RemoveWindowSubclass.restype = wintypes.BOOL
+        safe_dpi = max(96, int(dpi or 96))
+        border_size = max(7, int(round(8 * safe_dpi / 96)))
+        header_height = max(48, int(round(72 * safe_dpi / 96)))
+        action_width = max(96, int(round(116 * safe_dpi / 96)))
+
+        @callback_type
+        def player_window_proc(
+            hwnd: int,
+            message: int,
+            wparam: int,
+            lparam: int,
+            callback_id: int,
+            callback_data: int,
+        ) -> int:
+            try:
+                if message == 0x0084:  # WM_NCHITTEST
+                    window_rect = wintypes.RECT()
+                    if user32.GetWindowRect(hwnd, ctypes.byref(window_rect)):
+                        screen_x = ctypes.c_short(int(lparam) & 0xFFFF).value
+                        screen_y = ctypes.c_short(
+                            (int(lparam) >> 16) & 0xFFFF
+                        ).value
+                        client_x = screen_x - int(window_rect.left)
+                        client_y = screen_y - int(window_rect.top)
+                        width = max(
+                            1,
+                            int(window_rect.right - window_rect.left),
+                        )
+                        height = max(
+                            1,
+                            int(window_rect.bottom - window_rect.top),
+                        )
+                        on_left = client_x < border_size
+                        on_right = client_x >= width - border_size
+                        on_top = client_y < border_size
+                        on_bottom = client_y >= height - border_size
+                        if on_top and on_left:
+                            return 13  # HTTOPLEFT
+                        if on_top and on_right:
+                            return 14  # HTTOPRIGHT
+                        if on_bottom and on_left:
+                            return 16  # HTBOTTOMLEFT
+                        if on_bottom and on_right:
+                            return 17  # HTBOTTOMRIGHT
+                        if on_left:
+                            return 10  # HTLEFT
+                        if on_right:
+                            return 11  # HTRIGHT
+                        if on_top:
+                            return 12  # HTTOP
+                        if on_bottom:
+                            return 15  # HTBOTTOM
+                        if (
+                            border_size <= client_y < header_height
+                            and client_x < width - action_width
+                        ):
+                            return 2  # HTCAPTION
+                if message == 0x0082:  # WM_NCDESTROY
+                    comctl32.RemoveWindowSubclass(
+                        hwnd,
+                        player_window_proc,
+                        callback_id,
+                    )
+                    _SPC_PLAYER_NATIVE_WNDPROCS.pop(int(hwnd), None)
+            except Exception:
+                pass
+            return int(comctl32.DefSubclassProc(hwnd, message, wparam, lparam))
+
+        installed = comctl32.SetWindowSubclass(
+            handle,
+            player_window_proc,
+            subclass_id,
+            0,
+        )
+        if not installed:
+            return False
+        _SPC_PLAYER_NATIVE_WNDPROCS[handle] = (
+            player_window_proc,
+            subclass_id,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _configure_windows_spc_player_window(
+    window: Any,
+    corner_radius: int = 26,
+    popup_x: int | None = None,
+    popup_y: int | None = None,
+    popup_width: int | None = None,
+    popup_height: int | None = None,
+) -> bool:
+    """Anchor the frameless player and give it native rounded corners."""
+    if not IS_WINDOWS:
+        return False
+    region = 0
+    try:
+        native_window = window.native
+        native_window.ShowInTaskbar = True
+        native_handle = native_window.Handle
+        try:
+            handle = int(native_handle.ToInt64())
+        except AttributeError:
+            handle = int(native_handle)
+        if handle <= 0:
+            return False
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND,
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        window_rect = wintypes.RECT()
+        if not user32.GetWindowRect(handle, ctypes.byref(window_rect)):
+            return False
+        try:
+            dpi = max(96, int(user32.GetDpiForWindow(handle)))
+        except Exception:
+            dpi = 96
+        dpi_scale = dpi / 96.0
+        requested_width = (
+            max(1, int(popup_width))
+            if popup_width is not None
+            else None
+        )
+        requested_height = (
+            max(1, int(popup_height))
+            if popup_height is not None
+            else None
+        )
+        width = max(
+            1,
+            int(round(requested_width * dpi_scale))
+            if requested_width is not None
+            else int(window_rect.right - window_rect.left),
+        )
+        height = max(
+            1,
+            int(round(requested_height * dpi_scale))
+            if requested_height is not None
+            else int(window_rect.bottom - window_rect.top),
+        )
+        x = (
+            int(popup_x)
+            if popup_x is not None
+            else int(window_rect.left)
+        )
+        y = (
+            int(popup_y)
+            if popup_y is not None
+            else int(window_rect.top)
+        )
+        # The popup payload uses desktop coordinates but its requested size is
+        # expressed in CSS/Tk logical pixels. SetWindowPos expects physical
+        # pixels for a DPI-aware WebView host, so scale the size and move the
+        # top-left by the growth amount to preserve its bottom-right anchor.
+        if popup_x is not None and requested_width is not None:
+            x -= width - requested_width
+        if popup_y is not None and requested_height is not None:
+            y -= height - requested_height
+        work_area = _windows_monitor_work_area_for_point(
+            x + (width // 2),
+            y + (height // 2),
+        )
+        if work_area is not None:
+            work_left, work_top, work_right, work_bottom = work_area
+            margin = max(8, int(round(16 * dpi_scale)))
+            width = min(
+                width,
+                max(1, work_right - work_left - (margin * 2)),
+            )
+            height = min(
+                height,
+                max(1, work_bottom - work_top - (margin * 2)),
+            )
+            x = min(
+                max(work_left + margin, x),
+                work_right - width - margin,
+            )
+            y = min(
+                max(work_top + margin, y),
+                work_bottom - height - margin,
+            )
+        if not user32.SetWindowPos(
+            handle,
+            -1,  # HWND_TOPMOST
+            x,
+            y,
+            width,
+            height,
+            0x0010 | 0x0040,  # SWP_NOACTIVATE | SWP_SHOWWINDOW
+        ):
+            return False
+        diameter = max(2, int(round(corner_radius * 2 * dpi / 96)))
+        region = int(
+            gdi32.CreateRoundRectRgn(
+                0,
+                0,
+                width + 1,
+                height + 1,
+                diameter,
+                diameter,
+            )
+        )
+        if region <= 0:
+            return False
+        if not user32.SetWindowRgn(handle, region, True):
+            gdi32.DeleteObject(region)
+            return False
+        # Windows owns the successful region and deletes it with the window.
+        return True
+    except Exception as error:
+        if region:
+            try:
+                ctypes.windll.gdi32.DeleteObject(region)
+            except Exception:
+                pass
+        append_error_log(
+            "SPC player native window setup failed",
+            f"{type(error).__name__}: {error}",
+        )
+        return False
+
+
+def _windows_monitor_work_area_for_point(
+    x: int | None,
+    y: int | None,
+) -> tuple[int, int, int, int] | None:
+    """Return the usable work area nearest a desktop point on Windows."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        class Rect(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long),
+            ]
+
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_ulong),
+                ("rcMonitor", Rect),
+                ("rcWork", Rect),
+                ("dwFlags", ctypes.c_ulong),
+            ]
+
+        user32 = ctypes.windll.user32
+        if x is None or y is None:
+            work_area = wintypes.RECT()
+            if user32.SystemParametersInfoW(
+                0x0030,  # SPI_GETWORKAREA
+                0,
+                ctypes.byref(work_area),
+                0,
+            ):
+                return (
+                    int(work_area.left),
+                    int(work_area.top),
+                    int(work_area.right),
+                    int(work_area.bottom),
+                )
+            return None
+
+        monitor_from_point = user32.MonitorFromPoint
+        monitor_from_point.argtypes = [wintypes.POINT, ctypes.c_ulong]
+        monitor_from_point.restype = ctypes.c_void_p
+        get_monitor_info = user32.GetMonitorInfoW
+        get_monitor_info.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        get_monitor_info.restype = ctypes.c_int
+        monitor = monitor_from_point(wintypes.POINT(int(x), int(y)), 2)
+        info = MonitorInfo()
+        info.cbSize = ctypes.sizeof(MonitorInfo)
+        if monitor and get_monitor_info(monitor, ctypes.byref(info)):
+            return (
+                int(info.rcWork.left),
+                int(info.rcWork.top),
+                int(info.rcWork.right),
+                int(info.rcWork.bottom),
+            )
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _spc_player_popup_geometry(
+    payload: dict[str, Any] | None = None,
+) -> tuple[int, int, int | None, int | None]:
+    """Return a taskbar-safe embedded-player size and screen position."""
+    settings = dict(payload or {})
+    try:
+        width = max(520, min(1200, int(settings.get("embed_width", 820))))
+    except (TypeError, ValueError):
+        width = 820
+    try:
+        height = max(400, min(700, int(settings.get("embed_height", 420))))
+    except (TypeError, ValueError):
+        height = 500
+    try:
+        fallback_x = int(settings["popup_x"])
+        fallback_y = int(settings["popup_y"])
+    except (KeyError, TypeError, ValueError):
+        fallback_x = None
+        fallback_y = None
+    work_area = _windows_monitor_work_area_for_point(
+        None if fallback_x is None else fallback_x + (width // 2),
+        None if fallback_y is None else fallback_y + (height // 2),
+    )
+    if work_area is None:
+        return width, height, fallback_x, fallback_y
+
+    work_left, work_top, work_right, work_bottom = work_area
+    margin = 16
+    width = min(width, max(1, work_right - work_left - (margin * 2)))
+    height = min(height, max(1, work_bottom - work_top - (margin * 2)))
+    if fallback_x is None:
+        fallback_x = work_right - width - margin
+    if fallback_y is None:
+        fallback_y = work_bottom - height - margin
+    fallback_x = min(
+        max(work_left + margin, fallback_x),
+        work_right - width - margin,
+    )
+    fallback_y = min(
+        max(work_top + margin, fallback_y),
+        work_bottom - height - margin,
+    )
+    return width, height, fallback_x, fallback_y
+
+
+def _embed_windows_webview_window(
+    window: Any,
+    parent_hwnd: object,
+    width: object,
+    height: object,
+) -> bool:
+    """Attach a pywebview window to a Tk frame as a native child window."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        parent = int(parent_hwnd)
+        child_width = max(1, int(width))
+        child_height = max(1, int(height))
+        native_window = window.native
+        native_handle = native_window.Handle
+        try:
+            child = int(native_handle.ToInt64())
+        except AttributeError:
+            child = int(native_handle)
+        if parent <= 0 or child <= 0:
+            return False
+
+        user32 = ctypes.windll.user32
+        get_window_long = user32.GetWindowLongPtrW
+        set_window_long = user32.SetWindowLongPtrW
+        get_window_long.argtypes = [wintypes.HWND, ctypes.c_int]
+        get_window_long.restype = ctypes.c_ssize_t
+        set_window_long.argtypes = [
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_ssize_t,
+        ]
+        set_window_long.restype = ctypes.c_ssize_t
+        user32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
+        user32.SetParent.restype = wintypes.HWND
+        user32.IsChild.argtypes = [wintypes.HWND, wintypes.HWND]
+        user32.IsChild.restype = wintypes.BOOL
+
+        gwl_style = -16
+        ws_child = 0x40000000
+        ws_visible = 0x10000000
+        ws_clip_siblings = 0x04000000
+        ws_clip_children = 0x02000000
+        top_level_styles = (
+            0x80000000  # WS_POPUP
+            | 0x00C00000  # WS_CAPTION
+            | 0x00040000  # WS_THICKFRAME
+            | 0x00080000  # WS_SYSMENU
+            | 0x00020000  # WS_MINIMIZEBOX
+            | 0x00010000  # WS_MAXIMIZEBOX
+        )
+        current_style = int(get_window_long(child, gwl_style))
+        child_style = (
+            (current_style & ~top_level_styles)
+            | ws_child
+            | ws_visible
+            | ws_clip_siblings
+            | ws_clip_children
+        )
+        user32.SetParent(child, parent)
+        set_window_long(child, gwl_style, child_style)
+        positioned = bool(
+            user32.SetWindowPos(
+                child,
+                0,
+                0,
+                0,
+                child_width,
+                child_height,
+                0x0020 | 0x0040,  # SWP_FRAMECHANGED | SWP_SHOWWINDOW
+            )
+        )
+        return positioned and bool(user32.IsChild(parent, child))
+    except Exception as error:
+        append_error_log(
+            "Embedded SPC player attachment failed",
+            f"{type(error).__name__}: {error}",
+        )
+        return False
+
+
+def _run_smwcentral_webview(
+    target_url: str,
+    language: str = "en",
+    mode: str = "browse",
+    payload: dict[str, Any] | None = None,
+) -> int:
+    normalized_mode = str(mode or "browse").strip().casefold()
+    validator = (
+        _validated_smwcentral_home_link_url
+        if normalized_mode == "feed_link"
+        else _validated_smwcentral_webview_url
+    )
+    safe_url = validator(target_url)
+    if not safe_url:
+        append_error_log(
+            "Embedded SMW Central window failed",
+            "The requested URL was not an HTTPS SMW Central page.",
+        )
+        return 1
+
+    try:
+        import webview
+
+        SMWC_WEBVIEW_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        if normalized_mode in {"spc_player", "radio"}:
+            _configure_windows_spc_player_identity()
+            _enable_windows_dpi_awareness()
+        icon_path = bundled_resource_path(
+            "app_assets",
+            "smw_stream_tracker_icon.ico",
+        )
+        if normalized_mode not in {
+            "browse", "feed_link", "home_feed", "login", "review",
+            "spc_player", "radio",
+        }:
+            normalized_mode = "browse"
+        submission = dict(payload or {})
+        review_target = _smwcentral_comments_url(
+            submission.get("target_url", "")
+        )
+        spc_api = (
+            _SpcPlayerWebviewApi()
+            if normalized_mode in {"spc_player", "radio"}
+            else None
+        )
+        window_options: dict[str, Any] = {
+            "width": 1180,
+            "height": 880,
+            "min_size": (760, 600),
+            "resizable": True,
+            "maximized": normalized_mode != "home_feed",
+            "fullscreen": False,
+            "hidden": normalized_mode == "home_feed",
+            "focus": normalized_mode != "home_feed",
+            "background_color": "#0F1B2D",
+            "text_select": True,
+            "zoomable": True,
+        }
+        if normalized_mode in {"spc_player", "radio"}:
+            popup_width, popup_height, popup_x, popup_y = (
+                _spc_player_popup_geometry(submission)
+            )
+            embed_background = str(
+                submission.get("embed_background", "#0F1B2D")
+            ).strip()
+            if not re.fullmatch(r"#[0-9A-Fa-f]{6}", embed_background):
+                embed_background = "#0F1B2D"
+            window_options.update(
+                {
+                    "width": popup_width,
+                    "height": popup_height,
+                    "x": popup_x,
+                    "y": popup_y,
+                    "min_size": (400, 220),
+                    "resizable": True,
+                    "maximized": False,
+                    "hidden": True,
+                    "focus": False,
+                    "frameless": True,
+                    "easy_drag": False,
+                    "shadow": False,
+                    "on_top": True,
+                    "background_color": embed_background,
+                    "js_api": spc_api,
+                }
+            )
+            # WebView2 transparency relies on ICoreWebView2Controller2, which
+            # is unavailable on some otherwise supported Windows WebView2
+            # runtimes.  Requesting it makes the packaged player process exit
+            # before the window can appear.  Windows already gets a genuinely
+            # shaped, background-free popup from SetWindowRgn below, so avoid
+            # the fragile transparent-controller path there.  Other platforms
+            # can continue using pywebview's native transparency support.
+            if not IS_WINDOWS:
+                window_options["transparent"] = True
+        window = webview.create_window(
+            _smwcentral_window_title(language, normalized_mode),
+            safe_url,
+            **window_options,
+        )
+        if spc_api is not None:
+            spc_api.window = window
+
+        if normalized_mode in {"spc_player", "radio"} and IS_WINDOWS:
+            def configure_native_spc_player() -> bool:
+                return _configure_windows_spc_player_window(
+                    window,
+                    popup_x=popup_x,
+                    popup_y=popup_y,
+                    popup_width=popup_width,
+                    popup_height=popup_height,
+                )
+
+            # before_show establishes the taskbar identity and rounded frame;
+            # shown reapplies the requested bottom-right position after the
+            # WebView host has finished its own placement pass.
+            window.events.before_show += configure_native_spc_player
+            window.events.shown += configure_native_spc_player
+
+        player_watchdog_stop = threading.Event()
+        player_watchdog_started = False
+
+        def stop_player_watchdog(*_args: object) -> None:
+            player_watchdog_stop.set()
+
+        def conceal_player_page(*_args: object) -> None:
+            """Never expose the source website while its player is rebuilt."""
+            try:
+                window.hide()
+            except Exception:
+                pass
+
+        def install_player_layer(
+            player_script: str,
+            *,
+            activate_radio: bool = False,
+        ) -> bool:
+            """Install and verify the tracker-owned UI in the active document."""
+            window.evaluate_js(player_script)
+            layer_ready = bool(
+                window.evaluate_js(
+                    "Boolean(document.getElementById("
+                    "'smw-tracker-owned-player'))"
+                )
+            )
+            if activate_radio:
+                window.evaluate_js(_smwcentral_radio_javascript())
+            return layer_ready
+
+        def start_player_watchdog(
+            player_script: str,
+            *,
+            activate_radio: bool = False,
+        ) -> None:
+            """Restore the custom shell after site navigation or DOM rebuilds."""
+            nonlocal player_watchdog_started
+            if player_watchdog_started:
+                return
+            player_watchdog_started = True
+
+            def worker() -> None:
+                consecutive_failures = 0
+                while not player_watchdog_stop.wait(0.35):
+                    try:
+                        install_player_layer(
+                            player_script,
+                            activate_radio=activate_radio,
+                        )
+                        consecutive_failures = 0
+                    except Exception:
+                        # Navigation briefly makes evaluate_js unavailable.
+                        # Keep trying, but stop once the window is truly gone.
+                        consecutive_failures += 1
+                        if consecutive_failures >= 80:
+                            break
+
+            threading.Thread(
+                target=worker,
+                name="SMWCentralPlayerLayerWatchdog",
+                daemon=True,
+            ).start()
+
+        if normalized_mode in {"spc_player", "radio"}:
+            window.events.before_load += conceal_player_page
+            window.events.closed += stop_player_watchdog
+
+        def loaded_handler() -> None:
+            try:
+                if normalized_mode == "spc_player":
+                    conceal_player_page()
+                    player_script = _smwcentral_spc_player_javascript(
+                        language,
+                        submission.get("embed_background", "#0F1B2D"),
+                        True,
+                        False,
+                    )
+                    if install_player_layer(player_script):
+                        window.show()
+                    start_player_watchdog(player_script)
+                    return
+                if normalized_mode == "radio":
+                    conceal_player_page()
+                    player_script = _smwcentral_spc_player_javascript(
+                        language,
+                        submission.get("embed_background", "#0F1B2D"),
+                        False,
+                        True,
+                    )
+                    if install_player_layer(
+                        player_script,
+                        activate_radio=True,
+                    ):
+                        window.show()
+                    start_player_watchdog(
+                        player_script,
+                        activate_radio=True,
+                    )
+                    return
+                if normalized_mode == "home_feed":
+                    feed = window.evaluate_js(
+                        _smwcentral_home_feed_javascript()
+                    )
+                    if isinstance(feed, str):
+                        try:
+                            feed = json.loads(feed)
+                        except json.JSONDecodeError:
+                            feed = None
+                    if not isinstance(feed, dict):
+                        # A Cloudflare interstitial may load first. Keep the
+                        # hidden view alive; the real page triggers another
+                        # loaded event after the browser check completes.
+                        return
+                    _write_smwcentral_home_feed_cache(feed)
+                    window.destroy()
+                    return
+
+                state = window.evaluate_js(
+                    _smwcentral_login_state_javascript()
+                )
+                if isinstance(state, str):
+                    try:
+                        state = json.loads(state)
+                    except json.JSONDecodeError:
+                        state = {}
+                if not isinstance(state, dict):
+                    state = {}
+                authenticated = bool(state.get("authenticated"))
+                current_url = _validated_smwcentral_webview_url(
+                    state.get("url", "")
+                )
+
+                if normalized_mode == "login":
+                    if authenticated:
+                        window.destroy()
+                    return
+
+                if normalized_mode != "review" or not review_target:
+                    return
+
+                if not authenticated:
+                    if not bool(state.get("onLoginPage")):
+                        window.load_url(
+                            urljoin(SMW_CENTRAL_WEBSITE_URL, "?p=login")
+                        )
+                    return
+
+                current_without_fragment = urlparse(current_url)._replace(
+                    fragment=""
+                ).geturl()
+                target_without_fragment = urlparse(review_target)._replace(
+                    fragment=""
+                ).geturl()
+                if current_without_fragment != target_without_fragment:
+                    window.load_url(review_target)
+                    return
+
+                window.evaluate_js(
+                    _smwcentral_prefill_javascript(
+                        submission.get("rating", ""),
+                        submission.get("comment", ""),
+                        language,
+                    )
+                )
+            except Exception as error:
+                append_error_log(
+                    "Embedded SMW Central page handler failed",
+                    f"{type(error).__name__}: {error}",
+                )
+
+        if normalized_mode in {
+            "home_feed", "login", "review", "spc_player", "radio"
+        }:
+            window.events.loaded += loaded_handler
+
+        automatic_login = bool(submission.get("automatic_login", True))
+        storage_path = SMWC_WEBVIEW_STORAGE_DIR
+        if normalized_mode in {"spc_player", "radio"}:
+            # A dedicated WebView2 profile keeps the music renderer and its
+            # Windows audio session separate from other embedded pages.
+            storage_path = SMWC_WEBVIEW_STORAGE_DIR / "SPCPlayer"
+            storage_path.mkdir(parents=True, exist_ok=True)
+        start_options: dict[str, Any] = {
+            "private_mode": (
+                normalized_mode in {"login", "review"}
+                and not automatic_login
+            ),
+            "storage_path": str(storage_path),
+        }
+        if IS_WINDOWS:
+            start_options["gui"] = "edgechromium"
+            if icon_path.exists():
+                start_options["icon"] = str(icon_path)
+        webview.start(**start_options)
+        return 0
+    except Exception as error:
+        append_error_log(
+            "Embedded SMW Central window failed",
+            "".join(
+                traceback.format_exception(
+                    type(error),
+                    error,
+                    error.__traceback__,
+                )
+            ),
+        )
+        return 1
 
 
 def _normalize_feedback_appearance(value: object) -> str:
@@ -70424,6 +78547,21 @@ def main() -> None:
 
     if STARTUP_CHECK_ARGUMENT in sys.argv[1:]:
         raise SystemExit(_run_tk_startup_check())
+
+    if SMWC_WEBVIEW_ARGUMENT in sys.argv[1:]:
+        target_url, language, mode, payload = (
+            _smwcentral_webview_values_from_arguments(
+                sys.argv[1:]
+            )
+        )
+        raise SystemExit(
+            _run_smwcentral_webview(
+                target_url,
+                language,
+                mode,
+                payload,
+            )
+        )
 
     if FEEDBACK_WEBVIEW_ARGUMENT in sys.argv[1:]:
         raise SystemExit(
