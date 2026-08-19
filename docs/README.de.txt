@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - VOLLSTÄNDIGE EINRICHTUNGSANLEITUNG
-Version 1.1.2
+Version 2.0.0
 
 SPRACHEN
 English: README.en.txt
@@ -24,15 +24,20 @@ level_timer.txt für OBS bereit. Katalog, Patchen, FXPAK-Emoji-Aliase,
 Datenbank, Arbeitsmappen und OBS-Texte funktionieren unter Windows und Mac
 gleich.
 
-NEU IN VERSION 1.1.2
+NEU IN VERSION 2.0.0
 
-* Wenn ein Popup bereits geschlossen wurde, endet das verzögerte Neuzeichnen
-  einer umrandeten Schaltfläche jetzt still, statt den Tkinter-Fehler
-  „invalid command name“ auszugeben.
-* Tests decken bereits zerstörte Schaltflächen und das kurze Zeitfenster ab, in
-  dem eine Schaltfläche direkt nach der Existenzprüfung verschwindet.
-* Diese reine Bereinigungsfehlerbehebung ändert weder MiSTer, FXPAK Pro,
-  RetroArch, Tracker-Daten noch übersetzte Oberflächentexte.
+* Das Stream-Desk-Design umfasst jetzt Dashboard, Einstellungen, Bibliotheken,
+  Spielmodi, Einrichtungswerkzeuge, Dialoge, Popups und den Windows-Installer.
+* Hot Potato und Mario Kaizo Challenge bieten kuratierte Wiedergabelisten,
+  automatische Warteschlangen, Filter und direkte Steuerelemente im Dashboard.
+* Die geführte RetroAchievements-Einrichtung, kompatible Core-Starts und
+  Trophäen markieren unterstützte Hacks, ohne das normale Tracking zu verändern.
+* Erweiterte Filter decken Titel, Ersteller, Schwierigkeit, Typ, Veröffentlichung,
+  Hall of Fame, ausstehende Moderation und RetroAchievements appweit ab.
+* Katalog, My Tracker, Einstellungen, Patchen und Einrichtung wurden beschleunigt,
+  damit die Oberfläche flüssig bleibt und keine alten Farben aufblitzen.
+* RetroArch-Starts, Installer, Updater, die schnellere QUsb2Snes-Einrichtung und
+  alle mitgelieferten Übersetzungen wurden für diese Version überarbeitet.
 
 NEU IN VERSION 1.1.1
 
@@ -145,7 +150,7 @@ SMW Stream Tracker enthält und lädt kein kommerzielles Basis-ROM herunter.
 
 2. PROGRAMM INSTALLIEREN
 
-1. Starten Sie SMWStreamTracker_Setup_1.1.2.exe.
+1. Starten Sie SMWStreamTracker_Setup_2.0.0.exe.
 2. Wählen Sie auf dem ersten Bildschirm eine Sprache.
 3. Lesen Sie den Hinweis zu optionaler Software und ROMs.
 4. Wählen Sie FXPAK Pro, RetroArch oder MiSTer als erste Plattform.

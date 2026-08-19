@@ -199,18 +199,21 @@ class MacPlatformSupportTests(unittest.TestCase):
             app._prepare_retroarch_game_switch = mock.Mock(
                 return_value="saved previous state and restarted RetroArch"
             )
+            normal_speed_config = root / "RetroArchNormalSpeed.cfg"
 
             with (
                 mock.patch.object(tracker, "IS_WINDOWS", False),
                 mock.patch.object(tracker, "IS_MACOS", True),
                 mock.patch.object(
                     tracker,
+                    "RETROARCH_NORMAL_SPEED_CONFIG_FILE",
+                    normal_speed_config,
+                ),
+                mock.patch.object(
+                    tracker,
                     "launch_local_application",
                 ) as launch,
             ):
-                expected_config_path = tracker.retroarch_config_path(
-                    executable
-                )
                 result = app._run_local_emulator_launcher(
                     {"title": "Test Hack"},
                     "RetroArch",
@@ -223,8 +226,7 @@ class MacPlatformSupportTests(unittest.TestCase):
             launch.assert_called_once_with(
                 executable,
                 [
-                    "--config",
-                    str(expected_config_path),
+                    f"--config={normal_speed_config}",
                     "-L",
                     str(core),
                     str(rom),

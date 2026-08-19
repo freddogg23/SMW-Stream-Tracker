@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - GUIDE COMPLET DE CONFIGURATION
-Version 1.1.2
+Version 2.0.0
 
 LANGUES
 English : README.en.txt
@@ -25,15 +25,20 @@ game_timer.txt et level_timer.txt pour OBS. Le catalogue, les correctifs, les
 alias emoji FXPAK, la base de données, les classeurs et les textes OBS gardent
 le même fonctionnement sous Windows et Mac.
 
-NOUVEAUTÉS DE LA VERSION 1.1.2
+NOUVEAUTÉS DE LA VERSION 2.0.0
 
-* Lorsqu’une fenêtre contextuelle est déjà fermée, le rafraîchissement différé
-  d’un bouton contouré s’arrête silencieusement au lieu d’afficher l’erreur
-  Tkinter « invalid command name ».
-* Des tests couvrent les boutons déjà détruits ainsi que le bref intervalle où
-  un bouton disparaît juste après la vérification de son existence.
-* Ce correctif de nettoyage ne modifie ni MiSTer, ni FXPAK Pro, ni RetroArch,
-  ni les données du tracker, ni les textes traduits de l’interface.
+* La refonte Stream Desk couvre maintenant le tableau de bord, les réglages,
+  les bibliothèques, les modes de jeu, les outils, les fenêtres et l’installateur.
+* Hot Potato et Mario Kaizo Challenge ajoutent des listes personnalisées, une
+  file automatique, des filtres et des commandes sur le tableau de bord.
+* La configuration guidée de RetroAchievements, le lancement avec un cœur
+  compatible et les trophées identifient les hacks pris en charge sans gêner le tracker.
+* Les filtres avancés incluent titre, créateur, difficulté, type, publication,
+  Hall of Fame, modération en attente et RetroAchievements dans toute l’application.
+* Le catalogue, My Tracker, les réglages, les correctifs et la configuration ont
+  été accélérés pour garder une interface fluide sans flash des anciennes couleurs.
+* Le lancement RetroArch, l’installateur, le programme de mise à jour,
+  QUsb2Snes et toutes les traductions incluses ont également été peaufinés.
 
 NOUVEAUTÉS DE LA VERSION 1.1.1
 
@@ -149,7 +154,7 @@ SMW Stream Tracker n'inclut et ne télécharge aucune ROM commerciale de base.
 
 2. INSTALLER LE PROGRAMME
 
-1. Lancez SMWStreamTracker_Setup_1.1.2.exe.
+1. Lancez SMWStreamTracker_Setup_2.0.0.exe.
 2. Choisissez une langue sur le premier écran.
 3. Lisez l'avis sur les logiciels facultatifs et les ROMs.
 4. Choisissez FXPAK Pro, RetroArch ou MiSTer comme plateforme initiale.

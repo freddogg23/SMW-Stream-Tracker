@@ -71,9 +71,13 @@ class DeathCounterTests(unittest.TestCase):
         save_slot=0,
         player_state=0x00,
         translevel=1,
+        level_number=None,
     ):
+        if level_number is None:
+            level_number = translevel
         return {
             "mode": mode,
+            "level_number": level_number,
             "save_slot": save_slot,
             "player_state": player_state,
             "paused": 0,
@@ -91,6 +95,109 @@ class DeathCounterTests(unittest.TestCase):
                 self.tracker.LEVEL_MODE,
                 lives,
             )
+
+    def test_hot_potato_rotation_waits_for_stable_post_death_gameplay(self):
+        worker = self.make_worker()
+        request_id = "safe-rotation-test"
+        worker.request_hot_potato_safe_rotation(request_id)
+        worker.process_commands()
+        ready_at = (
+            worker.hot_potato_rotation_requested_at
+            + self.tracker.HOT_POTATO_ROTATION_MIN_RECOVERY_SECONDS
+        )
+
+        transition_state = self.make_state(0x0F, player_state=0x00)
+        self.assertFalse(
+            worker.update_hot_potato_rotation_readiness(
+                transition_state,
+                ready_at + 1.0,
+            )
+        )
+        self.assertEqual(worker.hot_potato_rotation_safe_samples, 0)
+
+        gameplay_state = self.make_state(
+            self.tracker.LEVEL_MODE,
+            player_state=0x00,
+        )
+        for sample in range(
+            self.tracker.HOT_POTATO_ROTATION_STABLE_SAMPLES - 1
+        ):
+            self.assertFalse(
+                worker.update_hot_potato_rotation_readiness(
+                    gameplay_state,
+                    ready_at + 1.1 + sample * 0.1,
+                )
+            )
+
+        self.assertTrue(
+            worker.update_hot_potato_rotation_readiness(
+                gameplay_state,
+                ready_at + 2.0,
+            )
+        )
+        events = []
+        while not worker.event_queue.empty():
+            events.append(worker.event_queue.get_nowait())
+        self.assertIn(
+            {
+                "type": "hot_potato_rotation_ready",
+                "request_id": request_id,
+                "mode": self.tracker.LEVEL_MODE,
+            },
+            events,
+        )
+        self.assertEqual(worker.hot_potato_rotation_request_id, "")
+
+    def test_hot_potato_rotation_rejects_an_active_death_latch(self):
+        worker = self.make_worker()
+        worker.request_hot_potato_safe_rotation("latched-death-test")
+        worker.process_commands()
+        worker.death_detection_latched = True
+        state = self.make_state(
+            self.tracker.LEVEL_MODE,
+            player_state=0x00,
+        )
+
+        self.assertFalse(
+            worker.update_hot_potato_rotation_readiness(
+                state,
+                worker.hot_potato_rotation_requested_at
+                + self.tracker.HOT_POTATO_ROTATION_MIN_RECOVERY_SECONDS
+                + 10.0,
+            )
+        )
+        self.assertEqual(worker.hot_potato_rotation_safe_samples, 0)
+
+    def test_hot_potato_accepts_stable_title_with_stale_player_state(self):
+        worker = self.make_worker()
+        worker.request_hot_potato_safe_rotation("safe-title-test")
+        worker.process_commands()
+        worker.death_detection_latched = True
+        state = self.make_state(
+            self.tracker.PLAYER_SELECT_MODE,
+            player_state=0x09,
+        )
+        ready_at = (
+            worker.hot_potato_rotation_requested_at
+            + self.tracker.HOT_POTATO_ROTATION_MIN_RECOVERY_SECONDS
+            + 1.0
+        )
+
+        for sample in range(
+            self.tracker.HOT_POTATO_ROTATION_STABLE_SAMPLES - 1
+        ):
+            self.assertFalse(
+                worker.update_hot_potato_rotation_readiness(
+                    state,
+                    ready_at + sample * 0.1,
+                )
+            )
+        self.assertTrue(
+            worker.update_hot_potato_rotation_readiness(
+                state,
+                ready_at + 1.0,
+            )
+        )
 
     def test_override_updates_level_and_total_deaths_together(self):
         worker = self.make_worker()
@@ -376,6 +483,46 @@ class DeathCounterTests(unittest.TestCase):
         )
         self.assertEqual(worker.level_death_count, 1)
         self.assertEqual(worker.death_count, 1)
+
+    def test_pipe_and_door_room_changes_are_not_retry_deaths(self):
+        for transition_mode, label in ((0x0F, "pipe"), (0x10, "door")):
+            with self.subTest(transition=label):
+                worker = self.make_worker()
+                worker.select_save_slot(0)
+                worker.previous_mode = self.tracker.LEVEL_MODE
+                worker.previous_player_state = 0x00
+                worker.previous_player_lives = 5
+
+                worker.update_timers_from_state(
+                    self.make_state(
+                        self.tracker.LEVEL_MODE,
+                        level_number=0x0105,
+                    )
+                    | {"player_lives": 5},
+                    delta=0.1,
+                    now=28.0,
+                )
+                worker.update_timers_from_state(
+                    self.make_state(
+                        transition_mode,
+                        level_number=0x0105,
+                    )
+                    | {"player_lives": 5},
+                    delta=0.1,
+                    now=28.1,
+                )
+                worker.update_timers_from_state(
+                    self.make_state(
+                        self.tracker.LEVEL_MODE,
+                        level_number=0x0106,
+                    )
+                    | {"player_lives": 5},
+                    delta=0.1,
+                    now=28.2,
+                )
+
+                self.assertEqual(worker.level_death_count, 0)
+                self.assertEqual(worker.death_count, 0)
 
     def test_instant_retry_loading_cycle_counts_without_life_drop(self):
         worker = self.make_worker()

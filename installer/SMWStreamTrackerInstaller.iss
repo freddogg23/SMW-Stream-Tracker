@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.1.2"
+#define AppVersion "2.0.0"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -40,7 +40,7 @@ SetupIconFile=..\app_assets\smw_stream_tracker_icon.ico
 WizardImageFile=
 WizardSmallImageFile=
 WizardStyle=modern dark polar includetitlebar hidebevels
-WizardBackColor=#19283F
+WizardBackColor=#0D1216
 WizardSizePercent=150
 DisableWelcomePage=no
 UninstallDisplayIcon={app}\{#AppExeName}
@@ -75,8 +75,8 @@ english.RetroArchOption=RetroArch (Windows emulator)
 english.MiSTerOption=MiSTer FPGA (network hardware)
 english.DependencyTitle=Optional Dependencies
 english.DependencySubtitle=Select any combination of the tools you want Setup to install.
-english.DependencyDescription=SNI is strongly recommended for local live tracking. Select MiSTer to continue with the app's one-click network setup on first launch.
-english.SNIOption=Install SNI v0.0.103 (strongly recommended for live tracking)
+english.DependencyDescription=SNI is required for RetroArch and MiSTer live tracking. MiSTer also continues with the app's one-click network setup on first launch.
+english.SNIOption=Install SNI v0.0.103 (needed for RetroArch and MiSTer setup)
 english.QUsbOption=Install QUsb2Snes 2025-10-20 (recommended for FXPAK Pro and SD2SNES users)
 english.RetroArchInstallOption=Install portable RetroArch 1.22.2 and the bsnes-mercury Performance core (select if you only want a new/clean install)
 english.MiSTerSetupOption=Set up MiSTer on first launch (requires MiSTer to be connected to your local network)
@@ -115,6 +115,8 @@ english.ErrorRetroExe=The selected RetroArch executable was not found. Select a 
 english.ErrorRetroCore=The selected SNES core was not found. Select a valid Libretro core or clear the field to configure it later.
 english.RetroInstallProgress=Installing RetroArch with its faster background installer...
 english.ErrorRetroInstall=RetroArch could not be installed. Check your internet connection and try Setup again.
+english.QUsbInstallProgress=Installing QUsb2Snes with the faster Windows archive engine...
+english.ErrorQUsbInstall=QUsb2Snes could not be installed. Check your internet connection and try Setup again.
 english.ReadySNI=SNI v0.0.103 (strongly recommended)
 english.ReadyQUsb=QUsb2Snes 2025-10-20
 english.ReadyRetro=Portable RetroArch 1.22.2 and the bsnes-mercury Performance core
@@ -152,8 +154,8 @@ australian.RetroArchOption=RetroArch (emulator on the Windows box)
 australian.MiSTerOption=MiSTer FPGA (the network hardware, mate)
 australian.DependencyTitle=Optional Bits and Bobs
 australian.DependencySubtitle=Pick any combination of tools you want Setup to chuck in.
-australian.DependencyDescription=SNI is strongly recommended for local live tracking. Tick MiSTer and the app will find and sort out the hardware on first launch—too easy, mate.
-australian.SNIOption=Install SNI v0.0.103 (strongly recommended for live tracking)
+australian.DependencyDescription=SNI is needed for RetroArch and MiSTer live tracking. Tick MiSTer and the app will find and sort out the hardware on first launch—too easy, mate.
+australian.SNIOption=Install SNI v0.0.103 (needed for RetroArch and MiSTer setup)
 australian.QUsbOption=Install QUsb2Snes 2025-10-20 (recommended for FXPAK Pro and SD2SNES mates)
 australian.RetroArchInstallOption=Install portable RetroArch 1.22.2 and the bsnes-mercury Performance core (tick this only for a fresh/clean install, mate)
 australian.MiSTerSetupOption=Set up MiSTer on first launch (requires MiSTer to be connected to your local network, mate)
@@ -192,6 +194,8 @@ australian.ErrorRetroExe=Could not find that RetroArch executable. Pick a valid 
 australian.ErrorRetroCore=Could not find that SNES core. Pick a valid Libretro core or clear the field and sort it later.
 australian.RetroInstallProgress=Installing RetroArch with its faster background installer, mate...
 australian.ErrorRetroInstall=Crikey, RetroArch could not be installed. Check the internet connection and give Setup another burl.
+australian.QUsbInstallProgress=Installing QUsb2Snes with the faster Windows archive engine, mate...
+australian.ErrorQUsbInstall=Crikey, QUsb2Snes could not be installed. Check the internet connection and give Setup another burl.
 australian.ReadySNI=SNI v0.0.103 (strongly recommended)
 australian.ReadyQUsb=QUsb2Snes 2025-10-20
 australian.ReadyRetro=Portable RetroArch 1.22.2 and the bsnes-mercury Performance core
@@ -229,8 +233,8 @@ spanish.RetroArchOption=RetroArch (emulador de Windows)
 spanish.MiSTerOption=MiSTer FPGA (hardware de red)
 spanish.DependencyTitle=Dependencias opcionales
 spanish.DependencySubtitle=Seleccione cualquier combinación de herramientas que desee instalar.
-spanish.DependencyDescription=SNI es muy recomendado para el seguimiento local en vivo. Seleccione MiSTer para continuar con la configuración de red automática al iniciar la aplicación por primera vez.
-spanish.SNIOption=Instalar SNI v0.0.103 (muy recomendado para el seguimiento en vivo)
+spanish.DependencyDescription=SNI es necesario para el seguimiento en vivo de RetroArch y MiSTer. MiSTer también continúa con la configuración automática de red en el primer inicio.
+spanish.SNIOption=Instalar SNI v0.0.103 (necesario para configurar RetroArch y MiSTer)
 spanish.QUsbOption=Instalar QUsb2Snes 2025-10-20 (recomendado para FXPAK Pro y SD2SNES)
 spanish.RetroArchInstallOption=Instalar RetroArch portátil 1.22.2 y el núcleo bsnes-mercury Performance (seleccione solo si desea una instalación nueva/limpia)
 spanish.MiSTerSetupOption=Configurar MiSTer en el primer inicio (requiere que MiSTer esté conectado a su red local)
@@ -269,6 +273,8 @@ spanish.ErrorRetroExe=No se encontró el ejecutable de RetroArch. Seleccione un 
 spanish.ErrorRetroCore=No se encontró el núcleo SNES. Seleccione un núcleo Libretro válido o borre el campo.
 spanish.RetroInstallProgress=Instalando RetroArch con su instalador rápido en segundo plano...
 spanish.ErrorRetroInstall=No se pudo instalar RetroArch. Compruebe la conexión a Internet y vuelva a ejecutar el instalador.
+spanish.QUsbInstallProgress=Instalando QUsb2Snes con el motor rápido de archivos de Windows...
+spanish.ErrorQUsbInstall=No se pudo instalar QUsb2Snes. Compruebe la conexión a Internet y vuelva a ejecutar el instalador.
 spanish.ReadySNI=SNI v0.0.103 (muy recomendado)
 spanish.ReadyQUsb=QUsb2Snes 2025-10-20
 spanish.ReadyRetro=RetroArch portátil 1.22.2 y el núcleo bsnes-mercury Performance
@@ -306,8 +312,8 @@ french.RetroArchOption=RetroArch (émulateur Windows)
 french.MiSTerOption=MiSTer FPGA (matériel réseau)
 french.DependencyTitle=Dépendances facultatives
 french.DependencySubtitle=Sélectionnez les outils que le programme d'installation doit installer.
-french.DependencyDescription=SNI est fortement recommandé pour le suivi local en direct. Sélectionnez MiSTer pour continuer avec la configuration réseau automatique au premier lancement de l'application.
-french.SNIOption=Installer SNI v0.0.103 (fortement recommandé pour le suivi en direct)
+french.DependencyDescription=SNI est requis pour le suivi en direct de RetroArch et MiSTer. MiSTer poursuit aussi la configuration réseau automatique au premier lancement.
+french.SNIOption=Installer SNI v0.0.103 (requis pour configurer RetroArch et MiSTer)
 french.QUsbOption=Installer QUsb2Snes 2025-10-20 (recommandé pour FXPAK Pro et SD2SNES)
 french.RetroArchInstallOption=Installer RetroArch portable 1.22.2 et le cœur bsnes-mercury Performance (sélectionnez uniquement pour une nouvelle installation propre)
 french.MiSTerSetupOption=Configurer MiSTer au premier lancement (nécessite que MiSTer soit connecté à votre réseau local)
@@ -346,6 +352,8 @@ french.ErrorRetroExe=L'exécutable RetroArch est introuvable. Sélectionnez un r
 french.ErrorRetroCore=Le cœur SNES est introuvable. Sélectionnez un cœur Libretro valide ou videz le champ.
 french.RetroInstallProgress=Installation de RetroArch avec son programme rapide en arrière-plan...
 french.ErrorRetroInstall=RetroArch n'a pas pu être installé. Vérifiez la connexion Internet et relancez l'installation.
+french.QUsbInstallProgress=Installation de QUsb2Snes avec le moteur d'archive rapide de Windows...
+french.ErrorQUsbInstall=QUsb2Snes n'a pas pu être installé. Vérifiez la connexion Internet et relancez l'installation.
 french.ReadySNI=SNI v0.0.103 (fortement recommandé)
 french.ReadyQUsb=QUsb2Snes 2025-10-20
 french.ReadyRetro=RetroArch portable 1.22.2 et le cœur bsnes-mercury Performance
@@ -383,8 +391,8 @@ german.RetroArchOption=RetroArch (Windows-Emulator)
 german.MiSTerOption=MiSTer FPGA (Netzwerk-Hardware)
 german.DependencyTitle=Optionale Abhängigkeiten
 german.DependencySubtitle=Wählen Sie beliebige Tools aus, die Setup installieren soll.
-german.DependencyDescription=SNI wird für lokales Live-Tracking dringend empfohlen. Wählen Sie MiSTer, um beim ersten App-Start mit der automatischen Netzwerkeinrichtung fortzufahren.
-german.SNIOption=SNI v0.0.103 installieren (für Live-Tracking dringend empfohlen)
+german.DependencyDescription=SNI wird für das Live-Tracking mit RetroArch und MiSTer benötigt. MiSTer fährt beim ersten App-Start außerdem mit der automatischen Netzwerkeinrichtung fort.
+german.SNIOption=SNI v0.0.103 installieren (für die Einrichtung von RetroArch und MiSTer erforderlich)
 german.QUsbOption=QUsb2Snes 2025-10-20 installieren (für FXPAK Pro und SD2SNES empfohlen)
 german.RetroArchInstallOption=Portables RetroArch 1.22.2 und bsnes-mercury Performance-Core installieren (nur für eine neue/saubere Installation auswählen)
 german.MiSTerSetupOption=MiSTer beim ersten Start einrichten (MiSTer muss mit Ihrem lokalen Netzwerk verbunden sein)
@@ -423,6 +431,8 @@ german.ErrorRetroExe=Die ausgewählte RetroArch-Programmdatei wurde nicht gefund
 german.ErrorRetroCore=Der SNES-Core wurde nicht gefunden. Wählen Sie einen gültigen Libretro-Core oder leeren Sie das Feld.
 german.RetroInstallProgress=RetroArch wird mit dem schnelleren Hintergrund-Installationsprogramm installiert...
 german.ErrorRetroInstall=RetroArch konnte nicht installiert werden. Prüfen Sie die Internetverbindung und starten Sie Setup erneut.
+german.QUsbInstallProgress=QUsb2Snes wird mit der schnelleren Windows-Archiv-Engine installiert...
+german.ErrorQUsbInstall=QUsb2Snes konnte nicht installiert werden. Prüfen Sie die Internetverbindung und starten Sie Setup erneut.
 german.ReadySNI=SNI v0.0.103 (dringend empfohlen)
 german.ReadyQUsb=QUsb2Snes 2025-10-20
 german.ReadyRetro=Portables RetroArch 1.22.2 und bsnes-mercury Performance-Core
@@ -460,8 +470,8 @@ brazilianportuguese.RetroArchOption=RetroArch (emulador do Windows)
 brazilianportuguese.MiSTerOption=MiSTer FPGA (hardware de rede)
 brazilianportuguese.DependencyTitle=Dependências opcionais
 brazilianportuguese.DependencySubtitle=Selecione qualquer combinação de ferramentas para instalar.
-brazilianportuguese.DependencyDescription=SNI é altamente recomendado para o acompanhamento local ao vivo. Selecione MiSTer para continuar com a configuração automática de rede na primeira abertura do aplicativo.
-brazilianportuguese.SNIOption=Instalar SNI v0.0.103 (altamente recomendado para rastreamento ao vivo)
+brazilianportuguese.DependencyDescription=SNI é necessário para o acompanhamento ao vivo do RetroArch e do MiSTer. O MiSTer também continua com a configuração automática de rede na primeira abertura.
+brazilianportuguese.SNIOption=Instalar SNI v0.0.103 (necessário para configurar RetroArch e MiSTer)
 brazilianportuguese.QUsbOption=Instalar QUsb2Snes 2025-10-20 (recomendado para FXPAK Pro e SD2SNES)
 brazilianportuguese.RetroArchInstallOption=Instalar RetroArch portátil 1.22.2 e o núcleo bsnes-mercury Performance (selecione somente para uma instalação nova/limpa)
 brazilianportuguese.MiSTerSetupOption=Configurar o MiSTer na primeira abertura (requer que o MiSTer esteja conectado à sua rede local)
@@ -500,6 +510,8 @@ brazilianportuguese.ErrorRetroExe=O executável do RetroArch não foi encontrado
 brazilianportuguese.ErrorRetroCore=O núcleo SNES não foi encontrado. Selecione um núcleo Libretro válido ou limpe o campo.
 brazilianportuguese.RetroInstallProgress=Instalando o RetroArch com seu instalador rápido em segundo plano...
 brazilianportuguese.ErrorRetroInstall=Não foi possível instalar o RetroArch. Verifique a conexão com a Internet e execute o instalador novamente.
+brazilianportuguese.QUsbInstallProgress=Instalando o QUsb2Snes com o mecanismo rápido de arquivos do Windows...
+brazilianportuguese.ErrorQUsbInstall=Não foi possível instalar o QUsb2Snes. Verifique a conexão com a Internet e execute o instalador novamente.
 brazilianportuguese.ReadySNI=SNI v0.0.103 (altamente recomendado)
 brazilianportuguese.ReadyQUsb=QUsb2Snes 2025-10-20
 brazilianportuguese.ReadyRetro=RetroArch portátil 1.22.2 e o núcleo bsnes-mercury Performance
@@ -534,12 +546,12 @@ Source: "{#AppExeSource}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: i
 Source: "..\dist\runtime\tcl\*"; DestDir: "{app}\runtime\tcl"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\runtime\tk\*"; DestDir: "{app}\runtime\tk"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\docs\README.en.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme; Languages: english
-Source: "..\docs\README.au.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme; Languages: australian
-Source: "..\docs\README.es.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme; Languages: spanish
-Source: "..\docs\README.fr.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme; Languages: french
-Source: "..\docs\README.de.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme; Languages: german
-Source: "..\docs\README.pt-BR.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme; Languages: brazilianportuguese
+Source: "..\docs\README.en.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion; Languages: english
+Source: "..\docs\README.au.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion; Languages: australian
+Source: "..\docs\README.es.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion; Languages: spanish
+Source: "..\docs\README.fr.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion; Languages: french
+Source: "..\docs\README.de.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion; Languages: german
+Source: "..\docs\README.pt-BR.txt"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion; Languages: brazilianportuguese
 Source: "..\docs\README.en.txt"; DestDir: "{app}\Documentation"; Flags: ignoreversion
 Source: "..\docs\README.au.txt"; DestDir: "{app}\Documentation"; Flags: ignoreversion
 Source: "..\docs\README.es.txt"; DestDir: "{app}\Documentation"; Flags: ignoreversion
@@ -559,11 +571,13 @@ Source: "https://github.com/alttpo/sni/releases/download/v0.0.103/sni-v0.0.103-w
   ExternalSize: 13307359; Flags: external download extractarchive recursesubdirs ignoreversion uninsneveruninstall; \
   Check: ShouldInstallSNI
 
-; Advanced legacy bridge alternative.
+; Advanced legacy bridge alternative. Download the verified package first,
+; then let Windows' native archive engine unpack its many small files in one
+; fast pass during post-install. This avoids Inno's slow per-file extraction.
 Source: "https://github.com/usb2snes/usb2snes/releases/download/2025-10-20/QUsb2Snes-bundle-2025-10-20.7z"; \
-  DestName: "QUsb2Snes-bundle-2025-10-20.7z"; DestDir: "{app}\Tools\QUsb2Snes"; \
+  DestName: "QUsb2Snes-bundle-2025-10-20.7z"; DestDir: "{tmp}"; \
   Hash: "104c4a01454d4a5e46998b0ddecf3f95ece71853c614e9e906c287f77de9806f"; \
-  ExternalSize: 70505572; Flags: external download extractarchive recursesubdirs ignoreversion uninsneveruninstall; \
+  ExternalSize: 70505572; Flags: external download ignoreversion deleteafterinstall; \
   Check: ShouldInstallQUsb
 
 ; Keep the entire RetroArch experience inside this blue installer, but let
@@ -639,6 +653,107 @@ var
   ExistingInstallationRemoved: Boolean;
   ExitAfterCompleteUninstall: Boolean;
   ExistingInstallDirectory: String;
+  DependencyOptionRows: array[0..3] of TPanel;
+  DependencyOptionBoxes: array[0..3] of TBitmapImage;
+  DependencyOptionTicks: array[0..3] of TNewStaticText;
+  DependencyOptionLabels: array[0..3] of TNewStaticText;
+  DesktopShortcutRow: TPanel;
+  DesktopShortcutBox: TBitmapImage;
+  DesktopShortcutTick: TNewStaticText;
+  DesktopShortcutLabel: TNewStaticText;
+  FinishOptionRows: array[0..1] of TPanel;
+  FinishOptionBoxes: array[0..1] of TBitmapImage;
+  FinishOptionTicks: array[0..1] of TNewStaticText;
+  FinishOptionLabels: array[0..1] of TNewStaticText;
+  DesktopShortcutSelected: Boolean;
+  FinishGuideSelected: Boolean;
+  FinishAppSelected: Boolean;
+
+function StreamDeskBackground: TColor;
+begin
+  Result := StrToColor('#0D1216');
+end;
+
+function StreamDeskSurface: TColor;
+begin
+  Result := StrToColor('#11171C');
+end;
+
+function StreamDeskSurfaceRaised: TColor;
+begin
+  Result := StrToColor('#182229');
+end;
+
+function StreamDeskSurfaceSelected: TColor;
+begin
+  Result := StrToColor('#26323B');
+end;
+
+function StreamDeskText: TColor;
+begin
+  Result := StrToColor('#F2F6F8');
+end;
+
+function StreamDeskMutedText: TColor;
+begin
+  Result := StrToColor('#9AA7B0');
+end;
+
+function StreamDeskGreen: TColor;
+begin
+  Result := StrToColor('#68D996');
+end;
+
+procedure StyleInstallerMemo(Memo: TNewMemo);
+begin
+  Memo.Color := StreamDeskSurface;
+  Memo.Font.Color := StreamDeskText;
+end;
+
+procedure StyleInstallerEdit(Edit: TNewEdit);
+begin
+  Edit.Color := StreamDeskSurfaceRaised;
+  Edit.Font.Color := StreamDeskText;
+end;
+
+procedure StyleInputOptionPage(Page: TInputOptionWizardPage);
+begin
+  if Page = nil then
+    Exit;
+  Page.Surface.Color := StreamDeskBackground;
+  Page.CheckListBox.Color := StreamDeskSurface;
+  Page.CheckListBox.Font.Color := StreamDeskText;
+end;
+
+procedure StyleInputDirPage(Page: TInputDirWizardPage; EditCount: Integer);
+var
+  I: Integer;
+begin
+  Page.Surface.Color := StreamDeskBackground;
+  for I := 0 to EditCount - 1 do
+  begin
+    Page.Edits[I].Color := StreamDeskSurfaceRaised;
+    Page.Edits[I].Font.Color := StreamDeskText;
+  end;
+end;
+
+procedure StyleInputFilePage(Page: TInputFileWizardPage; EditCount: Integer);
+var
+  I: Integer;
+begin
+  Page.Surface.Color := StreamDeskBackground;
+  for I := 0 to EditCount - 1 do
+  begin
+    Page.Edits[I].Color := StreamDeskSurfaceRaised;
+    Page.Edits[I].Font.Color := StreamDeskText;
+  end;
+end;
+
+procedure StyleOutputMessagePage(Page: TOutputMsgWizardPage);
+begin
+  Page.Surface.Color := StreamDeskBackground;
+  Page.MsgLabel.Font.Color := StreamDeskText;
+end;
 
 procedure ConfigureInstallerTheme;
 var
@@ -649,12 +764,47 @@ var
   ContentTop: Integer;
   ContentBottom: Integer;
 begin
+  { Match the app's Stream Desk shell instead of the former blue setup UI. }
+  WizardForm.Color := StreamDeskBackground;
+  WizardForm.MainPanel.Color := StreamDeskSurface;
+  WizardForm.WelcomePage.Color := StreamDeskBackground;
+  WizardForm.LicensePage.Color := StreamDeskBackground;
+  WizardForm.InfoBeforePage.Color := StreamDeskBackground;
+  WizardForm.SelectDirPage.Color := StreamDeskBackground;
+  WizardForm.SelectProgramGroupPage.Color := StreamDeskBackground;
+  WizardForm.SelectTasksPage.Color := StreamDeskBackground;
+  WizardForm.ReadyPage.Color := StreamDeskBackground;
+  WizardForm.PreparingPage.Color := StreamDeskBackground;
+  WizardForm.InstallingPage.Color := StreamDeskBackground;
+  WizardForm.InfoAfterPage.Color := StreamDeskBackground;
+  WizardForm.FinishedPage.Color := StreamDeskBackground;
+  WizardForm.PageNameLabel.Font.Color := StreamDeskText;
+  WizardForm.PageDescriptionLabel.Font.Color := StreamDeskMutedText;
+  WizardForm.WelcomeLabel1.Font.Color := StreamDeskText;
+  WizardForm.WelcomeLabel2.Font.Color := StreamDeskMutedText;
+  WizardForm.FinishedHeadingLabel.Font.Color := StreamDeskText;
+  WizardForm.FinishedLabel.Font.Color := StreamDeskMutedText;
+  WizardForm.LicenseMemo.Color := StreamDeskSurface;
+  WizardForm.LicenseMemo.Font.Color := StreamDeskText;
+  WizardForm.InfoBeforeMemo.Color := StreamDeskSurface;
+  WizardForm.InfoBeforeMemo.Font.Color := StreamDeskText;
+  WizardForm.InfoAfterMemo.Color := StreamDeskSurface;
+  WizardForm.InfoAfterMemo.Font.Color := StreamDeskText;
+  WizardForm.ReadyMemo.Color := StreamDeskSurface;
+  WizardForm.ReadyMemo.Font.Color := StreamDeskText;
+  WizardForm.PreparingLabel.Font.Color := StreamDeskText;
+  WizardForm.StatusLabel.Font.Color := StreamDeskText;
+  WizardForm.FileNameLabel.Font.Color := StreamDeskMutedText;
+  WizardForm.NextButton.Font.Style := [fsBold];
+  WizardForm.BackButton.Font.Style := [fsBold];
+  WizardForm.CancelButton.Font.Style := [fsBold];
+
   BannerFile := ExpandConstant('{tmp}\smw_installer_banner.png');
   ExtractTemporaryFile(ExtractFileName(BannerFile));
 
   InstallerBanner := TBitmapImage.Create(WizardForm);
   InstallerBanner.Parent := WizardForm;
-  InstallerBanner.BackColor := StrToColor('#19283F');
+  InstallerBanner.BackColor := StreamDeskBackground;
   InstallerBanner.Center := True;
   InstallerBanner.Stretch := True;
   InstallerBanner.PngImage.LoadFromFile(BannerFile);
@@ -706,6 +856,341 @@ begin
   WizardForm.FinishedLabel.Left := ScaleX(24);
   WizardForm.FinishedLabel.Width :=
     WizardForm.FinishedPage.ClientWidth - ScaleX(48);
+end;
+
+procedure PaintGreenCheckbox(Box: TBitmapImage; IsChecked: Boolean);
+var
+  BoxWidth: Integer;
+  BoxHeight: Integer;
+begin
+  BoxWidth := Box.Width;
+  BoxHeight := Box.Height;
+  Box.Bitmap.Width := BoxWidth;
+  Box.Bitmap.Height := BoxHeight;
+
+  if IsChecked then
+  begin
+    Box.Bitmap.Canvas.Brush.Color := StreamDeskGreen;
+    Box.Bitmap.Canvas.Pen.Color := StreamDeskGreen;
+  end
+  else
+  begin
+    Box.Bitmap.Canvas.Brush.Color := StreamDeskSurfaceRaised;
+    Box.Bitmap.Canvas.Pen.Color := StreamDeskMutedText;
+  end;
+  Box.Bitmap.Canvas.Pen.Width := 1;
+  Box.Bitmap.Canvas.Rectangle(0, 0, BoxWidth, BoxHeight);
+
+  if IsChecked then
+  begin
+    { Draw the app-style white check directly onto the green square. }
+    Box.Bitmap.Canvas.Pen.Color := StreamDeskText;
+    Box.Bitmap.Canvas.Pen.Width := BoxWidth div 6;
+    if Box.Bitmap.Canvas.Pen.Width < 2 then
+      Box.Bitmap.Canvas.Pen.Width := 2;
+    Box.Bitmap.Canvas.MoveTo(BoxWidth div 5, BoxHeight div 2);
+    Box.Bitmap.Canvas.LineTo((BoxWidth * 2) div 5, (BoxHeight * 3) div 4);
+    Box.Bitmap.Canvas.LineTo((BoxWidth * 4) div 5, BoxHeight div 4);
+  end;
+  Box.Repaint;
+end;
+
+procedure SetGreenCheckboxAppearance(
+  Row: TPanel;
+  Box: TBitmapImage;
+  Tick: TNewStaticText;
+  LabelControl: TNewStaticText;
+  IsChecked: Boolean);
+begin
+  if IsChecked then
+  begin
+    Row.Color := StreamDeskSurfaceSelected;
+    Tick.Visible := False;
+    LabelControl.Font.Color := StreamDeskText;
+  end
+  else
+  begin
+    Row.Color := StreamDeskSurface;
+    Tick.Visible := False;
+    LabelControl.Font.Color := StreamDeskMutedText;
+  end;
+  PaintGreenCheckbox(Box, IsChecked);
+  Row.Repaint;
+  Tick.Repaint;
+  LabelControl.Repaint;
+end;
+
+procedure CreateGreenCheckboxRow(
+  OwnerComponent: TComponent;
+  ParentControl: TWinControl;
+  var Row: TPanel;
+  var Box: TBitmapImage;
+  var Tick: TNewStaticText;
+  var LabelControl: TNewStaticText;
+  RowLeft, RowTop, RowWidth, RowHeight: Integer;
+  RowCaption: String;
+  ClickHandler: TNotifyEvent);
+begin
+  Row := TPanel.Create(OwnerComponent);
+  Row.Parent := ParentControl;
+  Row.Left := RowLeft;
+  Row.Top := RowTop;
+  Row.Width := RowWidth;
+  Row.Height := RowHeight;
+  Row.Caption := '';
+  Row.BevelOuter := bvNone;
+  Row.ParentBackground := False;
+  Row.ParentColor := False;
+  Row.Color := StreamDeskSurface;
+  Row.OnClick := ClickHandler;
+
+  Box := TBitmapImage.Create(OwnerComponent);
+  Box.Parent := Row;
+  Box.Left := ScaleX(12);
+  Box.Top := (Row.Height - ScaleY(14)) div 2;
+  Box.Width := ScaleX(14);
+  Box.Height := ScaleY(14);
+  Box.AutoSize := False;
+  Box.Stretch := False;
+  Box.Center := False;
+  Box.OnClick := ClickHandler;
+
+  Tick := TNewStaticText.Create(OwnerComponent);
+  Tick.Parent := Row;
+  Tick.Left := Box.Left;
+  Tick.Top := Box.Top;
+  Tick.Width := Box.Width;
+  Tick.Height := Box.Height;
+  Tick.AutoSize := False;
+  Tick.Alignment := taCenter;
+  Tick.ParentColor := False;
+  Tick.Color := StreamDeskSurfaceRaised;
+  Tick.Font.Color := StreamDeskBackground;
+  Tick.Font.Size := 8;
+  Tick.Font.Style := [fsBold];
+  Tick.Visible := False;
+  Tick.OnClick := ClickHandler;
+
+  PaintGreenCheckbox(Box, False);
+
+  LabelControl := TNewStaticText.Create(OwnerComponent);
+  LabelControl.Parent := Row;
+  LabelControl.Left := ScaleX(36);
+  LabelControl.Top := (Row.Height - ScaleY(34)) div 2;
+  LabelControl.Width := Row.Width - LabelControl.Left - ScaleX(12);
+  LabelControl.Height := ScaleY(34);
+  LabelControl.AutoSize := False;
+  LabelControl.WordWrap := True;
+  LabelControl.Caption := RowCaption;
+  LabelControl.Font.Color := StreamDeskMutedText;
+  LabelControl.Font.Style := [fsBold];
+  LabelControl.OnClick := ClickHandler;
+end;
+
+procedure RefreshDependencyOptionRows;
+var
+  I: Integer;
+begin
+  for I := 0 to 3 do
+    SetGreenCheckboxAppearance(
+      DependencyOptionRows[I],
+      DependencyOptionBoxes[I],
+      DependencyOptionTicks[I],
+      DependencyOptionLabels[I],
+      DependencyPage.Values[I]);
+end;
+
+procedure ToggleDependencyOption(Index: Integer);
+begin
+  DependencyPage.Values[Index] := not DependencyPage.Values[Index];
+  RefreshDependencyOptionRows;
+end;
+
+procedure ToggleDependencyOption0(Sender: TObject);
+begin
+  ToggleDependencyOption(0);
+end;
+
+procedure ToggleDependencyOption1(Sender: TObject);
+begin
+  ToggleDependencyOption(1);
+end;
+
+procedure ToggleDependencyOption2(Sender: TObject);
+begin
+  ToggleDependencyOption(2);
+end;
+
+procedure ToggleDependencyOption3(Sender: TObject);
+begin
+  ToggleDependencyOption(3);
+end;
+
+procedure CreateDependencyOptionRows;
+var
+  RowHeight: Integer;
+  RowGap: Integer;
+  RowTop: Integer;
+begin
+  RowGap := ScaleY(6);
+  { The native checklist can report a height extending below the visible }
+  { wizard surface at large DPI settings. Compact fixed rows keep all four }
+  { dependency choices above the navigation buttons on every supported size. }
+  RowHeight := ScaleY(44);
+  RowTop := DependencyPage.CheckListBox.Top;
+
+  CreateGreenCheckboxRow(
+    DependencyPage, DependencyPage.Surface,
+    DependencyOptionRows[0], DependencyOptionBoxes[0],
+    DependencyOptionTicks[0], DependencyOptionLabels[0],
+    DependencyPage.CheckListBox.Left, RowTop,
+    DependencyPage.CheckListBox.Width, RowHeight,
+    ExpandConstant('{cm:SNIOption}'), @ToggleDependencyOption0);
+  RowTop := RowTop + RowHeight + RowGap;
+  CreateGreenCheckboxRow(
+    DependencyPage, DependencyPage.Surface,
+    DependencyOptionRows[1], DependencyOptionBoxes[1],
+    DependencyOptionTicks[1], DependencyOptionLabels[1],
+    DependencyPage.CheckListBox.Left, RowTop,
+    DependencyPage.CheckListBox.Width, RowHeight,
+    ExpandConstant('{cm:QUsbOption}'), @ToggleDependencyOption1);
+  RowTop := RowTop + RowHeight + RowGap;
+  CreateGreenCheckboxRow(
+    DependencyPage, DependencyPage.Surface,
+    DependencyOptionRows[2], DependencyOptionBoxes[2],
+    DependencyOptionTicks[2], DependencyOptionLabels[2],
+    DependencyPage.CheckListBox.Left, RowTop,
+    DependencyPage.CheckListBox.Width, RowHeight,
+    ExpandConstant('{cm:RetroArchInstallOption}'), @ToggleDependencyOption2);
+  RowTop := RowTop + RowHeight + RowGap;
+  CreateGreenCheckboxRow(
+    DependencyPage, DependencyPage.Surface,
+    DependencyOptionRows[3], DependencyOptionBoxes[3],
+    DependencyOptionTicks[3], DependencyOptionLabels[3],
+    DependencyPage.CheckListBox.Left, RowTop,
+    DependencyPage.CheckListBox.Width, RowHeight,
+    ExpandConstant('{cm:MiSTerSetupOption}'), @ToggleDependencyOption3);
+
+  DependencyPage.CheckListBox.Visible := False;
+  RefreshDependencyOptionRows;
+end;
+
+procedure RefreshDesktopShortcutRow;
+begin
+  SetGreenCheckboxAppearance(
+    DesktopShortcutRow,
+    DesktopShortcutBox,
+    DesktopShortcutTick,
+    DesktopShortcutLabel,
+    DesktopShortcutSelected);
+end;
+
+procedure ToggleDesktopShortcut(Sender: TObject);
+begin
+  DesktopShortcutSelected := not DesktopShortcutSelected;
+  if WizardForm.TasksList.Items.Count > 0 then
+    WizardForm.TasksList.Checked[0] := DesktopShortcutSelected;
+  RefreshDesktopShortcutRow;
+end;
+
+procedure CreateDesktopShortcutRow;
+begin
+  WizardForm.SelectTasksPage.Color := StreamDeskBackground;
+  CreateGreenCheckboxRow(
+    WizardForm, WizardForm.SelectTasksPage,
+    DesktopShortcutRow, DesktopShortcutBox,
+    DesktopShortcutTick, DesktopShortcutLabel,
+    WizardForm.TasksList.Left, WizardForm.TasksList.Top,
+    WizardForm.TasksList.Width, ScaleY(58),
+    ExpandConstant('{cm:DesktopShortcut}'), @ToggleDesktopShortcut);
+  WizardForm.TasksList.Visible := False;
+  RefreshDesktopShortcutRow;
+end;
+
+procedure RefreshFinishOptionRows;
+begin
+  SetGreenCheckboxAppearance(
+    FinishOptionRows[0],
+    FinishOptionBoxes[0],
+    FinishOptionTicks[0],
+    FinishOptionLabels[0],
+    FinishGuideSelected);
+  SetGreenCheckboxAppearance(
+    FinishOptionRows[1],
+    FinishOptionBoxes[1],
+    FinishOptionTicks[1],
+    FinishOptionLabels[1],
+    FinishAppSelected);
+end;
+
+procedure SyncFinishOptionList;
+begin
+  if WizardForm.RunList.Items.Count > 0 then
+    WizardForm.RunList.Checked[0] := FinishGuideSelected;
+  if WizardForm.RunList.Items.Count > 1 then
+    WizardForm.RunList.Checked[1] := FinishAppSelected;
+end;
+
+procedure ToggleFinishGuide(Sender: TObject);
+begin
+  FinishGuideSelected := not FinishGuideSelected;
+  SyncFinishOptionList;
+  RefreshFinishOptionRows;
+end;
+
+procedure ToggleFinishApp(Sender: TObject);
+begin
+  FinishAppSelected := not FinishAppSelected;
+  SyncFinishOptionList;
+  RefreshFinishOptionRows;
+end;
+
+procedure CreateFinishOptionRows;
+var
+  RowTop: Integer;
+  RowLeft: Integer;
+  RowWidth: Integer;
+begin
+  RowTop := WizardForm.RunList.Top;
+  RowLeft := WizardForm.RunList.Left;
+  RowWidth := WizardForm.RunList.Width;
+  CreateGreenCheckboxRow(
+    WizardForm, WizardForm.FinishedPage,
+    FinishOptionRows[0], FinishOptionBoxes[0],
+    FinishOptionTicks[0], FinishOptionLabels[0],
+    RowLeft, RowTop,
+    RowWidth, ScaleY(54),
+    ExpandConstant('{cm:OpenGuide}'), @ToggleFinishGuide);
+  RowTop := RowTop + ScaleY(62);
+  CreateGreenCheckboxRow(
+    WizardForm, WizardForm.FinishedPage,
+    FinishOptionRows[1], FinishOptionBoxes[1],
+    FinishOptionTicks[1], FinishOptionLabels[1],
+    RowLeft, RowTop,
+    RowWidth, ScaleY(54),
+    ExpandConstant('{cm:LaunchApp}'), @ToggleFinishApp);
+  { Inno may make RunList visible again when it populates the [Run] items. }
+  { Move the native list off the page as well as hiding it, so only the two }
+  { consistent app-style green checkbox rows can ever be displayed. }
+  WizardForm.RunList.Visible := False;
+  WizardForm.RunList.Left := -WizardForm.RunList.Width - ScaleX(32);
+  RefreshFinishOptionRows;
+end;
+
+procedure ApplyCustomInstallerPageTheme;
+begin
+  StyleInputOptionPage(ExistingInstallActionPage);
+  StyleInputOptionPage(PlatformPage);
+  StyleInputOptionPage(DependencyPage);
+  StyleInputDirPage(FolderPage, 1);
+  StyleInstallerEdit(FolderOBSEdit);
+  FolderOBSLabel.Font.Color := StreamDeskText;
+  FolderOBSNote.Font.Color := StreamDeskMutedText;
+  StyleInputFilePage(ExistingInterfacePage, 1);
+  StyleInputFilePage(RetroArchPage, 2);
+  StyleOutputMessagePage(FXPAKStepsPage);
+  StyleOutputMessagePage(RetroArchStepsPage);
+  StyleOutputMessagePage(ExistingConfigPage);
 end;
 
 function ConfigFilePath: String;
@@ -1002,6 +1487,12 @@ var
 begin
   ConfigureInstallerTheme;
 
+  { The native TasksList and RunList receive their entries later in the }
+  { wizard lifecycle. Keep the custom rows safe and deterministic until then. }
+  DesktopShortcutSelected := False;
+  FinishGuideSelected := False;
+  FinishAppSelected := True;
+
   ExistingInstallationDetected := FindExistingTrackerInstallation(
     ExistingInstallDirectory
   );
@@ -1170,6 +1661,33 @@ begin
     ExpandConstant('{cm:ExistingTitle}'),
     ExpandConstant('{cm:ExistingSubtitle}'),
     ExpandConstant('{cm:ExistingDescription}'));
+
+  { Apply the Stream Desk palette after every custom page exists, then }
+  { replace Inno Setup's native checkbox lists with the app-style rows. }
+  ApplyCustomInstallerPageTheme;
+  CreateDependencyOptionRows;
+  CreateDesktopShortcutRow;
+  CreateFinishOptionRows;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpSelectTasks then
+  begin
+    if WizardForm.TasksList.Items.Count > 0 then
+      WizardForm.TasksList.Checked[0] := DesktopShortcutSelected;
+    RefreshDesktopShortcutRow;
+  end;
+
+  if CurPageID = wpFinished then
+  begin
+    { Inno repopulates and shows RunList immediately before this page opens. }
+    { Keep only the compact app-style rows; otherwise the native first item }
+    { appears above the styled copy on the completed-install page. }
+    WizardForm.RunList.Visible := False;
+    SyncFinishOptionList;
+    RefreshFinishOptionRows;
+  end;
 end;
 
 function ShouldInstallSNI: Boolean;
@@ -1272,11 +1790,12 @@ begin
     end
     else if PlatformPage.SelectedValueIndex = 2 then
     begin
-      DependencyPage.Values[0] := False;
+      DependencyPage.Values[0] := True;
       DependencyPage.Values[1] := False;
       DependencyPage.Values[2] := False;
       DependencyPage.Values[3] := True;
     end;
+    RefreshDependencyOptionRows;
   end
   else if CurPageID = ExistingInterfacePage.ID then
   begin
@@ -1477,6 +1996,48 @@ begin
     RaiseException(ExpandConstant('{cm:ErrorRetroInstall}'));
 end;
 
+procedure InstallQUsb2Snes;
+var
+  ArchivePath: String;
+  InstallDirectory: String;
+  TarPath: String;
+  Parameters: String;
+  ResultCode: Integer;
+begin
+  if not ShouldInstallQUsb then
+    Exit;
+
+  ArchivePath := ExpandConstant(
+    '{tmp}\QUsb2Snes-bundle-2025-10-20.7z');
+  InstallDirectory := ExpandConstant('{app}\Tools\QUsb2Snes');
+  TarPath := ExpandConstant('{sys}\tar.exe');
+  WizardForm.StatusLabel.Caption :=
+    ExpandConstant('{cm:QUsbInstallProgress}');
+
+  { Windows 10 includes bsdtar/libarchive. Let it unpack the complete 7z }
+  { bundle in one native pass instead of making Inno process every file. }
+  { The release has one QUsb2Snes-bundle wrapper directory, so remove that }
+  { first path component to preserve the install layout used by the app. }
+  if (not FileExists(ArchivePath)) or (not FileExists(TarPath)) then
+    RaiseException(ExpandConstant('{cm:ErrorQUsbInstall}'));
+
+  ForceDirectories(InstallDirectory);
+  Parameters := '-xf "' + ArchivePath + '" -C "' +
+    InstallDirectory + '" --strip-components 1';
+  if not Exec(
+    TarPath,
+    Parameters,
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode) then
+    RaiseException(ExpandConstant('{cm:ErrorQUsbInstall}'));
+
+  if (ResultCode <> 0) or
+     (not FileExists(InstallDirectory + '\QUsb2Snes.exe')) then
+    RaiseException(ExpandConstant('{cm:ErrorQUsbInstall}'));
+end;
+
 procedure ConfigurePortableRetroArch;
 var
   ConfigPath: String;
@@ -1565,6 +2126,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    InstallQUsb2Snes;
     InstallPortableRetroArch;
     ConfigurePortableRetroArch;
     WriteInitialConfiguration;

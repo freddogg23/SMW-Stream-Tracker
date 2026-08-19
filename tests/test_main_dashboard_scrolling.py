@@ -143,6 +143,15 @@ class MainDashboardScrollingTests(unittest.TestCase):
         self.assertIn("self._hide_tracker_paint_cover()", render_source)
         self.assertIn("tracker_overlay_retry_count", render_source)
 
+    def test_tracker_initial_paint_uses_one_in_memory_catalog_merge(self):
+        refresh_source = self.method_source("_refresh_my_tracker")
+        open_source = self.method_source("open_my_tracker")
+        page_source = self.method_source("_open_in_app_page")
+        self.assertIn("record = dict(tracked_record)", refresh_source)
+        self.assertNotIn("self._resolved_hack_details_record(", refresh_source)
+        self.assertIn("apply_generic_appearance=False", open_source)
+        self.assertIn('"my_tracker"', page_source)
+
     def test_tracker_canvas_redraw_is_debounced_during_resize(self):
         scheduler_source = self.method_source(
             "_schedule_tracker_cell_overlays"
@@ -164,6 +173,69 @@ class MainDashboardScrollingTests(unittest.TestCase):
         self.assertIn("allow_fallback=True", build_source)
         self.assertIn("_restore_cached_banner_photo(requested_size)", render_source)
         self.assertIn("banner_photo_cache.get", restore_source)
+
+    def test_dashboard_cards_are_content_sized_stacked_and_full_width(self):
+        dashboard_source = self.method_source("_build_stream_desk_dashboard")
+        self.assertIn("dashboard_density = 0.97", dashboard_source)
+        self.assertIn("def dashboard_px", dashboard_source)
+        self.assertIn('body.pack(fill="x", expand=False)', dashboard_source)
+        self.assertIn('sticky="ew"', dashboard_source)
+        self.assertIn("visible_body_width", dashboard_source)
+        self.assertIn("root_width", dashboard_source)
+        self.assertNotIn("GetDpiForWindow", dashboard_source)
+        self.assertNotIn("stack_breakpoint", dashboard_source)
+        self.assertNotIn("stack_panels", dashboard_source)
+        self.assertIn("run_width = available_width", dashboard_source)
+        self.assertIn("queue_width = available_width", dashboard_source)
+        self.assertIn("columnspan=2", dashboard_source)
+        self.assertIn("row=1", dashboard_source)
+        self.assertIn('getattr(self, "main_canvas", None)', dashboard_source)
+        self.assertIn("run_action_columns", dashboard_source)
+        self.assertIn("queue_action_columns", dashboard_source)
+        self.assertIn(
+            "self.stream_dashboard_resize_callback = resize_dashboard_panels",
+            dashboard_source,
+        )
+        self.assertIn("dashboard_root_bind_id", dashboard_source)
+        self.assertIn("release_dashboard_root_binding", dashboard_source)
+        self.assertNotIn(
+            'body.rowconfigure(0, weight=1, minsize=self._ui_px(300))',
+            dashboard_source,
+        )
+
+    def test_dashboard_icon_uses_the_asymmetric_reference_tiles(self):
+        icon_source = self.method_source("_draw_stream_desk_icon")
+        for tile in (
+            "(8, 8, 22, 27)",
+            "(28, 8, 41, 20)",
+            "(8, 32, 22, 41)",
+            "(28, 25, 41, 41)",
+        ):
+            self.assertIn(tile, icon_source)
+
+    def test_every_app_scrollbar_uses_the_yellow_canvas_component(self):
+        self.assertNotIn("ttk.Scrollbar(", self.source)
+        self.assertNotIn("tk.Scrollbar(", self.source)
+        self.assertGreaterEqual(
+            self.source.count("YellowCanvasScrollbar("),
+            20,
+        )
+
+    def test_timeline_markers_are_supersampled_and_cached(self):
+        marker_source = self.method_source("_timeline_marker_photo")
+        refresh_source = self.method_source("_refresh_session_timeline")
+        self.assertIn("supersample = 4", marker_source)
+        self.assertIn("Image.Resampling.LANCZOS", marker_source)
+        self.assertIn("_timeline_marker_photo_cache", marker_source)
+        self.assertIn("self._timeline_marker_photo(", refresh_source)
+        self.assertIn("canvas.create_image(", refresh_source)
+        self.assertIn("canvas._timeline_marker_images", refresh_source)
+
+    def test_canvas_layout_refreshes_the_dashboard_breakpoint(self):
+        layout_source = self.method_source("_sync_main_canvas_layout")
+        self.assertIn("stream_dashboard_resize_callback", layout_source)
+        self.assertIn("if callable(dashboard_resize)", layout_source)
+        self.assertIn("dashboard_resize()", layout_source)
 
 
 if __name__ == "__main__":

@@ -109,6 +109,8 @@ class UpdaterRelaunchTests(unittest.TestCase):
         self.assertIn("SMWStreamTrackerLauncher.py", build_spec)
         self.assertIn("import tkinter as tk", build_spec)
         self.assertIn("_tk_build_probe = tk.Tk()", build_spec)
+        self.assertIn("_python_abi_tag", build_spec)
+        self.assertIn('f"_imaging.{_python_abi_tag}-*.pyd"', build_spec)
         self.assertIn("cannot be packaged with this Python runtime", build_spec)
         self.assertIn("hookspath=[]", build_spec)
         self.assertIn(

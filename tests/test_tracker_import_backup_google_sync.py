@@ -2,6 +2,7 @@ import importlib.util
 import inspect
 import io
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -224,19 +225,51 @@ class TrackerImportBackupGoogleSyncTests(unittest.TestCase):
         self.assertNotIn('"Sync to Google Sheets Now"', source)
         self.assertNotIn("spreadsheet_bar = tk.Frame", source)
 
-    def test_spreadsheet_settings_is_a_blue_import_export_popup(self):
+    def test_spreadsheet_settings_uses_stream_desk_import_export_card(self):
         source = inspect.getsource(
             self.tracker.TrackerApp.open_spreadsheet_settings
         )
-        self.assertIn('bg=THEME["blue"]', source)
+        self.assertIn("dialog._uses_stream_desk_palette = True", source)
+        self.assertIn("self._create_stream_desk_page_header(", source)
+        self.assertIn('footer.pack(side="bottom", fill="x")', source)
         self.assertIn('text="Import Spreadsheet..."', source)
         self.assertIn('text="Export My Tracker..."', source)
 
-    def test_google_settings_is_blue_and_includes_both_import_routes(self):
+    def test_library_palette_exposes_colors_used_by_stream_desk_dialogs(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        for appearance, expected_palette in (
+            ("dark", self.tracker.STREAM_DESK_DARK),
+            ("light", self.tracker.STREAM_DESK_LIGHT),
+        ):
+            with self.subTest(appearance=appearance):
+                app.appearance_var = mock.Mock()
+                app.appearance_var.get.return_value = appearance
+                palette = app._library_palette()
+                for color_name in ("text_strong", "blue", "blue_dark"):
+                    with self.subTest(
+                        appearance=appearance,
+                        color_name=color_name,
+                    ):
+                        self.assertEqual(
+                            palette[color_name],
+                            expected_palette[color_name],
+                        )
+
+    def test_every_stream_desk_color_lookup_exists_in_both_themes(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        used_colors = set(
+            re.findall(r'STREAM_DESK\["([^"]+)"\]', source)
+        )
+        self.assertFalse(used_colors - set(self.tracker.STREAM_DESK_DARK))
+        self.assertFalse(used_colors - set(self.tracker.STREAM_DESK_LIGHT))
+
+    def test_google_settings_uses_stream_desk_and_includes_both_import_routes(self):
         source = inspect.getsource(
             self.tracker.TrackerApp.open_google_sheets_sync
         )
-        self.assertIn('bg=THEME["blue"]', source)
+        self.assertIn("dialog._uses_stream_desk_palette = True", source)
+        self.assertIn("self._create_stream_desk_page_header(", source)
+        self.assertIn('button_bar.pack(side="bottom", fill="x")', source)
         self.assertIn('text="Google Sheets sharing link (import):"', source)
         self.assertIn("self._start_google_sheet_link_import(", source)
         self.assertIn("self._start_google_sheets_import(", source)
@@ -452,16 +485,19 @@ class TrackerImportBackupGoogleSyncTests(unittest.TestCase):
             source,
         )
 
-    def test_all_game_mode_dialog_headers_are_blue(self):
+    def test_all_game_mode_dialog_headers_use_stream_desk_chrome(self):
         shell_source = inspect.getsource(
             self.tracker.TrackerApp._game_mode_dialog_shell
         )
         random_source = inspect.getsource(
             self.tracker.TrackerApp._play_random_main_hack
         )
-        self.assertIn('bg=THEME["blue"]', shell_source)
-        self.assertIn('bg=THEME["blue"]', random_source)
-        self.assertNotIn('bg=THEME["orange"]', random_source)
+        self.assertIn('bg=palette["window"]', shell_source)
+        self.assertIn('bg=palette["panel"]', shell_source)
+        self.assertIn('fg=STREAM_DESK["yellow"]', shell_source)
+        self.assertIn("_game_mode_dialog_shell", random_source)
+        self.assertNotIn('bg=THEME["blue"]', shell_source)
+        self.assertNotIn('bg=THEME["blue"]', random_source)
 
     def test_new_interface_text_is_translated_in_every_language(self):
         phrases = (

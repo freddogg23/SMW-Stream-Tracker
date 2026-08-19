@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "1.1.2"
+#define AppVersion "2.0.0"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -28,9 +28,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
 OutputBaseFilename=SMWStreamTracker_Update_{#AppVersion}
 SetupIconFile=..\app_assets\smw_stream_tracker_icon.ico
-WizardSmallImageFile=..\app_assets\smw_stream_tracker_icon.png
-WizardSmallImageBackColor=#E02C26
-WizardStyle=modern dynamic
+WizardImageFile=
+WizardSmallImageFile=
+WizardStyle=modern dark polar includetitlebar hidebevels
+WizardBackColor=#0D1216
+WizardSizePercent=130
 DisableWelcomePage=no
 Uninstallable=no
 Compression=lzma2/ultra64
@@ -94,6 +96,7 @@ brazilianportuguese.RollbackHashError=O instalador não conseguiu verificar a c�
 brazilianportuguese.StartupCheckFailed=O aplicativo atualizado não conseguiu iniciar o sistema de janelas. O instalador restaurou automaticamente a versão anterior que funcionava.
 
 [Files]
+Source: "smw_installer_banner.png"; Flags: dontcopy noencryption
 Source: "{#AppExeSource}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion restartreplace
 ; Permanent Tcl/Tk fallback used when one-file temporary extraction is blocked.
 Source: "..\dist\runtime\tcl\*"; DestDir: "{app}\runtime\tcl"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -128,6 +131,214 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; \
 [Code]
 var
   UpdatedAppStartupCheckPassed: Boolean;
+  UpdaterBanner: TBitmapImage;
+  UpdaterFinishRow: TPanel;
+  UpdaterFinishBox: TPanel;
+  UpdaterFinishTick: TNewStaticText;
+  UpdaterFinishLabel: TNewStaticText;
+  LaunchUpdatedAppSelected: Boolean;
+
+function UpdaterBackground: TColor;
+begin
+  Result := StrToColor('#0D1216');
+end;
+
+function UpdaterSurface: TColor;
+begin
+  Result := StrToColor('#11171C');
+end;
+
+function UpdaterSurfaceRaised: TColor;
+begin
+  Result := StrToColor('#182229');
+end;
+
+function UpdaterSurfaceSelected: TColor;
+begin
+  Result := StrToColor('#26323B');
+end;
+
+function UpdaterText: TColor;
+begin
+  Result := StrToColor('#F2F6F8');
+end;
+
+function UpdaterMutedText: TColor;
+begin
+  Result := StrToColor('#9AA7B0');
+end;
+
+function UpdaterGreen: TColor;
+begin
+  Result := StrToColor('#68D996');
+end;
+
+procedure ConfigureUpdaterTheme;
+var
+  BannerFile: String;
+  BannerWidth: Integer;
+  BannerHeight: Integer;
+  MaximumBannerWidth: Integer;
+  ContentTop: Integer;
+  ContentBottom: Integer;
+begin
+  WizardForm.Color := UpdaterBackground;
+  WizardForm.MainPanel.Color := UpdaterSurface;
+  WizardForm.WelcomePage.Color := UpdaterBackground;
+  WizardForm.LicensePage.Color := UpdaterBackground;
+  WizardForm.InfoBeforePage.Color := UpdaterBackground;
+  WizardForm.SelectDirPage.Color := UpdaterBackground;
+  WizardForm.SelectProgramGroupPage.Color := UpdaterBackground;
+  WizardForm.SelectTasksPage.Color := UpdaterBackground;
+  WizardForm.ReadyPage.Color := UpdaterBackground;
+  WizardForm.PreparingPage.Color := UpdaterBackground;
+  WizardForm.InstallingPage.Color := UpdaterBackground;
+  WizardForm.InfoAfterPage.Color := UpdaterBackground;
+  WizardForm.FinishedPage.Color := UpdaterBackground;
+  WizardForm.PageNameLabel.Font.Color := UpdaterText;
+  WizardForm.PageDescriptionLabel.Font.Color := UpdaterMutedText;
+  WizardForm.WelcomeLabel1.Font.Color := UpdaterText;
+  WizardForm.WelcomeLabel2.Font.Color := UpdaterMutedText;
+  WizardForm.FinishedHeadingLabel.Font.Color := UpdaterText;
+  WizardForm.FinishedLabel.Font.Color := UpdaterMutedText;
+  WizardForm.LicenseMemo.Color := UpdaterSurface;
+  WizardForm.LicenseMemo.Font.Color := UpdaterText;
+  WizardForm.InfoBeforeMemo.Color := UpdaterSurface;
+  WizardForm.InfoBeforeMemo.Font.Color := UpdaterText;
+  WizardForm.InfoAfterMemo.Color := UpdaterSurface;
+  WizardForm.InfoAfterMemo.Font.Color := UpdaterText;
+  WizardForm.ReadyMemo.Color := UpdaterSurface;
+  WizardForm.ReadyMemo.Font.Color := UpdaterText;
+  WizardForm.PreparingLabel.Font.Color := UpdaterText;
+  WizardForm.StatusLabel.Font.Color := UpdaterText;
+  WizardForm.FileNameLabel.Font.Color := UpdaterMutedText;
+  WizardForm.NextButton.Font.Style := [fsBold];
+  WizardForm.BackButton.Font.Style := [fsBold];
+  WizardForm.CancelButton.Font.Style := [fsBold];
+
+  BannerFile := ExpandConstant('{tmp}\smw_installer_banner.png');
+  ExtractTemporaryFile(ExtractFileName(BannerFile));
+  UpdaterBanner := TBitmapImage.Create(WizardForm);
+  UpdaterBanner.Parent := WizardForm;
+  UpdaterBanner.BackColor := UpdaterBackground;
+  UpdaterBanner.Center := True;
+  UpdaterBanner.Stretch := True;
+  UpdaterBanner.PngImage.LoadFromFile(BannerFile);
+
+  BannerHeight := ScaleY(112);
+  BannerWidth := MulDiv(BannerHeight, 1039, 292);
+  MaximumBannerWidth := WizardForm.ClientWidth - ScaleX(24);
+  if BannerWidth > MaximumBannerWidth then
+  begin
+    BannerWidth := MaximumBannerWidth;
+    BannerHeight := MulDiv(BannerWidth, 292, 1039);
+  end;
+  UpdaterBanner.Left := (WizardForm.ClientWidth - BannerWidth) div 2;
+  UpdaterBanner.Top := ScaleY(10);
+  UpdaterBanner.Width := BannerWidth;
+  UpdaterBanner.Height := BannerHeight;
+
+  ContentTop := UpdaterBanner.Top + UpdaterBanner.Height + ScaleY(10);
+  ContentBottom := WizardForm.NextButton.Top - ScaleY(10);
+  WizardForm.OuterNotebook.Left := ScaleX(12);
+  WizardForm.OuterNotebook.Top := ContentTop;
+  WizardForm.OuterNotebook.Width := WizardForm.ClientWidth - ScaleX(24);
+  WizardForm.OuterNotebook.Height := ContentBottom - ContentTop;
+  WizardForm.WizardBitmapImage.Visible := False;
+  WizardForm.WizardSmallBitmapImage.Visible := False;
+end;
+
+procedure RefreshUpdaterFinishRow;
+begin
+  if LaunchUpdatedAppSelected then
+  begin
+    UpdaterFinishRow.Color := UpdaterSurfaceSelected;
+    UpdaterFinishBox.Color := UpdaterGreen;
+    UpdaterFinishTick.Caption := '✓';
+    UpdaterFinishLabel.Font.Color := UpdaterText;
+  end
+  else
+  begin
+    UpdaterFinishRow.Color := UpdaterSurface;
+    UpdaterFinishBox.Color := UpdaterSurfaceRaised;
+    UpdaterFinishTick.Caption := '';
+    UpdaterFinishLabel.Font.Color := UpdaterMutedText;
+  end;
+end;
+
+procedure ToggleUpdaterFinishRow(Sender: TObject);
+begin
+  LaunchUpdatedAppSelected := not LaunchUpdatedAppSelected;
+  if WizardForm.RunList.Items.Count > 0 then
+    WizardForm.RunList.Checked[0] := LaunchUpdatedAppSelected;
+  RefreshUpdaterFinishRow;
+end;
+
+procedure CreateUpdaterFinishRow;
+begin
+  UpdaterFinishRow := TPanel.Create(WizardForm);
+  UpdaterFinishRow.Parent := WizardForm.FinishedPage;
+  UpdaterFinishRow.Left := WizardForm.RunList.Left;
+  UpdaterFinishRow.Top := WizardForm.RunList.Top;
+  UpdaterFinishRow.Width := WizardForm.RunList.Width;
+  UpdaterFinishRow.Height := ScaleY(58);
+  UpdaterFinishRow.Caption := '';
+  UpdaterFinishRow.BevelOuter := bvNone;
+  UpdaterFinishRow.OnClick := @ToggleUpdaterFinishRow;
+
+  UpdaterFinishBox := TPanel.Create(WizardForm);
+  UpdaterFinishBox.Parent := UpdaterFinishRow;
+  UpdaterFinishBox.Left := ScaleX(12);
+  UpdaterFinishBox.Top := (UpdaterFinishRow.Height - ScaleY(26)) div 2;
+  UpdaterFinishBox.Width := ScaleX(26);
+  UpdaterFinishBox.Height := ScaleY(26);
+  UpdaterFinishBox.Caption := '';
+  UpdaterFinishBox.BevelOuter := bvNone;
+  UpdaterFinishBox.OnClick := @ToggleUpdaterFinishRow;
+
+  UpdaterFinishTick := TNewStaticText.Create(WizardForm);
+  UpdaterFinishTick.Parent := UpdaterFinishBox;
+  UpdaterFinishTick.Left := 0;
+  UpdaterFinishTick.Top := 0;
+  UpdaterFinishTick.Width := UpdaterFinishBox.Width;
+  UpdaterFinishTick.Height := UpdaterFinishBox.Height;
+  UpdaterFinishTick.AutoSize := False;
+  UpdaterFinishTick.Alignment := taCenter;
+  UpdaterFinishTick.Font.Color := UpdaterBackground;
+  UpdaterFinishTick.Font.Style := [fsBold];
+  UpdaterFinishTick.OnClick := @ToggleUpdaterFinishRow;
+
+  UpdaterFinishLabel := TNewStaticText.Create(WizardForm);
+  UpdaterFinishLabel.Parent := UpdaterFinishRow;
+  UpdaterFinishLabel.Left := ScaleX(52);
+  UpdaterFinishLabel.Top := (UpdaterFinishRow.Height - ScaleY(30)) div 2;
+  UpdaterFinishLabel.Width := UpdaterFinishRow.Width - ScaleX(64);
+  UpdaterFinishLabel.Height := ScaleY(30);
+  UpdaterFinishLabel.AutoSize := False;
+  UpdaterFinishLabel.Caption := ExpandConstant('{cm:LaunchApp}');
+  UpdaterFinishLabel.Font.Style := [fsBold];
+  UpdaterFinishLabel.OnClick := @ToggleUpdaterFinishRow;
+
+  WizardForm.RunList.Visible := False;
+  RefreshUpdaterFinishRow;
+end;
+
+procedure InitializeWizard;
+begin
+  LaunchUpdatedAppSelected := True;
+  ConfigureUpdaterTheme;
+  CreateUpdaterFinishRow;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpFinished then
+  begin
+    if WizardForm.RunList.Items.Count > 0 then
+      WizardForm.RunList.Checked[0] := LaunchUpdatedAppSelected;
+    RefreshUpdaterFinishRow;
+  end;
+end;
 
 function SetEnvironmentVariable(
   lpName: String;
@@ -148,7 +359,7 @@ end;
 
 function UpdatedAppPassedStartupCheck(): Boolean;
 begin
-  Result := UpdatedAppStartupCheckPassed;
+  Result := UpdatedAppStartupCheckPassed and LaunchUpdatedAppSelected;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

@@ -45,7 +45,7 @@ class TableCellGridTests(unittest.TestCase):
             if self._is_grid_install(node)
         ]
 
-        self.assertEqual(len(constructors), 7)
+        self.assertEqual(len(constructors), 8)
         self.assertEqual(len(installers), len(constructors))
 
         for method in (
@@ -92,13 +92,17 @@ class TableCellGridTests(unittest.TestCase):
         self.assertIn('tree.cget("yscrollcommand")', installer_source)
         self.assertIn('tree.cget("xscrollcommand")', installer_source)
         self.assertIn("preserve_scroll_command", installer_source)
+        self.assertIn("34 if vertical_scroll else 0", installer_source)
+        self.assertIn('tree.column("#0", "width")', method_source)
+        self.assertIn("first_column_edge", method_source)
 
     def test_colored_cell_overlays_use_the_same_grid_color(self):
         self.assertNotIn('outline=palette["border"]', self.source)
-        self.assertGreaterEqual(
-            self.source.count("outline=self._table_grid_line_color()"),
-            8,
+        grid_color_uses = (
+            self.source.count("outline=self._table_grid_line_color()")
+            + self.source.count("border_color=self._table_grid_line_color()")
         )
+        self.assertGreaterEqual(grid_color_uses, 8)
 
     def test_grid_uses_light_blue_colors_in_both_themes(self):
         assignments = {

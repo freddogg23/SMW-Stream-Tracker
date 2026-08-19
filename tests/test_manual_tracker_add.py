@@ -47,10 +47,15 @@ class ManualTrackerAddTests(unittest.TestCase):
         self.assertIn("make_tracker_circle_action", source)
         self.assertIn("self._add_tracker_record", source)
 
-    def test_manual_form_uses_blue_app_style_and_refreshes_tracker(self):
+    def test_manual_form_uses_stream_desk_style_and_refreshes_tracker(self):
         source = self.method_source("_add_tracker_record")
         for expected in (
-            'bg=THEME["blue"]',
+            "dialog._uses_stream_desk_palette = True",
+            "self._create_stream_desk_page_header(",
+            'kicker="MY TRACKER"',
+            'bg=STREAM_DESK["green"]',
+            'active_bg=STREAM_DESK["green_dark"]',
+            'footer.pack(side="bottom", fill="x")',
             "self.stats_db.add_to_tracker(",
             "self.stats_db.save_tracked(",
             "self._reload_database_catalog()",
@@ -144,6 +149,7 @@ class ManualTrackerAddTests(unittest.TestCase):
     def test_manual_form_text_is_translated_in_every_language(self):
         texts = (
             "Add Hack to Tracker",
+            "Add a hack manually, then set the progress details you want My Tracker to remember.",
             "Hack Details",
             "Tracker Details",
             "ROM Hack Title:",
@@ -189,11 +195,52 @@ class ManualTrackerAddTests(unittest.TestCase):
         )
         self.assertIn("self._set_tracker_remove_mode(", toggle_source)
         self.assertIn('remove_bar.pack(', mode_source)
+        self.assertIn(
+            "self._show_tracker_paint_cover(include_page=False)",
+            mode_source,
+        )
+        self.assertIn(
+            "self._schedule_tracker_cell_overlays_after_layout()",
+            mode_source,
+        )
         self.assertIn('"remove_checkbox_boxes"', event_source)
         self.assertIn('column == "#0"', render_source)
-        self.assertIn("row_canvas.create_line(", render_source)
+        self.assertIn(
+            "MarioCheckbutton._build_indicator(",
+            render_source,
+        )
+        self.assertIn(
+            "fill=MarioCheckbutton.CHECKED_FILL",
+            render_source,
+        )
+        self.assertIn(
+            "outline=MarioCheckbutton.CHECKED_OUTLINE",
+            render_source,
+        )
+        self.assertIn("row_canvas.create_image(", render_source)
+        self.assertNotIn("row_canvas.create_line(", render_source)
         self.assertIn("for record in selected_records:", confirm_source)
         self.assertIn("self.stats_db.remove_tracked", confirm_source)
+
+    def test_collapsing_advanced_filters_hides_legacy_rows_until_repaint(self):
+        source = self.method_source("open_my_tracker")
+        repaint_source = self.method_source(
+            "_schedule_tracker_cell_overlays_after_layout"
+        )
+        self.assertIn(
+            "self._show_tracker_paint_cover(include_page=False)",
+            source,
+        )
+        self.assertIn(
+            "self._schedule_tracker_cell_overlays_after_layout()",
+            source,
+        )
+        self.assertIn("dialog.update_idletasks()", repaint_source)
+        self.assertIn("cancel_pending_repaint()", repaint_source)
+        self.assertIn(
+            "dialog.after_idle(\n                self._render_tracker_cell_overlays",
+            repaint_source,
+        )
 
     def test_remove_confirmation_is_translated_in_every_language(self):
         texts = (

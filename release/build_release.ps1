@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.1.2',
+    [string]$Version = '2.0.0',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -259,6 +259,7 @@ $sourceItems = @(
     'create_bowser_fixed_flame_overlay.py',
     'create_bowser_uncropped_fixed_flame_overlay.py',
     'docs',
+    'game_mode_assets',
     'fix_toadette_hair_circles.py',
     'installer',
     'platform_assets',
@@ -268,6 +269,7 @@ $sourceItems = @(
     'release_tools',
     'render_banner_qa.py',
     'tests',
+    'tools',
     'version_info.txt'
 ) | ForEach-Object { Join-Path $projectRoot $_ }
 if (Test-Path -LiteralPath $sourceZip) {

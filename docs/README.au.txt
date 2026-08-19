@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - THE RIDGY-DIDGE SETUP YARN
-Version 1.1.2
+Version 2.0.0
 
 G'day, mate. You've found the Australian guide: all the useful setup details,
 a healthy serve of local lingo, and absolutely no drop bears hiding in the
@@ -27,14 +27,20 @@ Timer and Level Timer windows plus game_timer.txt and level_timer.txt for OBS.
 The catalogue, patching, FXPAK emoji aliases, database, workbooks, and OBS text
 files all work the same way. Crikey, that saves a bit of mucking about!
 
-WHAT'S NEW IN VERSION 1.1.2, MATE
+WHAT'S NEW IN VERSION 2.0.0, MATE
 
-* If a blue popup has already nicked off, a delayed outlined-button redraw now
-  pulls up stumps quietly instead of printing an "invalid command name" yarn.
-* Regression tests cover buttons that are already gone and the tiny timing gap
-  where one disappears straight after the app checks it. No dramas.
-* This tidy-up does not change MiSTer, FXPAK Pro, RetroArch, tracker data, or
-  any of the translated interface text.
+* The Stream Desk makeover now runs through the dashboard, settings, libraries,
+  game modes, setup tools, popups, and the Windows installer. Looking sharp.
+* Hot Potato and Mario Kaizo Challenge bring playlists, automatic next-hack
+  queues, filters, and dashboard controls to the party.
+* Guided RetroAchievements setup, compatible-core launching, and trophy markers
+  show supported hacks without mucking with normal tracker behaviour.
+* Advanced filters now cover title, creator, difficulty, type, release state,
+  Hall of Fame, waiting moderation, and RetroAchievements across the app.
+* Catalog loading, My Tracker, settings, patching, and setup have been tightened
+  so the interface stays responsive and old colours do not flash through.
+* RetroArch launching, the installer and updater, quicker QUsb2Snes setup, and
+  every shipped translation have all had a proper polish. Too easy.
 
 WHAT'S NEW IN VERSION 1.1.1, MATE
 
@@ -112,7 +118,7 @@ WHAT'S NEW IN VERSION 1.1.0, MATE
 * Every popup, menu, control, status line, picker, and setup screen is covered
   in every language. The Australian option has extra mates, crikeys, and the
   occasional yeah-nah for good measure.
-* About & Updates has a Join the Discord mob button when you need a hand or a
+* About has a Join the Discord mob button when you need a hand or a
   yarn with FredDOGG23: https://discord.gg/fHkTRgqjcr
 
 WHAT'S IN THIS YARN
@@ -147,7 +153,7 @@ right thing, mate.
 
 2. GET THE SHOW ON THE ROAD
 
-1. Give SMWStreamTracker_Setup_1.1.2.exe a double-click.
+1. Give SMWStreamTracker_Setup_2.0.0.exe a double-click.
 2. Select Australian on the first screen. Good choice, champion.
 3. Read the optional-software information and the ROM notice.
 4. Pick FXPAK Pro, RetroArch, or MiSTer as your first cab off the rank.
@@ -419,7 +425,7 @@ SMW_Stream_Tracker_Automatic_Backup.xlsx, safe from an uninstall. Too easy.
 
 13. UPDATES, BACKUPS, AND WINDING BACK A VERSION
 
-Use File > Check for Updates inside SMW Stream Tracker. The app checks the
+Use Settings > About & Updates, then select Updates inside SMW Stream Tracker. The app checks the
 official update manifest and tells you when a newer version is available.
 Review the version, release date, size, and notes, then select Download & Install.
 

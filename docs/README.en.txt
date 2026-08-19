@@ -1,5 +1,5 @@
 SMW STREAM TRACKER - COMPLETE SETUP GUIDE
-Version 1.1.2
+Version 2.0.0
 
 LANGUAGES
 English: README.en.txt
@@ -23,14 +23,20 @@ Timer and Level Timer windows plus game_timer.txt and level_timer.txt for OBS.
 All catalog, patching, FXPAK, emoji-alias, database, workbook, and OBS text
 features use the same data and behavior on Windows and Mac.
 
-NEW IN VERSION 1.1.2
+NEW IN VERSION 2.0.0
 
-* A delayed outlined-button redraw now stops quietly if its popup has already
-  closed, preventing Tkinter's "invalid command name" cleanup traceback.
-* Regression tests cover both an already-destroyed button and the narrow race
-  where the button disappears immediately after its existence check.
-* This cleanup-only fix does not change MiSTer, FXPAK Pro, RetroArch, tracker
-  data, or any translated interface text.
+* The Stream Desk redesign now covers the dashboard, settings, libraries,
+  game modes, setup tools, dialogs, popups, and the Windows installer.
+* Hot Potato and Mario Kaizo Challenge add new ways to play, including curated
+  playlists, automatic next-hack queues, filters, and dashboard controls.
+* Guided RetroAchievements setup, compatible-core launching, and trophy markers
+  identify supported hacks without changing normal tracker behavior.
+* Advanced filters now support title, creator, difficulty, type, release state,
+  Hall of Fame, waiting moderation, and RetroAchievements across the app.
+* Catalog loading, My Tracker, settings, patching, and setup work have been
+  tightened so the interface stays responsive and avoids legacy-color flashes.
+* RetroArch launch normalization, installer/updater reliability, faster
+  QUsb2Snes setup, and every shipped translation have been polished for release.
 
 NEW IN VERSION 1.1.1
 
@@ -109,7 +115,7 @@ NEW IN VERSION 1.1.0
 * Message popups, menus, controls, status text, file pickers, and setup screens
   share complete translations. Australian English includes playful local
   wording throughout.
-* About & Updates now includes a Join Discord button for help and contact:
+* About now includes a Join Discord button for help and contact:
   https://discord.gg/fHkTRgqjcr
 
 TABLE OF CONTENTS
@@ -141,7 +147,7 @@ SMW Stream Tracker does not include or download a commercial base ROM.
 
 2. INSTALL THE PROGRAM
 
-1. Start SMWStreamTracker_Setup_1.1.2.exe.
+1. Start SMWStreamTracker_Setup_2.0.0.exe.
 2. Select a language on the first screen.
 3. Read the optional-software and ROM notice.
 4. Choose FXPAK Pro, RetroArch, or MiSTer as the initial platform.

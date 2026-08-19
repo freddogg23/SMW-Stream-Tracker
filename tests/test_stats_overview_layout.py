@@ -20,6 +20,12 @@ class StatsOverviewLayoutTests(unittest.TestCase):
             if isinstance(node, ast.FunctionDef)
             and node.name == "open_stats_overview"
         )
+        cls.stream_method = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_build_stream_desk_overview"
+        )
 
     def _panel_parent(self, panel_name):
         assignment = next(
@@ -104,6 +110,54 @@ class StatsOverviewLayoutTests(unittest.TestCase):
         self.assertIn("int(width * 0.18)", method_source)
         self.assertIn("self._ui_px(42)", method_source)
         self.assertNotIn("self._ui_px(290)", method_source)
+
+    def test_stream_desk_overview_restores_the_smooth_status_donut(self):
+        method_source = ast.get_source_segment(self.source, self.stream_method)
+        self.assertIn("def draw_status_donut", method_source)
+        self.assertIn('tr("Completed")', method_source)
+        self.assertIn('tr("In Progress")', method_source)
+        self.assertIn('tr("Planned")', method_source)
+        self.assertIn("Image.LANCZOS", method_source)
+        self.assertIn('"pie_canvas": pie_canvas', method_source)
+
+    def test_stream_desk_overview_reflows_for_the_available_width(self):
+        method_source = ast.get_source_segment(self.source, self.stream_method)
+        self.assertIn("def reflow_overview", method_source)
+        self.assertIn("def queue_overview_layout", method_source)
+        self.assertNotIn(
+            'body.bind("<Configure>", queue_overview_layout',
+            method_source,
+        )
+        self.assertIn(
+            'body_canvas.bind("<Configure>", queue_overview_layout',
+            method_source,
+        )
+        self.assertIn("dialog.add_prepaint_callback", method_source)
+        self.assertIn('panel_mode = "wide"', method_source)
+        self.assertIn('panel_mode = "medium"', method_source)
+        self.assertIn('panel_mode = "stacked"', method_source)
+        self.assertIn("metric_columns = 4", method_source)
+        self.assertIn("else 2", method_source)
+        self.assertIn("def resize_overview_body", method_source)
+        self.assertIn('dialog.bind("<MouseWheel>", scroll_overview', method_source)
+        self.assertIn('"body_scrollbar": body_scrollbar', method_source)
+        self.assertIn("available_height", method_source)
+        self.assertIn('vertical_mode = (', method_source)
+        self.assertIn("overview_body_geometry", method_source)
+        self.assertIn("natural_height > visible_height + self._ui_px(10)", method_source)
+        self.assertIn("natural_height > visible_height - self._ui_px(10)", method_source)
+        self.assertNotIn("height=0,", method_source)
+        self.assertNotIn("body.update_idletasks()", method_source)
+        self.assertIn('"running": False', method_source)
+        self.assertIn("72,", method_source)
+        self.assertIn("body_scrollbar.grid_remove()", method_source)
+        self.assertIn("body_canvas.yview_moveto(0.0)", method_source)
+
+    def test_stream_desk_overview_uses_larger_readable_type(self):
+        method_source = ast.get_source_segment(self.source, self.stream_method)
+        self.assertIn('font=("Segoe UI", 30, "bold")', method_source)
+        self.assertIn("value_font_size=24", method_source)
+        self.assertIn("title_font_size=17", method_source)
 
 
 if __name__ == "__main__":

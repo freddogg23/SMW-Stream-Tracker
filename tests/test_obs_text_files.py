@@ -123,8 +123,14 @@ class ObsTextFileTests(unittest.TestCase):
             {
                 "_create_tracker_dialog",
                 "_post_main_hack_selector_popup",
-                "open_native_obs_timer_window",
             },
+        )
+        timer_source = inspect.getsource(
+            self.tracker.TrackerApp.open_native_obs_timer_window
+        )
+        self.assertIn(
+            "self._create_tracker_dialog(self.root, force_native=True)",
+            timer_source,
         )
 
     def test_capture_mode_wording_is_translated_in_every_language(self):

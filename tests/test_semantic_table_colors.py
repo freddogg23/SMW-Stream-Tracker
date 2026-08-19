@@ -29,7 +29,40 @@ class _FakeTree:
         self.configured[name] = kwargs
 
 
+class _LegacyDifficultyTree:
+    def __init__(self):
+        self.tags = {
+            "row": (
+                "tracker_even",
+                "difficulty_palette_FF00FF",
+                "hall_of_fame",
+            ),
+        }
+
+    def item(self, iid, option=None, **kwargs):
+        if "tags" in kwargs:
+            self.tags[iid] = tuple(kwargs["tags"])
+        if option == "tags":
+            return self.tags[iid]
+        return {"tags": self.tags[iid]}
+
+
 class SemanticTableColorTests(unittest.TestCase):
+    def test_tracker_backing_rows_drop_legacy_difficulty_colors(self):
+        app = TrackerApp.__new__(TrackerApp)
+        tree = _LegacyDifficultyTree()
+
+        app._apply_difficulty_color_to_tree_item(
+            tree,
+            "row",
+            "Expert",
+        )
+
+        self.assertEqual(
+            tree.tags["row"],
+            ("tracker_even", "hall_of_fame"),
+        )
+
     def test_downloader_appearance_does_not_color_entire_semantic_rows(self):
         app = TrackerApp.__new__(TrackerApp)
         app._library_palette = lambda: {

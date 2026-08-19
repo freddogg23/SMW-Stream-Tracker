@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+import inspect
 from pathlib import Path
 import types
 import unittest
@@ -84,6 +85,37 @@ class DropdownAlignmentTests(unittest.TestCase):
             fake_tcl.calls,
         )
 
+    def test_creator_dropdowns_are_visually_centered_and_limit_popup_height(self):
+        shared_source = inspect.getsource(
+            self.tracker.TrackerApp._build_game_mode_filter_panel
+        )
+        curator_source = inspect.getsource(
+            self.tracker.TrackerApp._open_mario_kaizo_playlist_curator
+        )
+        centering_source = inspect.getsource(
+            self.tracker.TrackerApp._center_creator_combobox_text
+        )
+
+        self.assertIn('height=10 if variable_key == "creator"', shared_source)
+        self.assertIn(
+            '"CenteredCreator.Mario.TCombobox"',
+            shared_source,
+        )
+        self.assertIn("_center_creator_dropdown_rows", shared_source)
+        self.assertIn(
+            "self._center_creator_combobox_text(creator_combo)",
+            curator_source,
+        )
+        self.assertIn("padding=(self._ui_px(21), 0, 0, 0)", centering_source)
+
+        popup_source = inspect.getsource(
+            self.tracker.TrackerApp._center_dropdown_list_items
+        )
+        self.assertIn("center_within_visible_width", popup_source)
+        self.assertIn("_centered_dropdown_display_var", popup_source)
+        self.assertIn('"-listvariable"', popup_source)
+        self.assertIn('"xview"', popup_source)
+
     def test_searchable_hack_popup_centers_display_only_text(self):
         class FixedWidthFont:
             @staticmethod
@@ -150,7 +182,7 @@ class DropdownAlignmentTests(unittest.TestCase):
                 method_source,
             )
 
-    def test_catalog_and_downloader_give_type_column_more_room(self):
+    def test_catalog_keeps_wide_metadata_and_downloader_uses_preview_columns(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
         tree = ast.parse(source)
         method = next(
@@ -161,11 +193,32 @@ class DropdownAlignmentTests(unittest.TestCase):
         )
         method_source = ast.get_source_segment(source, method)
 
-        self.assertIn('else "Hack Title"', method_source)
-        self.assertIn('{"title": "Hack Title"}', method_source)
-        self.assertIn('width=(260 if catalog_view_only', method_source)
-        self.assertIn('minwidth=(240 if catalog_view_only', method_source)
+        self.assertIn('else ("title", "difficulty", "patch")', method_source)
+        self.assertIn('"#0": "Select"', method_source)
+        self.assertIn('"title": "Hack"', method_source)
+        self.assertIn('"patch": "Patch"', method_source)
+        self.assertIn('tree.column(\n                "patch"', method_source)
         self.assertIn('heading_width("type", 240)', method_source)
+
+    def test_preview_downloader_colors_only_the_title_column(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        method = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_downloader_title_overlay"
+        )
+        method_source = ast.get_source_segment(source, method)
+
+        self.assertNotIn("if not catalog_view_only:", method_source)
+        self.assertIn('title_column = "title"', method_source)
+        self.assertIn("tree.bbox(iid, title_column)", method_source)
+        self.assertIn('STREAM_DESK["yellow"]', method_source)
+        self.assertIn('STREAM_DESK["red"]', method_source)
+        self.assertIn('game.get("_retroachievements_game_id", 0)', method_source)
+        self.assertIn('self.downloader_widgets.get("trophy_photo")', method_source)
+        self.assertNotIn('else "#0"', method_source)
 
 
 if __name__ == "__main__":

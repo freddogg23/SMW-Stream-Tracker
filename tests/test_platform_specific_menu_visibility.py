@@ -32,7 +32,7 @@ class PlatformSpecificMenuVisibilityTests(unittest.TestCase):
         expected = {
             "FXPAK Pro": ("qusb2snes",),
             "RetroArch": ("sni", "retroarch"),
-            "MiSTer": ("mister",),
+            "MiSTer": ("sni", "mister"),
         }
         for platform_name, option_names in expected.items():
             with self.subTest(platform=platform_name):
@@ -47,12 +47,17 @@ class PlatformSpecificMenuVisibilityTests(unittest.TestCase):
             ("qusb2snes",),
         )
 
-    def test_downloads_menu_hides_fxpak_browser_on_other_platforms(self):
+    def test_setup_menu_is_removed_and_platform_routes_remain(self):
         source = inspect.getsource(self.tracker.TrackerApp._build_menu_bar)
-        self.assertIn("platform_setup_menu_options", source)
-        self.assertIn('if selected_platform == "FXPAK Pro"', source)
-        self.assertIn('"FXPAK Pro…"', source)
-        self.assertIn("self.connection_option_menu_names", source)
+        next_step_source = inspect.getsource(
+            self.tracker.TrackerApp._open_next_connection_setup_step
+        )
+        self.assertIn('self._open_settings_dialog("Platform")', next_step_source)
+        self.assertNotIn('create_menu_button(\n                "Setup"', source)
+        self.assertNotIn('("Setup", downloads_menu)', source)
+        self.assertNotIn('"FXPAK Pro…"', source)
+        self.assertIn("self.downloads_menu = None", source)
+        self.assertIn("self.connection_option_menu_names = ()", source)
 
     def test_platform_selection_rebuilds_only_the_menu_bar(self):
         source = inspect.getsource(
@@ -68,23 +73,39 @@ class PlatformSpecificMenuVisibilityTests(unittest.TestCase):
         self.assertIn("self._build_menu_bar()", rebuild_source)
         self.assertNotIn("self._build_ui", rebuild_source)
 
-    def test_settings_page_hides_inactive_platform_fields(self):
+    def test_platform_launch_preferences_are_persistent_config_values(self):
+        expected_defaults = {
+            "auto_connect_on_startup": True,
+            "return_to_dashboard_after_launch": True,
+            "confirm_before_replacing_game": False,
+            "save_tracker_data_automatically": True,
+        }
+        for key, expected in expected_defaults.items():
+            with self.subTest(key=key):
+                self.assertIn(key, self.tracker.DEFAULT_CONFIG)
+                self.assertEqual(self.tracker.DEFAULT_CONFIG[key], expected)
+
+    def test_settings_page_shows_only_the_selected_platform_setup(self):
         source = inspect.getsource(
             self.tracker.TrackerApp._open_settings_dialog
         )
-        self.assertIn('if selected_platform == "RetroArch"', source)
-        self.assertIn('elif selected_platform == "FXPAK Pro"', source)
-        self.assertIn(
-            'if selected_platform in {"FXPAK Pro", "RetroArch"}',
-            source,
-        )
+        self.assertIn("for platform_name in PLATFORM_OPTIONS", source)
+        self.assertIn("platform_setup_pages[platform_name]", source)
+        self.assertIn("platform_setup_pages[platform_name].tkraise()", source)
+        self.assertIn("connection_service_codes_for(platform_name)", source)
+        self.assertIn("platform_logo_label.configure(image=selected_logo)", source)
 
-    def test_fxpak_usb_downloader_controls_are_platform_gated(self):
+    def test_fxpak_downloader_uses_only_the_mounted_sd_copy_control(self):
         source = inspect.getsource(
             self.tracker.TrackerApp.open_hack_downloader
         )
         self.assertIn('if selected_platform == "FXPAK Pro"', source)
-        self.assertIn("Upload new ROMs through FXPAK Pro USB:", source)
+        self.assertIn('"send_fxpak_sd_button"', source)
+        self.assertIn('self.downloader_widgets["fxpak_sd_option"]', source)
+        self.assertIn("columnspan=2", source)
+        self.assertIn("copy_to_sd_var.set(False)", source)
+        self.assertNotIn("Copy through FXPAK Pro USB", source)
+        self.assertNotIn("Upload new ROMs through FXPAK Pro USB", source)
 
     def test_platform_settings_notes_are_translated(self):
         notes = (

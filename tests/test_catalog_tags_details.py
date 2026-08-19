@@ -144,6 +144,33 @@ class CatalogTagsAndDetailsTests(unittest.TestCase):
         self.assertEqual(len(metadata["screenshots"]), 1)
         self.assertEqual(request.call_args.args[0]["f[name]"], "Same Name")
 
+    def test_resolved_tracker_record_preserves_blank_tracker_only_fields(self):
+        class CatalogDatabase:
+            @staticmethod
+            def get_catalog_game(_catalog_key):
+                return {
+                    "catalog_key": "SMWC:123",
+                    "title": "Blank Rating World",
+                    "rating": 4.0,
+                }
+
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        app.stats_db = CatalogDatabase()
+        app.hack_catalog = []
+        resolved = app._resolved_hack_details_record(
+            {
+                "catalog_key": "SMWC:123",
+                "title": "Blank Rating World",
+                "personal_rating": None,
+                "smwc_rating": None,
+            }
+        )
+
+        self.assertIn("personal_rating", resolved)
+        self.assertIsNone(resolved["personal_rating"])
+        self.assertIn("smwc_rating", resolved)
+        self.assertIsNone(resolved["smwc_rating"])
+
     def test_every_supported_language_has_new_labels(self):
         labels = (
             "Search title, creator, or tag",
@@ -222,6 +249,53 @@ class CatalogTagsAndDetailsTests(unittest.TestCase):
             "metadata_missing",
             self.tracker.TrackerApp.open_mister_setup.__code__.co_varnames,
         )
+
+    def test_context_menus_keep_actions_but_remove_legacy_color_options(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        methods = {
+            node.name: node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+        shared_menu = ast.get_source_segment(
+            source,
+            methods["_show_table_appearance_menu"],
+        )
+        tracker_menu = ast.get_source_segment(
+            source,
+            methods["_show_tracker_appearance_menu"],
+        )
+        overview_menu = ast.get_source_segment(
+            source,
+            methods["_show_statistics_table_color_menu"],
+        )
+        downloader = ast.get_source_segment(
+            source,
+            methods["open_hack_downloader"],
+        )
+
+        removed_labels = (
+            "Solid color for",
+            "Gradient for",
+            "Alternating rows for",
+            "Edit gradient data bar",
+            "Set color for all",
+            "Choose another difficulty color",
+            "Use Overview alternating colors",
+            "Restore Mario theme colors",
+            "Restore default table colors",
+        )
+        for menu_source in (shared_menu, tracker_menu, overview_menu):
+            for label in removed_labels:
+                with self.subTest(method=menu_source[:40], label=label):
+                    self.assertNotIn(label, menu_source)
+
+        self.assertIn('"View Hack Details"', shared_menu)
+        self.assertIn("tree.selection()", shared_menu)
+        self.assertIn('"View Hack Details"', tracker_menu)
+        self.assertIn('"View Hack Details"', overview_menu)
+        self.assertIn("details_resolver=lambda iid:", downloader)
 
 
 if __name__ == "__main__":

@@ -61,13 +61,18 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
             "qusb2snes_path": str(qusb_path),
             "retroarch_executable_path": str(retroarch_path),
             "retroarch_core_path": str(core_path),
-            "selected_platform": "FXPAK Pro",
+            "selected_platform": {
+                "qusb2snes": "FXPAK Pro",
+                "sni_retroarch": "RetroArch",
+                "mister": "MiSTer",
+            }[choice],
             "mister_host": "MiSTer",
             "mister_ssh_fingerprint": "",
             "first_launch_mister_setup_requested": False,
         }
         app.sni_path_var = DummyVariable(sni_path)
         app.qusb_path_var = DummyVariable(qusb_path)
+        app.platform_var = DummyVariable(app.config["selected_platform"])
         app.root = DummyRoot()
         app._guided_setup_post_downloads_menu = lambda: None
         app.flash_refreshes = 0
@@ -80,6 +85,8 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
         )
         app.advanced_stages = []
         app._guided_setup_set_stage = app.advanced_stages.append
+        app._guided_setup_open_current_step = lambda: None
+        app._open_settings_dialog = lambda _section="Platform": None
         return app
 
     def test_sni_and_retroarch_must_both_finish_before_advancing(self):
@@ -91,6 +98,14 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
             ):
                 with self.subTest(first=first):
                     app = self.make_app(folder, "sni_retroarch")
+                    sni_path = Path(app.config["sni_path"])
+                    retroarch_path = Path(app.config["retroarch_executable_path"])
+                    core_path = Path(app.config["retroarch_core_path"])
+                    if first == "sni":
+                        retroarch_path.unlink()
+                        core_path.unlink()
+                    else:
+                        sni_path.unlink()
                     app._guided_optional_software_completed(first)
                     self.assertEqual(app.advanced_stages, [])
                     self.assertEqual(
@@ -99,14 +114,46 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
                     )
                     self.assertEqual(app.flash_refreshes, 1)
 
+                    if second == "sni":
+                        sni_path.touch()
+                    else:
+                        retroarch_path.touch()
+                        core_path.touch()
                     app._guided_optional_software_completed(second)
-                    self.assertEqual(app.advanced_stages, ["catalog"])
+                    self.assertEqual(app.advanced_stages, ["refresh_catalog"])
                     self.assertEqual(
                         app._guided_setup_software_completed,
                         {"sni", "retroarch"},
                     )
 
-    def test_sni_selection_leaves_only_retroarch_highlighted(self):
+    def test_preconfigured_paths_do_not_skip_the_platform_step(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            app = self.make_app(
+                Path(temporary_directory),
+                "sni_retroarch",
+            )
+
+            self.assertFalse(
+                app._guided_setup_requirement_ready("sni")
+            )
+            self.assertFalse(
+                app._guided_setup_requirement_ready("retroarch")
+            )
+
+            app._guided_setup_software_completed.add("sni")
+            self.assertTrue(
+                app._guided_setup_requirement_ready("sni")
+            )
+            self.assertFalse(
+                app._guided_setup_requirement_ready("retroarch")
+            )
+
+            app._guided_setup_software_completed.add("retroarch")
+            self.assertTrue(
+                app._guided_setup_requirement_ready("retroarch")
+            )
+
+    def test_native_setup_menu_targets_are_gone(self):
         app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
         downloads_menu = object()
         connection_menu = object()
@@ -118,27 +165,7 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
         app._guided_setup_software_selected = {"sni"}
         app._guided_setup_software_completed = set()
 
-        self.assertEqual(
-            app._guided_setup_target_menu_entries("connection"),
-            ((downloads_menu, 5), (connection_menu, 12)),
-        )
-
-    def test_retroarch_selection_leaves_only_sni_highlighted(self):
-        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
-        downloads_menu = object()
-        connection_menu = object()
-        app.downloads_menu = downloads_menu
-        app.connection_setup_menu = connection_menu
-        app.connection_setup_menu_index = 5
-        app.connection_option_menu_indexes = (10, 11, 12, 13)
-        app._guided_setup_software_choice = "sni_retroarch"
-        app._guided_setup_software_selected = {"retroarch"}
-        app._guided_setup_software_completed = set()
-
-        self.assertEqual(
-            app._guided_setup_target_menu_entries("connection"),
-            ((downloads_menu, 5), (connection_menu, 10)),
-        )
+        self.assertEqual(app._guided_setup_target_menu_entries("connection"), ())
 
     def test_qusb2snes_alone_can_advance(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -147,30 +174,13 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
                 "qusb2snes",
             )
             app._guided_optional_software_completed("qusb2snes")
-            self.assertEqual(app.advanced_stages, ["catalog"])
+            self.assertEqual(app.advanced_stages, ["refresh_catalog"])
             self.assertEqual(
                 app._guided_setup_software_completed,
                 {"qusb2snes"},
             )
 
-    def test_mister_selection_highlights_only_mister(self):
-        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
-        downloads_menu = object()
-        connection_menu = object()
-        app.downloads_menu = downloads_menu
-        app.connection_setup_menu = connection_menu
-        app.connection_setup_menu_index = 5
-        app.connection_option_menu_indexes = (10, 11, 12, 13)
-        app._guided_setup_software_choice = "mister"
-        app._guided_setup_software_selected = set()
-        app._guided_setup_software_completed = set()
-
-        self.assertEqual(
-            app._guided_setup_target_menu_entries("connection"),
-            ((downloads_menu, 5), (connection_menu, 13)),
-        )
-
-    def test_mister_advances_only_after_verified_one_click_setup(self):
+    def test_mister_advances_only_after_sni_and_verified_one_click_setup(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             app = self.make_app(Path(temporary_directory), "mister")
             app.config.update(
@@ -181,10 +191,17 @@ class GuidedSetupConnectionGateTests(unittest.TestCase):
                     "first_launch_mister_setup_requested": True,
                 }
             )
+            sni_path = Path(app.config["sni_path"])
+            sni_path.unlink()
             with mock.patch.object(self.tracker, "save_config") as save:
                 app._guided_optional_software_completed("mister")
 
-            self.assertEqual(app.advanced_stages, ["catalog"])
+            self.assertEqual(app.advanced_stages, [])
+            sni_path.touch()
+            with mock.patch.object(self.tracker, "save_config") as save:
+                app._guided_optional_software_completed("sni")
+
+            self.assertEqual(app.advanced_stages, ["refresh_catalog"])
             self.assertFalse(
                 app.config["first_launch_mister_setup_requested"]
             )

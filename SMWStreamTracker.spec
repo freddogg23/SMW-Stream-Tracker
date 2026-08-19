@@ -7,10 +7,35 @@ from PyInstaller.utils.hooks import collect_all
 
 
 # Development builds keep optional dependencies in local package folders.
-# Add them after the selected Python runtime's site-packages so an incomplete
-# vendored package cannot shadow a complete native installation (Pillow's
-# PIL._imaging extension is especially important for every branded image in
-# the tracker).
+# Prefer a local Pillow copy only when it contains the compiled imaging
+# extension for the Python runtime doing the build. A complete cp313 Pillow
+# folder is still unusable in a cp312 build and otherwise makes PyInstaller
+# finish successfully while every branded banner silently disappears at
+# runtime.
+_python_abi_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+for _pillow_folder_name in (
+    ".ui-test-deps",
+    ".build-packages",
+):
+    _pillow_packages = Path(SPECPATH) / _pillow_folder_name
+    _pillow_package = _pillow_packages / "PIL"
+    if (
+        _pillow_package.is_dir()
+        and any(
+            _pillow_package.glob(
+                f"_imaging.{_python_abi_tag}-*.pyd"
+            )
+        )
+    ):
+        _pillow_packages_text = str(_pillow_packages)
+        while _pillow_packages_text in sys.path:
+            sys.path.remove(_pillow_packages_text)
+        sys.path.insert(0, _pillow_packages_text)
+        break
+
+
+# Add the remaining optional dependencies after the chosen Python runtime's
+# site-packages.
 for _package_folder_name in (
     ".build-packages",
 ):

@@ -96,6 +96,24 @@ class ButtonRecorder:
         self.options.update(options)
 
 
+class UpdateActionButton(ButtonRecorder):
+    def __init__(self):
+        super().__init__()
+        self.scheduled = []
+        self.cancelled = []
+
+    def winfo_exists(self):
+        return True
+
+    def after(self, milliseconds, callback):
+        identifier = f"after-{len(self.scheduled) + 1}"
+        self.scheduled.append((identifier, milliseconds, callback))
+        return identifier
+
+    def after_cancel(self, identifier):
+        self.cancelled.append(identifier)
+
+
 class RandomDownloadedOnlyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -163,48 +181,32 @@ class RandomDownloadedOnlyTests(unittest.TestCase):
             [("raise", ".update_badge")],
         )
 
-    def test_update_badge_adds_red_dot_to_about_menu_entry(self):
+    def test_update_notification_reaches_new_settings_ui(self):
         app = self.make_app("FXPAK Pro")
-        app.app_language = "en"
-        app.help_update_badge = UpdateBadge()
-        app.update_available_version = "TEST"
+        settings_badge = UpdateBadge()
+        settings_button = UpdateActionButton()
+        app.help_update_badge = None
+        app.settings_update_badge = settings_badge
+        app.settings_update_action_button = settings_button
+        app.settings_update_flash_after_id = None
+        app.settings_update_flash_on = False
+        app.update_available_version = "2.1.0"
         app._ui_px = lambda value: value
-        app.help_menu = MenuRecorder()
-        app.about_updates_menu_index = 3
-        app.about_update_dot_image = "red-dot"
-        app.about_dialog = None
-        app.about_update_button = None
+        app._translate_ui_text = lambda text: text
 
         app._refresh_help_update_badge()
 
-        self.assertEqual(
-            app.help_menu.entry_options[3]["image"],
-            "red-dot",
-        )
+        self.assertIsNotNone(settings_badge.place_options)
+        self.assertEqual(settings_button.options["text"], "Update Available")
+        self.assertEqual(settings_button.options["bg"], self.tracker.STREAM_DESK["yellow"])
+        self.assertEqual(settings_button.scheduled[0][1], 850)
 
-    def test_about_update_button_flashes_update_available(self):
-        app = self.make_app("FXPAK Pro")
-        app.app_language = "en"
-        app.update_available_version = "TEST"
-        app.about_dialog = AfterDialog()
-        app.about_update_button = ButtonRecorder()
-        app.about_update_flash_after_id = None
-        app.about_update_flash_on = False
+        app.update_available_version = ""
+        app._refresh_help_update_badge()
 
-        app._refresh_about_update_button()
-
-        self.assertEqual(
-            app.about_update_button.options["text"],
-            "Update Available",
-        )
-        self.assertEqual(
-            app.about_update_button.options["bg"],
-            self.tracker.THEME["red"],
-        )
-        self.assertEqual(
-            app.about_dialog.scheduled[0][1],
-            700,
-        )
+        self.assertIsNone(settings_badge.place_options)
+        self.assertEqual(settings_button.options["text"], "Updates")
+        self.assertEqual(settings_button.cancelled, ["after-1"])
 
     def test_retroarch_settings_are_added_and_existing_values_replaced(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

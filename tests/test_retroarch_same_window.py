@@ -97,6 +97,8 @@ class RetroArchSameWindowTests(unittest.TestCase):
             app._load_retroarch_content_in_place = mock.Mock(
                 return_value=(True, True)
             )
+            app._retroarch_normal_speed_process = mock.Mock()
+            app._retroarch_normal_speed_process.poll.return_value = None
 
             with mock.patch.object(self.tracker.subprocess, "Popen") as popen:
                 result = app._run_local_emulator_launcher(
@@ -134,6 +136,8 @@ class RetroArchSameWindowTests(unittest.TestCase):
             app._retroarch_status = mock.Mock(
                 return_value="GET_STATUS PLAYING snes,Old Hack"
             )
+            app._retroarch_normal_speed_process = mock.Mock()
+            app._retroarch_normal_speed_process.poll.return_value = None
 
             with mock.patch.object(self.tracker.subprocess, "Popen") as popen:
                 with self.assertRaisesRegex(RuntimeError, "duplicate"):
@@ -143,6 +147,104 @@ class RetroArchSameWindowTests(unittest.TestCase):
                     )
 
         popen.assert_not_called()
+
+    def test_any_retroarch_launch_uses_normal_speed_config(self):
+        app = self.make_app()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            executable = root / "retroarch.exe"
+            core = root / "cores" / "snes9x_libretro.dll"
+            rom = root / "roms" / "New Hack.sfc"
+            core.parent.mkdir()
+            rom.parent.mkdir()
+            executable.write_bytes(b"EXE")
+            core.write_bytes(b"CORE")
+            rom.write_bytes(b"ROM")
+            app.config.update(
+                {
+                    "retroarch_executable_path": str(executable),
+                    "retroarch_core_path": str(core),
+                }
+            )
+            app._resolve_local_rom_path = mock.Mock(
+                return_value=(rom, "exact local filename match")
+            )
+            app._load_retroarch_content_in_place = mock.Mock(
+                return_value=(True, True)
+            )
+            app._prepare_retroarch_game_switch = mock.Mock(
+                return_value="saved previous state and restarted RetroArch"
+            )
+            normal_speed_config = root / "RetroArchNormalSpeed.cfg"
+
+            with mock.patch.object(
+                self.tracker,
+                "RETROARCH_NORMAL_SPEED_CONFIG_FILE",
+                normal_speed_config,
+            ):
+                with mock.patch.object(
+                    self.tracker,
+                    "primary_display_refresh_rate_hz",
+                    return_value=240.0,
+                ):
+                    with mock.patch.object(
+                        self.tracker.subprocess,
+                        "Popen",
+                    ) as popen:
+                        result = app._run_local_emulator_launcher(
+                            {"title": "New Hack"},
+                            "RetroArch",
+                        )
+
+            command = popen.call_args.args[0]
+            overlay_text = normal_speed_config.read_text(encoding="utf-8")
+
+        app._load_retroarch_content_in_place.assert_not_called()
+        app._prepare_retroarch_game_switch.assert_called_once_with(
+            already_saved=False,
+        )
+        popen.assert_called_once()
+        self.assertIn(f"--config={normal_speed_config}", command)
+        self.assertIn('fastforward_ratio = "1.000000"', overlay_text)
+        self.assertIn('input_toggle_fast_forward = "nul"', overlay_text)
+        self.assertIn('input_hold_fast_forward = "nul"', overlay_text)
+        self.assertIn('video_swap_interval = "4"', overlay_text)
+        self.assertIn('fps_show = "false"', overlay_text)
+        self.assertIn('framecount_show = "false"', overlay_text)
+        self.assertIn('config_save_on_exit = "false"', overlay_text)
+        self.assertIn("restarted RetroArch", result["method"])
+
+    def test_retroarch_vsync_interval_tracks_display_refresh_rate(self):
+        interval = self.tracker.retroarch_vsync_interval_for_refresh
+        self.assertEqual(interval(60), 1)
+        self.assertEqual(interval(120), 2)
+        self.assertEqual(interval(240), 4)
+        self.assertEqual(interval(360), 6)
+
+    def test_game_mode_launch_waits_for_speed_hotkey_release(self):
+        app = self.make_app()
+        app.platform_var = SimpleNamespace(get=lambda: "RetroArch")
+        app.worker = None
+        app.root = SimpleNamespace(after=lambda _delay, _callback: None)
+        app._wait_for_retroarch_launch_input_release = mock.Mock()
+        app._run_fxpak_game_launch = mock.Mock(
+            return_value={"path": r"C:\ROMs\New Hack.sfc"}
+        )
+
+        game = {
+            "title": "New Hack",
+            "_guard_retroarch_launch_input": True,
+            "_retroarch_force_fresh_process": True,
+        }
+        app._launch_catalog_game_thread(game)
+
+        app._wait_for_retroarch_launch_input_release.assert_called_once_with()
+        app._run_fxpak_game_launch.assert_called_once_with(
+            {
+                "title": "New Hack",
+                "_retroarch_force_fresh_process": True,
+            }
+        )
 
     def test_file_drop_accepts_64_bit_window_and_memory_handles(self):
         class FakeFunction:

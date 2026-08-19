@@ -67,14 +67,27 @@ class FirstLaunchSetupTests(unittest.TestCase):
         self.assertIn("function ShouldSetUpMiSTer: Boolean;", installer)
         self.assertIn("Result := 'MiSTer'", installer)
 
-    def test_complete_installer_uses_the_shared_banner_and_blue_theme(self):
+    def test_complete_installer_uses_the_shared_banner_and_stream_desk_theme(self):
         installer = INSTALLER_PATH.read_text(encoding="utf-8")
 
         self.assertIn(
             "WizardStyle=modern dark polar includetitlebar hidebevels",
             installer,
         )
-        self.assertIn("WizardBackColor=#19283F", installer)
+        self.assertIn("WizardBackColor=#0D1216", installer)
+        self.assertIn(
+            "WizardForm.Color := StreamDeskBackground;",
+            installer,
+        )
+        self.assertIn(
+            "WizardForm.MainPanel.Color := StreamDeskSurface;",
+            installer,
+        )
+        self.assertIn("function StreamDeskGreen: TColor;", installer)
+        self.assertIn("procedure CreateDependencyOptionRows;", installer)
+        self.assertIn("procedure CreateDesktopShortcutRow;", installer)
+        self.assertIn("procedure CreateFinishOptionRows;", installer)
+        self.assertIn("WizardForm.NextButton.Font.Style := [fsBold];", installer)
         self.assertIn("WizardSizePercent=150", installer)
         self.assertIn("WizardImageFile=\n", installer)
         self.assertIn("WizardSmallImageFile=\n", installer)
@@ -280,18 +293,25 @@ class FirstLaunchSetupTests(unittest.TestCase):
             with self.subTest(state_path=state_path):
                 self.assertIn(state_path, installer)
 
-        for protected_tool in ("SNI", "QUsb2Snes"):
-            with self.subTest(protected_tool=protected_tool):
-                installed_tool_line = next(
-                    line
-                    for line in installer.splitlines()
-                    if f'DestDir: "{{app}}\\Tools\\{protected_tool}"' in line
-                )
-                self.assertIn(protected_tool, installed_tool_line)
-                tool_block_start = installer.index(installed_tool_line)
-                tool_block_end = installer.find("\n\n", tool_block_start)
-                tool_block = installer[tool_block_start:tool_block_end]
-                self.assertIn("uninsneveruninstall", tool_block)
+        installed_sni_line = next(
+            line
+            for line in installer.splitlines()
+            if 'DestDir: "{app}\\Tools\\SNI"' in line
+        )
+        sni_block_start = installer.index(installed_sni_line)
+        sni_block_end = installer.find("\n\n", sni_block_start)
+        self.assertIn(
+            "uninsneveruninstall",
+            installer[sni_block_start:sni_block_end],
+        )
+
+        # QUsb2Snes is now expanded by Windows' native tar implementation for
+        # a much faster install. It is still placed outside uninstall ownership.
+        self.assertIn("procedure InstallQUsb2Snes;", installer)
+        self.assertIn(
+            "InstallDirectory := ExpandConstant('{app}\\Tools\\QUsb2Snes');",
+            installer,
+        )
 
         # RetroArch's faster nested installer owns its files, so the tracker
         # uninstaller never registers or removes them.
@@ -452,123 +472,84 @@ class FirstLaunchSetupTests(unittest.TestCase):
         self.assertIn("if callable(guided_setup_complete):", download_finish_source)
         self.assertIn("guided_setup_complete()", download_finish_source)
 
-    def test_guide_starts_at_downloads_and_hides_after_it_is_selected(self):
+    def test_setup_starts_at_the_first_real_step_without_a_guide_window(self):
         start_source = ast.get_source_segment(
             self.source,
             self.methods["start_guided_app_setup"],
         )
-        click_source = ast.get_source_segment(
+        route_source = ast.get_source_segment(
             self.source,
-            self.methods["_guided_downloads_menu_button_clicked"],
+            self.methods["_guided_setup_open_current_step"],
         )
-        self.assertIn('self._guided_setup_set_stage("downloads")', start_source)
-        self.assertIn('if stage == "downloads":', click_source)
-        self.assertIn("self._guided_setup_hide_dialog()", click_source)
-        self.assertIn('self._guided_setup_set_stage("connection")', click_source)
-        self.assertIn('elif stage == "downloads_again":', click_source)
-        self.assertIn(
-            'self._guided_setup_set_stage("download_missing")',
-            click_source,
-        )
+        self.assertIn('self._guided_setup_set_stage("connection")', start_source)
+        self.assertIn("self.root.after_idle(self._guided_setup_open_current_step)", start_source)
+        self.assertNotIn("self._create_tracker_dialog", start_source)
+        self.assertNotIn("guided_setup_action_button", start_source)
+        self.assertIn('self._open_settings_dialog("Platform")', route_source)
+        self.assertIn("self.open_hack_downloader()", route_source)
 
-    def test_connection_step_flashes_parent_and_all_four_choices(self):
+    def test_connection_step_uses_platform_page_actions(self):
         targets_source = ast.get_source_segment(
             self.source,
             self.methods["_guided_setup_target_menu_entries"],
         )
-        self.assertIn('if stage == "connection":', targets_source)
-        self.assertIn("connection_setup_menu_index", targets_source)
-        self.assertIn("connection_option_menu_indexes", targets_source)
-        self.assertIn(
-            "self.connection_option_menu_indexes = tuple(",
+        next_step_source = ast.get_source_segment(
             self.source,
+            self.methods["_open_next_connection_setup_step"],
         )
-        self.assertIn('"mister",', targets_source)
-        self.assertIn(
-            "self._guided_open_mister_setup,",
-            self.source,
-        )
+        self.assertIn("return ()", targets_source)
+        self.assertNotIn("connection_setup_menu_index", targets_source)
+        self.assertNotIn("downloads_menu", targets_source)
+        self.assertIn('self._open_settings_dialog("Platform")', next_step_source)
+        self.assertNotIn("_guided_install_optional_software(next_option)", next_step_source)
 
-    def test_reorganized_menus_keep_guided_setup_flash_targets(self):
+    def test_obsolete_setup_menu_is_completely_removed(self):
         menu_source = ast.get_source_segment(
             self.source,
             self.methods["_build_menu_bar"],
         )
         self.assertIn('create_menu_button(\n                "File"', menu_source)
-        self.assertIn('create_menu_button(\n                "Setup"', menu_source)
-        self.assertIn('label="Connection & Emulator"', menu_source)
-        self.assertIn('label="Application"', menu_source)
-        self.assertIn('label="LiveSplit Timers"', menu_source)
-        self.assertIn('"App Settings"', menu_source)
-        self.assertIn('label="OBS Settings"', menu_source)
-        settings_section = menu_source.split(
-            "self.downloads_menu_button, downloads_menu =",
-            1,
-        )[0]
-        application_section = menu_source.split(
-            "application_setup_menu = tk.Menu(",
-            1,
-        )[1].split(
-            "livesplit_setup_menu = tk.Menu(",
-            1,
-        )[0]
-        self.assertNotIn('"App Settings"', settings_section)
-        self.assertNotIn('label="OBS Settings"', settings_section)
-        self.assertIn('"App Settings"', application_section)
-        self.assertIn('label="OBS Settings"', application_section)
-        self.assertIn(
-            "obs_menu = tk.Menu(\n            application_setup_menu,",
-            application_section,
-        )
+        self.assertNotIn('create_menu_button(\n                "Setup"', menu_source)
+        self.assertNotIn('("Setup", downloads_menu)', menu_source)
+        self.assertNotIn('"Connection & Emulator",', menu_source)
+        self.assertNotIn('"Application",\n            self.start_guided_app_setup', menu_source)
+        self.assertNotIn('"LiveSplit Timers",', menu_source)
+        self.assertNotIn("application_setup_menu = tk.Menu(", menu_source)
+        self.assertNotIn("livesplit_setup_menu = tk.Menu(", menu_source)
+        self.assertNotIn("software_menu = tk.Menu(", menu_source)
         self.assertIn('"Test Selected Platform"', menu_source)
         self.assertIn('"Setup & Health Check..."', menu_source)
         self.assertIn('"Diagnostics..."', menu_source)
-        self.assertIn(
-            "self.connection_setup_menu_index = downloads_menu.index(\"end\")",
-            menu_source,
-        )
-        self.assertIn(
-            "self.connection_option_menu_indexes = tuple(",
-            menu_source,
-        )
-        self.assertIn(
-            "command=self._guided_downloads_menu_button_clicked",
-            menu_source,
-        )
+        self.assertIn("self.downloads_menu = None", menu_source)
+        self.assertIn("self.connection_setup_menu_index = None", menu_source)
 
-    def test_posted_native_menu_entries_are_stable_and_clickable(self):
-        tick_source = ast.get_source_segment(
+    def test_setup_handoffs_never_post_a_native_menu(self):
+        post_source = ast.get_source_segment(
             self.source,
-            self.methods["_guided_setup_flash_tick"],
+            self.methods["_guided_setup_post_downloads_menu"],
         )
-        start_source = ast.get_source_segment(
+        click_source = ast.get_source_segment(
             self.source,
-            self.methods["_guided_setup_start_flash"],
+            self.methods["_guided_downloads_menu_button_clicked"],
         )
-        self.assertNotIn("entryconfigure", tick_source)
-        self.assertIn("menu.entryconfigure(", start_source)
-        self.assertIn('label=f"\\u2605  {label}"', start_source)
-        self.assertIn('foreground=THEME["yellow"]', start_source)
+        self.assertNotIn("_post_menu", post_source)
+        self.assertNotIn("_post_menu", click_source)
+        self.assertIn("self._guided_setup_open_current_step()", post_source)
+        self.assertIn("self._guided_setup_open_current_step()", click_source)
 
     def test_connection_routes_require_the_expected_installs(self):
         completion_source = ast.get_source_segment(
             self.source,
             self.methods["_guided_optional_software_completed"],
         )
-        self.assertIn('if choice == "qusb2snes":', completion_source)
-        self.assertIn('configured_file("qusb2snes_path"', completion_source)
-        self.assertIn('elif choice == "sni_retroarch":', completion_source)
-        self.assertIn('configured_file("sni_path"', completion_source)
-        self.assertIn(
-            'configured_file("retroarch_executable_path")',
-            completion_source,
+        requirement_source = ast.get_source_segment(
+            self.source,
+            self.methods["_guided_setup_requirement_ready"],
         )
-        self.assertIn(
-            'configured_file("retroarch_core_path")',
-            completion_source,
-        )
-        self.assertIn('elif choice == "mister":', completion_source)
-        self.assertIn('"mister_ssh_fingerprint"', completion_source)
+        self.assertIn("platform_setup_menu_options(selected_platform)", completion_source)
+        for requirement in ("qusb2snes", "sni", "retroarch", "mister"):
+            self.assertIn(f'requirement == "{requirement}"', requirement_source)
+        self.assertIn('"mister_ssh_fingerprint"', requirement_source)
 
     def test_installer_selected_mister_flashes_one_click_setup(self):
         start_source = ast.get_source_segment(
@@ -583,8 +564,10 @@ class FirstLaunchSetupTests(unittest.TestCase):
             self.source,
             self.methods["open_mister_setup"],
         )
-        self.assertIn("first_launch_mister_setup_requested", start_source)
-        self.assertIn("mister_setup_automatic_button", target_source)
+        self.assertIn('"MiSTer": "mister"', start_source)
+        self.assertNotIn("mister_setup_automatic_button", target_source)
+        installer_source = INSTALLER_PATH.read_text(encoding="utf-8")
+        self.assertIn("DependencyPage.Values[0] := True", installer_source)
         self.assertIn(
             'self._guided_optional_software_completed("mister")',
             mister_source,
@@ -599,9 +582,9 @@ class FirstLaunchSetupTests(unittest.TestCase):
         self.assertEqual(self.source.count('"mister_connection_text":'), 6)
 
     def test_catalog_and_download_handoffs_follow_requested_order(self):
-        catalog_source = ast.get_source_segment(
+        route_source = ast.get_source_segment(
             self.source,
-            self.methods["open_smwcentral_catalog_browser"],
+            self.methods["_guided_setup_open_current_step"],
         )
         refresh_source = ast.get_source_segment(
             self.source,
@@ -611,11 +594,12 @@ class FirstLaunchSetupTests(unittest.TestCase):
             self.source,
             self.methods["_guided_setup_downloader_opened"],
         )
-        self.assertIn('self._guided_setup_set_stage("refresh_catalog")', catalog_source)
-        self.assertIn("_guided_setup_show_catalog_filter_prompt", catalog_source)
-        self.assertIn('self._guided_setup_set_stage("downloads_again")', refresh_source)
-        self.assertIn('self._guided_setup_set_stage("download_all")', downloader_source)
-        self.assertIn("_guided_setup_show_fxpak_prompt", downloader_source)
+        self.assertIn('self._guided_setup_set_stage("refresh_catalog")', route_source)
+        self.assertIn("self.open_hack_downloader()", route_source)
+        self.assertIn('self._guided_setup_set_stage("download_all")', refresh_source)
+        self.assertIn("_guided_setup_show_initial_download_prompt", refresh_source)
+        self.assertIn("catalog_page_refresh_button", downloader_source)
+        self.assertIn("_guided_setup_show_catalog_filter_prompt", downloader_source)
 
     def test_fresh_install_can_open_catalog_before_the_first_refresh(self):
         open_source = ast.get_source_segment(
@@ -631,10 +615,7 @@ class FirstLaunchSetupTests(unittest.TestCase):
             self.methods["open_game_library"],
         )
 
-        self.assertIn(
-            "if not self.hack_catalog and not catalog_view_only:",
-            open_source,
-        )
+        self.assertIn('self._guided_setup_stage != "refresh_catalog"', open_source)
         self.assertIn(
             "Your SMW Central catalog has not been downloaded yet.",
             open_source,
@@ -656,7 +637,7 @@ class FirstLaunchSetupTests(unittest.TestCase):
             open_source,
         )
 
-    def test_instruction_and_completion_popups_use_blue_app_dialogs(self):
+    def test_instruction_and_completion_popups_use_stream_desk_dialogs(self):
         filter_source = ast.get_source_segment(
             self.source,
             self.methods["_guided_setup_show_catalog_filter_prompt"],
@@ -670,14 +651,16 @@ class FirstLaunchSetupTests(unittest.TestCase):
             self.methods["_prompt_guided_obs_setup"],
         )
         self.assertIn("self._show_localized_info(", filter_source)
-        self.assertIn('"filter_prompt"', filter_source)
+        self.assertIn('"catalog_selection_message"', filter_source)
         self.assertIn("self._show_localized_info(", fxpak_source)
         self.assertIn('"fxpak_prompt"', fxpak_source)
-        self.assertIn('bg=THEME["blue"]', complete_source)
+        self.assertIn("self._create_stream_desk_page_header(", complete_source)
+        self.assertIn('STREAM_DESK["green"]', complete_source)
+        self.assertNotIn('bg=THEME["blue"]', complete_source)
         self.assertIn('"setup_complete_message"', complete_source)
         self.assertIn('"obs_prompt"', complete_source)
 
-    def test_setup_complete_opens_blue_obs_feature_chooser(self):
+    def test_setup_complete_opens_stream_desk_obs_feature_chooser(self):
         complete_source = ast.get_source_segment(
             self.source,
             self.methods["_prompt_guided_obs_setup"],
@@ -696,7 +679,9 @@ class FirstLaunchSetupTests(unittest.TestCase):
         )
 
         self.assertIn("self.open_guided_obs_setup_chooser()", complete_source)
-        self.assertIn('bg=THEME["blue"]', chooser_source)
+        self.assertIn("self._create_stream_desk_page_header(", chooser_source)
+        self.assertIn('STREAM_DESK["green"]', chooser_source)
+        self.assertNotIn('bg=THEME["blue"]', chooser_source)
         self.assertIn('"obs_text_files_button"', chooser_source)
         self.assertIn('"livesplit_obs_button"', chooser_source)
         self.assertIn('"livesplit_obs_button"', obs_text_source)
@@ -725,17 +710,20 @@ class FirstLaunchSetupTests(unittest.TestCase):
         self.assertNotIn('"Download Missing Hacks…"', self.source)
         self.assertNotIn('"Download All Matching Hacks"', self.source)
 
-    def test_setup_menu_and_obs_paths_are_available(self):
+    def test_setup_flow_and_obs_paths_are_available_without_a_setup_menu(self):
         menu_source = ast.get_source_segment(
             self.source,
             self.methods["_build_menu_bar"],
         )
-        self.assertIn('create_menu_button(\n                "Setup"', menu_source)
-        self.assertIn('label="Application"', menu_source)
-        self.assertIn('label="LiveSplit Timers"', menu_source)
-        self.assertIn('self._setup_guide_text("app_setup")', self.source)
-        self.assertIn('self._setup_guide_text("obs_setup")', self.source)
-        self.assertIn('self._setup_guide_text("livesplit_setup")', self.source)
+        settings_source = ast.get_source_segment(
+            self.source,
+            self.methods["_open_settings_dialog"],
+        )
+        self.assertNotIn('create_menu_button(\n                "Setup"', menu_source)
+        self.assertNotIn('("Setup", downloads_menu)', menu_source)
+        self.assertIn("self.start_guided_app_setup", settings_source)
+        self.assertIn("self.open_livesplit_obs_setup_guide", settings_source)
+        self.assertIn("def open_guided_obs_text_setup", self.source)
         for filename in (
             "hack_name.txt",
             "author.txt",
@@ -778,6 +766,23 @@ class FirstLaunchSetupTests(unittest.TestCase):
         self.assertIn('"level_livesplit_button"', guide_source)
         self.assertIn("install_or_open_livesplit_copy", guide_source)
 
+        guide_method = self.methods["open_livesplit_obs_setup_guide"]
+        for call in (
+            node
+            for node in ast.walk(guide_method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "tk"
+        ):
+            for keyword in call.keywords:
+                if keyword.arg in {"padx", "pady"}:
+                    self.assertNotIsInstance(
+                        keyword.value,
+                        (ast.Tuple, ast.List),
+                        "Tk widget constructors only accept one screen distance",
+                    )
+
         assignment = next(
             node
             for node in self.tree.body
@@ -810,6 +815,18 @@ class FirstLaunchSetupTests(unittest.TestCase):
                 self.assertIn("{game_port}", instructions)
                 self.assertIn("{level_port}", instructions)
                 self.assertIn("6.", instructions)
+
+    def test_settings_saved_notice_uses_the_themed_dialog(self):
+        settings_source = ast.get_source_segment(
+            self.source,
+            self.methods["_open_settings_dialog"],
+        )
+        self.assertIn(
+            'self._show_localized_info(\n'
+            '                APP_NAME,\n'
+            '                "Settings were saved successfully."',
+            settings_source,
+        )
 
     def test_every_supported_language_has_setup_copy(self):
         assignment = next(

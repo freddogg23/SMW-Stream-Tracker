@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 1.1.2**
+**Version 2.0.0**
 
 SMW Stream Tracker is a Windows and macOS application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -9,6 +9,29 @@ SMW Stream Tracker is a Windows and macOS application for tracking Super Mario W
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
+
+## What’s new in v2.0.0
+
+- Completes the **Stream Desk** redesign across the dashboard, tracker,
+  library, settings, game modes, setup tools, popups, and Windows installer,
+  with responsive layouts and consistent dark and light themes.
+- Adds and expands game modes, including **Hot Potato** and the **Mario Kaizo
+  Challenge**, with curated playlists, automatic next-hack selection,
+  dashboard controls, and challenge-wide exit tracking.
+- Adds guided **RetroAchievements** setup for RetroArch, MiSTer, and FXPAK Pro,
+  exact-ROM trophy markers, compatible-core launch routing, and shared filters.
+- Unifies advanced search and filtering by title, creator, difficulty, type,
+  release status, Hall of Fame, moderation status, and RetroAchievements across
+  the library, tracker, downloader, playlists, and random game selection.
+- Makes the app smoother and faster with background catalog work, instant
+  downloader opening, cached lookups, stable page sizing, and safer widget
+  refreshes that no longer flash legacy colors.
+- Normalizes every RetroArch launch to prevent accidental fast-forward and FPS
+  overlays, and improves MiSTer, FXPAK Pro, death detection, timer, and game
+  transition reliability.
+- Refreshes the installer and updater, accelerates optional QUsb2Snes and
+  RetroArch setup, preserves user ROMs and tools during uninstall, and gives
+  every shipped translation the same complete interface coverage.
 
 ## What’s new in v1.1.2
 
@@ -59,7 +82,7 @@ The app does **not** include, download, or upload a commercial Super Mario World
   builds, guided setup, OBS/LiveSplit tools, catalog, and blue dialog system.
 - Completes every new menu, button, status, popup, and setup instruction in all
   six languages, including the playful Australian translation.
-- **About & Updates** includes a translated **Join Discord** button for help and
+- **About** includes a translated **Join Discord** button for help and
   contact: <https://discord.gg/fHkTRgqjcr>
 
 ## macOS support
@@ -94,10 +117,12 @@ remove the catalog, settings, statistics, backups, ROM mappings, or OBS files.
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v1.1.0 Live Session dashboard with centered controls, platform status, timers, and death counters">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v2.0.0 Stream Desk dashboard with live-session controls, timeline, counters, and playlist">
 </p>
 
-The v1.1.0 dashboard places level time and deaths, current-hack details, and game time and deaths in one vertically centered Live Session panel, with compact controls below.
+The v2.0.0 Stream Desk dashboard keeps the active hack, session timeline,
+death and exit counters, game-mode controls, and upcoming playlist together in
+one responsive view.
 
 <table>
   <tr>
@@ -108,19 +133,30 @@ The v1.1.0 dashboard places level time and deaths, current-hack details, and gam
     </td>
     <td width="50%" valign="top">
       <img src="docs/screenshots/stats-overview.png" alt="Tracker statistics, difficulty progress, and recent activity"><br>
-      <strong>Statistics</strong><br>
+      <strong>Overview</strong><br>
       Review completion, playtime, ratings, difficulty progress, and recent activity.
     </td>
   </tr>
 </table>
 
-### SMW Central catalog
+### Game library
 
 <p align="center">
-  <img src="docs/screenshots/smw-central-catalog.png" alt="Searchable and sortable SMW Central catalog">
+  <img src="docs/screenshots/game-library.png" alt="Responsive Game Library with advanced filters, difficulty pills, RetroAchievements trophies, and hack details">
 </p>
 
-Browse the moderated catalog with title search, letter filters, difficulty and rating filters, sortable columns, SMW Central page links, patch-download links, and full light-blue cell borders.
+Search and filter ready-to-play ROMs, launch a selected hack, open its details
+and screenshots, import a save file, or download and patch anything missing.
+Gold trophies identify RetroAchievements-supported releases.
+
+### SMW Central hub
+
+<p align="center">
+  <img src="docs/screenshots/smw-central-catalog.png" alt="SMW Central hub with updates, radio, login, and website actions">
+</p>
+
+Open SMW Central updates and radio, sign in through SMW Central, or visit the
+site directly without leaving the Stream Desk navigation.
 
 <table>
   <tr>
@@ -139,7 +175,7 @@ Browse the moderated catalog with title search, letter filters, difficulty and r
     <td colspan="2" valign="top">
       <img src="docs/screenshots/about-discord.png" alt="About and Updates page with translated Join Discord button"><br>
       <strong>Help and contact</strong><br>
-      Open the Discord community directly from the translated About & Updates page.
+      Open the Discord community directly from the translated About page.
     </td>
   </tr>
 </table>
@@ -660,7 +696,7 @@ You can also restore a tracker workbook made by this app with **Stats → Import
 
 ### Check for an update
 
-1. Open **File → Check for Updates**.
+1. Open **Settings → About & Updates**, then select **Updates**.
 2. Review the version, date, size, and release notes.
 3. Select **Download & Install**.
 4. The app verifies the downloaded updater against the SHA-256 checksum in the official HTTPS update manifest.

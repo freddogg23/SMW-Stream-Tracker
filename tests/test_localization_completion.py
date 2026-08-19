@@ -12,6 +12,7 @@ MODULE_PATH = (
     / "SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py"
 )
 LOCALIZED_LANGUAGES = ("au", "es", "fr", "de", "pt-BR")
+SELECTABLE_LOCALIZED_LANGUAGES = ("es", "fr", "de", "pt-BR")
 
 
 def load_tracker_module():
@@ -162,6 +163,61 @@ class LocalizationCompletionTests(unittest.TestCase):
             }
             self.assertEqual(untranslated, set(), language)
 
+    def test_literal_window_titles_have_language_coverage(self):
+        tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
+        titles = {
+            node.args[0].value.strip()
+            for node in ast.walk(tree)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "title"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and node.args[0].value.strip()
+            )
+        }
+        language_neutral = {self.tracker.APP_NAME}
+        for language in SELECTABLE_LOCALIZED_LANGUAGES:
+            app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+            app.app_language = language
+            app.config = {"app_language": language}
+            untranslated = {
+                title
+                for title in titles
+                if title not in language_neutral
+                and app._translate_ui_text(title) == title
+            }
+            with self.subTest(language=language):
+                self.assertEqual(untranslated, set())
+
+    def test_hack_details_chrome_is_complete_in_every_language(self):
+        required_text = {
+            "Hack Details",
+            "Untitled",
+            "Unknown",
+            "By:",
+            "Unrated",
+            "SMWCentral Rating:",
+            "Type:",
+            "Tags:",
+            "Description",
+            "No description is available for this hack.",
+            "Screenshots",
+            "Loading screenshots…",
+            "No screenshots are available for this hack.",
+            "Click any screenshot to enlarge it.",
+            "Some screenshots could not be loaded.",
+            "Screenshot Viewer",
+            "Open SMWCentral",
+            "Close",
+        }
+        for language in LOCALIZED_LANGUAGES:
+            translations = self.tracker.UI_TRANSLATIONS[language]
+            with self.subTest(language=language):
+                self.assertEqual(required_text.difference(translations), set())
+
     def test_native_picker_titles_are_localized_before_windows_sees_them(self):
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
         picker_names = {
@@ -251,6 +307,33 @@ class LocalizationCompletionTests(unittest.TestCase):
         }
         self.assertIn("Join Discord", constants)
         self.assertIn("open_discord_community", called_attributes)
+
+    def test_about_page_uses_stream_desk_ui_and_links_twitch_channel(self):
+        for language in LOCALIZED_LANGUAGES:
+            with self.subTest(language=language):
+                translations = self.tracker.UI_TRANSLATIONS[language]
+                self.assertTrue(translations["Twitch Channel"].strip())
+                self.assertTrue(translations["ABOUT"].strip())
+
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        about_method = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "open_about_dialog"
+        )
+        about_source = ast.get_source_segment(source, about_method)
+        self.assertIn("_uses_stream_desk_palette", about_source)
+        self.assertIn('STREAM_DESK["yellow"]', about_source)
+        self.assertIn("https://www.twitch.tv/freddogg23", about_source)
+        self.assertIn('text="About"', about_source)
+        self.assertIn('dialog.title("About - SMW Stream Tracker")', about_source)
+        self.assertIn('before=about_card', about_source)
+        self.assertIn('side="bottom"', about_source)
+        self.assertIn("restore_order", about_source)
+        self.assertNotIn('"Check for Updates"', about_source)
+        self.assertNotIn("self.check_for_updates", about_source)
 
     def test_every_completion_row_is_available_in_every_language(self):
         for row in self.tracker._LOCALIZATION_COMPLETION_ROWS:
@@ -352,8 +435,9 @@ class LocalizationCompletionTests(unittest.TestCase):
 
     def test_named_pages_have_complete_control_translations(self):
         visible_labels = (
+            "Updates",
             "Preferred service",
-            "Timer grace:",
+            "AutoStop:",
             "Exit completion by difficulty",
             "Search title or creator",
             "Reset Filters",
@@ -649,7 +733,7 @@ class LocalizationCompletionTests(unittest.TestCase):
             "No",
         )
 
-        for language in LOCALIZED_LANGUAGES:
+        for language in SELECTABLE_LOCALIZED_LANGUAGES:
             with self.subTest(language=language):
                 app.language_var = FakeLanguageVar(language)
                 self.assertEqual(app._active_language_code(), language)
@@ -664,13 +748,15 @@ class LocalizationCompletionTests(unittest.TestCase):
                         changed_count += 1
                 self.assertGreaterEqual(
                     changed_count,
-                    2 if language == "au" else 7,
+                    7,
                 )
 
+        # Australian remains available only as archived translation data for
+        # existing documents/installers; it is no longer a selectable app UI.
         app.language_var = FakeLanguageVar("au")
-        self.assertEqual(app._active_language_code(), "au")
-        self.assertEqual(app._translate_ui_text("Yes"), "Too right")
-        self.assertEqual(app._translate_ui_text("No"), "Yeah, nah")
+        self.assertEqual(app._active_language_code(), "en")
+        self.assertEqual(app._translate_ui_text("Yes"), "Yes")
+        self.assertEqual(app._translate_ui_text("No"), "No")
 
         app.language_var = FakeLanguageVar("en")
         self.assertEqual(app._active_language_code(), "en")
@@ -709,14 +795,14 @@ class LocalizationCompletionTests(unittest.TestCase):
             for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.name in {
-                "_ask_localized_yes_no",
-                "_show_localized_info",
+                "_show_stream_desk_message_dialog",
+                "_ask_stream_desk_string",
             }
         }
 
         self.assertEqual(
             set(methods),
-            {"_ask_localized_yes_no", "_show_localized_info"},
+            {"_show_stream_desk_message_dialog", "_ask_stream_desk_string"},
         )
         for method_name, method in methods.items():
             with self.subTest(method=method_name):
@@ -728,7 +814,7 @@ class LocalizationCompletionTests(unittest.TestCase):
                 self.assertIn("appearance_var", attributes)
                 self.assertNotIn("appearance_mode", attributes)
 
-    def test_all_one_button_messages_use_the_blue_app_dialog(self):
+    def test_all_one_button_messages_use_the_stream_desk_app_dialog(self):
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
         installer = next(
             node
@@ -747,7 +833,7 @@ class LocalizationCompletionTests(unittest.TestCase):
         self.assertIn("self._show_localized_info(", source)
         self.assertIn('return "ok"', source)
 
-    def test_optional_software_found_prompt_uses_blue_app_dialog(self):
+    def test_optional_software_found_prompt_uses_stream_desk_app_dialog(self):
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
         methods = {
             node.name: node
@@ -756,25 +842,33 @@ class LocalizationCompletionTests(unittest.TestCase):
             and node.name in {
                 "install_optional_software",
                 "_ask_localized_yes_no",
+                "_show_stream_desk_message_dialog",
             }
         }
         install_source = ast.get_source_segment(
             MODULE_PATH.read_text(encoding="utf-8"),
             methods["install_optional_software"],
         )
-        dialog_source = ast.get_source_segment(
+        wrapper_source = ast.get_source_segment(
             MODULE_PATH.read_text(encoding="utf-8"),
             methods["_ask_localized_yes_no"],
+        )
+        dialog_source = ast.get_source_segment(
+            MODULE_PATH.read_text(encoding="utf-8"),
+            methods["_show_stream_desk_message_dialog"],
         )
 
         self.assertIn(
             "use_existing = self._ask_localized_yes_no(",
             install_source,
         )
-        self.assertIn('bg=THEME["blue"]', dialog_source)
+        self.assertIn("_show_stream_desk_message_dialog(", wrapper_source)
+        self.assertIn('STREAM_DESK["surface_deep"]', dialog_source)
+        self.assertIn('STREAM_DESK["green"]', dialog_source)
+        self.assertNotIn('bg=THEME["blue"]', dialog_source)
         self.assertNotIn('bg=THEME["orange"]', dialog_source)
 
-    def test_messagebox_info_warning_and_error_route_to_blue_dialog_at_runtime(self):
+    def test_messagebox_info_warning_and_error_route_to_stream_desk_dialog_at_runtime(self):
         app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
         calls = []
         owner = object()
@@ -950,17 +1044,22 @@ class LocalizationCompletionTests(unittest.TestCase):
         self.assertIn("_translate_ui_text", called_attributes)
 
         visible_labels = (
-            "Preferred service",
-            "Import workbook",
-            "OBS text folder",
-            "Local ROM library",
-            "RetroArch core",
+            "Preferred Service",
+            "Import / Refresh from Spreadsheet…",
+            "OBS Text Files",
+            "Local ROM Library",
+            "QUsb2Snes Application",
+            "SNI Application",
+            "RetroArch Application",
+            "RetroArch Core",
             "Appearance",
-            "App language",
-            "Timer grace:",
+            "App Language",
+            "Timer & LiveSplit Settings",
+            "AutoStop:",
             "seconds",
             "Game LiveSplit port:",
             "Level LiveSplit port:",
+            "LiveSplit Timers Setup...",
             "Save Settings",
             "Cancel",
             "Browse",
