@@ -2,10 +2,10 @@
 
 **Version 2.0.0**
 
-SMW Stream Tracker is a Windows and macOS application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
+SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
 - FXPAK Pro / SD2SNES hardware
-- RetroArch on Windows or macOS
+- RetroArch on Windows
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
@@ -78,39 +78,12 @@ The app does **not** include, download, or upload a commercial Super Mario World
   until a game is actually launched.
 - Adds Streamer.bot level-event output and translated setup guides for optional
   Twitch prediction automation.
-- Keeps the complete emoji-safe FXPAK mapping, native Apple Silicon and Intel
-  builds, guided setup, OBS/LiveSplit tools, catalog, and blue dialog system.
+- Keeps the complete emoji-safe FXPAK mapping, guided setup, OBS/LiveSplit
+  tools, catalog, and blue dialog system.
 - Completes every new menu, button, status, popup, and setup instruction in all
   six languages, including the playful Australian translation.
 - **About** includes a translated **Join Discord** button for help and
   contact: <https://discord.gg/fHkTRgqjcr>
-
-## macOS support
-
-The source now includes native macOS behavior and two reproducible Mac builds:
-Apple Silicon (`arm64`) and Intel (`x86_64`). The Mac workflow creates a normal
-`SMW Stream Tracker.app`, a drag-to-Applications DMG, a ZIP, and SHA-256 files.
-Building and signing a Mac app must run on macOS; it cannot be produced or fully
-tested by the Windows release script.
-
-The connection and emulator setup page uses official Mac packages automatically:
-
-- **SNI:** the official universal Darwin archive.
-- **QUsb2Snes:** the official macOS DMG.
-- **RetroArch:** the official universal Metal DMG plus the correct
-  `bsnes_mercury_performance_libretro.dylib` for Apple Silicon or Intel.
-- **OBS Studio / Streamlabs Desktop:** their ordinary Mac releases; the tracker
-  writes the same automatic title, creator, exit, death, game-timer, and
-  level-timer text files on both operating systems.
-
-Classic desktop LiveSplit is Windows-only. The Mac app therefore opens two
-tracker-controlled timer windows that OBS can capture, and it exposes
-`game_timer.txt` and `level_timer.txt` for fully styleable OBS text sources.
-This preserves the two-timer result without offering a non-working installer.
-
-Mac user data is stored in
-`~/Library/Application Support/SMWStreamTracker`. Replacing the `.app` does not
-remove the catalog, settings, statistics, backups, ROM mappings, or OBS files.
 
 ## Screenshots
 
@@ -161,19 +134,19 @@ site directly without leaving the Stream Desk navigation.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/livesplit-setup.png" alt="Automatic Game and Level LiveSplit setup guide"><br>
+      <img src="docs/screenshots/livesplit-setup.jpg" alt="Current Stream Desk Game and Level LiveSplit setup guide"><br>
       <strong>Two LiveSplit timers</strong><br>
       Download and configure separate game and level timers with the correct ports and automatic TCP server startup.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/obs-text-setup.png" alt="OBS text-file setup and reusable source paths"><br>
+      <img src="docs/screenshots/obs-text-setup.jpg" alt="Current Stream Desk OBS text-file setup and reusable source paths"><br>
       <strong>OBS text files</strong><br>
       Copy the live text-file paths or replace an existing OBS or Streamlabs text source so it updates automatically.
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <img src="docs/screenshots/about-discord.png" alt="About and Updates page with translated Join Discord button"><br>
+      <img src="docs/screenshots/about-discord.jpg" alt="Current Stream Desk About page with community and support buttons"><br>
       <strong>Help and contact</strong><br>
       Open the Discord community directly from the translated About page.
     </td>
@@ -217,8 +190,8 @@ The setup wizard installs all six text guides in its `Documentation` folder and 
 
 ### Required for everyone
 
-- A 64-bit Windows 10/11 PC, or a Mac running macOS 12 or later.
-- The Windows complete installer, or the Mac DMG matching your processor.
+- A 64-bit Windows 10/11 PC.
+- The Windows complete installer.
 - A folder where your patched ROMs can be stored.
 - Internet access for catalog refreshes, moderated patch downloads, updates, and optional dependency installation.
 
@@ -236,7 +209,7 @@ The setup wizard installs all six text guides in its `Documentation` folder and 
 
 ### Required for RetroArch
 
-- 64-bit RetroArch for Windows or macOS.
+- 64-bit RetroArch for Windows.
 - A compatible SNES Libretro core, preferably bsnes-mercury Performance.
 - RetroArch Network Commands enabled on port `55355`.
 
@@ -263,17 +236,6 @@ The setup wizard installs all six text guides in its `Documentation` folder and 
 7. Complete the wizard and launch SMW Stream Tracker.
 
 For a first installation, always use the complete installer. Use the smaller updater only when SMW Stream Tracker is already installed.
-
-### macOS
-
-1. Download the `arm64` DMG for an Apple Silicon Mac, or the `x86_64` DMG for
-   an Intel Mac.
-2. Verify it against the matching `SHA256SUMS_macOS_...txt` file.
-3. Open the DMG and drag **SMW Stream Tracker** to **Applications**.
-4. Open the app. If the build is not notarized, macOS may require
-   Control-click → **Open** once.
-5. Use **Downloads → Connection & Emulator Setup** to locate or install the
-   official Mac versions of SNI, QUsb2Snes, and RetroArch.
 
 ### Windows reinstall and uninstall behavior
 
@@ -370,7 +332,7 @@ Main, then install a tracker build made for that newer Main version.
 If you skip any of these tools in the installer, open **Downloads →
 Connection & Emulator Setup** later. The app can locate an existing SNI,
 QUsb2Snes, or RetroArch installation, or install it under the current user
-profile on Windows or macOS. RetroArch setup also installs the recommended SNES core, enables
+profile on Windows. RetroArch setup also installs the recommended SNES core, enables
 Network Commands on port `55355`, and records the executable and core paths in
 the app settings.
 
@@ -399,7 +361,7 @@ You can reopen this page later from **File → Setup & Health Check**.
 6. Open SMW Stream Tracker.
 7. Select **File → FXPAK Pro**.
 8. Open **File → Settings**.
-9. Next to **SNI / QUsb2Snes**, browse to the installed Windows executable or Mac application if it was not detected automatically.
+9. Next to **SNI / QUsb2Snes**, browse to the installed Windows executable if it was not detected automatically.
 10. Save the settings.
 11. In the FXPAK Pro status box, select **Refresh**.
 12. Confirm the status changes to **Connected** and a device is shown.
@@ -420,8 +382,8 @@ If you installed both connection services, choose the executable you want the tr
 9. Open SMW Stream Tracker.
 10. Select **File → RetroArch**.
 11. Open **File → Settings**.
-12. Set **RetroArch** to the full location of `retroarch.exe` on Windows or the RetroArch application on Mac.
-13. Set **RetroArch core** to `bsnes_mercury_performance_libretro.dll` on Windows, `bsnes_mercury_performance_libretro.dylib` on Mac, or another supported SNES core.
+12. Set **RetroArch** to the full location of `retroarch.exe`.
+13. Set **RetroArch core** to `bsnes_mercury_performance_libretro.dll` or another supported Windows SNES core.
 14. Set **Local ROM library** to the folder containing your patched ROMs.
 15. Save the settings.
 16. Select **File → Test Selected Platform**.
@@ -436,12 +398,12 @@ Open **File → Settings** and configure the fields you use.
 
 | Setting | What to select |
 |---|---|
-| SNI / QUsb2Snes | The SNI or QUsb2Snes executable/application for your operating system |
+| SNI / QUsb2Snes | The SNI or QUsb2Snes Windows executable |
 | Import workbook | Optional existing `.xlsx` or `.xlsm` tracker workbook |
 | OBS text folder | Folder where current-hack and timer text files will be written |
 | Local ROM library | Folder containing patched `.sfc` or `.smc` files |
-| RetroArch | `retroarch.exe` on Windows or the RetroArch app on Mac |
-| RetroArch core | A SNES Libretro core such as `bsnes_mercury_performance_libretro.dll` (Windows) or `.dylib` (Mac) |
+| RetroArch | The Windows `retroarch.exe` executable |
+| RetroArch core | A Windows SNES Libretro core such as `bsnes_mercury_performance_libretro.dll` |
 | Overworld timer grace | Seconds that game and active-level timers continue on the overworld before temporarily pausing |
 | Game LiveSplit port | TCP port for the full-game LiveSplit window; default `16834` |
 | Level LiveSplit port | TCP port for a separate level LiveSplit window; default `16835` |
@@ -488,7 +450,7 @@ There are two supported methods.
 
 ### Method A: Mounted SD card
 
-Use this when the SD card is inserted into the computer and appears as a Windows drive or macOS volume.
+Use this when the SD card is inserted into the computer and appears as a Windows drive.
 
 1. Open **Download Missing Hacks**.
 2. Enable **Copy new ROMs to a mounted SD folder**.
@@ -568,11 +530,9 @@ Use **Stats → Export My Tracker** to export as `.csv` or `.xlsx`.
 
 ## 14. Set up LiveSplit, OBS Studio, and Streamlabs Desktop
 
-On Windows, the two buttons install and control two desktop LiveSplit copies as
-described below. On macOS, the same Help submenu opens two tracker-controlled
-game and level timer windows instead because classic desktop LiveSplit is
-Windows-only. Add those Mac windows with OBS **Window Capture**, or use the
-`game_timer.txt` and `level_timer.txt` paths shown by **OBS Text File Setup**.
+The two buttons install and control two desktop LiveSplit copies as described
+below. You can also use the `game_timer.txt` and `level_timer.txt` paths shown by
+**OBS Text File Setup**.
 
 You can show the timers in either of these ways:
 
@@ -755,7 +715,7 @@ select **Refresh**.
 2. Enable **Network Commands**.
 3. Confirm the port is `55355`.
 4. Restart RetroArch after saving the setting.
-5. Confirm the RetroArch application and the platform-appropriate SNES core (`.dll` on Windows or `.dylib` on Mac) are selected in tracker Settings.
+5. Confirm the RetroArch application and Windows SNES core (`.dll`) are selected in tracker Settings.
 6. If the selected connection service is SNI, use the **bsnes-mercury Performance** core. SNI does not expose a Snes9x RetroArch session as a live device.
 7. If the selected connection service is QUsb2Snes, open its **Devices** menu and enable the **RetroArch virtual device**.
 8. Select **File → RetroArch**.
@@ -765,7 +725,7 @@ select **Refresh**.
 
 1. Confirm **Local ROM library** is correct.
 2. Confirm the expected `.sfc` or `.smc` file exists.
-3. For RetroArch, confirm the selected core DLL or dylib exists.
+3. For RetroArch, confirm the selected core DLL exists.
 4. For FXPAK Pro, confirm the ROM exists on the SD card or upload it first.
 5. Open Diagnostics and copy the redacted error report.
 
@@ -815,7 +775,7 @@ See **File → About SMW Stream Tracker** for privacy, application-license, and 
 - [ ] Enable Network Commands on port `55355`.
 - [ ] Select **File → RetroArch**.
 - [ ] Set the RetroArch application or executable.
-- [ ] Set the SNES core (`.dll` on Windows or `.dylib` on Mac).
+- [ ] Set the Windows SNES core (`.dll`).
 - [ ] Set the local ROM library.
 - [ ] Run **Test Selected Platform**.
 - [ ] Select a hack and choose **Play**.
