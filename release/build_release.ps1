@@ -258,7 +258,6 @@ $sourceItems = @(
     '.github',
     'LICENSE.txt',
     'README.md',
-    'SMWStreamTracker-macOS.spec',
     'SMWStreamTracker.spec',
     'SMWStreamTrackerLauncher.py',
     'SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py',
@@ -298,6 +297,19 @@ if (Test-Path -LiteralPath $sourceStaging) {
 New-Item -ItemType Directory -Path $sourceStaging | Out-Null
 foreach ($sourceItem in $sourceItems) {
     Copy-Item -LiteralPath $sourceItem -Destination $sourceStaging -Recurse -Force
+}
+$nonWindowsBuildMaterial = @(
+    '.github\workflows\build-macos.yml',
+    'release\build_macos_release.sh',
+    'release\requirements-macos.txt',
+    'tests\test_macos_support.py',
+    'tests\test_macos_tray_safety.py'
+)
+foreach ($relativePath in $nonWindowsBuildMaterial) {
+    $stagedPath = Join-Path $sourceStaging $relativePath
+    if (Test-Path -LiteralPath $stagedPath) {
+        Remove-Item -LiteralPath $stagedPath -Force
+    }
 }
 Get-ChildItem -LiteralPath $sourceStaging -Directory -Recurse -Force |
     Where-Object { $_.Name -eq '__pycache__' } |

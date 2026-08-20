@@ -153,6 +153,23 @@ class MacPlatformSupportTests(unittest.TestCase):
         self.assertIn('collect_all("certifi")', spec)
         self.assertIn("BUNDLE(", spec)
 
+    def test_windows_release_source_excludes_macos_build_material(self):
+        project_root = Path(__file__).resolve().parents[1]
+        build_script = (
+            project_root / "release" / "build_release.ps1"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("'SMWStreamTracker-macOS.spec',", build_script)
+        for relative_path in (
+            ".github\\workflows\\build-macos.yml",
+            "release\\build_macos_release.sh",
+            "release\\requirements-macos.txt",
+            "tests\\test_macos_support.py",
+            "tests\\test_macos_tray_safety.py",
+        ):
+            with self.subTest(relative_path=relative_path):
+                self.assertIn(f"'{relative_path}'", build_script)
+
     def test_mac_timer_fallback_is_translated_in_every_language(self):
         expected_keys = {
             "mac_timer_obs_button",
