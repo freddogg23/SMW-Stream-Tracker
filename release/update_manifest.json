@@ -1,19 +1,19 @@
 {
   "schema": 1,
-  "version": "2.0.1",
+  "version": "2.0.2",
   "release_date": "2026-08-20",
   "notes": [
-    "Adds live RetroAchievements progress, recent unlocks, and official badge artwork to the Overview and every recognized selected game.",
-    "Adds an achievements.txt source for OBS and Streamlabs with editable formatting and a live preview in OBS Text Settings.",
-    "Repairs partial Game Library caches with a complete background scan so the full local library reliably appears.",
-    "Gives MiSTer setup, RetroAchievements setup, OBS Text File Setup, and OBS Text Settings the Stream Desk interface with larger actions and properly fitted content.",
-    "Keeps every Overview card visible without scrolling and removes the resize feedback loop that could make the page twitch at compact window sizes.",
-    "Improves dashboard game shortcuts, MiSTer death handling, MiSTer save imports, and exact-ROM relaunch reliability.",
-    "Adds one linked thank-you message for Jole_12, PixelPadlock, and the other community testers.",
-    "Prevents duplicate or clipped native controls on the installer and updater finish pages while preserving the themed launch options."
+    "Adds an authenticated local-WebSocket OBS companion dock with a unique persistent URL for every Windows installation.",
+    "Adds configurable Hack, Creator, Exit Counter, Deaths, Timers, and RetroAchievements cards without requiring an OBS Browser Source.",
+    "Adds optional Search & Play and Play Random Hack dock controls with rating, difficulty, type, release, and Hall of Fame filters.",
+    "Repairs Download and Install, the Settings update badge, and desktop-shortcut creation during the initial Windows install.",
+    "Packages complete Paramiko and cryptography support so MiSTer setup works in the released Windows EXE.",
+    "Removes the unstable experimental MiSTer Main from setup and release packages, blocks launches through that known-bad build, and keeps the verified restore path available.",
+    "Improves Overview sizing and stability while preserving the fitted Stream Desk setup and OBS pages.",
+    "Publishes Windows downloads only; macOS remains untested and is not included in this release."
   ],
-  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v2.0.1/SMWStreamTracker_Update_2.0.1.exe",
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v2.0.2/SMWStreamTracker_Update_2.0.2.exe",
   "verification": "sha256",
-  "sha256": "ab026681be8d79797ffde1cf19b7abf73a43b300339c4278b2e905d499db5856",
-  "size": 72572508
+  "sha256": "c31128a61de8e094b7de6502fc0f56b7b18cc2d0ebc43ca16f753a409f9f0048",
+  "size": 71933378
 }
