@@ -518,8 +518,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "2.0.0"
-APP_BUILD_DATE = "2026-08-19"
+APP_VERSION = "2.0.1"
+APP_BUILD_DATE = "2026-08-20"
 
 GAME_MODE_STAGE_IMAGE_FILES = {
     "play_random_hack": "stage_scene_yoshis_island_2.png",
@@ -1435,6 +1435,9 @@ SMWC_API_TRANSIENT_HTTP_CODES = frozenset(
 )
 RETROACHIEVEMENTS_HOME_URL = "https://retroachievements.org/"
 RETROACHIEVEMENTS_REGISTER_URL = "https://retroachievements.org/createaccount.php"
+RETROACHIEVEMENTS_CONTROL_PANEL_URL = (
+    "https://retroachievements.org/controlpanel.php"
+)
 RETROACHIEVEMENTS_RETROARCH_HELP_URL = (
     "https://docs.libretro.com/guides/retroachievements/"
 )
@@ -3284,9 +3287,26 @@ def refresh_catalog_from_smwcentral_site(
     existing_by_id = github_catalog_existing_by_id(
         database
     )
-    metadata_complete = (
-        database.metadata().get("SMWC Feature Metadata Complete") == "1"
+    metadata = database.metadata()
+    expected_count = github_catalog_integer(
+        metadata.get("Official Hack Count", 0)
     )
+    local_catalog_incomplete = (
+        expected_count > 0
+        and len(existing_by_id) < expected_count
+    )
+    metadata_complete = (
+        metadata.get("SMWC Feature Metadata Complete") == "1"
+        and not local_catalog_incomplete
+    )
+    if local_catalog_incomplete and progress_callback is not None:
+        progress_callback(
+            (
+                "The local catalog contains only "
+                f"{len(existing_by_id):,} of {expected_count:,} "
+                "expected hacks. Running a full repair scan…"
+            )
+        )
     fetch_result = fetch_smwcentral_catalog(
         cancel_event,
         progress_callback,
@@ -4227,6 +4247,10 @@ def refresh_catalog_from_github_repository(
             database
         )
     )
+    local_count_matches_remote = (
+        remote_count <= 0
+        or len(existing_by_id) == remote_count
+    )
     refreshed_at = (
         datetime.now()
         .astimezone()
@@ -4265,6 +4289,7 @@ def refresh_catalog_from_github_repository(
         remote_sequence >= 0
         and local_sequence == remote_sequence
         and existing_by_id
+        and local_count_matches_remote
     ):
         database.set_metadata(
             "Catalog Sequence",
@@ -13518,6 +13543,10 @@ RETROACHIEVEMENTS_SNES_HASH_CACHE_FILE = (
 RETROACHIEVEMENTS_ROM_SCAN_CACHE_FILE = (
     APP_DATA_DIR / "RetroAchievementsROMLibrary.json"
 )
+RETROACHIEVEMENTS_PROGRESS_CACHE_FILE = (
+    APP_DATA_DIR / "RetroAchievementsProgress.json"
+)
+RETROACHIEVEMENTS_BADGE_CACHE_DIR = APP_DATA_DIR / "RetroAchievementsBadges"
 RETROARCH_NORMAL_SPEED_CONFIG_FILE = (
     APP_DATA_DIR / "RetroArchNormalSpeed.cfg"
 )
@@ -13541,6 +13570,629 @@ UPDATE_DOWNLOAD_DIR = APP_DATA_DIR / "Updates"
 LOG_DIR = APP_DATA_DIR / "Logs"
 CRASH_LOG_FILE = LOG_DIR / "SMWStreamTracker-errors.log"
 UNINSTALL_OBS_PATH_FILE = APP_DATA_DIR / "UninstallObsOutputPath.txt"
+
+
+RETROACHIEVEMENTS_WEB_API_URL = "https://retroachievements.org/API/"
+RETROACHIEVEMENTS_BADGE_URL = "https://retroachievements.org/Badge/"
+
+
+def _retroachievements_value(
+    record: dict[str, Any],
+    *names: str,
+    default: Any = None,
+) -> Any:
+    for name in names:
+        if name in record:
+            return record[name]
+    return default
+
+
+def empty_retroachievements_summary(
+    status: str = "loading",
+    message: str = "Loading RetroAchievements...",
+) -> dict[str, Any]:
+    return {
+        "source": "RetroAchievements",
+        "status": status,
+        "message": message,
+        "game_id": 0,
+        "game_title": "",
+        "hardcore": False,
+        "items": [],
+        "unlocked": 0,
+        "total": 0,
+        "next": None,
+        "recent": [],
+    }
+
+
+def retroachievements_badge_url(badge_name: Any) -> str:
+    cleaned = str(badge_name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", cleaned):
+        return ""
+    return RETROACHIEVEMENTS_BADGE_URL + cleaned + ".png"
+
+
+def normalize_retroachievements_game_progress(
+    payload: dict[str, Any],
+    *,
+    hardcore: bool,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("RetroAchievements returned invalid game progress.")
+    raw_achievements = _retroachievements_value(
+        payload,
+        "Achievements",
+        "achievements",
+        default={},
+    )
+    if isinstance(raw_achievements, dict):
+        achievement_records = list(raw_achievements.values())
+    elif isinstance(raw_achievements, list):
+        achievement_records = raw_achievements
+    else:
+        achievement_records = []
+
+    items: list[dict[str, Any]] = []
+    for raw_item in achievement_records:
+        if not isinstance(raw_item, dict):
+            continue
+        earned_softcore = str(
+            _retroachievements_value(
+                raw_item,
+                "DateEarned",
+                "dateEarned",
+                default="",
+            )
+            or ""
+        ).strip()
+        earned_hardcore = str(
+            _retroachievements_value(
+                raw_item,
+                "DateEarnedHardcore",
+                "dateEarnedHardcore",
+                default="",
+            )
+            or ""
+        ).strip()
+        earned_date = (
+            earned_hardcore
+            if hardcore
+            else (earned_softcore or earned_hardcore)
+        )
+        badge_name = str(
+            _retroachievements_value(
+                raw_item,
+                "BadgeName",
+                "badgeName",
+                default="",
+            )
+            or ""
+        ).strip()
+        try:
+            achievement_id = int(
+                _retroachievements_value(
+                    raw_item,
+                    "ID",
+                    "id",
+                    default=0,
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            achievement_id = 0
+        try:
+            display_order = int(
+                _retroachievements_value(
+                    raw_item,
+                    "DisplayOrder",
+                    "displayOrder",
+                    default=len(items),
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            display_order = len(items)
+        try:
+            points = max(
+                0,
+                int(
+                    _retroachievements_value(
+                        raw_item,
+                        "Points",
+                        "points",
+                        default=0,
+                    )
+                    or 0
+                ),
+            )
+        except (TypeError, ValueError):
+            points = 0
+        items.append(
+            {
+                "id": achievement_id,
+                "title": str(
+                    _retroachievements_value(
+                        raw_item,
+                        "Title",
+                        "title",
+                        default="Achievement",
+                    )
+                ),
+                "description": str(
+                    _retroachievements_value(
+                        raw_item,
+                        "Description",
+                        "description",
+                        default="",
+                    )
+                    or ""
+                ),
+                "points": points,
+                "badge_name": badge_name,
+                "badge_url": retroachievements_badge_url(badge_name),
+                "display_order": display_order,
+                "unlocked": bool(earned_date),
+                "date_earned": earned_date,
+                "hardcore_unlocked": bool(earned_hardcore),
+            }
+        )
+
+    items.sort(key=lambda item: (item["display_order"], item["id"]))
+    unlocked_items = [item for item in items if item["unlocked"]]
+    recent_items = sorted(
+        unlocked_items,
+        key=lambda item: str(item.get("date_earned", "")),
+        reverse=True,
+    )[:6]
+    locked_items = [item for item in items if not item["unlocked"]]
+    game_title = str(
+        _retroachievements_value(payload, "Title", "title", default="")
+        or ""
+    )
+    try:
+        game_id = int(
+            _retroachievements_value(payload, "ID", "id", default=0) or 0
+        )
+    except (TypeError, ValueError):
+        game_id = 0
+    try:
+        reported_total = int(
+            _retroachievements_value(
+                payload,
+                "NumAchievements",
+                "numAchievements",
+                default=len(items),
+            )
+            or 0
+        )
+    except (TypeError, ValueError):
+        reported_total = len(items)
+    total = max(len(items), reported_total)
+    return {
+        "source": "RetroAchievements",
+        "status": "ready",
+        "message": "",
+        "game_id": game_id,
+        "game_title": game_title,
+        "hardcore": bool(hardcore),
+        "items": items,
+        "unlocked": len(unlocked_items),
+        "total": total,
+        "next": locked_items[0] if locked_items else None,
+        "recent": [
+            {
+                **item,
+                "detail": game_title,
+                "date": item.get("date_earned", ""),
+            }
+            for item in recent_items
+        ],
+    }
+
+
+def retroachievements_api_get(
+    endpoint: str,
+    parameters: dict[str, Any],
+    *,
+    web_api_key: str,
+    timeout: float = 20,
+    opener: Callable[..., Any] = urlopen,
+) -> Any:
+    endpoint_name = str(endpoint or "").strip()
+    if not re.fullmatch(r"API_[A-Za-z0-9_]+\.php", endpoint_name):
+        raise ValueError("Invalid RetroAchievements API endpoint.")
+    api_key = str(web_api_key or "").strip()
+    if not api_key:
+        raise ValueError("A RetroAchievements Web API key is required.")
+    query = {str(key): str(value) for key, value in parameters.items()}
+    query["y"] = api_key
+    request = Request(
+        RETROACHIEVEMENTS_WEB_API_URL
+        + endpoint_name
+        + "?"
+        + urlencode(query),
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "SMW-Stream-Tracker/2.0",
+        },
+    )
+    with opener(request, timeout=timeout) as response:
+        payload = response.read(8 * 1024 * 1024 + 1)
+    if len(payload) > 8 * 1024 * 1024:
+        raise ValueError("RetroAchievements response exceeded 8 MB.")
+    document = json.loads(payload.decode("utf-8"))
+    if isinstance(document, dict) and document.get("Success") is False:
+        raise ValueError(
+            str(document.get("Error") or "RetroAchievements rejected the request.")
+        )
+    return document
+
+
+RETROACHIEVEMENTS_SETUP_NETWORK_WARNING = (
+    "RetroAchievements could not be reached to verify the display username "
+    "and Web API key. Platform setup continued; badges and progress will "
+    "appear when the connection is available."
+)
+
+
+def verify_retroachievements_display_credentials(
+    username: str,
+    web_api_key: str,
+    *,
+    api_get: Callable[..., Any] = retroachievements_api_get,
+) -> str:
+    """Validate display credentials, returning a warning for network outages."""
+    try:
+        profile = api_get(
+            "API_GetUserProfile.php",
+            {"u": str(username or "").strip()},
+            web_api_key=str(web_api_key or "").strip(),
+        )
+    except HTTPError as error:
+        if int(getattr(error, "code", 0) or 0) in {401, 403}:
+            raise ValueError(
+                "RetroAchievements rejected the username or Web API key. "
+                "Select Get Web API Key, copy the current key, and try again."
+            ) from error
+        return RETROACHIEVEMENTS_SETUP_NETWORK_WARNING
+    except (URLError, OSError):
+        return RETROACHIEVEMENTS_SETUP_NETWORK_WARNING
+    except ValueError as error:
+        raise ValueError(
+            "RetroAchievements could not verify the username and Web API key. "
+            "Select Get Web API Key, copy the current key, and try again."
+        ) from error
+
+    profile_user = str(
+        _retroachievements_value(
+            profile if isinstance(profile, dict) else {},
+            "User",
+            "user",
+            default="",
+        )
+    ).strip()
+    if not profile_user:
+        raise ValueError(
+            "RetroAchievements could not verify the username and Web API key. "
+            "Select Get Web API Key, copy the current key, and try again."
+        )
+    return ""
+
+
+def retroachievements_setup_error_text(
+    error: BaseException,
+    platform_name: str = "",
+) -> str:
+    """Return setup failures without exposing raw socket or DNS errors."""
+    error_text = str(error or "").strip()
+    reason = getattr(error, "reason", error)
+    combined_text = f"{error_text} {reason}".casefold()
+    if isinstance(reason, socket.gaierror) or "getaddrinfo failed" in combined_text:
+        if normalize_platform_name(platform_name) == "MiSTer":
+            return (
+                "The setup could not find MiSTer or an official download service "
+                "on the network. Make sure MiSTer is powered on and connected, "
+                "verify its address in Settings > Platform, and check your "
+                "internet or DNS connection before trying again."
+            )
+        return (
+            "The setup could not find the required service on the network. "
+            "Check your internet and DNS connection, then try again."
+        )
+    if isinstance(error, HTTPError) and int(getattr(error, "code", 0) or 0) in {
+        401,
+        403,
+    }:
+        return (
+            "RetroAchievements rejected the username or Web API key. Select "
+            "Get Web API Key, copy the current key, and try again."
+        )
+    if isinstance(error, (URLError, TimeoutError, socket.timeout)):
+        return (
+            "The setup could not reach the required service or device. Check "
+            "your connection and try again."
+        )
+    return error_text or "RetroAchievements setup could not be completed."
+
+
+def fetch_retroachievements_game_progress(
+    username: str,
+    web_api_key: str,
+    game_id: int,
+    *,
+    hardcore: bool,
+    api_get: Callable[..., Any] = retroachievements_api_get,
+) -> dict[str, Any]:
+    username_text = str(username or "").strip()
+    if not username_text:
+        raise ValueError("A RetroAchievements username is required.")
+    if int(game_id or 0) <= 0:
+        raise ValueError("A RetroAchievements game ID is required.")
+    payload = api_get(
+        "API_GetGameInfoAndUserProgress.php",
+        {"u": username_text, "g": int(game_id), "a": 1},
+        web_api_key=web_api_key,
+    )
+    return normalize_retroachievements_game_progress(
+        payload,
+        hardcore=hardcore,
+    )
+
+
+def fetch_retroachievements_overview(
+    username: str,
+    web_api_key: str,
+    *,
+    hardcore: bool,
+    api_get: Callable[..., Any] = retroachievements_api_get,
+) -> dict[str, Any]:
+    username_text = str(username or "").strip()
+    if not username_text:
+        raise ValueError("A RetroAchievements username is required.")
+    recent_games = api_get(
+        "API_GetUserRecentlyPlayedGames.php",
+        {"u": username_text, "c": 50},
+        web_api_key=web_api_key,
+    )
+    if not isinstance(recent_games, list):
+        raise ValueError("RetroAchievements returned invalid recent games.")
+    snes_games: list[dict[str, Any]] = []
+    for record in recent_games:
+        if not isinstance(record, dict):
+            continue
+        try:
+            console_id = int(
+                _retroachievements_value(
+                    record,
+                    "ConsoleID",
+                    "consoleId",
+                    default=0,
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            console_id = 0
+        if console_id == RETROACHIEVEMENTS_SNES_CONSOLE_ID:
+            snes_games.append(record)
+    if not snes_games:
+        return empty_retroachievements_summary(
+            "no_game",
+            "No recently played RetroAchievements SNES game was found.",
+        )
+    snes_game = snes_games[0]
+    snes_game_ids: set[int] = set()
+    for record in snes_games:
+        try:
+            recent_snes_game_id = int(
+                _retroachievements_value(
+                    record,
+                    "GameID",
+                    "gameId",
+                    default=0,
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            continue
+        if recent_snes_game_id > 0:
+            snes_game_ids.add(recent_snes_game_id)
+    game_id = int(
+        _retroachievements_value(
+            snes_game,
+            "GameID",
+            "gameId",
+            default=0,
+        )
+        or 0
+    )
+    summary = fetch_retroachievements_game_progress(
+        username_text,
+        web_api_key,
+        game_id,
+        hardcore=hardcore,
+        api_get=api_get,
+    )
+    recent_unlocks = api_get(
+        "API_GetUserRecentAchievements.php",
+        {"u": username_text, "m": 10080},
+        web_api_key=web_api_key,
+    )
+    if isinstance(recent_unlocks, list):
+        normalized_recent: list[dict[str, Any]] = []
+        for raw_item in recent_unlocks:
+            if not isinstance(raw_item, dict):
+                continue
+            try:
+                recent_game_id = int(
+                    _retroachievements_value(
+                        raw_item,
+                        "GameID",
+                        "gameId",
+                        default=0,
+                    )
+                    or 0
+                )
+            except (TypeError, ValueError):
+                continue
+            if recent_game_id not in snes_game_ids:
+                continue
+            badge_name = str(
+                _retroachievements_value(
+                    raw_item,
+                    "BadgeName",
+                    "badgeName",
+                    default="",
+                )
+                or ""
+            )
+            normalized_recent.append(
+                {
+                    "id": int(
+                        _retroachievements_value(
+                            raw_item,
+                            "AchievementID",
+                            "achievementId",
+                            default=0,
+                        )
+                        or 0
+                    ),
+                    "title": str(
+                        _retroachievements_value(
+                            raw_item,
+                            "Title",
+                            "title",
+                            default="Achievement",
+                        )
+                    ),
+                    "description": str(
+                        _retroachievements_value(
+                            raw_item,
+                            "Description",
+                            "description",
+                            default="",
+                        )
+                        or ""
+                    ),
+                    "badge_name": badge_name,
+                    "badge_url": retroachievements_badge_url(badge_name),
+                    "detail": str(
+                        _retroachievements_value(
+                            raw_item,
+                            "GameTitle",
+                            "gameTitle",
+                            default=summary.get("game_title", ""),
+                        )
+                    ),
+                    "date": str(
+                        _retroachievements_value(
+                            raw_item,
+                            "Date",
+                            "date",
+                            default="",
+                        )
+                        or ""
+                    ),
+                    "unlocked": True,
+                    "hardcore_unlocked": bool(
+                        _retroachievements_value(
+                            raw_item,
+                            "HardcoreMode",
+                            "hardcoreMode",
+                            default=False,
+                        )
+                    ),
+                }
+            )
+        if normalized_recent:
+            summary["recent"] = normalized_recent[:6]
+    return summary
+
+
+def format_achievement_obs_text(
+    summary: dict[str, Any],
+    template: object = None,
+) -> str:
+    status = str(summary.get("status", ""))
+    message = str(
+        summary.get("message") or "No achievement data available."
+    )
+    game_title = str(summary.get("game_title", "")).strip()
+    unlocked = int(summary.get("unlocked", 0))
+    total = int(summary.get("total", 0))
+    hardcore = bool(summary.get("hardcore"))
+    latest_title = ""
+    latest_description = ""
+    latest_date = ""
+    next_title = ""
+    next_description = ""
+
+    if status != "ready":
+        default_text = "RetroAchievements: " + message
+    else:
+        lines = [
+            "RetroAchievements"
+            + ((": " + game_title) if game_title else "")
+            + " — "
+            + f"{unlocked}/{total} unlocked"
+            + (" (hardcore)" if hardcore else "")
+        ]
+        recent = summary.get("recent", [])
+        if recent:
+            latest = recent[0]
+            latest_title = str(latest.get("title", "Achievement"))
+            latest_description = str(
+                latest.get("description") or latest.get("detail", "")
+            )
+            latest_date = format_display_date(
+                latest.get("date", ""),
+                empty="",
+            )
+            latest_text = (
+                latest_title + " — " + latest_description
+            ).rstrip(" —")
+            if latest_date:
+                latest_text += " (" + latest_date + ")"
+            lines.append("Latest: " + latest_text)
+
+        next_achievement = summary.get("next")
+        if isinstance(next_achievement, dict):
+            next_title = str(
+                next_achievement.get("title", "Achievement")
+            )
+            next_description = str(
+                next_achievement.get("description", "")
+            )
+            lines.append(
+                "Next locked: "
+                + next_title
+                + " — "
+                + next_description
+            )
+        elif total > 0:
+            next_title = "All achievements unlocked!"
+            lines.append(next_title)
+
+        default_text = "\n".join(lines)
+
+    rendered = render_obs_text_template(
+        template,
+        "{default}",
+        default=default_text,
+        game=game_title,
+        unlocked=unlocked,
+        total=total,
+        progress=f"{unlocked}/{total}",
+        hardcore=("hardcore" if hardcore else ""),
+        hardcore_suffix=(" (hardcore)" if hardcore else ""),
+        latest=latest_title,
+        latest_description=latest_description,
+        latest_date=latest_date,
+        next=next_title,
+        next_description=next_description,
+        message=message,
+    )
+    return rendered.replace("\\n", "\n")
 
 
 def application_directory() -> Path:
@@ -20884,6 +21536,11 @@ _MISTER_LOCALIZATION_ROWS = (
     ("Set Up MiSTer...", "Sort out the MiSTer, mate...", "Configurar MiSTer...", "Configurer MiSTer...", "MiSTer einrichten...", "Configurar o MiSTer..."),
     ("MiSTer Setup", "MiSTer wrangling", "Configuración de MiSTer", "Configuration de MiSTer", "MiSTer-Einrichtung", "Configuração do MiSTer"),
     ("MISTER SETUP", "MISTER WRANGLING", "CONFIGURACIÓN DE MISTER", "CONFIGURATION DE MISTER", "MISTER-EINRICHTUNG", "CONFIGURAÇÃO DO MISTER"),
+    ("MISTER CONNECTION", "MISTER CONNECTION, MATE", "CONEXIÓN DE MISTER", "CONNEXION MISTER", "MISTER-VERBINDUNG", "CONEXÃO DO MISTER"),
+    ("Connect, prepare, and verify MiSTer for live tracking and game launching.", "Connect, sort, and check the MiSTer for live tracking and game launching, mate.", "Conecta, prepara y verifica MiSTer para el seguimiento en vivo y el inicio de juegos.", "Connectez, préparez et vérifiez le MiSTer pour le suivi en direct et le lancement des jeux.", "MiSTer für Live-Verfolgung und Spielstart verbinden, vorbereiten und prüfen.", "Conecte, prepare e verifique o MiSTer para rastreamento ao vivo e inicialização de jogos."),
+    ("Automatic setup", "Automatic setup, mate", "Configuración automática", "Configuration automatique", "Automatische Einrichtung", "Configuração automática"),
+    ("Recommended", "Recommended, mate", "Recomendado", "Recommandé", "Empfohlen", "Recomendado"),
+    ("Connection details", "Connection details, mate", "Detalles de conexión", "Détails de connexion", "Verbindungsdetails", "Detalhes da conexão"),
     ("MiSTer Login", "MiSTer login, mate", "Acceso a MiSTer", "Connexion MiSTer", "MiSTer-Anmeldung", "Login do MiSTer"),
     ("MISTER LOGIN", "MISTER LOGIN, MATE", "ACCESO A MISTER", "CONNEXION MISTER", "MISTER-ANMELDUNG", "LOGIN DO MISTER"),
     ("MiSTer host or IP:", "MiSTer name or IP, mate:", "Nombre o IP de MiSTer:", "Nom ou IP du MiSTer :", "MiSTer-Name oder IP:", "Nome ou IP do MiSTer:"),
@@ -21576,6 +22233,7 @@ _WINDOW_LOCALIZATION_ROWS = (
     ("Twitch Channel", "Canal de Twitch", "Chaîne Twitch", "Twitch-Kanal", "Canal da Twitch"),
     ("OBS Text Settings", "Configuración de textos de OBS", "Paramètres des textes OBS", "OBS-Texteinstellungen", "Configurações de textos do OBS"),
     ("Preview", "Vista previa", "Aperçu", "Vorschau", "Visualização"),
+    ("Use {default}, {game}, {progress}, {latest}, {next}, and {hardcore_suffix}. Type \\n for a new line.", "Usa {default}, {game}, {progress}, {latest}, {next} y {hardcore_suffix}. Escribe \\n para una línea nueva.", "Utilisez {default}, {game}, {progress}, {latest}, {next} et {hardcore_suffix}. Saisissez \\n pour une nouvelle ligne.", "Verwende {default}, {game}, {progress}, {latest}, {next} und {hardcore_suffix}. Gib \\n für eine neue Zeile ein.", "Use {default}, {game}, {progress}, {latest}, {next} e {hardcore_suffix}. Digite \\n para uma nova linha."),
     ("Overview", "Resumen", "Vue d’ensemble", "Übersicht", "Visão geral"),
     ("My Tracker", "Mi tracker", "Mon tracker", "Mein Tracker", "Meu tracker"),
     ("Status", "Estado", "Statut", "Status", "Status"),
@@ -21596,6 +22254,12 @@ _WINDOW_LOCALIZATION_ROWS = (
     ("Grandmaster", "Gran maestro", "Grand maître", "Großmeister", "Grão-mestre"),
     ("Unranked", "Sin clasificar", "Non classé", "Ohne Rang", "Sem classificação"),
     ("Session Timeline", "Línea de tiempo de la sesión", "Chronologie de la session", "Sitzungsverlauf", "Linha do tempo da sessão"),
+    ("Recently Played", "Jugados recientemente", "Joués récemment", "Kürzlich gespielt", "Jogados recentemente"),
+    ("History", "Historial", "Historique", "Verlauf", "Histórico"),
+    ("Choose Game Action", "Elegir acción del juego", "Choisir une action", "Spielaktion auswählen", "Escolher ação do jogo"),
+    ('What would you like to do with "{title}"?', '¿Qué quieres hacer con "{title}"?', 'Que voulez-vous faire avec « {title} » ?', 'Was möchtest du mit „{title}“ tun?', 'O que você gostaria de fazer com "{title}"?'),
+    ("Start Game", "Iniciar juego", "Lancer le jeu", "Spiel starten", "Iniciar jogo"),
+    ("Game Details", "Detalles del juego", "Détails du jeu", "Spieldetails", "Detalhes do jogo"),
     ("Catalog {version}  •  Refreshed {date}", "Catálogo {version}  •  Actualizado {date}", "Catalogue {version}  •  Actualisé {date}", "Katalog {version}  •  Aktualisiert {date}", "Catálogo {version}  •  Atualizado {date}"),
 )
 for (
@@ -21809,6 +22473,9 @@ _RUNTIME_LOCALIZATION_ROWS = (
     ("Save File Imported", "Save file brought in, mate", "Archivo de guardado importado", "Fichier de sauvegarde importé", "Spielstand importiert", "Arquivo de salvamento importado"),
     ('The save file was imported for "{title}".\n\nDestination:\n{destination}\n\nAutomatic backup:\n{backup}', 'The save file was brought in for "{title}", mate.\n\nDestination:\n{destination}\n\nAutomatic backup:\n{backup}', 'El archivo de guardado se importó para "{title}".\n\nDestino:\n{destination}\n\nCopia de seguridad automática:\n{backup}', 'Le fichier de sauvegarde a été importé pour « {title} ».\n\nDestination :\n{destination}\n\nCopie de sauvegarde automatique :\n{backup}', 'Der Spielstand für „{title}“ wurde importiert.\n\nZiel:\n{destination}\n\nAutomatische Sicherung:\n{backup}', 'O arquivo de salvamento foi importado para "{title}".\n\nDestino:\n{destination}\n\nBackup automático:\n{backup}'),
     ('The save file was imported for "{title}".\n\nDestination:\n{destination}', 'The save file was brought in for "{title}", mate.\n\nDestination:\n{destination}', 'El archivo de guardado se importó para "{title}".\n\nDestino:\n{destination}', 'Le fichier de sauvegarde a été importé pour « {title} ».\n\nDestination :\n{destination}', 'Der Spielstand für „{title}“ wurde importiert.\n\nZiel:\n{destination}', 'O arquivo de salvamento foi importado para "{title}".\n\nDestino:\n{destination}'),
+    ("A 512-byte copier header was removed so MiSTer can read the save.", "A 512-byte copier header was removed so MiSTer can read the save, mate.", "Se eliminó un encabezado de copiador de 512 bytes para que MiSTer pueda leer el guardado.", "Un en-tête de copieur de 512 octets a été supprimé afin que le MiSTer puisse lire la sauvegarde.", "Ein 512-Byte-Copier-Header wurde entfernt, damit MiSTer den Speicherstand lesen kann.", "Um cabeçalho de copiador de 512 bytes foi removido para que o MiSTer possa ler o save."),
+    ("MiSTer was safely returned to its menu, the save was installed, and the hack was relaunched.", "MiSTer was safely returned to its menu, the save was installed, and the hack was relaunched, mate.", "MiSTer volvió de forma segura a su menú, se instaló el guardado y se reinició el hack.", "Le MiSTer est revenu en toute sécurité à son menu, la sauvegarde a été installée et le hack a été relancé.", "MiSTer wurde sicher zum Menü zurückgeführt, der Speicherstand wurde installiert und der Hack neu gestartet.", "O MiSTer voltou com segurança ao menu, o save foi instalado e o hack foi reiniciado."),
+    ("The save was installed, but the hack could not be relaunched automatically: {error}", "The save was installed, but the hack couldn't be kicked off again automatically, mate: {error}", "El guardado se instaló, pero el hack no pudo reiniciarse automáticamente: {error}", "La sauvegarde a été installée, mais le hack n’a pas pu être relancé automatiquement : {error}", "Der Speicherstand wurde installiert, aber der Hack konnte nicht automatisch neu gestartet werden: {error}", "O save foi instalado, mas o hack não pôde ser reiniciado automaticamente: {error}"),
     ("Save File Import Failed", "Save file import came a cropper", "Error al importar el archivo de guardado", "Échec de l’importation du fichier de sauvegarde", "Spielstandimport fehlgeschlagen", "Falha ao importar arquivo de salvamento"),
     ("The save file could not be imported:\n\n{error}", "The save file couldn't be brought in, mate:\n\n{error}", "No se pudo importar el archivo de guardado:\n\n{error}", "Le fichier de sauvegarde n’a pas pu être importé :\n\n{error}", "Der Spielstand konnte nicht importiert werden:\n\n{error}", "Não foi possível importar o arquivo de salvamento:\n\n{error}"),
     ("Another save-file import is already in progress.", "Another save-file import is already under way, mate.", "Ya hay otra importación de archivo de guardado en curso.", "Une autre importation de fichier de sauvegarde est déjà en cours.", "Ein anderer Spielstandimport läuft bereits.", "Outra importação de arquivo de salvamento já está em andamento."),
@@ -22132,7 +22799,11 @@ _RUNTIME_LOCALIZATION_ROWS = (
     ("PLATFORM ACHIEVEMENTS", "PLATFORM ACHIEVEMENTS", "LOGROS DE LA PLATAFORMA", "SUCCÈS DE LA PLATEFORME", "PLATTFORM-ERFOLGE", "CONQUISTAS DA PLATAFORMA"),
     ("Active Platform", "Active platform", "Plataforma activa", "Plateforme active", "Aktive Plattform", "Plataforma ativa"),
     ("RetroAchievements Username", "RetroAchievements username", "Usuario de RetroAchievements", "Nom d’utilisateur RetroAchievements", "RetroAchievements-Benutzername", "Usuário do RetroAchievements"),
+    ("RetroAchievements Web API Key", "RetroAchievements Web API key", "Clave de API web de RetroAchievements", "Clé API Web RetroAchievements", "RetroAchievements-Web-API-Schlüssel", "Chave da API Web do RetroAchievements"),
     ("RetroAchievements Password", "RetroAchievements password", "Contraseña de RetroAchievements", "Mot de passe RetroAchievements", "RetroAchievements-Passwort", "Senha do RetroAchievements"),
+    ("Get Web API Key", "Get Web API key", "Obtener clave de API web", "Obtenir la clé API Web", "Web-API-Schlüssel abrufen", "Obter chave da API Web"),
+    ("Enter the Web API key from your RetroAchievements account control panel.", "Enter the Web API key from your RetroAchievements account control panel, mate.", "Introduce la clave de API web del panel de control de tu cuenta de RetroAchievements.", "Saisissez la clé API Web depuis le panneau de contrôle de votre compte RetroAchievements.", "Gib den Web-API-Schlüssel aus dem Kontrollzentrum deines RetroAchievements-Kontos ein.", "Digite a chave da API Web do painel de controle da sua conta do RetroAchievements."),
+    ("Your platform password is not stored. The Web API key is saved locally so the tracker can display your real RetroAchievements progress and badges.", "Your platform password isn't stored. The Web API key stays local so the tracker can show your real RetroAchievements progress and badges, mate.", "La contraseña de la plataforma no se guarda. La clave de API web se guarda localmente para mostrar tu progreso e insignias reales de RetroAchievements.", "Le mot de passe de la plateforme n’est pas enregistré. La clé API Web est conservée localement afin d’afficher votre progression et vos badges RetroAchievements réels.", "Das Plattform-Passwort wird nicht gespeichert. Der Web-API-Schlüssel wird lokal gespeichert, damit dein echter RetroAchievements-Fortschritt und deine Abzeichen angezeigt werden können.", "A senha da plataforma não é armazenada. A chave da API Web é salva localmente para exibir seu progresso e suas medalhas reais do RetroAchievements."),
     ("MiSTer SSH Password", "MiSTer SSH password", "Contraseña SSH de MiSTer", "Mot de passe SSH de MiSTer", "MiSTer-SSH-Passwort", "Senha SSH do MiSTer"),
     ("Hardcore Mode", "Hardcore mode", "Modo hardcore", "Mode hardcore", "Hardcore-Modus", "Modo hardcore"),
     ("Show Passwords", "Show passwords", "Mostrar contraseñas", "Afficher les mots de passe", "Passwörter anzeigen", "Mostrar senhas"),
@@ -22161,6 +22832,7 @@ _RUNTIME_LOCALIZATION_ROWS = (
     ("The app will find or install the official RA2Snes client, start QUsb2Snes, and open RA2Snes. RA2Snes completes the account login inside its own window.", "The app will find or install the official RA2Snes client, start QUsb2Snes, and open RA2Snes. RA2Snes finishes the account login in its own window, mate.", "La aplicación buscará o instalará el cliente oficial RA2Snes, iniciará QUsb2Snes y abrirá RA2Snes. RA2Snes completa el inicio de sesión de la cuenta en su propia ventana.", "L’application trouvera ou installera le client RA2Snes officiel, démarrera QUsb2Snes et ouvrira RA2Snes. RA2Snes termine la connexion au compte dans sa propre fenêtre.", "Die App sucht oder installiert den offiziellen RA2Snes-Client, startet QUsb2Snes und öffnet RA2Snes. RA2Snes schließt die Kontoanmeldung im eigenen Fenster ab.", "O aplicativo localizará ou instalará o cliente oficial RA2Snes, iniciará o QUsb2Snes e abrirá o RA2Snes. O RA2Snes conclui o login da conta em sua própria janela."),
     ("Your password is passed only to the selected platform client. The tracker does not keep it in its own settings.", "Your password goes only to the selected platform client. The tracker doesn't keep it in its own settings, mate.", "Tu contraseña se entrega únicamente al cliente de la plataforma seleccionada. El tracker no la guarda en su propia configuración.", "Votre mot de passe est transmis uniquement au client de la plateforme sélectionnée. Le tracker ne le conserve pas dans ses propres paramètres.", "Dein Passwort wird nur an den ausgewählten Plattform-Client übergeben. Der Tracker speichert es nicht in seinen eigenen Einstellungen.", "Sua senha é enviada somente ao cliente da plataforma selecionada. O tracker não a guarda nas próprias configurações."),
     ("RetroAchievements", "RetroAchievements", "RetroAchievements", "RetroAchievements", "RetroAchievements", "RetroAchievements"),
+    ("SSH", "SSH", "SSH", "SSH", "SSH", "SSH"),
     (": Supports Retro Achievements", ": Supports Retro Achievements", ": Compatible con Retro Achievements", ": Prend en charge Retro Achievements", ": Unterstützt Retro Achievements", ": Compatível com Retro Achievements"),
     ("Waiting for SMW Central Moderation", "Waiting for SMW Central Moderation", "En espera de moderación de SMW Central", "En attente de modération par SMW Central", "Wartet auf die Moderation durch SMW Central", "Aguardando moderação do SMW Central"),
     ("TRACKER DATA", "TRACKER DATA", "DATOS DEL TRACKER", "DONNÉES DU TRACKER", "TRACKER-DATEN", "DADOS DO TRACKER"),
@@ -22297,6 +22969,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "obs_exits": "Exits",
         "obs_level_deaths": "Level Deaths",
         "obs_game_deaths": "Game Deaths",
+        "obs_achievements": "Achievements",
         "livesplit_obs_button": "Set Up Two LiveSplit Timers for OBS",
         "livesplit_obs_note": (
             "Two separately extracted LiveSplit copies are required to show "
@@ -22458,6 +23131,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "obs_folder_missing": "Primero elige una carpeta de textos de OBS en Ajustes de textos de OBS. Los archivos se crearán automáticamente al guardar.",
         "obs_hack_title": "Título del hack", "obs_creator": "Creador", "obs_exits": "Salidas",
         "obs_level_deaths": "Muertes del nivel", "obs_game_deaths": "Muertes de la partida",
+        "obs_achievements": "Logros",
         "livesplit_obs_button": "Configurar dos temporizadores LiveSplit en OBS",
         "livesplit_obs_note": "Se necesitan dos copias de LiveSplit extraídas por separado para mostrar a la vez los temporizadores de partida y de nivel.",
         "livesplit_obs_title": "Dos temporizadores LiveSplit en OBS",
@@ -22519,6 +23193,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "obs_folder_missing": "Choisissez d’abord un dossier de textes OBS dans les paramètres. Les fichiers seront créés automatiquement après l’enregistrement.",
         "obs_hack_title": "Titre du hack", "obs_creator": "Créateur", "obs_exits": "Sorties",
         "obs_level_deaths": "Morts du niveau", "obs_game_deaths": "Morts de la partie",
+        "obs_achievements": "Succès",
         "livesplit_obs_button": "Configurer deux chronomètres LiveSplit dans OBS",
         "livesplit_obs_note": "Deux copies de LiveSplit extraites séparément sont nécessaires pour afficher simultanément les chronomètres de partie et de niveau.",
         "livesplit_obs_title": "Deux chronomètres LiveSplit dans OBS",
@@ -22577,6 +23252,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "obs_folder_missing": "Wähle zuerst in den OBS-Texteinstellungen einen Ordner. Die Dateien werden nach dem Speichern automatisch erstellt.",
         "obs_hack_title": "Hacktitel", "obs_creator": "Ersteller", "obs_exits": "Ausgänge",
         "obs_level_deaths": "Level-Tode", "obs_game_deaths": "Spiel-Tode",
+        "obs_achievements": "Erfolge",
         "livesplit_obs_button": "Zwei LiveSplit-Timer für OBS einrichten",
         "livesplit_obs_note": "Zwei separat entpackte LiveSplit-Kopien sind erforderlich, damit Spiel- und Level-Timer gleichzeitig angezeigt werden.",
         "livesplit_obs_title": "Zwei LiveSplit-Timer in OBS",
@@ -22635,6 +23311,7 @@ SETUP_GUIDE_TRANSLATIONS = {
         "obs_folder_missing": "Primeiro escolha uma pasta de textos do OBS nas configurações. Os arquivos serão criados automaticamente ao salvar.",
         "obs_hack_title": "Título do hack", "obs_creator": "Criador", "obs_exits": "Saídas",
         "obs_level_deaths": "Mortes da fase", "obs_game_deaths": "Mortes do jogo",
+        "obs_achievements": "Conquistas",
         "livesplit_obs_button": "Configurar dois temporizadores LiveSplit no OBS",
         "livesplit_obs_note": "São necessárias duas cópias do LiveSplit extraídas separadamente para mostrar ao mesmo tempo os temporizadores do jogo e da fase.",
         "livesplit_obs_title": "Dois temporizadores LiveSplit no OBS",
@@ -23098,6 +23775,7 @@ _MAC_TIMER_SETUP_TRANSLATIONS = {
         ),
         "obs_game_timer": "Game Timer",
         "obs_level_timer": "Level Timer",
+        "obs_achievements": "Achievements",
     },
     "au": {
         "mac_timer_obs_button": "Set Up Game & Level Timers for OBS, Mate",
@@ -23127,6 +23805,7 @@ _MAC_TIMER_SETUP_TRANSLATIONS = {
         ),
         "obs_game_timer": "Game Timer",
         "obs_level_timer": "Level Timer",
+        "obs_achievements": "Achievements, Mate",
     },
     "es": {
         "mac_timer_obs_button": "Configurar temporizadores de juego y nivel para OBS",
@@ -23156,6 +23835,7 @@ _MAC_TIMER_SETUP_TRANSLATIONS = {
         ),
         "obs_game_timer": "Temporizador de juego",
         "obs_level_timer": "Temporizador de nivel",
+        "obs_achievements": "Logros",
     },
     "fr": {
         "mac_timer_obs_button": "Configurer les chronomètres de partie et de niveau pour OBS",
@@ -23185,6 +23865,7 @@ _MAC_TIMER_SETUP_TRANSLATIONS = {
         ),
         "obs_game_timer": "Chronomètre de partie",
         "obs_level_timer": "Chronomètre de niveau",
+        "obs_achievements": "Succès",
     },
     "de": {
         "mac_timer_obs_button": "Spiel- und Level-Timer für OBS einrichten",
@@ -23214,6 +23895,7 @@ _MAC_TIMER_SETUP_TRANSLATIONS = {
         ),
         "obs_game_timer": "Spiel-Timer",
         "obs_level_timer": "Level-Timer",
+        "obs_achievements": "Erfolge",
     },
     "pt-BR": {
         "mac_timer_obs_button": "Configurar cronômetros de jogo e fase no OBS",
@@ -23243,6 +23925,7 @@ _MAC_TIMER_SETUP_TRANSLATIONS = {
         ),
         "obs_game_timer": "Cronômetro do jogo",
         "obs_level_timer": "Cronômetro da fase",
+        "obs_achievements": "Conquistas",
     },
 }
 for _language_code, _mac_timer_copy in _MAC_TIMER_SETUP_TRANSLATIONS.items():
@@ -23265,6 +23948,7 @@ DEFAULT_CONFIG = {
     "obs_exits_text_format": "Exits: {completed} / {total}",
     "obs_deaths_text_format": "Level Deaths: {deaths}",
     "obs_total_deaths_text_format": "Total Deaths: {total_deaths}",
+    "obs_achievements_text_format": "{default}",
     # Keep tracker-owned dialogs inside the main window so a single OBS
     # Window Capture source can include them.  Native OS and third-party
     # windows (browsers, installers, file pickers) intentionally stay native.
@@ -23291,6 +23975,7 @@ DEFAULT_CONFIG = {
     "retroarch_host": "127.0.0.1",
     "retroarch_port": 55355,
     "retroachievements_username": "",
+    "retroachievements_web_api_key": "",
     "retroachievements_hardcore": True,
     "retroachievements_setup_platforms": [],
     "ra2snes_executable_path": "",
@@ -23667,6 +24352,7 @@ def hack_gauntlet_level_override(translevel: int) -> int:
     return (hack_gauntlet_level_number(translevel) + 0x24) & 0xFF
 
 CHECK_INTERVAL_SECONDS = 0.10
+DEATH_RECOVERY_STABLE_SAMPLES = 3
 HOT_POTATO_ROTATION_MIN_RECOVERY_SECONDS = 2.5
 HOT_POTATO_ROTATION_STABLE_SAMPLES = 5
 RECONNECT_DELAY_SECONDS = 5
@@ -23891,6 +24577,15 @@ def ensure_obs_text_files(
         "hack_name.txt": "No game detected",
         "level_timer.txt": "00:00",
         "game_timer.txt": "00:00",
+        "achievements.txt": format_achievement_obs_text(
+            {
+                "status": "setup_required",
+                "message": (
+                    "add your username and Web API key in Setup."
+                ),
+            },
+            config.get("obs_achievements_text_format"),
+        ),
         # Streamer.bot can follow this append-only event file with its File
         # Tail service. It is separate from display text so prediction
         # automation never has to infer a clear from a formatted counter.
@@ -29768,9 +30463,12 @@ finally {
         # A normal SMW death sets $71 to 09 and decrements $0DBE. Depending
         # on the hack and the timing of the memory samples, either signal can
         # arrive first or one can be skipped entirely. Consume both as one
-        # event, then rearm on the first signal-free recovery sample. Waiting
-        # for three exact mode-$14 samples caused deaths after fast retries and
-        # in hacks with custom transition modes to be silently missed.
+        # event.  MiSTer can briefly expose a normal player state before its
+        # lives byte reaches the tracker, so an animation-only death must stay
+        # latched across that short gap.  Once the lives decrement has been
+        # consumed, one clean sample is enough to rearm.  If no lives drop is
+        # observed, accept several clean player-state samples instead; this
+        # still supports hacks that never update the standard lives byte.
         if self.death_detection_latched:
             if lives_decreased:
                 self.death_latch_saw_lives_drop = True
@@ -29779,11 +30477,17 @@ finally {
                     self.last_level_player_lives = player_lives
                 return False
 
-            signal_free_recovery = (
-                player_state != 0x09
-                or self.death_latch_saw_lives_drop
+            if player_state == 0x09:
+                self.death_alive_samples = 0
+                return False
+
+            self.death_alive_samples += 1
+            recovery_samples_required = (
+                1
+                if self.death_latch_saw_lives_drop
+                else DEATH_RECOVERY_STABLE_SAMPLES
             )
-            if signal_free_recovery:
+            if self.death_alive_samples >= recovery_samples_required:
                 self.death_detection_latched = False
                 self.death_alive_samples = 0
                 self.death_latch_saw_lives_drop = False
@@ -31306,6 +32010,11 @@ class TrackerApp:
                 pass
 
         self.config = load_config()
+        self._retroachievements_progress_tokens: dict[str, int] = {}
+        self._retroachievements_obs_after_id: str | None = None
+        self._retroachievements_overview_summary = (
+            self._cached_retroachievements_progress()
+        )
         # The MiSTer password is intentionally session-only and is never
         # written to the tracker configuration file.
         self.mister_session_password = ""
@@ -31830,6 +32539,7 @@ class TrackerApp:
             self.root.after(200, self.process_events)
             if bool(self.config.get("auto_connect_on_startup", True)):
                 self.root.after(400, self.start_tracker)
+            self.root.after(650, self._refresh_retroachievements_obs_async)
             self.root.after(700, self._create_daily_recovery_backup)
             if bool(self.config.get("save_tracker_data_automatically", True)):
                 self.root.after(900, self._queue_automatic_tracker_excel_backup)
@@ -34026,30 +34736,37 @@ class TrackerApp:
         spacer.grid(row=0, column=2, sticky="e")
         spacer.grid_propagate(False)
 
-        banner_height = self._ui_px(126)
+        # Overview is a dense at-a-glance dashboard. Give its cards the full
+        # viewport instead of spending a quarter of a compact display on the
+        # decorative cast banner used by the other in-app pages.
+        show_in_app_banner = page_key != "overview"
+        banner_height = self._ui_px(126) if show_in_app_banner else 0
         self.in_app_banner_frame = tk.Frame(
             shell,
             bg=STREAM_DESK["surface_deep"],
-            height=banner_height,
+            height=max(1, banner_height),
             bd=0,
             highlightthickness=0,
         )
-        self.in_app_banner_frame.pack(fill="x")
-        self.in_app_banner_frame.pack_propagate(False)
+        if show_in_app_banner:
+            self.in_app_banner_frame.pack(fill="x")
+            self.in_app_banner_frame.pack_propagate(False)
         self.in_app_banner_label = tk.Label(
             self.in_app_banner_frame,
             bg=STREAM_DESK["surface_deep"],
             bd=0,
             highlightthickness=0,
         )
-        self.in_app_banner_label.pack(fill="both", expand=True)
+        if show_in_app_banner:
+            self.in_app_banner_label.pack(fill="both", expand=True)
         self.in_app_banner_render_size = None
-        self.in_app_banner_frame.bind(
-            "<Configure>",
-            self._queue_in_app_banner_resize,
-            add="+",
-        )
-        self.root.after_idle(self._render_in_app_banner)
+        if show_in_app_banner:
+            self.in_app_banner_frame.bind(
+                "<Configure>",
+                self._queue_in_app_banner_resize,
+                add="+",
+            )
+            self.root.after_idle(self._render_in_app_banner)
 
         page.pack(fill="both", expand=True)
         # Keep the first visible frame stable while the caller constructs the
@@ -36000,13 +36717,15 @@ class TrackerApp:
             bd=0,
         )
         header.pack(fill="x")
-        tk.Label(
+        title_label = tk.Label(
             header,
             text=title,
             font=("Segoe UI", title_font_size, "bold"),
             fg=STREAM_DESK["text_strong"],
             bg=STREAM_DESK["surface"],
-        ).pack(side="left")
+        )
+        title_label.pack(side="left")
+        trailing_label = None
         if trailing_variable is not None or trailing_text is not None:
             options = {
                 "font": ("Segoe UI", 10),
@@ -36017,7 +36736,8 @@ class TrackerApp:
                 options["textvariable"] = trailing_variable
             else:
                 options["text"] = trailing_text or ""
-            tk.Label(header, **options).pack(side="right")
+            trailing_label = tk.Label(header, **options)
+            trailing_label.pack(side="right")
         tk.Frame(
             card,
             bg=STREAM_DESK["border"],
@@ -36033,6 +36753,9 @@ class TrackerApp:
         )
         body.pack(fill="both", expand=True)
         body.stream_card = card
+        body.stream_header = header
+        body.stream_title_label = title_label
+        body.stream_trailing_label = trailing_label
         return body
 
     def _stream_desk_stat(
@@ -36276,6 +36999,63 @@ class TrackerApp:
         self._refresh_game_mode_dashboard_rule()
         self._refresh_mario_kaizo_dashboard_queue()
 
+    def _dashboard_up_next_games(
+        self,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Return the actual queue instead of reusing launch history."""
+        item_limit = max(0, int(limit))
+        if self._game_mode_session_is_active():
+            return self._active_game_mode_up_next_games(item_limit)
+        try:
+            tracked_games = self.stats_db.list_tracked()
+        except Exception:
+            return []
+        return [
+            dict(game)
+            for game in tracked_games
+            if str(game.get("status") or "").strip() == "Planned"
+        ][:item_limit]
+
+    def _dashboard_recently_played_games(
+        self,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        return [
+            dict(game)
+            for game in self.recent_launched_hacks[: max(0, int(limit))]
+        ]
+
+    def _open_dashboard_game_action(
+        self,
+        collection: str,
+        index: int,
+    ) -> None:
+        games = (
+            getattr(self, "stream_dashboard_recent_games", [])
+            if collection == "recent"
+            else getattr(self, "stream_dashboard_queue_games", [])
+        )
+        game = games[index] if 0 <= index < len(games) else {}
+        if not game:
+            self.open_game_library()
+            return
+        resolved = self._resolved_hack_details_record(game)
+        title = str(resolved.get("title") or "Unknown").strip() or "Unknown"
+        choice = self._show_stream_desk_message_dialog(
+            self._translate_ui_text("Choose Game Action"),
+            self._translate_ui_text(
+                'What would you like to do with "{title}"?'
+            ).format(title=title),
+            kind="question",
+            parent=self.root,
+            response_type="askgameaction",
+        )
+        if choice == "start":
+            self._launch_catalog_game(resolved)
+        elif choice == "details":
+            self._open_game_library_for_game(resolved)
+
     def _build_stream_desk_dashboard(self, parent: tk.Widget) -> None:
         # Preserve the original dashboard proportions while trimming only its
         # vertical rhythm enough to keep the complete page on one screen.
@@ -36345,14 +37125,35 @@ class TrackerApp:
             expand=True,
             padx=(self._ui_px(12), 0),
         )
-        tk.Label(
+        current_game_label = tk.Label(
             copy,
             textvariable=self.game_var,
             font=("Segoe UI", 20, "bold"),
             fg=STREAM_DESK["text_strong"],
             bg=STREAM_DESK["window"],
             anchor="w",
-        ).pack(anchor="w", pady=(self._ui_px(3), 0))
+            cursor="hand2",
+        )
+        current_game_label.pack(anchor="w", pady=(self._ui_px(3), 0))
+        current_game_label.bind(
+            "<Button-1>",
+            self._open_current_game_in_library,
+            add="+",
+        )
+        current_game_label.bind(
+            "<Enter>",
+            lambda _event: current_game_label.configure(
+                fg=STREAM_DESK["green"]
+            ),
+            add="+",
+        )
+        current_game_label.bind(
+            "<Leave>",
+            lambda _event: current_game_label.configure(
+                fg=STREAM_DESK["text_strong"]
+            ),
+            add="+",
+        )
         metadata = tk.Frame(copy, bg=STREAM_DESK["window"], bd=0)
         metadata.pack(anchor="w", pady=(self._ui_px(3), 0))
         tk.Label(
@@ -36490,10 +37291,11 @@ class TrackerApp:
         # host made both panels consume every spare pixel on tall displays,
         # leaving a large empty box below the useful controls.
         body.pack(fill="x", expand=False)
-        body.columnconfigure(0, weight=1)
-        body.columnconfigure(1, weight=0)
+        body.columnconfigure(0, weight=1, uniform="dashboard_lists")
+        body.columnconfigure(1, weight=1, uniform="dashboard_lists")
         body.rowconfigure(0, weight=0, minsize=0)
         body.rowconfigure(1, weight=0, minsize=0)
+        body.rowconfigure(2, weight=0, minsize=0)
 
         run_body = self._stream_desk_card(
             body,
@@ -36656,71 +37458,158 @@ class TrackerApp:
         queue_body.stream_card.grid(
             row=1,
             column=0,
-            columnspan=2,
-            sticky="ew",
-            padx=0,
+            columnspan=1,
+            sticky="nsew",
+            padx=(0, dashboard_px(6)),
             pady=(dashboard_y_px(8), 0),
         )
-        if self._game_mode_session_is_active():
-            recent_hacks = self._active_game_mode_up_next_games(3)
-        else:
-            recent_hacks = list(reversed(self.recent_launched_hacks[-3:]))
-        while len(recent_hacks) < 3:
-            recent_hacks.append({})
+        queue_games = self._dashboard_up_next_games(3)
+        while len(queue_games) < 3:
+            queue_games.append({})
+        self.stream_dashboard_queue_games = queue_games
         queue_title_labels: list[tk.Label] = []
         self.stream_dashboard_queue_title_vars = []
         self.stream_dashboard_queue_difficulty_vars = []
-        for index, game in enumerate(recent_hacks[:3], start=1):
-            row = tk.Frame(
-                queue_body,
-                bg=STREAM_DESK["surface"],
-                pady=dashboard_y_px(16),
-                bd=0,
-            )
-            row.pack(fill="x")
-            if index > 1:
-                tk.Frame(
-                    queue_body,
-                    bg=STREAM_DESK["border"],
-                    height=1,
+
+        def bind_dashboard_game_row(
+            row_widget: tk.Widget,
+            title_widget: tk.Label,
+            collection: str,
+            game_index: int,
+        ) -> None:
+            def enter_row(_event=None) -> None:
+                title_widget.configure(fg=STREAM_DESK["green"])
+
+            def leave_row(_event=None) -> None:
+                title_widget.configure(fg=STREAM_DESK["text"])
+
+            pending = [row_widget]
+            while pending:
+                target = pending.pop()
+                try:
+                    target.configure(cursor="hand2")
+                    target.bind(
+                        "<Button-1>",
+                        lambda _event, source=collection, slot=game_index: (
+                            self._open_dashboard_game_action(source, slot)
+                        ),
+                        add="+",
+                    )
+                    target.bind("<Enter>", enter_row, add="+")
+                    target.bind("<Leave>", leave_row, add="+")
+                    pending.extend(target.winfo_children())
+                except (AttributeError, tk.TclError):
+                    continue
+
+        def add_dashboard_game_rows(
+            card_body: tk.Frame,
+            games: list[dict[str, Any]],
+            collection: str,
+            title_variables: list[tk.StringVar],
+            difficulty_variables: list[tk.StringVar],
+            title_labels: list[tk.Label],
+        ) -> None:
+            for index, game in enumerate(games[:3], start=1):
+                row = tk.Frame(
+                    card_body,
+                    bg=STREAM_DESK["surface"],
+                    pady=dashboard_y_px(16),
                     bd=0,
-                ).pack(fill="x", before=row)
-            tk.Label(
-                row,
-                text=f"{index:02d}  ·  ",
-                font=("Segoe UI", 10),
-                fg=STREAM_DESK["muted_dim"],
-                bg=STREAM_DESK["surface"],
-            ).pack(side="left")
-            title = str(game.get("title") or "Choose from Game Library")
-            title_variable = tk.StringVar(master=self.root, value=title)
-            self.stream_dashboard_queue_title_vars.append(title_variable)
-            title_label = tk.Label(
-                row,
-                textvariable=title_variable,
-                font=("Segoe UI", 11, "bold"),
-                fg=STREAM_DESK["text"],
-                bg=STREAM_DESK["surface"],
-                anchor="w",
-                justify="left",
-                wraplength=self._ui_px(280),
-            )
-            title_label.pack(side="left", fill="x", expand=True)
-            queue_title_labels.append(title_label)
-            difficulty_variable = tk.StringVar(
-                master=self.root,
-                value=str(game.get("difficulty") or "Unknown"),
-            )
-            self.stream_dashboard_queue_difficulty_vars.append(
-                difficulty_variable
-            )
-            self._make_difficulty_pill(
-                row,
-                difficulty_variable,
-                surface_color=STREAM_DESK["surface"],
-                font_size=8,
-                minimum_width=66,
-            ).pack(side="right")
+                )
+                row.pack(fill="x")
+                if index > 1:
+                    tk.Frame(
+                        card_body,
+                        bg=STREAM_DESK["border"],
+                        height=1,
+                        bd=0,
+                    ).pack(fill="x", before=row)
+                tk.Label(
+                    row,
+                    text=f"{index:02d}  ·  ",
+                    font=("Segoe UI", 10),
+                    fg=STREAM_DESK["muted_dim"],
+                    bg=STREAM_DESK["surface"],
+                ).pack(side="left")
+                title = str(
+                    game.get("title")
+                    or self._translate_ui_text("Choose from Game Library")
+                )
+                title_variable = tk.StringVar(master=self.root, value=title)
+                title_variables.append(title_variable)
+                title_label = tk.Label(
+                    row,
+                    textvariable=title_variable,
+                    font=("Segoe UI", 11, "bold"),
+                    fg=STREAM_DESK["text"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="w",
+                    justify="left",
+                    wraplength=self._ui_px(220),
+                )
+                title_label.pack(side="left", fill="x", expand=True)
+                title_labels.append(title_label)
+                difficulty_variable = tk.StringVar(
+                    master=self.root,
+                    value=(
+                        str(game.get("difficulty") or "Unknown")
+                        if game
+                        else "—"
+                    ),
+                )
+                difficulty_variables.append(difficulty_variable)
+                difficulty_pill = self._make_difficulty_pill(
+                    row,
+                    difficulty_variable,
+                    surface_color=STREAM_DESK["surface"],
+                    font_size=8,
+                    minimum_width=66,
+                )
+                difficulty_pill.pack(side="right")
+                bind_dashboard_game_row(
+                    row,
+                    title_label,
+                    collection,
+                    index - 1,
+                )
+
+        add_dashboard_game_rows(
+            queue_body,
+            queue_games,
+            "queue",
+            self.stream_dashboard_queue_title_vars,
+            self.stream_dashboard_queue_difficulty_vars,
+            queue_title_labels,
+        )
+
+        recent_body = self._stream_desk_card(
+            body,
+            "Recently Played",
+            trailing_text="History",
+        )
+        recent_body.stream_card.grid(
+            row=1,
+            column=1,
+            columnspan=1,
+            sticky="nsew",
+            padx=(dashboard_px(6), 0),
+            pady=(dashboard_y_px(8), 0),
+        )
+        recent_games = self._dashboard_recently_played_games(3)
+        while len(recent_games) < 3:
+            recent_games.append({})
+        self.stream_dashboard_recent_games = recent_games
+        recent_title_labels: list[tk.Label] = []
+        self.stream_dashboard_recent_title_vars = []
+        self.stream_dashboard_recent_difficulty_vars = []
+        add_dashboard_game_rows(
+            recent_body,
+            recent_games,
+            "recent",
+            self.stream_dashboard_recent_title_vars,
+            self.stream_dashboard_recent_difficulty_vars,
+            recent_title_labels,
+        )
         queue_actions = tk.Frame(
             queue_body,
             bg=STREAM_DESK["surface"],
@@ -36764,6 +37653,23 @@ class TrackerApp:
                 padx=(0 if index == 0 else self._ui_px(7), 0),
             )
 
+        recent_actions = tk.Frame(
+            recent_body,
+            bg=STREAM_DESK["surface"],
+            bd=0,
+        )
+        recent_actions.pack(fill="x", pady=(dashboard_y_px(13), 0))
+        recent_library_button = self._make_action_button(
+            recent_actions,
+            text="Game Library",
+            command=self.open_game_library,
+            bg=STREAM_DESK["surface_alt"],
+            active_bg=STREAM_DESK["selected"],
+            width=15,
+            pad_y=7,
+        )
+        recent_library_button.pack(fill="x")
+
         dashboard_layout_signature: tuple | None = None
 
         def resize_dashboard_panels(event=None) -> None:
@@ -36786,10 +37692,14 @@ class TrackerApp:
                     min(viewport_width, root_width) - self._ui_px(44),
                 )
                 available_width = min(body_width, visible_body_width)
-                # Current Run and Up Next intentionally stay stacked so each
-                # dashboard card uses the entire available horizontal space.
+                split_game_lists = available_width >= self._ui_px(900)
+                list_gap = self._ui_px(12)
                 run_width = available_width
-                queue_width = available_width
+                queue_width = (
+                    max(1, (available_width - list_gap) // 2)
+                    if split_game_lists
+                    else available_width
+                )
                 if run_width < self._ui_px(520):
                     stat_columns = 2
                 elif run_width < self._ui_px(840):
@@ -36811,10 +37721,11 @@ class TrackerApp:
                     else 3
                 )
                 title_wraplength = max(
-                    self._ui_px(130),
-                    queue_width - self._ui_px(210),
+                    self._ui_px(105),
+                    queue_width - self._ui_px(190),
                 )
                 signature = (
+                    split_game_lists,
                     stat_columns,
                     run_action_columns,
                     queue_action_columns,
@@ -36823,10 +37734,19 @@ class TrackerApp:
                 if signature == dashboard_layout_signature:
                     return
                 dashboard_layout_signature = signature
-                body.columnconfigure(0, weight=1, uniform="")
-                body.columnconfigure(1, weight=0, uniform="")
+                body.columnconfigure(
+                    0,
+                    weight=1,
+                    uniform="dashboard_lists" if split_game_lists else "",
+                )
+                body.columnconfigure(
+                    1,
+                    weight=1 if split_game_lists else 0,
+                    uniform="dashboard_lists" if split_game_lists else "",
+                )
                 body.rowconfigure(0, weight=0, minsize=0)
                 body.rowconfigure(1, weight=0, minsize=0)
+                body.rowconfigure(2, weight=0, minsize=0)
                 run_body.stream_card.grid_configure(
                     row=0,
                     column=0,
@@ -36838,10 +37758,18 @@ class TrackerApp:
                 queue_body.stream_card.grid_configure(
                     row=1,
                     column=0,
-                    columnspan=2,
-                    padx=0,
+                    columnspan=1 if split_game_lists else 2,
+                    padx=(0, dashboard_px(6)) if split_game_lists else 0,
                     pady=(dashboard_y_px(8), 0),
-                    sticky="ew",
+                    sticky="nsew" if split_game_lists else "ew",
+                )
+                recent_body.stream_card.grid_configure(
+                    row=1 if split_game_lists else 2,
+                    column=1 if split_game_lists else 0,
+                    columnspan=1 if split_game_lists else 2,
+                    padx=(dashboard_px(6), 0) if split_game_lists else 0,
+                    pady=(dashboard_y_px(8), 0),
+                    sticky="nsew" if split_game_lists else "ew",
                 )
 
                 for column in range(5):
@@ -36920,7 +37848,7 @@ class TrackerApp:
                         ),
                         sticky="ew",
                     )
-                for title_label in queue_title_labels:
+                for title_label in (*queue_title_labels, *recent_title_labels):
                     title_label.configure(wraplength=title_wraplength)
             except tk.TclError:
                 return
@@ -39246,6 +40174,21 @@ class TrackerApp:
             "backup_path": backup_path,
         }
 
+    def _configure_mister_snes_live_tracking(self, sftp) -> None:
+        """Enable SNI live tracking for both supported MiSTer SNES cores."""
+        self._mister_sftp_makedirs(sftp, "/media/fat/config")
+        uartmode_payload = (6).to_bytes(
+            4,
+            byteorder="little",
+            signed=False,
+        )
+        for core_name in ("SNES", "RA_SNES"):
+            self._mister_sftp_write(
+                sftp,
+                f"/media/fat/config/uartmode.{core_name}",
+                uartmode_payload,
+            )
+
     def _install_mister_support(
         self,
         host: str,
@@ -39325,12 +40268,7 @@ class TrackerApp:
                         "MiSTer temporary storage would not accept the "
                         "live-tracking launcher. Restart MiSTer and try again."
                     ) from error
-                self._mister_sftp_makedirs(sftp, "/media/fat/config")
-                self._mister_sftp_write(
-                    sftp,
-                    "/media/fat/config/uartmode.SNES",
-                    (6).to_bytes(4, byteorder="little", signed=False),
-                )
+                self._configure_mister_snes_live_tracking(sftp)
                 self._mister_sftp_makedirs(
                     sftp,
                     str(self.config.get("mister_rom_root")),
@@ -39345,8 +40283,9 @@ class TrackerApp:
             # Linux images predating SNI mode 6 include an old uartmode
             # launcher. Install the verified current launcher exactly as the
             # official install_snid.sh does, while retaining the original the
-            # first time this repair runs. The saved uartmode.SNES file handles
-            # future core loads; running it now also supports an active core.
+            # first time this repair runs. The saved uartmode core files handle
+            # future normal and RetroAchievements SNES core loads; running it
+            # now also supports an active core.
             install_command = (
                 "set -e; "
                 "mount -o remount,rw /; "
@@ -39416,54 +40355,174 @@ class TrackerApp:
         parent: tk.Widget | None = None,
     ) -> bool:
         owner = parent or self.root
-        palette = self._library_palette()
         dialog = self._create_tracker_dialog(owner)
         dialog.title(self._translate_ui_text("MiSTer Login"))
-        self._size_dialog_for_ui(dialog, 660, 360, 600, 330)
+        self._size_dialog_for_ui(dialog, 760, 430, 680, 390)
         dialog.resizable(False, False)
         dialog.transient(owner)
-        dialog.configure(bg=palette["window"])
+        dialog.configure(bg=STREAM_DESK["window"])
         result = {"accepted": False}
         password_var = tk.StringVar(value=self.mister_session_password or "1")
+        show_password_var = tk.BooleanVar(value=False)
+
+        header = tk.Frame(
+            dialog,
+            bg=STREAM_DESK["surface_deep"],
+            padx=self._ui_px(24),
+            pady=self._ui_px(18),
+            highlightbackground=STREAM_DESK["border"],
+            highlightthickness=1,
+        )
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text=APP_NAME.upper(),
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["green"],
+            bg=STREAM_DESK["surface_deep"],
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            header,
+            text=self._translate_ui_text("MiSTer Login"),
+            font=("Segoe UI", 22, "bold"),
+            fg=STREAM_DESK["text_strong"],
+            bg=STREAM_DESK["surface_deep"],
+            anchor="w",
+            pady=self._ui_px(3),
+        ).pack(fill="x")
+
+        actions = tk.Frame(dialog, bg=STREAM_DESK["window"])
+        actions.pack(
+            side="bottom",
+            fill="x",
+            padx=self._ui_px(20),
+            pady=(0, self._ui_px(18)),
+        )
+        action_group = tk.Frame(actions, bg=STREAM_DESK["window"])
+        action_group.pack(side="right")
+
+        card = tk.Frame(
+            dialog,
+            bg=STREAM_DESK["surface"],
+            padx=self._ui_px(22),
+            pady=self._ui_px(20),
+            highlightbackground=STREAM_DESK["border_strong"],
+            highlightthickness=1,
+        )
+        card.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(20),
+            pady=self._ui_px(18),
+            before=actions,
+        )
+        card.columnconfigure(1, weight=1)
+
+        credential_icon = tk.Canvas(
+            card,
+            width=self._ui_px(58),
+            height=self._ui_px(58),
+            bg=STREAM_DESK["surface"],
+            highlightthickness=0,
+            bd=0,
+        )
+        credential_icon.grid(
+            row=0,
+            column=0,
+            rowspan=3,
+            sticky="n",
+            padx=(0, self._ui_px(18)),
+        )
+        icon_size = self._ui_px(58)
+        icon_inset = self._ui_px(4)
+        credential_icon.create_oval(
+            icon_inset,
+            icon_inset,
+            icon_size - icon_inset,
+            icon_size - icon_inset,
+            outline=STREAM_DESK["green"],
+            width=max(2, self._ui_px(2)),
+        )
+        credential_icon.create_text(
+            icon_size // 2,
+            icon_size // 2,
+            text="SSH",
+            fill=STREAM_DESK["green"],
+            font=("Segoe UI", 10, "bold"),
+        )
 
         tk.Label(
-            dialog,
-            text=self._translate_ui_text("MISTER LOGIN"),
-            font=("Segoe UI", 16, "bold"),
-            fg="white",
-            bg=THEME["blue"],
-            pady=self._ui_px(12),
-        ).pack(fill="x")
-        body = tk.Frame(
-            dialog,
-            bg=palette["panel"],
-            padx=self._ui_px(24),
-            pady=self._ui_px(20),
-        )
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        tk.Label(
-            body,
+            card,
             text=self._translate_ui_text(
                 "Enter the MiSTer SSH password. The factory default is 1. "
                 "Leave it blank if you use an SSH key. The password is kept "
                 "only until the tracker closes."
             ),
             font=("Segoe UI", 11),
-            fg=palette["text"],
-            bg=palette["panel"],
-            wraplength=self._ui_px(570),
+            fg=STREAM_DESK["text"],
+            bg=STREAM_DESK["surface"],
+            wraplength=self._ui_px(590),
             justify="left",
-        ).pack(fill="x", pady=(0, 12))
+            anchor="w",
+        ).grid(row=0, column=1, sticky="ew", pady=(0, self._ui_px(14)))
+        tk.Label(
+            card,
+            text=self._translate_ui_text("SSH password:"),
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["surface"],
+            anchor="w",
+        ).grid(row=1, column=1, sticky="ew", pady=(0, self._ui_px(6)))
+        entry_shell = tk.Frame(
+            card,
+            bg=STREAM_DESK["surface_deep"],
+            highlightbackground=STREAM_DESK["border_strong"],
+            highlightcolor=STREAM_DESK["green"],
+            highlightthickness=1,
+            bd=0,
+        )
+        entry_shell.grid(row=2, column=1, sticky="ew")
         password_entry = tk.Entry(
-            body,
+            entry_shell,
             textvariable=password_var,
             show="*",
             font=("Segoe UI", 12),
-            bg=palette["entry"],
-            fg=palette["text"],
-            insertbackground=palette["text"],
+            bg=STREAM_DESK["surface_deep"],
+            fg=STREAM_DESK["text_strong"],
+            insertbackground=STREAM_DESK["text_strong"],
+            selectbackground=STREAM_DESK["selected"],
+            selectforeground=STREAM_DESK["text_strong"],
+            relief="flat",
+            bd=0,
         )
-        password_entry.pack(fill="x", ipady=6)
+        password_entry.pack(
+            fill="x",
+            padx=self._ui_px(12),
+            pady=self._ui_px(9),
+        )
+        show_passwords = MarioCheckbutton(
+            card,
+            text=self._translate_ui_text("Show Passwords"),
+            variable=show_password_var,
+            command=lambda: password_entry.configure(
+                show="" if show_password_var.get() else "*"
+            ),
+            font=("Segoe UI", 9),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["surface"],
+            activeforeground=STREAM_DESK["text"],
+            activebackground=STREAM_DESK["surface"],
+            selectcolor=STREAM_DESK["surface_alt"],
+            highlightthickness=0,
+            bd=0,
+        )
+        show_passwords.grid(
+            row=3,
+            column=1,
+            sticky="w",
+            pady=(self._ui_px(10), 0),
+        )
 
         def finish(accepted: bool) -> None:
             if accepted:
@@ -39472,24 +40531,24 @@ class TrackerApp:
                 result["accepted"] = True
             dialog.destroy()
 
-        buttons = tk.Frame(body, bg=palette["panel"])
-        buttons.pack(fill="x", pady=(18, 0))
         self._make_action_button(
-            buttons,
+            action_group,
             self._translate_ui_text("Cancel"),
             lambda: finish(False),
-            "#63788F",
-            "#4A6078",
+            STREAM_DESK["surface_alt"],
+            STREAM_DESK["selected"],
             width=12,
-        ).pack(side="right", padx=(8, 0))
+            fixed_pixel_width=self._ui_px(138),
+        ).pack(side="left")
         self._make_action_button(
-            buttons,
+            action_group,
             self._translate_ui_text("Continue"),
             lambda: finish(True),
-            THEME["green"],
-            "#208A39",
+            STREAM_DESK["green"],
+            STREAM_DESK["green_dark"],
             width=12,
-        ).pack(side="right")
+            fixed_pixel_width=self._ui_px(150),
+        ).pack(side="left", padx=(self._ui_px(8), 0))
         dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
         dialog.bind("<Return>", lambda _event: finish(True))
         dialog.bind("<Escape>", lambda _event: finish(False))
@@ -39527,10 +40586,12 @@ class TrackerApp:
         palette = self._library_palette()
         dialog = self._create_tracker_dialog(self.root)
         self.mister_setup_dialog = dialog
+        dialog._uses_stream_desk_palette = True
         dialog.title(self._translate_ui_text("MiSTer Setup"))
-        self._size_dialog_for_ui(dialog, 940, 900, 780, 740)
-        dialog.minsize(self._ui_px(760), self._ui_px(660))
+        self._size_dialog_for_ui(dialog, 980, 840, 820, 700)
+        dialog.minsize(self._ui_px(780), self._ui_px(680))
         dialog.transient(self.root)
+        dialog.resizable(True, True)
         dialog.configure(bg=palette["window"])
 
         host_var = tk.StringVar(
@@ -39566,25 +40627,54 @@ class TrackerApp:
                     lambda: self._open_settings_dialog("Platform"),
                 )
 
-        tk.Label(
+        self._create_stream_desk_page_header(
             dialog,
-            text=self._translate_ui_text("MISTER SETUP"),
-            font=("Segoe UI", 18, "bold"),
-            fg="white",
-            bg=THEME["blue"],
-            pady=self._ui_px(13),
-        ).pack(fill="x")
-        body = tk.Frame(
-            dialog,
-            bg=palette["panel"],
-            padx=self._ui_px(24),
-            pady=self._ui_px(18),
-            highlightbackground=palette["border"],
-            highlightthickness=1,
+            kicker="MISTER CONNECTION",
+            title="MiSTer Setup",
+            subtitle=(
+                "Connect, prepare, and verify MiSTer for live tracking and "
+                "game launching."
+            ),
         )
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        tk.Label(
-            body,
+
+        footer = tk.Frame(
+            dialog,
+            bg=palette["window"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(10),
+            bd=0,
+        )
+        footer.pack(side="bottom", fill="x")
+
+        content = tk.Frame(
+            dialog,
+            bg=palette["window"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(14),
+            bd=0,
+        )
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=3, uniform="mister_setup_columns")
+        content.columnconfigure(1, weight=2, uniform="mister_setup_columns")
+        content.rowconfigure(0, weight=1)
+
+        automatic_body = self._stream_desk_card(
+            content,
+            self._translate_ui_text("Automatic setup"),
+            trailing_text=self._translate_ui_text("Recommended"),
+            title_font_size=15,
+            header_pad_y=10,
+            body_pad=14,
+        )
+        automatic_card = automatic_body.stream_card
+        automatic_card.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, self._ui_px(9)),
+        )
+        instructions_label = tk.Label(
+            automatic_body,
             text=self._translate_ui_text(
                 "1. Connect MiSTer to your router with Ethernet or Wi-Fi and "
                 "power it on.\n2. Keep this computer on the same network.\n"
@@ -39594,13 +40684,81 @@ class TrackerApp:
                 "test everything.\n4. The fields and smaller buttons below "
                 "are only needed for manual setup."
             ),
-            font=("Segoe UI", 11),
+            font=("Segoe UI", 10),
             fg=palette["text"],
             bg=palette["panel"],
+            anchor="nw",
+            justify="left",
+        )
+        instructions_label.pack(fill="both", expand=True)
+        automatic_body.bind(
+            "<Configure>",
+            lambda event: instructions_label.configure(
+                wraplength=max(
+                    self._ui_px(300),
+                    int(event.width) - self._ui_px(28),
+                )
+            ),
+            add="+",
+        )
+
+        status_strip = tk.Frame(
+            automatic_body,
+            bg=palette["panel_alt"],
+            padx=self._ui_px(12),
+            pady=self._ui_px(10),
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        status_strip.pack(fill="x", pady=(self._ui_px(10), 0))
+        tk.Label(
+            status_strip,
+            text="●",
+            font=("Segoe UI", 10, "bold"),
+            fg=STREAM_DESK["green"],
+            bg=palette["panel_alt"],
+        ).pack(side="left", padx=(0, self._ui_px(8)))
+        status_label = tk.Label(
+            status_strip,
+            textvariable=status_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
             anchor="w",
             justify="left",
-            wraplength=self._ui_px(840),
-        ).grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 18))
+        )
+        status_label.pack(side="left", fill="x", expand=True)
+        status_strip.bind(
+            "<Configure>",
+            lambda event: status_label.configure(
+                wraplength=max(
+                    self._ui_px(240),
+                    int(event.width) - self._ui_px(52),
+                )
+            ),
+            add="+",
+        )
+        one_click_button_frame = tk.Frame(
+            automatic_body,
+            bg=palette["panel"],
+            bd=0,
+        )
+        one_click_button_frame.pack(
+            fill="x",
+            pady=(self._ui_px(10), 0),
+        )
+
+        manual_body = self._stream_desk_card(
+            content,
+            self._translate_ui_text("Manual setup options"),
+            trailing_text=self._translate_ui_text("Connection details"),
+            title_font_size=15,
+            header_pad_y=10,
+            body_pad=14,
+        )
+        manual_card = manual_body.stream_card
+        manual_card.grid(row=0, column=1, sticky="nsew")
 
         fields = (
             ("MiSTer host or IP:", host_var, False),
@@ -39608,107 +40766,93 @@ class TrackerApp:
             ("SSH port:", port_var, False),
             ("SSH password:", password_var, True),
         )
-        for row, (label_text, variable, secret) in enumerate(fields, start=1):
+        for label_text, variable, secret in fields:
             tk.Label(
-                body,
+                manual_body,
                 text=self._translate_ui_text(label_text),
-                font=("Segoe UI", 11, "bold"),
-                fg=palette["text"],
+                font=("Segoe UI", 9, "bold"),
+                fg=palette["muted"],
                 bg=palette["panel"],
-                anchor="e",
-            ).grid(row=row, column=0, sticky="e", padx=(0, 12), pady=7)
+                anchor="w",
+            ).pack(fill="x")
             entry = tk.Entry(
-                body,
+                manual_body,
                 textvariable=variable,
                 show="*" if secret else "",
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 10),
                 bg=palette["entry"],
                 fg=palette["text"],
                 insertbackground=palette["text"],
+                justify="center",
+                relief="flat",
+                highlightbackground=palette["border"],
+                highlightcolor=STREAM_DESK["green"],
+                highlightthickness=1,
             )
-            entry.grid(row=row, column=1, columnspan=2, sticky="ew", ipady=5)
+            entry.pack(
+                fill="x",
+                ipady=self._ui_px(4),
+                pady=(self._ui_px(2), self._ui_px(5)),
+            )
 
-        tk.Label(
-            body,
+        password_note = tk.Label(
+            manual_body,
             text=self._translate_ui_text(
                 "The password is used only for this tracker session and is "
                 "never saved. Leave it blank if your MiSTer uses an SSH key."
             ),
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 8),
             fg=palette["muted"],
             bg=palette["panel"],
             anchor="w",
             justify="left",
-        ).grid(row=5, column=1, columnspan=2, sticky="w", pady=(0, 12))
-        status_label = tk.Label(
-            body,
-            textvariable=status_var,
-            font=("Segoe UI", 10, "bold"),
-            fg="#FFD43B",
-            bg=palette["panel"],
-            anchor="w",
-            justify="left",
-            wraplength=self._ui_px(820),
         )
-        status_label.grid(row=6, column=0, columnspan=3, sticky="ew", pady=12)
-
-        body.grid_columnconfigure(1, weight=1)
-        body.grid_columnconfigure(2, weight=0)
-        body.grid_rowconfigure(6, weight=1)
-
-        one_click_button_frame = tk.Frame(body, bg=palette["panel"])
-        one_click_button_frame.grid(
-            row=7,
-            column=0,
-            columnspan=3,
-            sticky="ew",
-            pady=(8, 10),
-        )
-        tk.Label(
-            body,
-            text=self._translate_ui_text("Manual setup options"),
-            font=("Segoe UI", 9, "bold"),
-            fg=palette["muted"],
-            bg=palette["panel"],
-            anchor="w",
-        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(2, 4))
-        buttons = tk.Frame(body, bg=palette["panel"])
-        buttons.grid(row=9, column=0, columnspan=3, sticky="ew")
-
-        virtual_states_frame = tk.Frame(
-            body,
-            bg=palette["panel"],
-            highlightbackground=THEME["blue"],
-            highlightthickness=1,
-            padx=self._ui_px(14),
-            pady=self._ui_px(10),
-        )
-        virtual_states_frame.grid(
-            row=10,
-            column=0,
-            columnspan=3,
-            sticky="ew",
-            pady=(16, 0),
-        )
-        tk.Label(
-            virtual_states_frame,
-            text=self._translate_ui_text(
-                "MiSTer Save States 5–11"
+        password_note.pack(fill="x", pady=(0, self._ui_px(6)))
+        manual_body.bind(
+            "<Configure>",
+            lambda event: password_note.configure(
+                wraplength=max(
+                    self._ui_px(220),
+                    int(event.width) - self._ui_px(28),
+                )
             ),
-            font=("Segoe UI", 11, "bold"),
-            fg="#59A5FF",
+            add="+",
+        )
+        buttons = tk.Frame(manual_body, bg=palette["panel"], bd=0)
+        buttons.pack(fill="x", side="bottom")
+        buttons.columnconfigure(0, weight=5, uniform="mister_manual_actions")
+        buttons.columnconfigure(1, weight=6, uniform="mister_manual_actions")
+
+        virtual_states_body = self._stream_desk_card(
+            content,
+            self._translate_ui_text("MiSTer Save States 5–11"),
+            trailing_text="F5–F11",
+            title_font_size=15,
+            header_pad_y=9,
+            body_pad=12,
+        )
+        virtual_states_frame = virtual_states_body.stream_card
+        virtual_states_frame.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(self._ui_px(9), 0),
+        )
+        virtual_states_copy = tk.Frame(
+            virtual_states_body,
             bg=palette["panel"],
-            anchor="w",
-        ).pack(fill="x")
-        tk.Label(
-            virtual_states_frame,
+            bd=0,
+        )
+        virtual_states_copy.pack(side="left", fill="both", expand=True)
+        virtual_states_description = tk.Label(
+            virtual_states_copy,
             text=self._translate_ui_text(
                 "Installed automatically by Find & Set Up MiSTer or by "
                 "selecting Install Virtual Save State Slots below. SNES only. "
-                "Native states 1–4 stay "
-                "unchanged. F5–F11 load states 5–11, and Alt+F5–Alt+F11 "
-                "save states 5–11. F12 still opens "
-                "the MiSTer menu. State 4 is used briefly as a bridge, and an exact "
+                "Native states 1–4 stay unchanged. F5–F11 load states 5–11, "
+                "and Alt+F5–Alt+F11 save states 5–11. F12 still opens the "
+                "MiSTer menu. State 4 is used briefly as a bridge, and an exact "
                 "backup is verified first."
             ),
             font=("Segoe UI", 9),
@@ -39716,13 +40860,27 @@ class TrackerApp:
             bg=palette["panel"],
             anchor="w",
             justify="left",
-            wraplength=self._ui_px(820),
-        ).pack(fill="x", pady=(4, 8))
-        virtual_states_buttons = tk.Frame(
-            virtual_states_frame,
-            bg=palette["panel"],
         )
-        virtual_states_buttons.pack(fill="x")
+        virtual_states_description.pack(fill="x")
+        virtual_states_copy.bind(
+            "<Configure>",
+            lambda event: virtual_states_description.configure(
+                wraplength=max(
+                    self._ui_px(360),
+                    int(event.width) - self._ui_px(12),
+                )
+            ),
+            add="+",
+        )
+        virtual_states_buttons = tk.Frame(
+            virtual_states_body,
+            bg=palette["panel"],
+            bd=0,
+        )
+        virtual_states_buttons.pack(
+            side="right",
+            padx=(self._ui_px(16), 0),
+        )
 
         busy_buttons: list[tk.Widget] = []
 
@@ -39997,9 +41155,10 @@ class TrackerApp:
             one_click_button_frame,
             self._translate_ui_text("Find & Set Up MiSTer"),
             automatic_setup,
-            THEME["green"],
-            "#208A39",
+            STREAM_DESK["green"],
+            STREAM_DESK["green_dark"],
             width=30,
+            pad_y=9,
         )
         self.mister_setup_automatic_button = automatic_button
         automatic_button.pack(fill="x")
@@ -40007,45 +41166,62 @@ class TrackerApp:
             buttons,
             self._translate_ui_text("Test Connection"),
             test_connection,
-            THEME["blue"],
-            "#1768B2",
-            width=15,
+            STREAM_DESK["blue"],
+            STREAM_DESK["blue_dark"],
+            width=18,
+            pad_y=11,
+            font_size=11,
         )
-        test_button.pack(side="left", padx=(0, 8))
+        test_button.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, self._ui_px(5)),
+        )
         restore_original_button = self._make_action_button(
             buttons,
             self._translate_ui_text("Restore Previous MiSTer Version"),
             restore_original_mister,
-            "#63788F",
-            "#4A6078",
-            width=23,
+            STREAM_DESK["surface_alt"],
+            STREAM_DESK["selected"],
+            width=22,
+            pad_y=11,
+            font_size=8,
         )
-        restore_original_button.pack(side="left")
+        restore_original_button.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(self._ui_px(5), 0),
+        )
         save_button = self._make_action_button(
-            buttons,
+            footer,
             self._translate_ui_text("Save & Select MiSTer"),
             save_only,
-            THEME["purple"],
-            "#6037AA",
+            STREAM_DESK["green"],
+            STREAM_DESK["green_dark"],
             width=19,
+            pad_y=8,
         )
-        save_button.pack(side="right", padx=(8, 0))
+        save_button.pack(side="right")
         close_button = self._make_action_button(
-            buttons,
+            footer,
             self._translate_ui_text("Close"),
             close_dialog,
-            "#63788F",
-            "#4A6078",
+            STREAM_DESK["surface_alt"],
+            STREAM_DESK["selected"],
             width=10,
+            pad_y=8,
         )
-        close_button.pack(side="right")
+        close_button.pack(side="right", padx=(0, self._ui_px(8)))
         install_button = self._make_action_button(
             virtual_states_buttons,
             self._translate_ui_text("Install Virtual Save State Slots"),
             install_support,
-            THEME["green"],
-            "#208A39",
-            width=27,
+            STREAM_DESK["green"],
+            STREAM_DESK["green_dark"],
+            width=25,
+            pad_y=8,
         )
         install_button.pack(side="left")
         busy_buttons.extend(
@@ -40058,6 +41234,7 @@ class TrackerApp:
             )
         )
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.bind("<Escape>", lambda _event: close_dialog())
         self._apply_widget_appearance(
             dialog,
             dark=(self.appearance_var.get() == "dark"),
@@ -42065,6 +43242,13 @@ class TrackerApp:
                 (primary_label or "Continue", True, True),
             )
             close_value = False
+        elif response_key == "askgameaction":
+            buttons = (
+                ("Cancel", None, False),
+                ("Game Details", "details", False),
+                ("Start Game", "start", True),
+            )
+            close_value = None
         elif response_key in {"askyesno", "askquestion"}:
             buttons = (("No", False, False), ("Yes", True, True))
             close_value = False
@@ -43496,6 +44680,7 @@ class TrackerApp:
                 mister_ini_path,
                 updated_ini.encode("utf-8"),
             )
+            self._configure_mister_snes_live_tracking(sftp)
             try:
                 sftp.remove(temporary_ini)
             except OSError:
@@ -43530,6 +44715,7 @@ class TrackerApp:
         self,
         platform_name: str,
         username: str,
+        web_api_key: str,
         hardcore: bool,
         *,
         ra2snes_executable: Path | None = None,
@@ -43544,6 +44730,9 @@ class TrackerApp:
             configured_platforms
         )
         self.config["retroachievements_username"] = str(username).strip()
+        self.config["retroachievements_web_api_key"] = str(
+            web_api_key
+        ).strip()
         self.config["retroachievements_hardcore"] = bool(hardcore)
         if ra2snes_executable is not None:
             self.config["ra2snes_executable_path"] = str(
@@ -43562,7 +44751,7 @@ class TrackerApp:
         palette = self._library_palette()
         dialog = self._create_tracker_dialog(self.root)
         dialog.title(self._translate_ui_text("RetroAchievements Setup"))
-        self._size_dialog_for_ui(dialog, 900, 720, 700, 610)
+        self._size_dialog_for_ui(dialog, 900, 650, 700, 520)
         dialog.configure(bg=palette["window"])
         dialog.resizable(True, True)
         dialog.transient(self.root)
@@ -43609,21 +44798,99 @@ class TrackerApp:
             pady=(self._ui_px(8), self._ui_px(18)),
         )
 
-        body = tk.Frame(
+        setup_body_host = tk.Frame(
             dialog,
+            bg=palette["window"],
+            bd=0,
+            highlightthickness=0,
+        )
+        setup_body_host.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(20),
+            pady=self._ui_px(18),
+        )
+        setup_body_host.columnconfigure(0, weight=1)
+        setup_body_host.rowconfigure(0, weight=1)
+        setup_scroll_canvas = tk.Canvas(
+            setup_body_host,
+            bg=palette["window"],
+            bd=0,
+            highlightthickness=0,
+            yscrollincrement=self._ui_px(28),
+        )
+        setup_scrollbar = YellowCanvasScrollbar(
+            setup_body_host,
+            orient="vertical",
+            command=setup_scroll_canvas.yview,
+        )
+        setup_scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        setup_scrollbar.grid(row=0, column=1, sticky="ns")
+        setup_scrollbar.grid_remove()
+        setup_scroll_canvas.configure(yscrollcommand=setup_scrollbar.set)
+
+        body = tk.Frame(
+            setup_scroll_canvas,
             bg=palette["panel"],
             padx=self._ui_px(24),
             pady=self._ui_px(20),
             highlightbackground=palette["border"],
             highlightthickness=1,
         )
-        body.pack(
-            fill="both",
-            expand=True,
-            padx=self._ui_px(20),
-            pady=self._ui_px(18),
+        setup_body_window = setup_scroll_canvas.create_window(
+            (0, 0),
+            window=body,
+            anchor="nw",
         )
         body.columnconfigure(0, weight=1)
+
+        setup_scrollbar_visible = {"value": False}
+
+        def resize_setup_body(_event=None) -> None:
+            try:
+                visible_width = max(1, setup_scroll_canvas.winfo_width())
+                visible_height = max(1, setup_scroll_canvas.winfo_height())
+                natural_height = max(1, body.winfo_reqheight())
+                content_height = max(visible_height, natural_height)
+                setup_scroll_canvas.itemconfigure(
+                    setup_body_window,
+                    width=visible_width,
+                    height=content_height,
+                )
+                setup_scroll_canvas.configure(
+                    scrollregion=(0, 0, visible_width, content_height),
+                )
+                needs_scrollbar = natural_height > visible_height + 2
+                if needs_scrollbar and not setup_scrollbar_visible["value"]:
+                    setup_scrollbar.grid()
+                    setup_scrollbar_visible["value"] = True
+                elif not needs_scrollbar and setup_scrollbar_visible["value"]:
+                    setup_scrollbar.grid_remove()
+                    setup_scroll_canvas.yview_moveto(0.0)
+                    setup_scrollbar_visible["value"] = False
+            except (tk.TclError, TypeError, ValueError):
+                pass
+
+        def scroll_setup_body(event) -> str:
+            try:
+                bounds = setup_scroll_canvas.bbox("all")
+                if bounds is None or bounds[3] <= setup_scroll_canvas.winfo_height():
+                    return "break"
+                if getattr(event, "num", None) == 4:
+                    direction = -1
+                elif getattr(event, "num", None) == 5:
+                    direction = 1
+                else:
+                    direction = -1 if int(event.delta) > 0 else 1
+                setup_scroll_canvas.yview_scroll(direction * 3, "units")
+            except (tk.TclError, TypeError, ValueError):
+                pass
+            return "break"
+
+        setup_scroll_canvas.bind("<Configure>", resize_setup_body, add="+")
+        body.bind("<Configure>", resize_setup_body, add="+")
+        for wheel_event in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            dialog.bind(wheel_event, scroll_setup_body, add="+")
 
         platform_descriptions = {
             "RetroArch": (
@@ -43658,6 +44925,9 @@ class TrackerApp:
         form.columnconfigure(0, weight=1)
         username_var = tk.StringVar(
             value=str(self.config.get("retroachievements_username", ""))
+        )
+        web_api_key_var = tk.StringVar(
+            value=str(self.config.get("retroachievements_web_api_key", ""))
         )
         password_var = tk.StringVar()
         hardcore_var = tk.BooleanVar(
@@ -43710,14 +44980,22 @@ class TrackerApp:
 
         form_row = 0
         username_entry: tk.Entry | None = None
+        web_api_key_entry: tk.Entry | None = None
         password_entry: tk.Entry | None = None
+        username_entry = add_field(
+            form_row,
+            "RetroAchievements Username",
+            username_var,
+        )
+        form_row += 2
+        web_api_key_entry = add_field(
+            form_row,
+            "RetroAchievements Web API Key",
+            web_api_key_var,
+            masked=True,
+        )
+        form_row += 2
         if platform_name != "FXPAK Pro":
-            username_entry = add_field(
-                form_row,
-                "RetroAchievements Username",
-                username_var,
-            )
-            form_row += 2
             password_entry = add_field(
                 form_row,
                 "RetroAchievements Password",
@@ -43778,8 +45056,9 @@ class TrackerApp:
             tk.Label(
                 form,
                 text=self._translate_ui_text(
-                    "Your password is passed only to the selected platform "
-                    "client. The tracker does not keep it in its own settings."
+                    "Your platform password is not stored. The Web API key is "
+                    "saved locally so the tracker can display your real "
+                    "RetroAchievements progress and badges."
                 ),
                 font=("Segoe UI", 9),
                 fg=palette["muted"],
@@ -43813,10 +45092,9 @@ class TrackerApp:
         status_card.grid(
             row=2,
             column=0,
-            sticky="nsew",
+            sticky="ew",
             pady=(self._ui_px(18), 0),
         )
-        body.rowconfigure(2, weight=1)
         tk.Label(
             status_card,
             textvariable=status_var,
@@ -43868,6 +45146,17 @@ class TrackerApp:
             width=15,
             pad_y=8,
         ).pack(side="left")
+        self._make_action_button(
+            footer,
+            text=self._translate_ui_text("Get Web API Key"),
+            command=lambda: webbrowser.open_new_tab(
+                RETROACHIEVEMENTS_CONTROL_PANEL_URL
+            ),
+            bg=palette["panel_alt"],
+            active_bg=palette["selected"],
+            width=16,
+            pad_y=8,
+        ).pack(side="left", padx=(self._ui_px(8), 0))
 
         setup_button: OutlinedButton
 
@@ -43894,6 +45183,7 @@ class TrackerApp:
                 self._record_retroachievements_setup(
                     platform_name,
                     str(result.get("username", username_var.get())),
+                    str(result.get("web_api_key", web_api_key_var.get())),
                     bool(result.get("hardcore", hardcore_var.get())),
                     ra2snes_executable=result.get("ra2snes_executable"),
                 )
@@ -43905,6 +45195,7 @@ class TrackerApp:
             self.status_var.set(
                 f"RetroAchievements setup is complete for {platform_name}."
             )
+            self._refresh_retroachievements_obs_async()
             self._show_localized_info(
                 "RetroAchievements Ready",
                 message,
@@ -43913,6 +45204,7 @@ class TrackerApp:
 
         def setup_worker(
             username: str,
+            web_api_key: str,
             password: str,
             hardcore: bool,
             ssh_password: str,
@@ -43920,8 +45212,15 @@ class TrackerApp:
             try:
                 result: dict[str, Any] = {
                     "username": username,
+                    "web_api_key": web_api_key,
                     "hardcore": hardcore,
                 }
+                api_verification_warning = (
+                    verify_retroachievements_display_credentials(
+                        username,
+                        web_api_key,
+                    )
+                )
                 if platform_name == "RetroArch":
                     executable = self._find_optional_software_executable(
                         "retroarch"
@@ -43998,13 +45297,18 @@ class TrackerApp:
                         "submits unlocks from the FXPAK Pro. Keep both programs open "
                         "while playing."
                     )
+                if api_verification_warning:
+                    result["message"] += "\n\n" + api_verification_warning
                 self.root.after(0, lambda: finish_setup(result, ""))
             except Exception as error:
                 append_error_log(
                     "RetroAchievements setup failed",
                     traceback.format_exc(),
                 )
-                error_text = str(error)
+                error_text = retroachievements_setup_error_text(
+                    error,
+                    platform_name,
+                )
                 self.root.after(
                     0,
                     lambda: finish_setup(None, error_text),
@@ -44012,8 +45316,9 @@ class TrackerApp:
 
         def begin_setup() -> None:
             username = username_var.get().strip()
+            web_api_key = web_api_key_var.get().strip()
             password = password_var.get()
-            if platform_name != "FXPAK Pro" and not username:
+            if not username:
                 self._show_localized_error(
                     "RetroAchievements Setup",
                     "Enter your RetroAchievements username.",
@@ -44021,6 +45326,15 @@ class TrackerApp:
                 )
                 if username_entry is not None:
                     username_entry.focus_set()
+                return
+            if not web_api_key:
+                self._show_localized_error(
+                    "RetroAchievements Setup",
+                    "Enter the Web API key from your RetroAchievements account control panel.",
+                    parent=dialog,
+                )
+                if web_api_key_entry is not None:
+                    web_api_key_entry.focus_set()
                 return
             if platform_name != "FXPAK Pro" and not password:
                 executable = (
@@ -44056,6 +45370,7 @@ class TrackerApp:
                 target=setup_worker,
                 args=(
                     username,
+                    web_api_key,
                     password,
                     bool(hardcore_var.get()),
                     ssh_password_var.get(),
@@ -45192,6 +46507,10 @@ class TrackerApp:
             (
                 "OBS Text Files",
                 (
+                    (
+                        self._setup_guide_text("obs_title"),
+                        self.open_guided_obs_text_setup,
+                    ),
                     (
                         self._setup_guide_text(
                             "choose_obs_folder_button"
@@ -51111,6 +52430,7 @@ class TrackerApp:
             return False
         if self.worker is not None:
             self.worker.config.update(self.config)
+        self._export_achievements_to_obs()
         return True
 
     def parse_timer_override(self, value: str) -> float:
@@ -51348,6 +52668,80 @@ class TrackerApp:
         if selected:
             self.output_folder_var.set(selected)
 
+    def _export_achievements_to_obs(
+        self,
+        summary: dict[str, Any] | None = None,
+    ) -> bool:
+        output_text = str(
+            self.output_folder_var.get()
+            if hasattr(self, "output_folder_var")
+            else self.config.get("output_folder", "")
+        ).strip()
+        if not output_text:
+            return False
+
+        try:
+            output_folder = Path(output_text)
+            output_folder.mkdir(parents=True, exist_ok=True)
+            achievement_summary = (
+                dict(summary)
+                if isinstance(summary, dict)
+                else dict(
+                    getattr(
+                        self,
+                        "_retroachievements_overview_summary",
+                        self._cached_retroachievements_progress(),
+                    )
+                )
+            )
+            achievement_text = format_achievement_obs_text(
+                achievement_summary,
+                self.config.get("obs_achievements_text_format"),
+            )
+            destination = output_folder / "achievements.txt"
+            current_text = (
+                destination.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                if destination.exists()
+                else ""
+            )
+            if current_text == achievement_text:
+                return True
+
+            temporary = output_folder / "achievements.txt.tmp"
+            temporary.write_text(achievement_text, encoding="utf-8")
+            try:
+                temporary.replace(destination)
+            except OSError:
+                # OBS can briefly hold a text source open on Windows. A direct
+                # write keeps the source updating if the atomic swap is busy.
+                destination.write_text(achievement_text, encoding="utf-8")
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
+            return True
+        except Exception as error:
+            append_error_log("OBS achievement export", str(error))
+            return False
+
+    def _refresh_retroachievements_obs_async(self) -> None:
+        cached = self._cached_retroachievements_progress()
+        self._retroachievements_overview_summary = dict(cached)
+        self._export_achievements_to_obs(cached)
+        self._start_retroachievements_progress_refresh()
+        try:
+            if self._retroachievements_obs_after_id is not None:
+                self.root.after_cancel(self._retroachievements_obs_after_id)
+            self._retroachievements_obs_after_id = self.root.after(
+                120_000,
+                self._refresh_retroachievements_obs_async,
+            )
+        except (AttributeError, tk.TclError):
+            self._retroachievements_obs_after_id = None
+
     def _bootstrap_stats_database(self) -> str:
         self.stats_db.initialize()
         catalog_count = self.stats_db.catalog_count()
@@ -51562,6 +52956,8 @@ class TrackerApp:
             "main_hack_selector_combo",
         ):
             self._refresh_main_hack_selector()
+
+        self._export_achievements_to_obs()
 
     def _reload_database_catalog(self) -> None:
         self.spreadsheet_var.set("Reloading database…")
@@ -52652,6 +54048,7 @@ class TrackerApp:
 
         tr = self._translate_ui_text
         records = self.stats_db.list_tracked()
+        achievement_summary = self._cached_retroachievements_progress()
 
         page_head = tk.Frame(
             dialog,
@@ -52665,41 +54062,36 @@ class TrackerApp:
         page_head.pack(fill="x")
         copy = tk.Frame(page_head, bg=STREAM_DESK["window"], bd=0)
         copy.pack(side="left", fill="x", expand=True)
-        tk.Label(
+        overview_kicker_label = tk.Label(
             copy,
             text=tr("CAREER STATISTICS"),
             font=("Segoe UI", 10, "bold"),
             fg=STREAM_DESK["yellow"],
             bg=STREAM_DESK["window"],
             anchor="w",
-        ).pack(anchor="w")
-        tk.Label(
+        )
+        overview_kicker_label.pack(anchor="w")
+        overview_title_label = tk.Label(
             copy,
             text=tr("Overview"),
             font=("Segoe UI", 30, "bold"),
             fg=STREAM_DESK["text_strong"],
             bg=STREAM_DESK["window"],
             anchor="w",
-        ).pack(anchor="w", pady=(self._ui_px(2), 0))
-        tk.Label(
+        )
+        overview_title_label.pack(anchor="w", pady=(self._ui_px(2), 0))
+        overview_subtitle_label = tk.Label(
             copy,
             text=tr("Your full Super Mario World history"),
             font=("Segoe UI", 12),
             fg=STREAM_DESK["muted"],
             bg=STREAM_DESK["window"],
             anchor="w",
-        ).pack(anchor="w", pady=(self._ui_px(4), 0))
-        self._make_action_button(
-            page_head,
-            text=tr("All time"),
-            command=lambda: None,
-            bg=STREAM_DESK["surface_alt"],
-            active_bg=STREAM_DESK["selected"],
-            width=12,
-            font_size=10,
-            pad_y=8,
-        ).pack(side="right")
-
+        )
+        overview_subtitle_label.pack(
+            anchor="w",
+            pady=(self._ui_px(4), 0),
+        )
         body_host = tk.Frame(
             dialog,
             bg=STREAM_DESK["window"],
@@ -52709,131 +54101,32 @@ class TrackerApp:
         body_host.pack(fill="both", expand=True)
         body_host.columnconfigure(0, weight=1)
         body_host.rowconfigure(0, weight=1)
-        body_canvas = tk.Canvas(
-            body_host,
-            bg=STREAM_DESK["window"],
-            bd=0,
-            highlightthickness=0,
-            yscrollincrement=self._ui_px(28),
-        )
-        body_scrollbar = YellowCanvasScrollbar(
-            body_host,
-            orient="vertical",
-            command=body_canvas.yview,
-        )
-        body_canvas.grid(row=0, column=0, sticky="nsew")
-        body_scrollbar.grid(row=0, column=1, sticky="ns")
-        body_scrollbar.grid_remove()
-        body_canvas.configure(yscrollcommand=body_scrollbar.set)
-
         body = tk.Frame(
-            body_canvas,
+            body_host,
             bg=STREAM_DESK["window"],
             padx=self._ui_px(28),
             pady=self._ui_px(18),
             bd=0,
         )
-        body_window = body_canvas.create_window(
-            (0, 0),
-            window=body,
-            anchor="nw",
-        )
+        body.grid(row=0, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
 
-        overview_scrollbar_visible = {"value": False}
-        overview_body_geometry = {"signature": None}
-
-        def resize_overview_body(event=None) -> None:
-            try:
-                visible_width = max(
-                    1,
-                    int(
-                        getattr(
-                            event,
-                            "width",
-                            body_canvas.winfo_width(),
-                        )
-                    ),
-                )
-                visible_height = max(
-                    1,
-                    int(
-                        getattr(
-                            event,
-                            "height",
-                            body_canvas.winfo_height(),
-                        )
-                    ),
-                )
-                # A frame's requested height remains its natural child-driven
-                # height even while the canvas stretches its actual height.
-                # Measuring that value directly avoids the old height=0 /
-                # update_idletasks cycle, which recursively generated more
-                # Configure events and made Overview visibly twitch.
-                natural_height = max(1, int(body.winfo_reqheight()))
-                content_height = max(
-                    visible_height,
-                    natural_height,
-                )
-                if overview_scrollbar_visible["value"]:
-                    needs_scrollbar = natural_height > visible_height - self._ui_px(10)
-                else:
-                    needs_scrollbar = natural_height > visible_height + self._ui_px(10)
-                geometry_signature = (
-                    visible_width,
-                    visible_height,
-                    natural_height,
-                    content_height,
-                    needs_scrollbar,
-                )
-                if overview_body_geometry["signature"] == geometry_signature:
-                    return
-                overview_body_geometry["signature"] = geometry_signature
-                body_canvas.itemconfigure(
-                    body_window,
-                    width=visible_width,
-                    height=content_height,
-                )
-                body_canvas.configure(
-                    scrollregion=(
-                        0,
-                        0,
-                        visible_width,
-                        content_height,
-                    )
-                )
-                if needs_scrollbar and not overview_scrollbar_visible["value"]:
-                    body_scrollbar.grid()
-                    overview_scrollbar_visible["value"] = True
-                elif not needs_scrollbar and overview_scrollbar_visible["value"]:
-                    body_scrollbar.grid_remove()
-                    body_canvas.yview_moveto(0.0)
-                    overview_scrollbar_visible["value"] = False
-            except (tk.TclError, TypeError, ValueError):
-                return
-
-        def scroll_overview(event) -> str:
-            try:
-                bounds = body_canvas.bbox("all")
-                if bounds is None or bounds[3] <= body_canvas.winfo_height():
-                    return "break"
-                direction = -1 if int(event.delta) > 0 else 1
-                body_canvas.yview_scroll(direction * 3, "units")
-            except (tk.TclError, TypeError, ValueError):
-                pass
-            return "break"
-
-        dialog.bind("<MouseWheel>", scroll_overview, add="+")
-
         recorded_deaths = 0
+        recorded_death_rows = 0
         playtime_by_difficulty: dict[str, int] = {}
+        status_lookup: dict[str, int] = {}
+        rating_values: list[float] = []
+        total_seconds = 0
         for record in records:
+            status = str(record.get("status") or "Planned")
+            status_lookup[status] = status_lookup.get(status, 0) + 1
             for death_key in ("total_deaths", "death_count", "deaths"):
                 try:
                     death_value = record.get(death_key)
                     if death_value not in (None, "", "*"):
                         recorded_deaths += max(0, int(float(death_value)))
+                        recorded_death_rows += 1
                         break
                 except (TypeError, ValueError):
                     continue
@@ -52842,29 +54135,43 @@ class TrackerApp:
                 seconds = max(0, int(record.get("playtime_seconds") or 0))
             except (TypeError, ValueError):
                 seconds = 0
+            total_seconds += seconds
             playtime_by_difficulty[difficulty] = (
                 playtime_by_difficulty.get(difficulty, 0) + seconds
             )
+            try:
+                personal_rating = record.get("personal_rating")
+                if personal_rating not in (None, ""):
+                    rating_values.append(float(personal_rating))
+            except (TypeError, ValueError):
+                pass
 
-        status_lookup = {
-            str(row.get("status") or ""): int(row.get("count") or 0)
-            for row in overview.get("status", [])
-        }
         status_data = (
             (tr("Completed"), status_lookup.get("Completed", 0), STREAM_DESK["green"]),
             (tr("In Progress"), status_lookup.get("In Progress", 0), STREAM_DESK["blue"]),
             (tr("Planned"), status_lookup.get("Planned", 0), STREAM_DESK["purple"]),
         )
-        total_tracked = sum(value for _label, value, _color in status_data)
+        # Keep the headline total identical to My Tracker, even if an older
+        # database contains a status label this three-slice chart does not know.
+        total_tracked = len(records)
 
-        total_seconds = max(0, int(overview.get("playtime_seconds") or 0))
         total_hours = total_seconds // 3600
         total_minutes = (total_seconds % 3600) // 60
-        average_rating = overview.get("average_rating")
+        average_rating = (
+            sum(rating_values) / len(rating_values)
+            if rating_values
+            else None
+        )
+        if recorded_death_rows <= 0:
+            recorded_deaths_text = "—"
+        elif recorded_death_rows < len(records):
+            recorded_deaths_text = f"{recorded_deaths:,}+"
+        else:
+            recorded_deaths_text = f"{recorded_deaths:,}"
         stat_values = (
-            ("Hacks completed", f"{int(overview.get('completed') or 0):,}"),
+            ("Hacks completed", f"{status_lookup.get('Completed', 0):,}"),
             ("Total playtime", f"{total_hours:,}h {total_minutes:02d}m"),
-            ("Recorded deaths", f"{recorded_deaths:,}"),
+            ("Recorded deaths", recorded_deaths_text),
             (
                 "Average rating",
                 f"{float(average_rating):.1f} / 5" if average_rating is not None else "—",
@@ -52877,7 +54184,7 @@ class TrackerApp:
             row=0,
             column=0,
             sticky="ew",
-            pady=(0, self._ui_px(14)),
+            pady=(0, self._ui_px(9)),
         )
         for column, (label_text, value_text) in enumerate(stat_values):
             variable = tk.StringVar(master=dialog, value=value_text)
@@ -52888,10 +54195,10 @@ class TrackerApp:
                     column,
                     tr(label_text),
                     variable,
-                    label_font_size=12,
-                    value_font_size=24,
-                    pad_x=19,
-                    pad_y=17,
+                    label_font_size=10,
+                    value_font_size=20,
+                    pad_x=15,
+                    pad_y=9,
                 )
             )
 
@@ -52902,9 +54209,9 @@ class TrackerApp:
             panels,
             tr("Tracker Status"),
             trailing_text=f"{total_tracked:,} {tr('Tracked')}",
-            title_font_size=17,
-            header_pad_y=16,
-            body_pad=12,
+            title_font_size=15,
+            header_pad_y=9,
+            body_pad=8,
         )
         status_card = status_body.stream_card
         pie_canvas = tk.Canvas(
@@ -52912,7 +54219,7 @@ class TrackerApp:
             bg=STREAM_DESK["surface"],
             bd=0,
             highlightthickness=0,
-            height=self._ui_px(330),
+            height=self._ui_px(220),
         )
         pie_canvas.pack(fill="both", expand=True)
 
@@ -52924,8 +54231,8 @@ class TrackerApp:
 
         def draw_status_donut(_event=None) -> None:
             try:
-                width = max(self._ui_px(260), pie_canvas.winfo_width())
-                height = max(self._ui_px(250), pie_canvas.winfo_height())
+                width = max(self._ui_px(160), pie_canvas.winfo_width())
+                height = max(self._ui_px(110), pie_canvas.winfo_height())
                 render_signature = (
                     width,
                     height,
@@ -52949,33 +54256,33 @@ class TrackerApp:
                 )
                 return
 
-            legend_height = self._ui_px(108)
-            use_side_legend = width >= self._ui_px(560)
+            legend_height = self._ui_px(64)
+            use_side_legend = width >= self._ui_px(360)
             if use_side_legend:
                 chart_size = min(
-                    self._ui_px(420),
-                    max(self._ui_px(220), height - self._ui_px(36)),
-                    max(self._ui_px(220), int(width * 0.54)),
+                    self._ui_px(140),
+                    max(self._ui_px(90), height - self._ui_px(8)),
+                    max(self._ui_px(90), int(width * 0.40)),
                 )
                 center_x = max(
-                    self._ui_px(18) + chart_size / 2,
-                    width * 0.27,
+                    self._ui_px(10) + chart_size / 2,
+                    width * 0.23,
                 )
                 center_y = height / 2
-                legend_x = center_x + chart_size / 2 + self._ui_px(34)
-                legend_y = center_y - self._ui_px(68)
+                legend_x = center_x + chart_size / 2 + self._ui_px(18)
+                legend_y = center_y - self._ui_px(35)
             else:
                 chart_size = min(
-                    self._ui_px(300),
-                    max(self._ui_px(170), width - self._ui_px(44)),
-                    max(self._ui_px(170), height - legend_height - self._ui_px(22)),
+                    self._ui_px(120),
+                    max(self._ui_px(80), width - self._ui_px(24)),
+                    max(self._ui_px(80), height - legend_height - self._ui_px(8)),
                 )
                 center_x = width / 2
-                center_y = self._ui_px(8) + chart_size / 2
-                legend_x = self._ui_px(22)
-                legend_y = center_y + chart_size / 2 + self._ui_px(14)
+                center_y = self._ui_px(4) + chart_size / 2
+                legend_x = self._ui_px(14)
+                legend_y = center_y + chart_size / 2 + self._ui_px(7)
 
-            size = max(self._ui_px(150), int(chart_size))
+            size = max(self._ui_px(75), int(chart_size))
             if Image is not None and ImageDraw is not None and ImageTk is not None:
                 scale = 4
                 hi_size = size * scale
@@ -53046,18 +54353,18 @@ class TrackerApp:
                 center_y - self._ui_px(8),
                 text=f"{total_tracked:,}",
                 fill=STREAM_DESK["text_strong"],
-                font=("Segoe UI", 30, "bold"),
+                font=("Segoe UI", 18, "bold"),
             )
             pie_canvas.create_text(
                 center_x,
-                center_y + self._ui_px(20),
+                center_y + self._ui_px(14),
                 text=tr("Tracked").upper(),
                 fill=STREAM_DESK["muted"],
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 8, "bold"),
             )
 
             for index, (label_text, value, color) in enumerate(status_data):
-                row_y = legend_y + index * self._ui_px(45)
+                row_y = legend_y + index * self._ui_px(23)
                 pie_canvas.create_oval(
                     legend_x,
                     row_y + self._ui_px(5),
@@ -53072,7 +54379,7 @@ class TrackerApp:
                     text=label_text,
                     anchor="nw",
                     fill=STREAM_DESK["text"],
-                    font=("Segoe UI", 12),
+                    font=("Segoe UI", 8),
                 )
                 pie_canvas.create_text(
                     (
@@ -53084,16 +54391,16 @@ class TrackerApp:
                     text=f"{value:,}",
                     anchor="ne",
                     fill=STREAM_DESK["text_strong"],
-                    font=("Segoe UI", 13, "bold"),
+                    font=("Segoe UI", 9, "bold"),
                 )
 
         difficulty_body = self._stream_desk_card(
             panels,
             tr("Playtime by difficulty"),
             trailing_text=tr("Hours"),
-            title_font_size=17,
-            header_pad_y=16,
-            body_pad=16,
+            title_font_size=15,
+            header_pad_y=9,
+            body_pad=10,
         )
         difficulty_card = difficulty_body.stream_card
         difficulty_order = (
@@ -53115,15 +54422,12 @@ class TrackerApp:
             ),
             key=lambda name: playtime_by_difficulty.get(name, 0),
             reverse=True,
-        )[:5]
+        )[:4]
         populated_difficulties = [
             name for name in difficulty_order if name in ranked_difficulties
         ]
         if not populated_difficulties:
-            populated_difficulties = [
-                str(row.get("difficulty") or "Unknown")
-                for row in overview.get("difficulty", [])
-            ][:5]
+            populated_difficulties = list(playtime_by_difficulty)[:4]
         populated_difficulties = populated_difficulties or ["Unknown"]
         maximum_seconds = max(
             1,
@@ -53134,7 +54438,7 @@ class TrackerApp:
             row = tk.Frame(
                 difficulty_body,
                 bg=STREAM_DESK["surface"],
-                pady=self._ui_px(8),
+                pady=self._ui_px(4),
                 bd=0,
             )
             row.pack(fill="x", expand=True)
@@ -53143,8 +54447,8 @@ class TrackerApp:
                 row,
                 difficulty,
                 surface_color=STREAM_DESK["surface"],
-                font_size=11,
-                minimum_width=136,
+                font_size=9,
+                minimum_width=112,
             ).pack(side="left")
             seconds = playtime_by_difficulty.get(difficulty, 0)
             track = tk.Canvas(
@@ -53158,7 +54462,7 @@ class TrackerApp:
                 side="left",
                 fill="x",
                 expand=True,
-                padx=self._ui_px(13),
+                padx=self._ui_px(9),
             )
 
             def draw_bar(
@@ -53196,29 +54500,304 @@ class TrackerApp:
             tk.Label(
                 row,
                 text=hours_text,
-                width=8,
-                font=("Segoe UI", 12, "bold"),
+                width=6,
+                font=("Segoe UI", 10, "bold"),
                 fg=STREAM_DESK["text_strong"],
                 bg=STREAM_DESK["surface"],
                 anchor="e",
             ).pack(side="right")
 
+        achievement_body = self._stream_desk_card(
+            panels,
+            tr("Achievements"),
+            trailing_text="RetroAchievements",
+            title_font_size=15,
+            header_pad_y=9,
+            body_pad=10,
+        )
+        achievement_card = achievement_body.stream_card
+        achievement_count_var = tk.StringVar(master=dialog, value="0 / 0")
+        achievement_game_var = tk.StringVar(
+            master=dialog,
+            value=tr("Loading RetroAchievements..."),
+        )
+        achievement_recent_var = tk.StringVar(master=dialog, value="")
+        achievement_next_var = tk.StringVar(master=dialog, value="")
+        achievement_progress_row = tk.Frame(
+            achievement_body,
+            bg=STREAM_DESK["surface"],
+            bd=0,
+        )
+        achievement_progress_row.pack(fill="x")
+        tk.Label(
+            achievement_progress_row,
+            textvariable=achievement_game_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=STREAM_DESK["text"],
+            bg=STREAM_DESK["surface"],
+            anchor="w",
+        ).pack(side="left")
+        tk.Label(
+            achievement_progress_row,
+            textvariable=achievement_count_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=STREAM_DESK["yellow"],
+            bg=STREAM_DESK["surface"],
+        ).pack(side="right")
+
+        achievement_ratio = {"value": 0.0}
+        achievement_progress_canvas = tk.Canvas(
+            achievement_body,
+            height=self._ui_px(7),
+            bg=STREAM_DESK["surface"],
+            bd=0,
+            highlightthickness=0,
+        )
+        achievement_progress_canvas.pack(
+            fill="x",
+            pady=(self._ui_px(5), self._ui_px(7)),
+        )
+
+        def draw_achievement_progress(_event=None) -> None:
+            try:
+                width = max(1, achievement_progress_canvas.winfo_width())
+                height = max(1, achievement_progress_canvas.winfo_height())
+                achievement_progress_canvas.delete("all")
+                achievement_progress_canvas.create_rectangle(
+                    0,
+                    0,
+                    width,
+                    height,
+                    fill=STREAM_DESK["border"],
+                    outline="",
+                )
+                ratio = max(
+                    0.0,
+                    min(1.0, float(achievement_ratio["value"])),
+                )
+                if ratio > 0:
+                    achievement_progress_canvas.create_rectangle(
+                        0,
+                        0,
+                        max(3, int(width * ratio)),
+                        height,
+                        fill=STREAM_DESK["yellow"],
+                        outline="",
+                    )
+            except tk.TclError:
+                pass
+
+        achievement_progress_canvas.bind(
+            "<Configure>",
+            draw_achievement_progress,
+            add="+",
+        )
+        badge_strip = tk.Frame(
+            achievement_body,
+            bg=STREAM_DESK["surface"],
+            bd=0,
+        )
+        badge_strip.pack(fill="x")
+        achievement_recent_label = tk.Label(
+            achievement_body,
+            textvariable=achievement_recent_var,
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["green"],
+            bg=STREAM_DESK["surface"],
+            anchor="w",
+            justify="left",
+            wraplength=self._ui_px(520),
+        )
+        achievement_recent_label.pack(
+            fill="x",
+            pady=(self._ui_px(7), 0),
+        )
+        achievement_next_label = tk.Label(
+            achievement_body,
+            textvariable=achievement_next_var,
+            font=("Segoe UI", 9),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["surface"],
+            anchor="w",
+            justify="left",
+            wraplength=self._ui_px(520),
+        )
+        achievement_next_label.pack(
+            fill="x",
+            pady=(self._ui_px(3), 0),
+        )
+
+        def render_retroachievements_overview(
+            summary: dict[str, Any],
+        ) -> None:
+            try:
+                if not dialog.winfo_exists():
+                    return
+            except (AttributeError, tk.TclError):
+                return
+            total = max(0, int(summary.get("total", 0) or 0))
+            unlocked = max(0, int(summary.get("unlocked", 0) or 0))
+            achievement_ratio["value"] = unlocked / max(1, total)
+            achievement_count_var.set(f"{unlocked} / {total} {tr('Unlocked')}")
+            game_title = str(summary.get("game_title", "")).strip()
+            if game_title:
+                achievement_game_var.set(
+                    "RetroAchievements · " + game_title
+                )
+            else:
+                achievement_game_var.set("RetroAchievements")
+            for child in badge_strip.winfo_children():
+                child.destroy()
+            achievement_body._ra_badge_photos = []
+            recent = [
+                item
+                for item in summary.get("recent", [])
+                if isinstance(item, dict)
+            ]
+            items = [
+                item
+                for item in summary.get("items", [])
+                if isinstance(item, dict)
+            ]
+            visible_badges: list[dict[str, Any]] = []
+            seen_ids: set[int] = set()
+            for badge in recent + items:
+                try:
+                    badge_id = int(badge.get("id", 0) or 0)
+                except (TypeError, ValueError):
+                    badge_id = 0
+                if badge_id and badge_id in seen_ids:
+                    continue
+                if badge_id:
+                    seen_ids.add(badge_id)
+                visible_badges.append(badge)
+                if len(visible_badges) >= 4:
+                    break
+            if not visible_badges:
+                tk.Label(
+                    badge_strip,
+                    text=str(
+                        summary.get("message")
+                        or tr("No RetroAchievements data is available.")
+                    ),
+                    font=("Segoe UI", 9),
+                    fg=STREAM_DESK["muted"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="w",
+                    justify="left",
+                    wraplength=self._ui_px(500),
+                ).pack(fill="x", pady=self._ui_px(8))
+            for badge_column, badge in enumerate(visible_badges):
+                badge_strip.columnconfigure(
+                    badge_column,
+                    weight=1,
+                    uniform="ra_badges",
+                )
+                unlocked_badge = bool(badge.get("unlocked", True))
+                badge_panel = tk.Frame(
+                    badge_strip,
+                    bg=STREAM_DESK["surface_alt"],
+                    highlightbackground=(
+                        STREAM_DESK["yellow"]
+                        if unlocked_badge
+                        else STREAM_DESK["border"]
+                    ),
+                    highlightthickness=1,
+                    padx=self._ui_px(4),
+                    pady=self._ui_px(4),
+                    bd=0,
+                )
+                badge_panel.grid(
+                    row=0,
+                    column=badge_column,
+                    sticky="nsew",
+                    padx=(0 if badge_column == 0 else self._ui_px(5), 0),
+                )
+                photo = self._retroachievements_badge_photo(
+                    dialog,
+                    badge.get("badge_name", ""),
+                    size=36,
+                    unlocked=unlocked_badge,
+                )
+                if photo is not None:
+                    achievement_body._ra_badge_photos.append(photo)
+                tk.Label(
+                    badge_panel,
+                    image=photo,
+                    text="RA" if photo is None else "",
+                    font=("Segoe UI", 10, "bold"),
+                    fg=STREAM_DESK["yellow"],
+                    bg=STREAM_DESK["surface_alt"],
+                ).pack()
+                tk.Label(
+                    badge_panel,
+                    text=str(badge.get("title", "Achievement")),
+                    font=("Segoe UI", 7, "bold"),
+                    fg=(
+                        STREAM_DESK["text_strong"]
+                        if unlocked_badge
+                        else STREAM_DESK["muted"]
+                    ),
+                    bg=STREAM_DESK["surface_alt"],
+                    justify="center",
+                    wraplength=self._ui_px(96),
+                ).pack(fill="x", pady=(self._ui_px(2), 0))
+            if recent:
+                latest = recent[0]
+                achievement_recent_var.set(
+                    tr("Recent achievement:")
+                    + " "
+                    + str(latest.get("title", "Achievement"))
+                    + " — "
+                    + str(latest.get("detail") or game_title)
+                )
+            else:
+                achievement_recent_var.set("")
+            next_badge = summary.get("next")
+            if isinstance(next_badge, dict):
+                achievement_next_var.set(
+                    tr("Next locked:")
+                    + " "
+                    + str(next_badge.get("title", "Achievement"))
+                    + " · "
+                    + str(next_badge.get("description", ""))
+                )
+            elif total > 0 and unlocked >= total:
+                achievement_next_var.set(tr("All achievements unlocked!"))
+            else:
+                achievement_next_var.set(str(summary.get("message", "")))
+            draw_achievement_progress()
+
+        render_retroachievements_overview(achievement_summary)
+        self._start_retroachievements_progress_refresh(
+            on_complete=render_retroachievements_overview,
+        )
+
         recent_body = self._stream_desk_card(
             panels,
             tr("Recent finishes"),
             trailing_text=str(datetime.now().year),
-            title_font_size=17,
-            header_pad_y=16,
-            body_pad=16,
+            title_font_size=15,
+            header_pad_y=9,
+            body_pad=10,
         )
         recent_card = recent_body.stream_card
+        recent_source = sorted(
+            records,
+            key=lambda row: str(
+                row.get("date_completed")
+                or row.get("date_started")
+                or ""
+            ),
+            reverse=True,
+        )
         recent_records = [
             row
-            for row in overview.get("recent", [])
+            for row in recent_source
             if str(row.get("status") or "") == "Completed"
-        ][:4]
+        ][:3]
         if not recent_records:
-            recent_records = list(overview.get("recent", []))[:4]
+            recent_records = recent_source[:3]
         if not recent_records:
             tk.Label(
                 recent_body,
@@ -53232,7 +54811,7 @@ class TrackerApp:
             row = tk.Frame(
                 recent_body,
                 bg=STREAM_DESK["surface"],
-                pady=self._ui_px(10),
+                pady=self._ui_px(5),
                 bd=0,
             )
             row.pack(fill="x", expand=True)
@@ -53247,7 +54826,7 @@ class TrackerApp:
             tk.Label(
                 row,
                 text=str(record.get("title") or "—"),
-                font=("Segoe UI", 12, "bold" if row_index == 0 else "normal"),
+                font=("Segoe UI", 10, "bold" if row_index == 0 else "normal"),
                 fg=STREAM_DESK["text_strong" if row_index == 0 else "text"],
                 bg=STREAM_DESK["surface"],
                 anchor="w",
@@ -53257,7 +54836,7 @@ class TrackerApp:
             tk.Label(
                 row,
                 text=date_text,
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 9),
                 fg=(
                     STREAM_DESK["green"]
                     if row_index == 0
@@ -53272,42 +54851,177 @@ class TrackerApp:
             "vertical": None,
         }
 
-        def reflow_overview(_event=None) -> None:
+        def overview_viewport_size() -> tuple[int, int]:
+            """Return the stable page viewport, never a child we reflow."""
             try:
-                available_width = max(1, body.winfo_width())
-                available_height = max(1, body_canvas.winfo_height())
-            except tk.TclError:
-                return
+                measured_width = int(dialog.winfo_width())
+                measured_height = int(dialog.winfo_height())
+                initial_width, initial_height = dialog._initial_viewport_size
+            except (AttributeError, tk.TclError, TypeError, ValueError):
+                return (1, 1)
+            if measured_width <= 1:
+                measured_width = int(initial_width)
+            if measured_height <= 1:
+                measured_height = int(initial_height)
+            return (max(1, measured_width), max(1, measured_height))
 
-            vertical_mode = (
-                "compact"
-                if available_height < self._ui_px(720)
-                else "normal"
-            )
+        def reflow_overview(_event=None) -> None:
+            available_width, available_height = overview_viewport_size()
+
+            if available_height < self._ui_px(720):
+                vertical_mode = "ultra"
+            elif available_height < self._ui_px(1100):
+                vertical_mode = "compact"
+            else:
+                vertical_mode = "normal"
             if responsive_state["vertical"] != vertical_mode:
                 responsive_state["vertical"] = vertical_mode
-                compact_vertical = vertical_mode == "compact"
+                compact_vertical = vertical_mode != "normal"
+                ultra_compact = vertical_mode == "ultra"
                 page_head.configure(
-                    padx=self._ui_px(22 if compact_vertical else 28),
-                    pady=self._ui_px(12 if compact_vertical else 19),
+                    padx=self._ui_px(
+                        8 if ultra_compact else (14 if compact_vertical else 24)
+                    ),
+                    pady=self._ui_px(
+                        2 if ultra_compact else (4 if compact_vertical else 12)
+                    ),
                 )
+                overview_kicker_label.configure(
+                    font=("Segoe UI", 8 if compact_vertical else 10, "bold"),
+                )
+                if ultra_compact:
+                    overview_kicker_label.pack_forget()
+                else:
+                    overview_kicker_label.pack(
+                        anchor="w",
+                        before=overview_title_label,
+                    )
+                overview_title_label.configure(
+                    font=(
+                        "Segoe UI",
+                        17 if ultra_compact else (20 if compact_vertical else 27),
+                        "bold",
+                    )
+                )
+                if compact_vertical:
+                    overview_subtitle_label.pack_forget()
+                else:
+                    overview_subtitle_label.configure(font=("Segoe UI", 10))
+                    overview_subtitle_label.pack(
+                        anchor="w",
+                        pady=(self._ui_px(4), 0),
+                    )
                 body.configure(
-                    padx=self._ui_px(20 if compact_vertical else 28),
-                    pady=self._ui_px(10 if compact_vertical else 18),
+                    padx=self._ui_px(
+                        4 if ultra_compact else (8 if compact_vertical else 18)
+                    ),
+                    pady=self._ui_px(
+                        2 if ultra_compact else (4 if compact_vertical else 10)
+                    ),
                 )
+                metrics.grid_configure(
+                    pady=(
+                        0,
+                        self._ui_px(
+                            2 if ultra_compact else (4 if compact_vertical else 9)
+                        ),
+                    ),
+                )
+                for metric_card in metric_cards:
+                    metric_card.configure(
+                        padx=self._ui_px(
+                            4 if ultra_compact else (7 if compact_vertical else 15)
+                        ),
+                        pady=self._ui_px(
+                            2 if ultra_compact else (4 if compact_vertical else 9)
+                        ),
+                    )
+                    metric_labels = metric_card.winfo_children()
+                    if len(metric_labels) >= 2:
+                        metric_labels[0].configure(
+                            font=(
+                                "Segoe UI",
+                                7 if ultra_compact else (8 if compact_vertical else 10),
+                            )
+                        )
+                        metric_labels[1].configure(
+                            font=(
+                                "Segoe UI",
+                                12 if ultra_compact else (14 if compact_vertical else 20),
+                                "bold",
+                            )
+                        )
+                for card_body in (
+                    status_body,
+                    difficulty_body,
+                    achievement_body,
+                    recent_body,
+                ):
+                    card_body.stream_header.configure(
+                        pady=self._ui_px(
+                            2 if ultra_compact else (4 if compact_vertical else 9)
+                        ),
+                    )
+                    card_body.stream_title_label.configure(
+                        font=(
+                            "Segoe UI",
+                            10 if ultra_compact else (11 if compact_vertical else 15),
+                            "bold",
+                        )
+                    )
+                    card_body.configure(
+                        padx=self._ui_px(
+                            3 if ultra_compact else (5 if compact_vertical else 10)
+                        ),
+                        pady=self._ui_px(
+                            3 if ultra_compact else (5 if compact_vertical else 10)
+                        ),
+                    )
                 pie_canvas.configure(
-                    height=self._ui_px(250 if compact_vertical else 330),
+                    height=self._ui_px(
+                        85 if ultra_compact else (112 if compact_vertical else 220)
+                    ),
                 )
                 for difficulty_row in difficulty_row_widgets:
                     difficulty_row.configure(
-                        pady=self._ui_px(5 if compact_vertical else 8),
+                        pady=self._ui_px(1 if compact_vertical else 4),
                     )
                 for recent_row in recent_row_widgets:
                     recent_row.configure(
-                        pady=self._ui_px(6 if compact_vertical else 10),
+                        pady=self._ui_px(
+                            1 if ultra_compact else (2 if compact_vertical else 5)
+                        ),
                     )
 
-            metric_columns = 4 if available_width >= self._ui_px(900) else 2
+                if ultra_compact:
+                    badge_strip.pack_forget()
+                    achievement_recent_label.pack_forget()
+                else:
+                    badge_strip.pack(
+                        fill="x",
+                        after=achievement_progress_canvas,
+                    )
+                    achievement_recent_label.pack(
+                        fill="x",
+                        pady=(self._ui_px(7), 0),
+                        after=badge_strip,
+                    )
+                achievement_next_label.pack(
+                    fill="x",
+                    pady=(self._ui_px(2 if ultra_compact else 3), 0),
+                    after=(
+                        achievement_progress_canvas
+                        if ultra_compact
+                        else achievement_recent_label
+                    ),
+                )
+
+            metric_columns = (
+                4
+                if vertical_mode == "ultra"
+                or available_width >= self._ui_px(700)
+                else 2
+            )
             if responsive_state["metrics"] != metric_columns:
                 responsive_state["metrics"] = metric_columns
                 for column in range(4):
@@ -53336,10 +55050,8 @@ class TrackerApp:
 
             if available_width >= self._ui_px(980):
                 panel_mode = "wide"
-            elif available_width >= self._ui_px(700):
-                panel_mode = "medium"
             else:
-                panel_mode = "stacked"
+                panel_mode = "medium"
             if (
                 responsive_state["panels"] == panel_mode
                 and responsive_state.get("laid_out_vertical") == vertical_mode
@@ -53347,14 +55059,23 @@ class TrackerApp:
                 return
             responsive_state["panels"] = panel_mode
             responsive_state["laid_out_vertical"] = vertical_mode
-            for card in (status_card, difficulty_card, recent_card):
+            for card in (
+                status_card,
+                difficulty_card,
+                achievement_card,
+                recent_card,
+            ):
                 card.grid_forget()
             for column in range(2):
                 panels.columnconfigure(column, weight=0, uniform="")
-            for row_index in range(3):
+            for row_index in range(4):
                 panels.rowconfigure(row_index, weight=0, uniform="")
 
-            gap = self._ui_px(8)
+            gap = self._ui_px(
+                2
+                if vertical_mode == "ultra"
+                else (3 if vertical_mode == "compact" else 8)
+            )
             if panel_mode == "wide":
                 panels.columnconfigure(0, weight=2, uniform="overview_panels")
                 panels.columnconfigure(1, weight=3, uniform="overview_panels")
@@ -53363,15 +55084,21 @@ class TrackerApp:
                 status_card.grid(
                     row=0,
                     column=0,
-                    rowspan=2,
                     sticky="nsew",
                     padx=(0, gap),
+                    pady=(0, gap),
                 )
                 difficulty_card.grid(
                     row=0,
                     column=1,
                     sticky="nsew",
                     pady=(0, gap),
+                )
+                achievement_card.grid(
+                    row=1,
+                    column=0,
+                    sticky="nsew",
+                    padx=(0, gap),
                 )
                 recent_card.grid(row=1, column=1, sticky="nsew")
             elif panel_mode == "medium":
@@ -53392,73 +55119,61 @@ class TrackerApp:
                     sticky="nsew",
                     pady=(0, gap),
                 )
-                recent_card.grid(
-                    row=1,
-                    column=0,
-                    columnspan=2,
-                    sticky="nsew",
-                )
-            else:
-                panels.columnconfigure(0, weight=1)
-                for row_index in range(3):
-                    panels.rowconfigure(row_index, weight=1)
-                status_card.grid(
-                    row=0,
-                    column=0,
-                    sticky="nsew",
-                    pady=(0, gap),
-                )
-                difficulty_card.grid(
+                achievement_card.grid(
                     row=1,
                     column=0,
                     sticky="nsew",
-                    pady=(0, gap),
+                    padx=(0, gap),
                 )
-                recent_card.grid(row=2, column=0, sticky="nsew")
-        overview_layout_state = {"after_id": None, "running": False}
+                recent_card.grid(row=1, column=1, sticky="nsew")
+        overview_layout_state = {
+            "after_id": None,
+            "running": False,
+            "last_viewport": None,
+        }
 
         def apply_overview_layout() -> None:
             overview_layout_state["after_id"] = None
             if overview_layout_state["running"]:
                 return
+            viewport = overview_viewport_size()
+            if (
+                overview_layout_state.get("last_viewport") == viewport
+                and responsive_state["vertical"] is not None
+            ):
+                return
             overview_layout_state["running"] = True
             try:
+                overview_layout_state["last_viewport"] = viewport
                 reflow_overview()
-                resize_overview_body()
                 draw_status_donut()
+                draw_achievement_progress()
             finally:
                 overview_layout_state["running"] = False
 
-        def queue_overview_layout(_event=None) -> None:
-            pending = overview_layout_state.get("after_id")
-            if pending is not None:
-                try:
-                    dialog.after_cancel(pending)
-                except tk.TclError:
-                    pass
+        def queue_overview_layout(event=None) -> None:
+            if event is not None and event.widget is not dialog:
+                return
+            if overview_layout_state.get("after_id") is not None:
+                return
             try:
-                if (
-                    body_canvas.winfo_width() <= 2
-                    or body_canvas.winfo_height() <= 2
-                ):
+                viewport_width, viewport_height = overview_viewport_size()
+                if viewport_width <= 2 or viewport_height <= 2:
                     return
                 overview_layout_state["after_id"] = dialog.after(
-                    72,
+                    48,
                     apply_overview_layout,
                 )
             except tk.TclError:
                 overview_layout_state["after_id"] = None
 
-        body_canvas.bind("<Configure>", queue_overview_layout, add="+")
-        pie_canvas.bind("<Configure>", queue_overview_layout, add="+")
-        body_canvas.yview_moveto(0.0)
+        dialog.bind("<Configure>", queue_overview_layout, add="+")
+        pie_canvas.bind("<Configure>", draw_status_donut, add="+")
         dialog.add_prepaint_callback(apply_overview_layout)
 
         self.stats_overview_widgets = {
             "header": page_head,
             "body_host": body_host,
-            "body_canvas": body_canvas,
-            "body_scrollbar": body_scrollbar,
             "body": body,
             "metrics": metrics,
             "charts": panels,
@@ -53467,9 +55182,12 @@ class TrackerApp:
             "pie_canvas": pie_canvas,
             "redraw_status_pie": draw_status_donut,
             "difficulty_panel": difficulty_card,
+            "achievement_panel": achievement_card,
+            "achievement_progress_canvas": achievement_progress_canvas,
             "recent_panel": recent_card,
             "reflow": reflow_overview,
             "queue_reflow": queue_overview_layout,
+            "layout_state": overview_layout_state,
         }
 
     def open_stats_overview(
@@ -53481,11 +55199,6 @@ class TrackerApp:
             self.stats_overview_dialog is not None
             and self.stats_overview_dialog.winfo_exists()
         ):
-            if not force_rebuild:
-                self.stats_overview_dialog.deiconify()
-                self.stats_overview_dialog.lift()
-                self.stats_overview_dialog.focus_force()
-                return
             self.stats_overview_dialog.destroy()
 
         palette = self._library_palette()
@@ -76461,42 +78174,54 @@ class TrackerApp:
                 )
             except (AttributeError, tk.TclError):
                 pass
-        title_variables = getattr(
-            self,
+        def refresh_game_list(
+            title_attribute: str,
+            difficulty_attribute: str,
+            games_attribute: str,
+            games: list[dict[str, Any]],
+        ) -> None:
+            title_variables = getattr(self, title_attribute, [])
+            difficulty_variables = getattr(self, difficulty_attribute, [])
+            if not title_variables:
+                return
+            while len(games) < len(title_variables):
+                games.append({})
+            setattr(self, games_attribute, games)
+            for index, variable in enumerate(title_variables):
+                game = games[index]
+                variable.set(
+                    str(
+                        game.get("title")
+                        or self._translate_ui_text(
+                            "Choose from Game Library"
+                        )
+                    )
+                )
+                if index < len(difficulty_variables):
+                    difficulty_variables[index].set(
+                        str(game.get("difficulty") or "Unknown")
+                        if game
+                        else "—"
+                    )
+
+        queue_count = len(
+            getattr(self, "stream_dashboard_queue_title_vars", [])
+        )
+        recent_count = len(
+            getattr(self, "stream_dashboard_recent_title_vars", [])
+        )
+        refresh_game_list(
             "stream_dashboard_queue_title_vars",
-            [],
-        )
-        difficulty_variables = getattr(
-            self,
             "stream_dashboard_queue_difficulty_vars",
-            [],
+            "stream_dashboard_queue_games",
+            self._dashboard_up_next_games(queue_count),
         )
-        if not title_variables:
-            return
-        if self._game_mode_session_is_active():
-            games = self._active_game_mode_up_next_games(
-                len(title_variables)
-            )
-        else:
-            games = list(
-                reversed(
-                    self.recent_launched_hacks[-len(title_variables):]
-                )
-            )
-        while len(games) < len(title_variables):
-            games.append({})
-        for index, variable in enumerate(title_variables):
-            game = games[index]
-            variable.set(
-                str(
-                    game.get("title")
-                    or self._translate_ui_text("Choose from Game Library")
-                )
-            )
-            if index < len(difficulty_variables):
-                difficulty_variables[index].set(
-                    str(game.get("difficulty") or "Unknown")
-                )
+        refresh_game_list(
+            "stream_dashboard_recent_title_vars",
+            "stream_dashboard_recent_difficulty_vars",
+            "stream_dashboard_recent_games",
+            self._dashboard_recently_played_games(recent_count),
+        )
 
     @staticmethod
     def _mario_kaizo_elapsed_seconds(started_at: object) -> int:
@@ -80398,6 +82123,270 @@ class TrackerApp:
         )
         return ImageTk.PhotoImage(image, master=master)
 
+    def _retroachievements_credentials(self) -> tuple[str, str, bool]:
+        return (
+            str(self.config.get("retroachievements_username", "")).strip(),
+            str(self.config.get("retroachievements_web_api_key", "")).strip(),
+            bool(self.config.get("retroachievements_hardcore", True)),
+        )
+
+    def _retroachievements_progress_cache_key(
+        self,
+        game_id: int | None,
+    ) -> str:
+        username, _api_key, hardcore = self._retroachievements_credentials()
+        scope = "overview" if game_id is None else f"game:{int(game_id)}"
+        return f"{username.casefold()}|{int(hardcore)}|{scope}"
+
+    def _cached_retroachievements_progress(
+        self,
+        game_id: int | None = None,
+    ) -> dict[str, Any]:
+        username, api_key, _hardcore = self._retroachievements_credentials()
+        if not username or not api_key:
+            return empty_retroachievements_summary(
+                "setup_required",
+                "Add your RetroAchievements username and Web API key in Setup.",
+            )
+        document = self._read_retroachievements_json_cache(
+            RETROACHIEVEMENTS_PROGRESS_CACHE_FILE
+        )
+        entries = document.get("entries", {})
+        if not isinstance(entries, dict):
+            entries = {}
+        record = entries.get(
+            self._retroachievements_progress_cache_key(game_id),
+            {},
+        )
+        summary = record.get("summary", {}) if isinstance(record, dict) else {}
+        if isinstance(summary, dict) and summary.get("source") == "RetroAchievements":
+            return dict(summary)
+        return empty_retroachievements_summary()
+
+    def _store_retroachievements_progress(
+        self,
+        summary: dict[str, Any],
+        game_id: int | None = None,
+    ) -> None:
+        document = self._read_retroachievements_json_cache(
+            RETROACHIEVEMENTS_PROGRESS_CACHE_FILE
+        )
+        entries = document.get("entries", {})
+        if not isinstance(entries, dict):
+            entries = {}
+        entries[self._retroachievements_progress_cache_key(game_id)] = {
+            "fetched_at": time.time(),
+            "summary": summary,
+        }
+        if len(entries) > 80:
+            entries = dict(
+                sorted(
+                    entries.items(),
+                    key=lambda item: float(
+                        item[1].get("fetched_at", 0)
+                        if isinstance(item[1], dict)
+                        else 0
+                    ),
+                    reverse=True,
+                )[:80]
+            )
+        self._write_retroachievements_json_cache(
+            RETROACHIEVEMENTS_PROGRESS_CACHE_FILE,
+            {"entries": entries},
+        )
+
+    @staticmethod
+    def _retroachievements_badge_cache_path(badge_name: Any) -> Path | None:
+        cleaned = str(badge_name or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", cleaned):
+            return None
+        return RETROACHIEVEMENTS_BADGE_CACHE_DIR / f"{cleaned}.png"
+
+    def _cache_retroachievements_badges(
+        self,
+        summary: dict[str, Any],
+    ) -> None:
+        candidates: list[dict[str, Any]] = []
+        for collection_name in ("recent", "items"):
+            collection = summary.get(collection_name, [])
+            if not isinstance(collection, list):
+                continue
+            candidates.extend(
+                item for item in collection if isinstance(item, dict)
+            )
+        seen: set[str] = set()
+        downloads: list[tuple[str, str, Path]] = []
+        for item in candidates:
+            badge_name = str(item.get("badge_name", "")).strip()
+            if not badge_name or badge_name in seen:
+                continue
+            seen.add(badge_name)
+            destination = self._retroachievements_badge_cache_path(badge_name)
+            if destination is None:
+                continue
+            try:
+                if destination.is_file() and destination.stat().st_size > 100:
+                    continue
+            except OSError:
+                pass
+            badge_url = str(item.get("badge_url", "")).strip()
+            parsed = urlparse(badge_url)
+            if (
+                parsed.scheme.casefold() != "https"
+                or (parsed.hostname or "").casefold()
+                not in {"retroachievements.org", "media.retroachievements.org"}
+                or not parsed.path.casefold().startswith("/badge/")
+            ):
+                continue
+            downloads.append((badge_name, badge_url, destination))
+            if len(downloads) >= 12:
+                break
+
+        def download_badge(
+            badge_name: str,
+            badge_url: str,
+            destination: Path,
+        ) -> None:
+            temporary = destination.with_name(
+                destination.name + f".{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            try:
+                request = Request(
+                    badge_url,
+                    headers={"User-Agent": "SMW-Stream-Tracker/2.0"},
+                )
+                with urlopen(request, timeout=15) as response:
+                    badge_bytes = response.read(2 * 1024 * 1024 + 1)
+                if not 100 < len(badge_bytes) <= 2 * 1024 * 1024:
+                    return
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary.write_bytes(badge_bytes)
+                os.replace(temporary, destination)
+            except (OSError, HTTPError, URLError, ValueError):
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        if downloads:
+            with ThreadPoolExecutor(max_workers=min(4, len(downloads))) as executor:
+                futures = [
+                    executor.submit(download_badge, *download)
+                    for download in downloads
+                ]
+                for future in futures:
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
+
+    def _retroachievements_badge_photo(
+        self,
+        master: tk.Misc,
+        badge_name: Any,
+        *,
+        size: int = 42,
+        unlocked: bool = True,
+    ):
+        if Image is None or ImageTk is None:
+            return None
+        path = self._retroachievements_badge_cache_path(badge_name)
+        if path is None or not path.is_file():
+            return None
+        try:
+            image = Image.open(path).convert("RGBA")
+            resampling = getattr(Image, "Resampling", Image)
+            image.thumbnail(
+                (self._ui_px(size), self._ui_px(size)),
+                getattr(resampling, "LANCZOS", 1),
+            )
+            if not unlocked:
+                alpha = image.getchannel("A").point(lambda value: value // 3)
+                image.putalpha(alpha)
+            return ImageTk.PhotoImage(image, master=master)
+        except (OSError, ValueError):
+            return None
+
+    def _start_retroachievements_progress_refresh(
+        self,
+        *,
+        game_id: int | None = None,
+        on_complete: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        username, api_key, hardcore = self._retroachievements_credentials()
+        if not username or not api_key:
+            summary = empty_retroachievements_summary(
+                "setup_required",
+                "Add your RetroAchievements username and Web API key in Setup.",
+            )
+            if callable(on_complete):
+                try:
+                    self.root.after(0, lambda: on_complete(summary))
+                except (AttributeError, tk.TclError):
+                    pass
+            return
+        token_key = "overview" if game_id is None else f"game:{int(game_id)}"
+        tokens = getattr(self, "_retroachievements_progress_tokens", {})
+        if not isinstance(tokens, dict):
+            tokens = {}
+        refresh_token = int(tokens.get(token_key, 0)) + 1
+        tokens[token_key] = refresh_token
+        self._retroachievements_progress_tokens = tokens
+
+        def worker() -> None:
+            try:
+                if game_id is None:
+                    summary = fetch_retroachievements_overview(
+                        username,
+                        api_key,
+                        hardcore=hardcore,
+                    )
+                else:
+                    summary = fetch_retroachievements_game_progress(
+                        username,
+                        api_key,
+                        int(game_id),
+                        hardcore=hardcore,
+                    )
+                self._cache_retroachievements_badges(summary)
+                self._store_retroachievements_progress(summary, game_id)
+            except (OSError, HTTPError, URLError, UnicodeError, ValueError, TypeError):
+                summary = self._cached_retroachievements_progress(game_id)
+                if str(summary.get("status", "")) != "ready":
+                    summary = empty_retroachievements_summary(
+                        "error",
+                        "RetroAchievements could not be refreshed. Check your username, Web API key, and connection.",
+                    )
+
+            def apply_result() -> None:
+                current_tokens = getattr(
+                    self,
+                    "_retroachievements_progress_tokens",
+                    {},
+                )
+                if int(current_tokens.get(token_key, 0)) != refresh_token:
+                    return
+                if game_id is None:
+                    self._retroachievements_overview_summary = dict(summary)
+                    self._export_achievements_to_obs(summary)
+                if callable(on_complete):
+                    on_complete(dict(summary))
+
+            try:
+                self.root.after(0, apply_result)
+            except (AttributeError, tk.TclError):
+                pass
+
+        threading.Thread(
+            target=worker,
+            name=(
+                "RetroAchievementsOverview"
+                if game_id is None
+                else f"RetroAchievementsGame{int(game_id)}"
+            ),
+            daemon=True,
+        ).start()
+
     @staticmethod
     def _read_retroachievements_json_cache(path: Path) -> dict[str, Any]:
         try:
@@ -80640,8 +82629,19 @@ class TrackerApp:
         """Build the list-and-detail library layout from the approved preview."""
 
         tr = self._translate_ui_text
+        # The in-memory catalog is intentionally cached for fast dashboard
+        # search, but Game Library must always start from the complete current
+        # database snapshot. This prevents a partial startup cache from
+        # becoming the library for the rest of the session.
+        try:
+            self.hack_catalog = self.stats_db.load_catalog()
+        except Exception as error:
+            append_error_log("Game Library catalog reload", str(error))
+
         def games_ready_for_platform(
             selected_platform: str,
+            *,
+            probe_direct_paths: bool = False,
         ) -> list[dict[str, Any]]:
             available = [
                 game
@@ -80650,7 +82650,7 @@ class TrackerApp:
                 and self._catalog_game_has_downloaded_rom(
                     game,
                     selected_platform,
-                    probe_direct_paths=False,
+                    probe_direct_paths=probe_direct_paths,
                 )
             ]
             if available:
@@ -81194,6 +83194,115 @@ class TrackerApp:
                 height=1,
                 bd=0,
             ).pack(fill="x")
+
+        selected_achievement_count_var = tk.StringVar(
+            master=dialog,
+            value="0 / 0",
+        )
+        selected_achievement_next_var = tk.StringVar(
+            master=dialog,
+            value=tr("Select a game to see its achievement progress."),
+        )
+        selected_achievement_ratio = {"value": 0.0}
+        selected_achievement_panel = tk.Frame(
+            detail_body,
+            bg=STREAM_DESK["surface_alt"],
+            highlightbackground=STREAM_DESK["yellow"],
+            highlightthickness=1,
+            padx=self._ui_px(10),
+            pady=self._ui_px(9),
+            bd=0,
+        )
+        selected_achievement_panel.pack(
+            fill="x",
+            pady=(self._ui_px(12), 0),
+        )
+        selected_achievement_heading = tk.Frame(
+            selected_achievement_panel,
+            bg=STREAM_DESK["surface_alt"],
+            bd=0,
+        )
+        selected_achievement_heading.pack(fill="x")
+        tk.Label(
+            selected_achievement_heading,
+            text=tr("RetroAchievements").upper(),
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["yellow"],
+            bg=STREAM_DESK["surface_alt"],
+            anchor="w",
+        ).pack(side="left")
+        tk.Label(
+            selected_achievement_heading,
+            textvariable=selected_achievement_count_var,
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["text_strong"],
+            bg=STREAM_DESK["surface_alt"],
+        ).pack(side="right")
+
+        selected_achievement_progress = tk.Canvas(
+            selected_achievement_panel,
+            height=self._ui_px(7),
+            bg=STREAM_DESK["surface_alt"],
+            bd=0,
+            highlightthickness=0,
+        )
+        selected_achievement_progress.pack(
+            fill="x",
+            pady=(self._ui_px(7), self._ui_px(8)),
+        )
+
+        def draw_selected_achievement_progress(_event=None) -> None:
+            try:
+                width = max(1, selected_achievement_progress.winfo_width())
+                height = max(1, selected_achievement_progress.winfo_height())
+                selected_achievement_progress.delete("all")
+                selected_achievement_progress.create_rectangle(
+                    0,
+                    0,
+                    width,
+                    height,
+                    fill=STREAM_DESK["border"],
+                    outline="",
+                )
+                ratio = max(
+                    0.0,
+                    min(1.0, float(selected_achievement_ratio["value"])),
+                )
+                if ratio > 0:
+                    selected_achievement_progress.create_rectangle(
+                        0,
+                        0,
+                        max(3, int(width * ratio)),
+                        height,
+                        fill=STREAM_DESK["yellow"],
+                        outline="",
+                    )
+            except (tk.TclError, TypeError, ValueError):
+                pass
+
+        selected_achievement_progress.bind(
+            "<Configure>",
+            draw_selected_achievement_progress,
+            add="+",
+        )
+        selected_achievement_badge_strip = tk.Frame(
+            selected_achievement_panel,
+            bg=STREAM_DESK["surface_alt"],
+            bd=0,
+        )
+        selected_achievement_badge_strip.pack(fill="x")
+
+        tk.Label(
+            selected_achievement_panel,
+            textvariable=selected_achievement_next_var,
+            font=("Segoe UI", 8),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["surface_alt"],
+            anchor="w",
+            justify="left",
+            wraplength=self._ui_px(420),
+        ).pack(fill="x", pady=(self._ui_px(7), 0))
+
         detail_actions = tk.Frame(
             detail_body,
             bg=STREAM_DESK["surface"],
@@ -81362,6 +83471,180 @@ class TrackerApp:
             str(record.get("catalog_key") or ""): record
             for record in self.stats_db.list_tracked()
         }
+
+        def update_selected_achievements(
+            game: dict[str, Any],
+            tracked: dict[str, Any],
+        ) -> None:
+            try:
+                game_id = int(
+                    game.get("_retroachievements_game_id", 0) or 0
+                )
+            except (TypeError, ValueError):
+                game_id = 0
+
+            def render_summary(summary: dict[str, Any]) -> None:
+                try:
+                    current_game_id = int(
+                        selected_game.get(
+                            "_retroachievements_game_id",
+                            0,
+                        )
+                        or 0
+                    )
+                except (TypeError, ValueError):
+                    current_game_id = 0
+                if current_game_id != game_id:
+                    return
+                total = max(0, int(summary.get("total", 0) or 0))
+                unlocked = max(0, int(summary.get("unlocked", 0) or 0))
+                selected_achievement_count_var.set(
+                    f"{unlocked} / {total} {tr('UNLOCKED')}"
+                )
+                selected_achievement_ratio["value"] = unlocked / max(1, total)
+                for child in selected_achievement_badge_strip.winfo_children():
+                    child.destroy()
+                dialog._selected_ra_badge_photos = []
+                recent = [
+                    item
+                    for item in summary.get("recent", [])
+                    if isinstance(item, dict)
+                ]
+                items = [
+                    item
+                    for item in summary.get("items", [])
+                    if isinstance(item, dict)
+                ]
+                visible: list[dict[str, Any]] = []
+                seen_ids: set[int] = set()
+                for item in recent + items:
+                    try:
+                        item_id = int(item.get("id", 0) or 0)
+                    except (TypeError, ValueError):
+                        item_id = 0
+                    if item_id and item_id in seen_ids:
+                        continue
+                    if item_id:
+                        seen_ids.add(item_id)
+                    visible.append(item)
+                    if len(visible) >= 6:
+                        break
+                if not visible:
+                    tk.Label(
+                        selected_achievement_badge_strip,
+                        text=str(
+                            summary.get("message")
+                            or tr("No RetroAchievements data is available.")
+                        ),
+                        font=("Segoe UI", 8),
+                        fg=STREAM_DESK["muted"],
+                        bg=STREAM_DESK["surface_alt"],
+                        anchor="w",
+                        justify="left",
+                        wraplength=self._ui_px(410),
+                    ).pack(fill="x", pady=self._ui_px(5))
+                for badge_index, item in enumerate(visible):
+                    selected_achievement_badge_strip.columnconfigure(
+                        badge_index,
+                        weight=1,
+                        uniform="ra_game_badges",
+                    )
+                    unlocked_item = bool(item.get("unlocked", True))
+                    badge_host = tk.Frame(
+                        selected_achievement_badge_strip,
+                        bg=STREAM_DESK["surface_deep"],
+                        highlightbackground=(
+                            STREAM_DESK["yellow"]
+                            if unlocked_item
+                            else STREAM_DESK["border"]
+                        ),
+                        highlightthickness=1,
+                        padx=self._ui_px(3),
+                        pady=self._ui_px(4),
+                        bd=0,
+                    )
+                    badge_host.grid(
+                        row=0,
+                        column=badge_index,
+                        sticky="nsew",
+                        padx=(0 if badge_index == 0 else self._ui_px(3), 0),
+                    )
+                    photo = self._retroachievements_badge_photo(
+                        dialog,
+                        item.get("badge_name", ""),
+                        size=36,
+                        unlocked=unlocked_item,
+                    )
+                    if photo is not None:
+                        dialog._selected_ra_badge_photos.append(photo)
+                    tk.Label(
+                        badge_host,
+                        image=photo,
+                        text="RA" if photo is None else "",
+                        font=("Segoe UI", 8, "bold"),
+                        fg=(
+                            STREAM_DESK["yellow"]
+                            if unlocked_item
+                            else STREAM_DESK["muted_dim"]
+                        ),
+                        bg=STREAM_DESK["surface_deep"],
+                    ).pack()
+                    tk.Label(
+                        badge_host,
+                        text=str(item.get("title", "Achievement")),
+                        font=("Segoe UI", 7, "bold"),
+                        fg=(
+                            STREAM_DESK["text_strong"]
+                            if unlocked_item
+                            else STREAM_DESK["muted_dim"]
+                        ),
+                        bg=STREAM_DESK["surface_deep"],
+                        justify="center",
+                        wraplength=self._ui_px(62),
+                    ).pack(fill="x")
+
+                status_parts: list[str] = []
+                if recent:
+                    latest = recent[0]
+                    latest_date = format_display_date(
+                        latest.get("date") or latest.get("date_earned", ""),
+                        empty="",
+                    )
+                    status_parts.append(
+                        tr("Recent:")
+                        + " "
+                        + str(latest.get("title", "Achievement"))
+                        + ((" · " + latest_date) if latest_date else "")
+                    )
+                next_item = summary.get("next")
+                if isinstance(next_item, dict):
+                    status_parts.append(
+                        tr("Next locked:")
+                        + " "
+                        + str(next_item.get("title", "Achievement"))
+                    )
+                elif total > 0 and unlocked >= total:
+                    status_parts.append(tr("All achievements unlocked!"))
+                selected_achievement_next_var.set(
+                    "  ·  ".join(status_parts)
+                    or str(summary.get("message", ""))
+                )
+                draw_selected_achievement_progress()
+
+            if game_id <= 0:
+                render_summary(
+                    empty_retroachievements_summary(
+                        "unsupported",
+                        "This game is not recognized by RetroAchievements.",
+                    )
+                )
+                return
+            cached = self._cached_retroachievements_progress(game_id)
+            render_summary(cached)
+            self._start_retroachievements_progress_refresh(
+                game_id=game_id,
+                on_complete=render_summary,
+            )
 
         def game_identity(game: dict[str, Any] | None) -> str:
             source = game or {}
@@ -81697,6 +83980,7 @@ class TrackerApp:
             tracked = tracked_by_key.get(str(resolved.get("catalog_key") or ""), {})
             completed_exits = int(tracked.get("completed_exits") or 0)
             total_exits = int(tracked.get("total_exits") or 0)
+            update_selected_achievements(resolved, tracked)
             detail_values["Progress"].set(
                 f"{round((completed_exits / total_exits) * 100):d}%"
                 if total_exits
@@ -81822,6 +84106,62 @@ class TrackerApp:
             self._schedule_shared_difficulty_tree_pills(ready_tree)
             self._schedule_game_title_tree_overlay(ready_tree)
 
+        library_scan_state = {"token": None}
+
+        def refresh_ready_games_from_disk(
+            selected_platform: str,
+        ) -> None:
+            """Replace any partial quick cache with one complete ROM scan."""
+            scan_token = object()
+            library_scan_state["token"] = scan_token
+            catalog_snapshot = list(self.hack_catalog)
+            count_var.set(tr("Scanning the complete game library…"))
+
+            def worker() -> None:
+                available = [
+                    game
+                    for game in catalog_snapshot
+                    if str(game.get("title") or "").strip()
+                    and self._catalog_game_has_downloaded_rom(
+                        game,
+                        selected_platform,
+                        probe_direct_paths=True,
+                    )
+                ]
+                complete_snapshot = available or [
+                    game
+                    for game in catalog_snapshot
+                    if str(game.get("title") or "").strip()
+                ]
+
+                def apply_complete_scan() -> None:
+                    if library_scan_state.get("token") is not scan_token:
+                        return
+                    try:
+                        if not dialog.winfo_exists():
+                            return
+                    except tk.TclError:
+                        return
+                    if platform_name != selected_platform:
+                        return
+                    ready_games[:] = complete_snapshot
+                    refresh_rows()
+                    self._start_game_library_retroachievements_scan(
+                        ready_games,
+                        refresh_rows,
+                    )
+
+                try:
+                    self.root.after(0, apply_complete_scan)
+                except tk.TclError:
+                    pass
+
+            threading.Thread(
+                target=worker,
+                name="GameLibraryCompleteScan",
+                daemon=True,
+            ).start()
+
         def select_library_platform(_event=None) -> None:
             nonlocal platform_name
             selected_platform = platform_var.get().strip()
@@ -81843,6 +84183,7 @@ class TrackerApp:
                 ready_games,
                 refresh_rows,
             )
+            refresh_ready_games_from_disk(selected_platform)
 
         ready_tree.bind("<<TreeviewSelect>>", on_tree_selection, add="+")
         ready_tree.bind("<Double-1>", lambda _event: launch_selected(), add="+")
@@ -81880,6 +84221,10 @@ class TrackerApp:
             "filtered_games": filtered_games,
             "list_body": list_body,
             "detail_body": detail_body,
+            "achievement_panel": selected_achievement_panel,
+            "achievement_count_var": selected_achievement_count_var,
+            "achievement_next_var": selected_achievement_next_var,
+            "achievement_progress": selected_achievement_progress,
             "ready_tree": ready_tree,
             "ready_scrollbar": ready_scrollbar,
             "detail_canvas": detail_canvas,
@@ -81943,7 +84288,58 @@ class TrackerApp:
             ready_games,
             refresh_rows,
         )
+        refresh_ready_games_from_disk(platform_name)
         dialog.protocol("WM_DELETE_WINDOW", self._close_game_library)
+
+    def _open_game_library_for_game(
+        self,
+        game: dict[str, Any] | None,
+    ) -> None:
+        record = self._resolved_hack_details_record(game)
+        if not record:
+            return
+        self.open_game_library()
+        dialog = self.game_library_dialog
+        if dialog is None:
+            return
+        try:
+            if not dialog.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        widgets = getattr(self, "game_library_widgets", {})
+        if not isinstance(widgets, dict):
+            return
+        difficulty_filter = widgets.get("difficulty_var")
+        released_filter = widgets.get("released_var")
+        hall_of_fame_filter = widgets.get("hall_of_fame_var")
+        retroachievements_filter = widgets.get("retroachievements_var")
+        search_variable = widgets.get("search_var")
+        try:
+            if difficulty_filter is not None:
+                difficulty_filter.set("Any")
+            released_options = self._released_filter_options()
+            if released_filter is not None and released_options:
+                released_filter.set(released_options[0][0])
+            boolean_options = self._boolean_filter_options()
+            if boolean_options:
+                if hall_of_fame_filter is not None:
+                    hall_of_fame_filter.set(boolean_options[0])
+                if retroachievements_filter is not None:
+                    retroachievements_filter.set(boolean_options[0])
+            if search_variable is not None:
+                search_variable.set(str(record.get("title") or "").strip())
+        except (AttributeError, tk.TclError):
+            pass
+        select_game = widgets.get("select_game")
+        if callable(select_game):
+            select_game(record)
+        dialog.deiconify()
+        dialog.lift()
+        dialog.focus_force()
+
+    def _open_current_game_in_library(self, event=None) -> None:
+        self._open_game_library_for_game(self.current_hack_record)
 
     def open_game_library(self, event=None) -> None:
         platform_name = self.platform_var.get().strip() or "FXPAK Pro"
@@ -81955,6 +84351,11 @@ class TrackerApp:
             self.game_library_dialog.lift()
             self.game_library_dialog.focus_force()
             return
+
+        try:
+            self.hack_catalog = self.stats_db.load_catalog()
+        except Exception as error:
+            append_error_log("Game Library catalog reload", str(error))
 
         if not self.hack_catalog:
             messagebox.showinfo(
@@ -83998,6 +86399,7 @@ class TrackerApp:
         if replay_variable is not None:
             replay_variable.set("")
         self._update_replay_last_hack_button()
+        self._refresh_mario_kaizo_dashboard_queue()
 
     def _selected_recent_replay_hack(self) -> dict[str, Any] | None:
         variable = getattr(self, "replay_recent_hack_var", None)
@@ -84815,14 +87217,53 @@ class TrackerApp:
             raise ValueError(
                 "The selected MiSTer ROM is not inside /media/fat/games/SNES."
             ) from error
-        # MiSTer's FileGenerateSavePath() deliberately discards every ROM
-        # directory component and writes saves as
-        # /media/fat/saves/<core>/<ROM basename>.sav. Mirroring a ROM folder
-        # here makes the upload succeed, but the SNES core silently loads a
-        # different (usually empty) save from its flat SNES save directory.
+        # MiSTer mirrors the ROM's path below games/SNES inside saves/SNES.
+        # Tracker-managed ROMs live in the "SMW Stream Tracker" subfolder, so
+        # flattening this path uploads a valid file that the active core never
+        # reads.
+        relative_rom_path = remote_rom_path.relative_to(
+            "/media/fat/games/SNES"
+        )
         return str(
             PurePosixPath("/media/fat/saves/SNES")
-            / remote_rom_path.with_suffix(".sav").name
+            / relative_rom_path.with_suffix(".sav")
+        )
+
+    @staticmethod
+    def _normalized_snes_save_payload(source: Path) -> tuple[bytes, bool]:
+        """Return raw SNES SRAM bytes and whether a copier header was removed."""
+        payload = source.read_bytes()
+        valid_sizes = {1 << exponent for exponent in range(7, 21)}
+        if len(payload) in valid_sizes:
+            return payload, False
+        if len(payload) > 512 and len(payload) - 512 in valid_sizes:
+            return payload[512:], True
+        if not payload:
+            raise ValueError("The selected save file is empty.")
+        if len(payload) > (1024 * 1024) + 512:
+            raise ValueError(
+                "The selected file is too large to be a SNES save file."
+            )
+        raise ValueError(
+            "The selected file is not a raw SNES save/SRAM file. "
+            "Save states are not supported."
+        )
+
+    def _release_mister_save_for_import(self, client) -> None:
+        """Unload the active core so it cannot overwrite the imported SRAM."""
+        command = "load_core menu.rbf"
+        self._mister_run_checked(
+            client,
+            f"printf '%s\\n' {shlex.quote(command)} > /dev/MiSTer_cmd",
+            "MiSTer did not return to its menu before importing the save file.",
+        )
+        # Core shutdown can flush SRAM slightly after MiSTer accepts the menu
+        # command. Give it time to finish, then commit that write to storage.
+        time.sleep(2.0)
+        self._mister_run_checked(
+            client,
+            "sync",
+            "MiSTer could not flush the active save before importing it.",
         )
 
     def _perform_mister_save_import(
@@ -84830,6 +87271,7 @@ class TrackerApp:
         game: dict[str, Any],
         source: Path,
     ) -> dict[str, str]:
+        payload, normalized = self._normalized_snes_save_payload(source)
         destination = self._mister_save_destination(game)
         host = normalize_mister_host(self.config.get("mister_host", "MiSTer"))
         user = str(self.config.get("mister_ssh_user", "root")).strip() or "root"
@@ -84847,6 +87289,7 @@ class TrackerApp:
         staged = destination + f".{os.getpid()}.smw-import.tmp"
         try:
             self._verified_mister_peer(client)
+            self._release_mister_save_for_import(client)
             sftp = client.open_sftp()
             try:
                 self._mister_sftp_makedirs(
@@ -84865,15 +87308,20 @@ class TrackerApp:
                     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                     backup = destination + f".backup-{timestamp}"
                     self._mister_sftp_write(sftp, backup, existing)
-                sftp.put(str(source), staged)
+                self._mister_sftp_write(sftp, staged, payload)
                 try:
                     sftp.remove(destination)
                 except OSError:
                     pass
                 sftp.rename(staged, destination)
-                if int(sftp.stat(destination).st_size) != source.stat().st_size:
+                uploaded_payload = self._mister_sftp_read(
+                    sftp,
+                    destination,
+                    maximum_bytes=1024 * 1024,
+                )
+                if uploaded_payload != payload:
                     raise RuntimeError(
-                        "MiSTer did not store the complete imported save file."
+                        "MiSTer did not store the imported save file correctly."
                     )
             finally:
                 try:
@@ -84881,9 +87329,25 @@ class TrackerApp:
                 except (OSError, UnboundLocalError):
                     pass
                 sftp.close()
+            self._mister_run_checked(
+                client,
+                "sync",
+                "MiSTer could not commit the imported save file.",
+            )
         finally:
             client.close()
-        return {"destination": destination, "backup": backup}
+        launch_error = ""
+        try:
+            self._run_mister_game_launch(dict(game))
+        except Exception as error:
+            launch_error = str(error)
+        return {
+            "destination": destination,
+            "backup": backup,
+            "normalized": "true" if normalized else "",
+            "relaunched": "true" if not launch_error else "",
+            "launch_error": launch_error,
+        }
 
     def _perform_save_file_import(
         self,
@@ -84943,10 +87407,22 @@ class TrackerApp:
                 kind="error",
             )
             return
-        if not 0 < source_size <= 1024 * 1024:
+        if not 0 < source_size <= (1024 * 1024) + 512:
             self._show_localized_info(
                 "Save File Import Failed",
                 "The selected file is empty or too large to be a SNES save file.",
+                parent=self.root,
+                kind="error",
+            )
+            return
+        try:
+            self._normalized_snes_save_payload(source)
+        except (OSError, ValueError) as error:
+            self._show_localized_info(
+                "Save File Import Failed",
+                self._translate_ui_text(
+                    "The save file could not be imported:\n\n{error}"
+                ).format(error=str(error)),
                 parent=self.root,
                 kind="error",
             )
@@ -85042,6 +87518,22 @@ class TrackerApp:
                 title=title,
                 destination=destination,
             )
+        if str(result.get("normalized", "")):
+            message += "\n\n" + self._translate_ui_text(
+                "A 512-byte copier header was removed so MiSTer can read "
+                "the save."
+            )
+        if str(result.get("relaunched", "")):
+            message += "\n\n" + self._translate_ui_text(
+                "MiSTer was safely returned to its menu, the save was "
+                "installed, and the hack was relaunched."
+            )
+        launch_error = str(result.get("launch_error", "")).strip()
+        if launch_error:
+            message += "\n\n" + self._translate_ui_text(
+                "The save was installed, but the hack could not be "
+                "relaunched automatically: {error}"
+            ).format(error=launch_error)
         self.status_var.set(self._translate_ui_text("Save File Imported"))
         self._show_localized_info(
             "Save File Imported",
@@ -85138,6 +87630,10 @@ class TrackerApp:
                                 "game with the normal SNES core."
                             )
                         )
+                    # Existing installations may predate RA-core tracking
+                    # support. Repair the per-core uartmode setting before
+                    # loading RA_SNES so snid starts for this launch.
+                    self._configure_mister_snes_live_tracking(sftp)
                 self._mister_sftp_makedirs(sftp, remote_root)
                 self._mister_sftp_makedirs(sftp, menu_root)
                 try:
@@ -90161,6 +92657,7 @@ class TrackerApp:
             worker = getattr(self, "worker", None)
             if worker is not None:
                 worker.config["output_folder"] = str(output_folder)
+            self._export_achievements_to_obs()
         except OSError as error:
             self._show_localized_info(
                 self._setup_guide_text("obs_title"),
@@ -90193,7 +92690,7 @@ class TrackerApp:
         dialog.configure(bg=palette["window"])
         dialog.transient(self.root)
         dialog.resizable(True, True)
-        self._size_dialog_for_ui(dialog, 1040, 720, 780, 580)
+        self._size_dialog_for_ui(dialog, 1040, 900, 900, 720)
         self._create_stream_desk_page_header(
             dialog,
             kicker="OBS",
@@ -90206,7 +92703,7 @@ class TrackerApp:
             highlightbackground=palette["border"],
             highlightthickness=1,
         )
-        body.pack(fill="both", expand=True, padx=16, pady=16)
+        body.pack(fill="both", expand=True, padx=12, pady=12)
         existing_source_note = tk.Frame(
             body,
             bg=palette["panel_alt"],
@@ -90215,8 +92712,8 @@ class TrackerApp:
         )
         existing_source_note.pack(
             fill="x",
-            padx=28,
-            pady=(0, 8),
+            padx=20,
+            pady=(0, 6),
         )
         tk.Label(
             existing_source_note,
@@ -90233,8 +92730,8 @@ class TrackerApp:
             bg=palette["panel_alt"],
             justify="center",
             wraplength=self._ui_px(900),
-            padx=18,
-            pady=10,
+            padx=14,
+            pady=8,
         ).pack(fill="x")
 
         output_folder_text = self.output_folder_var.get().strip()
@@ -90247,13 +92744,14 @@ class TrackerApp:
                 pass
 
         files_frame = tk.Frame(body, bg=palette["panel"])
-        files_frame.pack(fill="x", padx=28, pady=8)
+        files_frame.pack(fill="x", padx=20, pady=4)
         files_frame.columnconfigure(1, weight=1)
 
         file_rows = (
             ("obs_hack_title", "hack_name.txt"),
             ("obs_creator", "author.txt"),
             ("obs_exits", "exits.txt"),
+            ("obs_achievements", "achievements.txt"),
             ("obs_level_deaths", "level_deaths.txt"),
             ("obs_game_deaths", "total_deaths.txt"),
             ("obs_game_timer", "game_timer.txt"),
@@ -90306,7 +92804,7 @@ class TrackerApp:
                     fg=palette["text"],
                     bg=palette["panel"],
                     anchor="e",
-                ).grid(row=row_index, column=0, sticky="e", padx=(0, 12), pady=6)
+                ).grid(row=row_index, column=0, sticky="e", padx=(0, 12), pady=4)
                 path_var = tk.StringVar(value=path_text)
                 tk.Entry(
                     files_frame,
@@ -90318,7 +92816,7 @@ class TrackerApp:
                     relief="solid",
                     bd=1,
                     justify="center",
-                ).grid(row=row_index, column=1, sticky="ew", ipady=7, pady=6)
+                ).grid(row=row_index, column=1, sticky="ew", ipady=5, pady=4)
                 copy_button = self._make_action_button(
                     files_frame,
                     self._setup_guide_text("copy"),
@@ -90331,7 +92829,7 @@ class TrackerApp:
                 copy_button.configure(
                     command=lambda p=path_text, b=copy_button: copy_path(p, b)
                 )
-                copy_button.grid(row=row_index, column=2, padx=(12, 0), pady=6)
+                copy_button.grid(row=row_index, column=2, padx=(12, 0), pady=4)
 
         tk.Label(
             body,
@@ -90342,9 +92840,9 @@ class TrackerApp:
             justify="left",
             anchor="nw",
             wraplength=self._ui_px(900),
-            padx=24,
-            pady=16,
-        ).pack(fill="both", expand=True)
+            padx=20,
+            pady=10,
+        ).pack(fill="x")
 
         actions = tk.Frame(dialog, bg=palette["window"])
         actions.pack(
@@ -94221,7 +96719,7 @@ class TrackerApp:
             "en": (
                 "Tracks Super Mario World ROM-hack progress with FXPAK Pro or RetroArch, maintains a local catalog, and writes optional stream text files.\n\n"
                 "SMW Central & the SMW community\nCatalog data comes directly from SMW Central's moderated catalog. Huge thanks to its staff and moderators, and to every creator, tester, player, and tool developer supporting these remarkable hacks.\n\n"
-                "Testers\nJole_12 — thank you for detailed testing and feedback that helps make each release more reliable.\n\n"
+                "Testers\nA HUGE thank you to Jole_12, PixelPadlock, and everyone else who tests the tracker and shares feedback. Your help makes every release more reliable.\n\n"
                 "Looking ahead\nFuture releases may explore more hardware setups, flash-cartridge workflows, and emulator integrations beyond FXPAK Pro and RetroArch.\n\n"
                 "Privacy\nNo telemetry is collected. Network access is used only for requested features. Feedback sends only answers entered in the anonymous form; ROMs, settings, paths, diagnostics, and tracker data are never attached.\n\n"
                 "Acknowledgments\nSNI, QUsb2Snes, RetroArch, Libretro/bsnes-mercury, SMW Central, openpyxl, Pillow, websocket-client, pystray, pywebview, pythonnet, Microsoft Edge WebView2, and their contributors.\n\n"
@@ -94230,7 +96728,7 @@ class TrackerApp:
             "au": (
                 "Keeps track of Super Mario World ROM-hack progress with FXPAK Pro or RetroArch, maintains a local catalogue, and writes optional stream text files.\n\n"
                 "SMW Central & the SMW community\nThe catalogue data comes straight from SMW Central's moderated catalogue. A massive cheers to its staff, moderators, creators, testers, players, and tool developers for all their ripper work.\n\n"
-                "Testers\nJole_12 — cheers for the detailed testing and feedback that helps make every release sturdier.\n\n"
+                "Testers\nA HUGE cheers to Jole_12, PixelPadlock, and everyone else who tests the tracker and shares feedback. Your help makes every release sturdier.\n\n"
                 "Looking ahead\nFuture releases may have a crack at more hardware setups, flash-cart workflows, and emulator integrations.\n\n"
                 "Privacy\nNo telemetry is collected. Network access is used only when you ask for an online feature. Feedback sends only what you type; your ROMs, settings, paths, diagnostics, and tracker data stay put.\n\n"
                 "Copyright (c) 2026 FredDOGG23. All rights reserved."
@@ -94238,7 +96736,7 @@ class TrackerApp:
             "es": (
                 "Registra el progreso de hacks de Super Mario World con FXPAK Pro o RetroArch, mantiene un catálogo local y crea archivos de texto opcionales para transmisiones.\n\n"
                 "SMW Central y la comunidad de SMW\nLos datos proceden directamente del catálogo moderado de SMW Central. Muchísimas gracias a su personal y moderadores, y a todos los creadores, probadores, jugadores y desarrolladores de herramientas.\n\n"
-                "Probadores\nJole_12: gracias por las pruebas detalladas y los comentarios que hacen cada versión más fiable.\n\n"
+                "Probadores\nUn ENORME agradecimiento a Jole_12, PixelPadlock y a todas las demás personas que prueban el tracker y comparten sus comentarios. Su ayuda hace que cada versión sea más fiable.\n\n"
                 "Mirando al futuro\nLas próximas versiones pueden explorar más configuraciones de hardware, cartuchos flash e integraciones con emuladores.\n\n"
                 "Privacidad\nNo se recopila telemetría. El acceso a la red solo se usa para funciones solicitadas. El formulario anónimo envía únicamente las respuestas escritas; nunca adjunta ROM, configuración, rutas, diagnósticos ni datos del tracker.\n\n"
                 "Copyright (c) 2026 FredDOGG23. Todos los derechos reservados."
@@ -94246,7 +96744,7 @@ class TrackerApp:
             "fr": (
                 "Suit la progression des hacks de Super Mario World avec FXPAK Pro ou RetroArch, conserve un catalogue local et crée des fichiers texte facultatifs pour le stream.\n\n"
                 "SMW Central et la communauté SMW\nLes données proviennent directement du catalogue modéré de SMW Central. Un immense merci à son équipe, à ses modérateurs, ainsi qu'aux créateurs, testeurs, joueurs et développeurs d'outils.\n\n"
-                "Testeurs\nJole_12 — merci pour les tests détaillés et les retours qui rendent chaque version plus fiable.\n\n"
+                "Testeurs\nUn IMMENSE merci à Jole_12, PixelPadlock et à toutes les autres personnes qui testent le tracker et partagent leurs retours. Votre aide rend chaque version plus fiable.\n\n"
                 "À venir\nDe futures versions pourront explorer davantage de configurations matérielles, de cartouches flash et d'émulateurs.\n\n"
                 "Confidentialité\nAucune télémétrie n'est collectée. Le réseau n'est utilisé que pour les fonctions demandées. Le formulaire anonyme envoie uniquement vos réponses ; ROM, paramètres, chemins, diagnostics et données du tracker ne sont jamais joints.\n\n"
                 "Copyright (c) 2026 FredDOGG23. Tous droits réservés."
@@ -94254,7 +96752,7 @@ class TrackerApp:
             "de": (
                 "Verfolgt den Fortschritt von Super-Mario-World-ROM-Hacks mit FXPAK Pro oder RetroArch, verwaltet einen lokalen Katalog und erstellt optionale Textdateien für Streams.\n\n"
                 "SMW Central und die SMW-Community\nDie Katalogdaten stammen direkt aus dem moderierten Katalog von SMW Central. Herzlichen Dank an Team und Moderatoren sowie an alle Ersteller, Tester, Spieler und Werkzeugentwickler.\n\n"
-                "Tester\nJole_12 — vielen Dank für die ausführlichen Tests und Rückmeldungen, die jede Version zuverlässiger machen.\n\n"
+                "Tester\nEin RIESIGES Dankeschön an Jole_12, PixelPadlock und alle anderen, die den Tracker testen und Rückmeldungen geben. Eure Hilfe macht jede Version zuverlässiger.\n\n"
                 "Ausblick\nKünftige Versionen können weitere Hardware-Einrichtungen, Flash-Cartridge-Abläufe und Emulator-Integrationen untersuchen.\n\n"
                 "Datenschutz\nEs werden keine Telemetriedaten gesammelt. Netzwerkzugriff erfolgt nur für ausdrücklich angeforderte Funktionen. Das anonyme Formular sendet ausschließlich eingegebene Antworten; ROMs, Einstellungen, Pfade, Diagnosen und Tracker-Daten werden nie angehängt.\n\n"
                 "Copyright (c) 2026 FredDOGG23. Alle Rechte vorbehalten."
@@ -94262,7 +96760,7 @@ class TrackerApp:
             "pt-BR": (
                 "Acompanha o progresso de hacks de Super Mario World com FXPAK Pro ou RetroArch, mantém um catálogo local e cria arquivos de texto opcionais para transmissões.\n\n"
                 "SMW Central e a comunidade SMW\nOs dados vêm diretamente do catálogo moderado do SMW Central. Muito obrigado à equipe e aos moderadores, além de todos os criadores, testadores, jogadores e desenvolvedores de ferramentas.\n\n"
-                "Testadores\nJole_12 — obrigado pelos testes detalhados e comentários que tornam cada versão mais confiável.\n\n"
+                "Testadores\nUm ENORME agradecimento a Jole_12, PixelPadlock e a todas as outras pessoas que testam o tracker e compartilham comentários. Sua ajuda torna cada versão mais confiável.\n\n"
                 "Olhando para o futuro\nVersões futuras poderão explorar mais configurações de hardware, cartuchos flash e integrações com emuladores.\n\n"
                 "Privacidade\nNenhuma telemetria é coletada. A rede é usada somente para recursos solicitados. O formulário anônimo envia apenas as respostas digitadas; ROMs, configurações, caminhos, diagnósticos e dados do tracker nunca são anexados.\n\n"
                 "Copyright (c) 2026 FredDOGG23. Todos os direitos reservados."
@@ -94363,6 +96861,47 @@ class TrackerApp:
         about_text_widget.pack(fill="both", expand=True)
         about_scrollbar.configure(command=about_text_widget.yview)
         about_text_widget.insert("1.0", self._localized_about_text())
+        for tag_name, tester_name, channel_url in (
+            (
+                "jole_twitch",
+                "Jole_12",
+                "https://www.twitch.tv/jole_12",
+            ),
+            (
+                "pixelpadlock_twitch",
+                "PixelPadlock",
+                "https://www.twitch.tv/pixelpadlock",
+            ),
+        ):
+            link_start = about_text_widget.search(
+                tester_name,
+                "1.0",
+                stopindex="end",
+            )
+            if not link_start:
+                continue
+            link_end = f"{link_start}+{len(tester_name)}c"
+            about_text_widget.tag_add(tag_name, link_start, link_end)
+            about_text_widget.tag_configure(
+                tag_name,
+                foreground="#A970FF",
+                underline=True,
+            )
+            about_text_widget.tag_bind(
+                tag_name,
+                "<Button-1>",
+                lambda _event, url=channel_url: webbrowser.open(url),
+            )
+            about_text_widget.tag_bind(
+                tag_name,
+                "<Enter>",
+                lambda _event: about_text_widget.configure(cursor="hand2"),
+            )
+            about_text_widget.tag_bind(
+                tag_name,
+                "<Leave>",
+                lambda _event: about_text_widget.configure(cursor="arrow"),
+            )
         about_text_widget.configure(state="disabled")
         actions = tk.Frame(dialog, bg=palette["window"])
         actions.pack(
@@ -94716,6 +97255,7 @@ class TrackerApp:
         content_canvas.configure(yscrollcommand=content_scrollbar.set)
         content_canvas.grid(row=0, column=0, sticky="nsew")
         content_scrollbar.grid(row=0, column=1, sticky="ns")
+        content_scrollbar.grid_remove()
 
         form_host = tk.Frame(content_canvas, bg=palette["window"])
         form_host.columnconfigure(0, weight=1)
@@ -94724,27 +97264,44 @@ class TrackerApp:
             window=form_host,
             anchor="nw",
         )
-        body = tk.Frame(
+        body = self._stream_desk_card(
             form_host,
-            bg=palette["panel"],
-            highlightbackground=palette["border"],
-            highlightthickness=1,
-            padx=self._ui_px(24),
-            pady=self._ui_px(20),
+            "Text file formats",
+            trailing_text="OBS-ready output",
+            title_font_size=15,
+            header_pad_y=10,
+            body_pad=18,
         )
-        body.grid(
+        obs_settings_card = body.stream_card
+        obs_settings_card.grid(
             row=0,
             column=0,
             sticky="ew",
             pady=self._ui_px(14),
         )
         body.columnconfigure(1, weight=1)
+        obs_settings_scroll_state = {"visible": False}
 
         def sync_obs_settings_scrollregion(_event=None) -> None:
             try:
-                content_canvas.configure(
-                    scrollregion=content_canvas.bbox("all")
+                bounds = content_canvas.bbox("all")
+                content_canvas.configure(scrollregion=bounds)
+                content_height = (
+                    max(0, int(bounds[3] - bounds[1]))
+                    if bounds is not None
+                    else 0
                 )
+                overflow = (
+                    content_height
+                    > content_canvas.winfo_height() + self._ui_px(2)
+                )
+                if overflow and not obs_settings_scroll_state["visible"]:
+                    content_scrollbar.grid()
+                    obs_settings_scroll_state["visible"] = True
+                elif not overflow and obs_settings_scroll_state["visible"]:
+                    content_scrollbar.grid_remove()
+                    content_canvas.yview_moveto(0.0)
+                    obs_settings_scroll_state["visible"] = False
             except tk.TclError:
                 pass
 
@@ -94757,7 +97314,7 @@ class TrackerApp:
                     self._ui_px(14),
                     (canvas_width - max_panel_width) // 2,
                 )
-                body.grid_configure(padx=horizontal_pad)
+                obs_settings_card.grid_configure(padx=horizontal_pad)
                 sync_obs_settings_scrollregion()
             except (tk.TclError, TypeError, ValueError):
                 pass
@@ -94807,6 +97364,14 @@ class TrackerApp:
                 )
             )
         )
+        achievements_format_var = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "obs_achievements_text_format",
+                    "{default}",
+                )
+            )
+        )
         obs_capture_mode_var = tk.BooleanVar(
             value=bool(self.config.get("obs_capture_mode", False))
         )
@@ -94814,6 +97379,7 @@ class TrackerApp:
         exits_preview_var = tk.StringVar()
         deaths_preview_var = tk.StringVar()
         total_deaths_preview_var = tk.StringVar()
+        achievements_preview_var = tk.StringVar()
 
         def add_label(row: int, text_value: str) -> None:
             tk.Label(
@@ -94932,6 +97498,21 @@ class TrackerApp:
             anchor="w",
         ).grid(row=8, column=1, sticky="ew", pady=(0, 8))
 
+        add_label(9, "Achievements file format:")
+        make_entry(9, achievements_format_var)
+        tk.Label(
+            body,
+            text=(
+                "Use {default}, {game}, {progress}, {latest}, {next}, and "
+                "{hardcore_suffix}. Type \\n for a new line."
+            ),
+            font=("Segoe UI", 9),
+            fg=palette["muted"],
+            bg=palette["panel"],
+            anchor="w",
+            justify="left",
+        ).grid(row=10, column=1, sticky="ew", pady=(0, 8))
+
         capture_panel = tk.Frame(
             body,
             bg=palette["panel_alt"],
@@ -94941,7 +97522,7 @@ class TrackerApp:
             pady=10,
         )
         capture_panel.grid(
-            row=9,
+            row=11,
             column=0,
             columnspan=3,
             sticky="ew",
@@ -95005,7 +97586,7 @@ class TrackerApp:
             pady=10,
         )
         preview.grid(
-            row=10,
+            row=12,
             column=0,
             columnspan=3,
             sticky="ew",
@@ -95051,6 +97632,15 @@ class TrackerApp:
             bg=palette["panel_alt"],
             anchor="w",
         ).pack(fill="x")
+        tk.Label(
+            preview,
+            textvariable=achievements_preview_var,
+            font=("Segoe UI", 10),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+            justify="left",
+        ).pack(fill="x", pady=(3, 0))
 
         def update_previews(*_args: object) -> None:
             try:
@@ -95078,6 +97668,28 @@ class TrackerApp:
                 )
             except (KeyError, ValueError, AttributeError, IndexError):
                 total_deaths_text = "Invalid total deaths format"
+            sample_achievement_summary = {
+                "status": "ready",
+                "game_title": "Sample RetroAchievements Game",
+                "unlocked": 7,
+                "total": 12,
+                "hardcore": True,
+                "recent": [
+                    {
+                        "title": "Sample Badge",
+                        "description": "Clear the first challenge",
+                        "date": "2026-08-20",
+                    }
+                ],
+                "next": {
+                    "title": "Next Badge",
+                    "description": "Clear the next challenge",
+                },
+            }
+            achievements_text = format_achievement_obs_text(
+                sample_achievement_summary,
+                achievements_format_var.get(),
+            )
             author_preview_var.set(f"author.txt:  {author_text}")
             exits_preview_var.set(f"exits.txt:  {exits_text}")
             deaths_preview_var.set(
@@ -95086,11 +97698,15 @@ class TrackerApp:
             total_deaths_preview_var.set(
                 f"total_deaths.txt:  {total_deaths_text}"
             )
+            achievements_preview_var.set(
+                "achievements.txt:\n" + achievements_text
+            )
 
         author_format_var.trace_add("write", update_previews)
         exits_format_var.trace_add("write", update_previews)
         deaths_format_var.trace_add("write", update_previews)
         total_deaths_format_var.trace_add("write", update_previews)
+        achievements_format_var.trace_add("write", update_previews)
         update_previews()
 
         def close_dialog() -> None:
@@ -95149,6 +97765,7 @@ class TrackerApp:
             exits_template = exits_format_var.get()
             deaths_template = deaths_format_var.get()
             total_deaths_template = total_deaths_format_var.get()
+            achievements_template = achievements_format_var.get()
             if not folder_text:
                 messagebox.showerror(
                     "OBS Text Settings",
@@ -95184,6 +97801,27 @@ class TrackerApp:
                 "total deaths",
             ):
                 return
+            if not validate_template(
+                achievements_template,
+                {
+                    "default",
+                    "game",
+                    "unlocked",
+                    "total",
+                    "progress",
+                    "hardcore",
+                    "hardcore_suffix",
+                    "latest",
+                    "latest_description",
+                    "latest_date",
+                    "next",
+                    "next_description",
+                    "message",
+                },
+                set(),
+                "achievements",
+            ):
+                return
 
             updated_config = dict(self.config)
             updated_config.update(
@@ -95193,6 +97831,7 @@ class TrackerApp:
                     "obs_exits_text_format": exits_template,
                     "obs_deaths_text_format": deaths_template,
                     "obs_total_deaths_text_format": total_deaths_template,
+                    "obs_achievements_text_format": achievements_template,
                     "obs_capture_mode": bool(obs_capture_mode_var.get()),
                 }
             )
@@ -95209,6 +97848,7 @@ class TrackerApp:
 
             self.config = updated_config
             self.output_folder_var.set(folder_text)
+            self._export_achievements_to_obs()
             output_folder = Path(folder_text)
             if self.worker is not None:
                 self.worker.config.update(self.config)
@@ -95328,6 +97968,7 @@ class TrackerApp:
             return
         if folder is None:
             return
+        self._export_achievements_to_obs()
         open_local_path(folder)
 
     def _test_selected_platform(self) -> None:

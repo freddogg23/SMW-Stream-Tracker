@@ -216,6 +216,7 @@ class RetroAchievementsSetupTests(unittest.TestCase):
         self.assertIn("DOWNLOADER_INI_PATH", source)
         self.assertIn("MiSTer_RA", source)
         self.assertIn("mister_retroachievements_ini_text", source)
+        self.assertIn("_configure_mister_snes_live_tracking", source)
 
     def test_game_library_uses_cached_exact_hash_trophies(self):
         scan_source = inspect.getsource(
@@ -288,6 +289,7 @@ class RetroAchievementsSetupTests(unittest.TestCase):
         self.assertIn("_mister_use_retroachievements_core", launch_source)
         self.assertIn("/media/fat/_RA_Cores/Cores/SNES.rbf", mister_source)
         self.assertIn("retroachievements=use_retroachievements_core", mister_source)
+        self.assertIn("_configure_mister_snes_live_tracking", mister_source)
 
     def test_platform_only_settings_save_does_not_rebuild_the_ui(self):
         source = inspect.getsource(self.tracker.TrackerApp._open_settings_dialog)

@@ -174,7 +174,7 @@ class MainDashboardScrollingTests(unittest.TestCase):
         self.assertIn("_restore_cached_banner_photo(requested_size)", render_source)
         self.assertIn("banner_photo_cache.get", restore_source)
 
-    def test_dashboard_cards_are_content_sized_stacked_and_full_width(self):
+    def test_dashboard_current_run_is_full_width_and_game_lists_split(self):
         dashboard_source = self.method_source("_build_stream_desk_dashboard")
         self.assertIn("dashboard_density = 0.97", dashboard_source)
         self.assertIn("def dashboard_px", dashboard_source)
@@ -186,7 +186,11 @@ class MainDashboardScrollingTests(unittest.TestCase):
         self.assertNotIn("stack_breakpoint", dashboard_source)
         self.assertNotIn("stack_panels", dashboard_source)
         self.assertIn("run_width = available_width", dashboard_source)
-        self.assertIn("queue_width = available_width", dashboard_source)
+        self.assertIn("split_game_lists", dashboard_source)
+        self.assertIn("(available_width - list_gap) // 2", dashboard_source)
+        self.assertIn('uniform="dashboard_lists"', dashboard_source)
+        self.assertIn('"Recently Played"', dashboard_source)
+        self.assertIn("recent_body.stream_card.grid_configure", dashboard_source)
         self.assertIn("columnspan=2", dashboard_source)
         self.assertIn("row=1", dashboard_source)
         self.assertIn('getattr(self, "main_canvas", None)', dashboard_source)

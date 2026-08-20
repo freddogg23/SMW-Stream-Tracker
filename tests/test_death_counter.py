@@ -417,6 +417,63 @@ class DeathCounterTests(unittest.TestCase):
         self.assertEqual(worker.level_death_count, 1)
         self.assertEqual(worker.death_count, 1)
 
+    def test_mister_delayed_lives_drop_does_not_double_count_death(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.level_id = 1
+        worker.update_death_counter_from_state(
+            0x00,
+            self.tracker.LEVEL_MODE,
+            5,
+        )
+
+        # MiSTer can deliver the animation edge, one clean-looking sample,
+        # and the lives decrement in three separate memory snapshots.
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x09,
+                self.tracker.LEVEL_MODE,
+                5,
+            )
+        )
+        self.assertFalse(
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.LEVEL_MODE,
+                5,
+            )
+        )
+        self.assertTrue(worker.death_detection_latched)
+        self.assertFalse(
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.LEVEL_MODE,
+                4,
+            )
+        )
+        self.assertEqual(worker.level_death_count, 1)
+        self.assertEqual(worker.death_count, 1)
+
+        # The consumed lives signal allows the next clean sample to rearm,
+        # and the next actual death must still be counted normally.
+        self.assertFalse(
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.LEVEL_MODE,
+                4,
+            )
+        )
+        self.assertFalse(worker.death_detection_latched)
+        self.assertTrue(
+            worker.update_death_counter_from_state(
+                0x09,
+                self.tracker.LEVEL_MODE,
+                4,
+            )
+        )
+        self.assertEqual(worker.level_death_count, 2)
+        self.assertEqual(worker.death_count, 2)
+
     def test_lives_change_on_death_to_overworld_is_counted(self):
         worker = self.make_worker()
         worker.select_save_slot(0)

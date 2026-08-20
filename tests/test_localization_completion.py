@@ -146,6 +146,7 @@ class LocalizationCompletionTests(unittest.TestCase):
         visible_text.discard("")
         language_neutral = {
             "FXPAK PRO",
+            "SSH",
             "★   1UP   ?   ★",
             "Status:",
         }

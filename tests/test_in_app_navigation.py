@@ -867,6 +867,8 @@ class InAppNavigationTests(unittest.TestCase):
         method = self.methods["_open_settings_dialog"]
         source = ast.get_source_segment(self.source, method)
         self.assertIn('build_action_settings_page(\n            "OBS"', source)
+        self.assertIn('self._setup_guide_text("obs_title")', source)
+        self.assertIn("self.open_guided_obs_text_setup", source)
         self.assertIn('"choose_obs_folder_button"', source)
         self.assertIn('"Edit OBS Text Settings..."', source)
         self.assertIn('"Open OBS Text Folder"', source)

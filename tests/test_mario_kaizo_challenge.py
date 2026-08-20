@@ -89,7 +89,7 @@ class MarioKaizoChallengeTests(unittest.TestCase):
         source = inspect.getsource(
             self.tracker.TrackerApp._build_stream_desk_dashboard
         )
-        self.assertIn("self._active_game_mode_up_next_games(3)", source)
+        self.assertIn("self._dashboard_up_next_games(3)", source)
         self.assertIn('text="Curate Playlist"', source)
         self.assertIn("self._open_mario_kaizo_playlist_curator", source)
         self.assertIn('"Hack Completed" if mario_kaizo_active', source)

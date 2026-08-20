@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "2.0.0"
+#define AppVersion "2.0.1"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -627,12 +627,6 @@ Name: "{autodesktop}\SMW Stream Tracker"; Filename: "{app}\{#AppExeName}"; Tasks
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm:ShortcutGroup}"; Flags: unchecked
 
-[Run]
-Filename: "{app}\README.txt"; Description: "{cm:OpenGuide}"; \
-  Flags: postinstall shellexec skipifsilent unchecked
-Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; \
-  Flags: postinstall nowait skipifsilent
-
 [Code]
 var
   InstallerBanner: TBitmapImage;
@@ -1125,24 +1119,30 @@ end;
 
 procedure SyncFinishOptionList;
 begin
-  if WizardForm.RunList.Items.Count > 0 then
-    WizardForm.RunList.Checked[0] := FinishGuideSelected;
-  if WizardForm.RunList.Items.Count > 1 then
-    WizardForm.RunList.Checked[1] := FinishAppSelected;
+  { Finish actions are owned by the themed rows.  Keeping [Run] empty avoids }
+  { Inno repainting a second checkbox list over this finished-page layout. }
 end;
 
 procedure ToggleFinishGuide(Sender: TObject);
 begin
   FinishGuideSelected := not FinishGuideSelected;
-  SyncFinishOptionList;
   RefreshFinishOptionRows;
 end;
 
 procedure ToggleFinishApp(Sender: TObject);
 begin
   FinishAppSelected := not FinishAppSelected;
-  SyncFinishOptionList;
   RefreshFinishOptionRows;
+end;
+
+procedure HideNativeFinishRunList;
+begin
+  { The installer deliberately has no postinstall [Run] entries.  Hide the }
+  { unused native host so the themed rows are the only finish-page controls. }
+  WizardForm.RunList.Visible := False;
+  WizardForm.RunList.Enabled := False;
+  WizardForm.RunList.Left := -WizardForm.RunList.Width - ScaleX(64);
+  WizardForm.RunList.Top := -WizardForm.RunList.Height - ScaleY(64);
 end;
 
 procedure CreateFinishOptionRows;
@@ -1169,11 +1169,7 @@ begin
     RowLeft, RowTop,
     RowWidth, ScaleY(54),
     ExpandConstant('{cm:LaunchApp}'), @ToggleFinishApp);
-  { Inno may make RunList visible again when it populates the [Run] items. }
-  { Move the native list off the page as well as hiding it, so only the two }
-  { consistent app-style green checkbox rows can ever be displayed. }
-  WizardForm.RunList.Visible := False;
-  WizardForm.RunList.Left := -WizardForm.RunList.Width - ScaleX(32);
+  HideNativeFinishRunList;
   RefreshFinishOptionRows;
 end;
 
@@ -1681,11 +1677,9 @@ begin
 
   if CurPageID = wpFinished then
   begin
-    { Inno repopulates and shows RunList immediately before this page opens. }
-    { Keep only the compact app-style rows; otherwise the native first item }
-    { appears above the styled copy on the completed-install page. }
-    WizardForm.RunList.Visible := False;
-    SyncFinishOptionList;
+    HideNativeFinishRunList;
+    FinishOptionRows[0].BringToFront;
+    FinishOptionRows[1].BringToFront;
     RefreshFinishOptionRows;
   end;
 end;
@@ -1743,9 +1737,41 @@ begin
     Result := False;
 end;
 
+procedure RunSelectedFinishOptions;
+var
+  ResultCode: Integer;
+begin
+  ResultCode := -1;
+  if FinishGuideSelected then
+    ShellExec(
+      'open',
+      ExpandConstant('{app}\README.txt'),
+      '',
+      ExpandConstant('{app}'),
+      SW_SHOWNORMAL,
+      ewNoWait,
+      ResultCode
+    );
+  if FinishAppSelected then
+    Exec(
+      ExpandConstant('{app}\{#AppExeName}'),
+      '',
+      ExpandConstant('{app}'),
+      SW_SHOWNORMAL,
+      ewNoWait,
+      ResultCode
+    );
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+
+  if CurPageID = wpFinished then
+  begin
+    RunSelectedFinishOptions;
+    Exit;
+  end;
 
   if ExistingInstallationDetected then
   begin
