@@ -1,29 +1,7 @@
-name: Build macOS apps
+name: Build macOS apps (manual only)
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
-  pull_request:
-    paths:
-      - "SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py"
-      - "SMWStreamTrackerLauncher.py"
-      - "SMWStreamTracker-macOS.spec"
-      - "release/build_macos_release.sh"
-      - "release/requirements-macos.txt"
-      - "app_assets/**"
-      - "banner_background_assets/**"
-      - "banner_character_assets/**"
-      - "banner_character_assets_user/**"
-      - "banner_foreground_assets/**"
-      - "banner_title_assets/**"
-      - "banner_element_assets/**"
-      - "platform_assets/**"
-      - "docs/**"
-      - "installer/**"
-      - "tests/**"
-      - ".github/workflows/build-macos.yml"
 
 permissions:
   contents: write
@@ -74,24 +52,3 @@ jobs:
             dist/SMWStreamTracker_macOS_${{ matrix.architecture }}_*.zip
             dist/SHA256SUMS_macOS_${{ matrix.architecture }}_*.txt
           if-no-files-found: error
-
-      - name: Attach Mac downloads to the tagged GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="${{ github.ref_name }}"
-          for attempt in {1..40}; do
-            if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-              gh release upload "$tag" \
-                dist/SMWStreamTracker_macOS_${{ matrix.architecture }}_*.dmg \
-                dist/SMWStreamTracker_macOS_${{ matrix.architecture }}_*.zip \
-                dist/SHA256SUMS_macOS_${{ matrix.architecture }}_*.txt \
-                --repo "${{ github.repository }}" \
-                --clobber
-              exit 0
-            fi
-            sleep 15
-          done
-          echo "The Windows workflow did not create release $tag in time."
-          exit 1
