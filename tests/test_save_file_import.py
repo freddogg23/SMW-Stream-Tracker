@@ -104,7 +104,7 @@ class SaveFileImportTests(unittest.TestCase):
             self.assertEqual(destination, existing)
             self.assertEqual(method, "saved local ROM mapping")
 
-    def test_mister_destination_uses_flat_core_save_folder_and_rom_basename(self):
+    def test_mister_destination_mirrors_rom_subfolders_and_basename(self):
         app = self.make_app()
         destination = app._mister_save_destination(
             {
@@ -118,8 +118,78 @@ class SaveFileImportTests(unittest.TestCase):
 
         self.assertEqual(
             destination,
-            "/media/fat/saves/SNES/Actual MiSTer Name.sav",
+            (
+                "/media/fat/saves/SNES/SMW Stream Tracker/A/"
+                "Actual MiSTer Name.sav"
+            ),
         )
+
+    def test_mister_default_rom_root_is_mirrored_in_save_destination(self):
+        app = self.make_app(
+            {"mister_rom_root": "/media/fat/games/SNES/SMW Stream Tracker"}
+        )
+        app._resolve_local_rom_path = mock.Mock(
+            return_value=(Path("Tortured Souls 3.sfc"), "test")
+        )
+
+        destination = app._mister_save_destination(
+            {"title": "Tortured Souls 3"}
+        )
+
+        self.assertEqual(
+            destination,
+            "/media/fat/saves/SNES/SMW Stream Tracker/Tortured Souls 3.sav",
+        )
+
+    def test_raw_snes_save_payload_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "Mario A B C.sav"
+            payload = bytes(range(256)) * 8
+            source.write_bytes(payload)
+
+            normalized, header_removed = (
+                self.tracker.TrackerApp._normalized_snes_save_payload(source)
+            )
+
+            self.assertEqual(normalized, payload)
+            self.assertFalse(header_removed)
+
+    def test_512_byte_copier_header_is_removed_from_snes_save(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "headered.srm"
+            payload = bytes(range(256)) * 8
+            source.write_bytes((b"header" + bytes(506)) + payload)
+
+            normalized, header_removed = (
+                self.tracker.TrackerApp._normalized_snes_save_payload(source)
+            )
+
+            self.assertEqual(normalized, payload)
+            self.assertTrue(header_removed)
+
+    def test_non_sram_payload_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "save-state.sav"
+            source.write_bytes(b"not a raw SRAM file")
+
+            with self.assertRaisesRegex(ValueError, "Save states"):
+                self.tracker.TrackerApp._normalized_snes_save_payload(source)
+
+    def test_mister_import_releases_core_verifies_bytes_and_relaunches(self):
+        source = inspect.getsource(
+            self.tracker.TrackerApp._perform_mister_save_import
+        )
+        self.assertIn("_release_mister_save_for_import", source)
+        self.assertIn("uploaded_payload != payload", source)
+        self.assertIn("MiSTer could not commit the imported save file.", source)
+        self.assertIn("_run_mister_game_launch(dict(game))", source)
+
+    def test_mister_release_returns_to_menu_before_import(self):
+        source = inspect.getsource(
+            self.tracker.TrackerApp._release_mister_save_for_import
+        )
+        self.assertIn("load_core menu.rbf", source)
+        self.assertIn('"sync"', source)
 
     def test_fxpak_mounted_destination_uses_firmware_save_folder(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

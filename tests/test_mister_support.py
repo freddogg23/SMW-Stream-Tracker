@@ -134,6 +134,23 @@ class MisterSupportTests(unittest.TestCase):
         self.assertIn("nohup uartmode 6", source)
         self.assertIn("self._test_tcp_port(host, 23074)", source)
 
+    def test_live_tracking_is_enabled_for_normal_and_ra_snes_cores(self):
+        source = inspect.getsource(
+            self.tracker.TrackerApp._configure_mister_snes_live_tracking
+        )
+        self.assertIn('(\"SNES\", \"RA_SNES\")', source)
+        self.assertIn(
+            'f\"/media/fat/config/uartmode.{core_name}\"',
+            source,
+        )
+        install_source = inspect.getsource(
+            self.tracker.TrackerApp._install_mister_support
+        )
+        self.assertIn(
+            "self._configure_mister_snes_live_tracking(sftp)",
+            install_source,
+        )
+
     def test_experimental_mister_binary_matches_the_embedded_safety_hash(self):
         binary_path = (
             MODULE_PATH.parent
@@ -429,6 +446,11 @@ class MisterSupportTests(unittest.TestCase):
                 for text in (
                     "Set Up MiSTer...",
                     "MiSTer Setup",
+                    "MISTER CONNECTION",
+                    "Connect, prepare, and verify MiSTer for live tracking and game launching.",
+                    "Automatic setup",
+                    "Recommended",
+                    "Connection details",
                     "Find & Set Up MiSTer",
                     "Install Virtual Save State Slots",
                     "Save & Select MiSTer",
@@ -478,6 +500,28 @@ class MisterSupportTests(unittest.TestCase):
             "            virtual_states_buttons,",
             setup_source,
         )
+
+    def test_mister_setup_uses_compact_stream_desk_cards(self):
+        setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
+        self.assertIn("self._create_stream_desk_page_header(", setup_source)
+        self.assertIn('kicker="MISTER CONNECTION"', setup_source)
+        self.assertGreaterEqual(setup_source.count("self._stream_desk_card("), 3)
+        self.assertIn("dialog._uses_stream_desk_palette = True", setup_source)
+        self.assertIn("self._size_dialog_for_ui(dialog, 980, 840, 820, 700)", setup_source)
+        self.assertIn("footer = tk.Frame(", setup_source)
+        self.assertIn("content.columnconfigure(0, weight=3", setup_source)
+        self.assertNotIn('bg=THEME["blue"]', setup_source)
+
+    def test_mister_test_and_restore_buttons_share_a_full_height_row(self):
+        setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
+        self.assertIn('self._translate_ui_text("Test Connection")', setup_source)
+        self.assertGreaterEqual(setup_source.count("pad_y=11"), 2)
+        self.assertIn('test_button.grid(\n            row=0', setup_source)
+        self.assertIn(
+            'restore_original_button.grid(\n            row=0',
+            setup_source,
+        )
+        self.assertIn('uniform="mister_manual_actions"', setup_source)
 
 
 if __name__ == "__main__":

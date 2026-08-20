@@ -33,6 +33,41 @@ class UpdaterRelaunchTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tracker = load_tracker_module()
 
+    def test_release_metadata_matches_app_version(self):
+        project_root = MODULE_PATH.parent
+        version = self.tracker.APP_VERSION
+        numeric_version = ", ".join(version.split("."))
+
+        for script_name in (
+            "SMWStreamTrackerInstaller.iss",
+            "SMWStreamTrackerUpdater.iss",
+        ):
+            installer_source = (
+                project_root / "installer" / script_name
+            ).read_text(encoding="utf-8")
+            self.assertIn(f'#define AppVersion "{version}"', installer_source)
+
+        version_info = (project_root / "version_info.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(f"filevers=({numeric_version}, 0)", version_info)
+        self.assertIn(f"prodvers=({numeric_version}, 0)", version_info)
+        self.assertIn(
+            f"StringStruct(u'FileVersion', u'{version}')",
+            version_info,
+        )
+        self.assertIn(
+            f"StringStruct(u'ProductVersion', u'{version}')",
+            version_info,
+        )
+        self.assertTrue(
+            (
+                project_root
+                / "release"
+                / f"DESKTOP_RELEASE_NOTES_{version}.md"
+            ).is_file()
+        )
+
     def test_updater_starts_with_fresh_pyinstaller_environment(self):
         app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
         app.shutdown = mock.Mock()

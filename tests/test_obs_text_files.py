@@ -70,6 +70,63 @@ class ObsTextFileTests(unittest.TestCase):
             self.tracker.TrackerApp.open_guided_obs_text_setup
         )
         self.assertNotIn("chart_scale", source)
+        self.assertIn(
+            "self._size_dialog_for_ui(dialog, 1040, 900, 900, 720)",
+            source,
+        )
+        self.assertNotIn('dialog.state("zoomed")', source)
+
+    def test_obs_text_settings_uses_the_new_card_ui(self):
+        source = inspect.getsource(
+            self.tracker.TrackerApp.open_obs_settings_dialog
+        )
+        self.assertIn(
+            'body = self._stream_desk_card(\n            form_host,',
+            source,
+        )
+        self.assertIn('"Text file formats"', source)
+        self.assertIn('trailing_text="OBS-ready output"', source)
+        self.assertIn("content_scrollbar.grid_remove()", source)
+        self.assertIn("obs_settings_scroll_state", source)
+
+    def test_achievements_text_format_is_editable_and_previewed(self):
+        self.assertEqual(
+            self.tracker.DEFAULT_CONFIG["obs_achievements_text_format"],
+            "{default}",
+        )
+        source = inspect.getsource(
+            self.tracker.TrackerApp.open_obs_settings_dialog
+        )
+        self.assertIn("achievements_format_var = tk.StringVar", source)
+        self.assertIn('add_label(9, "Achievements file format:")', source)
+        self.assertIn("achievements_preview_var", source)
+        self.assertIn('"obs_achievements_text_format": achievements_template', source)
+        export_source = inspect.getsource(
+            self.tracker.TrackerApp._export_achievements_to_obs
+        )
+        self.assertIn(
+            'self.config.get("obs_achievements_text_format")',
+            export_source,
+        )
+
+    def test_custom_achievement_text_supports_placeholders_and_lines(self):
+        summary = {
+            "status": "ready",
+            "game_title": "Sample Game",
+            "unlocked": 7,
+            "total": 12,
+            "hardcore": True,
+            "recent": [{"title": "Latest Badge"}],
+            "next": {"title": "Next Badge"},
+        }
+        text = self.tracker.format_achievement_obs_text(
+            summary,
+            "{game}: {progress}{hardcore_suffix}\\nLatest: {latest}",
+        )
+        self.assertEqual(
+            text,
+            "Sample Game: 7/12 (hardcore)\nLatest: Latest Badge",
+        )
 
     def test_obs_capture_mode_is_opt_in_and_saved_from_obs_settings(self):
         self.assertIs(self.tracker.DEFAULT_CONFIG["obs_capture_mode"], False)
@@ -176,6 +233,7 @@ class ObsTextFileTests(unittest.TestCase):
                     "total_deaths.txt",
                     "exits.txt",
                     "hack_name.txt",
+                    "achievements.txt",
                     "level_timer.txt",
                     "game_timer.txt",
                     "streamerbot_level_events.txt",

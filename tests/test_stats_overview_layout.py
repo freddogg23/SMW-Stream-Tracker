@@ -124,40 +124,85 @@ class StatsOverviewLayoutTests(unittest.TestCase):
         method_source = ast.get_source_segment(self.source, self.stream_method)
         self.assertIn("def reflow_overview", method_source)
         self.assertIn("def queue_overview_layout", method_source)
+        self.assertIn(
+            'dialog.bind("<Configure>", queue_overview_layout',
+            method_source,
+        )
         self.assertNotIn(
             'body.bind("<Configure>", queue_overview_layout',
             method_source,
         )
         self.assertIn(
-            'body_canvas.bind("<Configure>", queue_overview_layout',
+            'pie_canvas.bind("<Configure>", draw_status_donut',
             method_source,
         )
+        self.assertNotIn("body_canvas", method_source)
         self.assertIn("dialog.add_prepaint_callback", method_source)
         self.assertIn('panel_mode = "wide"', method_source)
         self.assertIn('panel_mode = "medium"', method_source)
-        self.assertIn('panel_mode = "stacked"', method_source)
-        self.assertIn("metric_columns = 4", method_source)
+        self.assertNotIn('panel_mode = "stacked"', method_source)
+        self.assertIn('vertical_mode = "ultra"', method_source)
+        self.assertIn('vertical_mode == "ultra"', method_source)
         self.assertIn("else 2", method_source)
-        self.assertIn("def resize_overview_body", method_source)
-        self.assertIn('dialog.bind("<MouseWheel>", scroll_overview', method_source)
-        self.assertIn('"body_scrollbar": body_scrollbar', method_source)
+        self.assertNotIn("def resize_overview_body", method_source)
+        self.assertNotIn("scroll_overview", method_source)
+        self.assertNotIn("body_scrollbar", method_source)
+        self.assertNotIn('"<MouseWheel>"', method_source)
         self.assertIn("available_height", method_source)
-        self.assertIn('vertical_mode = (', method_source)
-        self.assertIn("overview_body_geometry", method_source)
-        self.assertIn("natural_height > visible_height + self._ui_px(10)", method_source)
-        self.assertIn("natural_height > visible_height - self._ui_px(10)", method_source)
-        self.assertNotIn("height=0,", method_source)
-        self.assertNotIn("body.update_idletasks()", method_source)
+        self.assertIn(
+            "available_width, available_height = overview_viewport_size()",
+            method_source,
+        )
+        self.assertIn("dialog.winfo_width()", method_source)
+        self.assertIn("dialog.winfo_height()", method_source)
+        self.assertNotIn("body.winfo_width()", method_source)
+        self.assertNotIn("body.winfo_height()", method_source)
+        self.assertIn("badge_strip.pack_forget()", method_source)
+        self.assertIn("overview_kicker_label.pack_forget()", method_source)
+        self.assertNotIn("overview_body_geometry", method_source)
+        self.assertNotIn("update_idletasks()", method_source)
         self.assertIn('"running": False', method_source)
-        self.assertIn("72,", method_source)
-        self.assertIn("body_scrollbar.grid_remove()", method_source)
-        self.assertIn("body_canvas.yview_moveto(0.0)", method_source)
+        self.assertIn('"last_viewport": None', method_source)
+        self.assertNotIn("after_cancel", method_source)
+        self.assertIn("48,", method_source)
 
-    def test_stream_desk_overview_uses_larger_readable_type(self):
+    def test_stream_desk_overview_uses_compact_readable_type(self):
         method_source = ast.get_source_segment(self.source, self.stream_method)
         self.assertIn('font=("Segoe UI", 30, "bold")', method_source)
-        self.assertIn("value_font_size=24", method_source)
-        self.assertIn("title_font_size=17", method_source)
+        self.assertIn("value_font_size=20", method_source)
+        self.assertIn("title_font_size=15", method_source)
+
+    def test_stream_desk_overview_never_requires_vertical_scrolling(self):
+        method_source = ast.get_source_segment(self.source, self.stream_method)
+        self.assertNotIn("YellowCanvasScrollbar", method_source)
+        self.assertNotIn("tk.Canvas(\n            body_host", method_source)
+        self.assertNotIn("yscrollcommand", method_source)
+        self.assertNotIn("yview_scroll", method_source)
+        self.assertNotIn("scrollregion", method_source)
+        self.assertNotIn("yview_moveto", method_source)
+        self.assertIn(
+            'show_in_app_banner = page_key != "overview"',
+            self.source,
+        )
+
+    def test_stream_desk_overview_uses_my_tracker_records_for_every_summary(self):
+        method_source = ast.get_source_segment(self.source, self.stream_method)
+        self.assertIn("records = self.stats_db.list_tracked()", method_source)
+        self.assertIn("status_lookup.get('Completed', 0)", method_source)
+        self.assertIn("recorded_death_rows", method_source)
+        self.assertIn('recorded_deaths_text = "—"', method_source)
+        self.assertIn("recent_source = sorted(", method_source)
+        self.assertIn("total_tracked = len(records)", method_source)
+        self.assertNotIn('overview.get("status"', method_source)
+        self.assertNotIn('overview.get("recent"', method_source)
+        self.assertNotIn('overview.get("playtime_seconds"', method_source)
+        self.assertNotIn('overview.get("average_rating"', method_source)
+        self.assertNotIn("overview.get('completed'", method_source)
+
+    def test_reopening_overview_rebuilds_live_values(self):
+        method_source = ast.get_source_segment(self.source, self.method)
+        self.assertNotIn("if not force_rebuild:", method_source)
+        self.assertIn("self.stats_overview_dialog.destroy()", method_source)
 
 
 if __name__ == "__main__":

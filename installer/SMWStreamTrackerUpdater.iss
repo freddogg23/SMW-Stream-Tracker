@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "2.0.0"
+#define AppVersion "2.0.1"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -124,14 +124,11 @@ Source: "PRIVACY.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "THIRD_PARTY_NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
-[Run]
-Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchApp}"; \
-  Flags: postinstall nowait skipifsilent; Check: UpdatedAppPassedStartupCheck
-
 [Code]
 var
   UpdatedAppStartupCheckPassed: Boolean;
   UpdaterBanner: TBitmapImage;
+  UpdaterFinishMask: TPanel;
   UpdaterFinishRow: TPanel;
   UpdaterFinishBox: TPanel;
   UpdaterFinishTick: TNewStaticText;
@@ -201,6 +198,18 @@ begin
   WizardForm.WelcomeLabel2.Font.Color := UpdaterMutedText;
   WizardForm.FinishedHeadingLabel.Font.Color := UpdaterText;
   WizardForm.FinishedLabel.Font.Color := UpdaterMutedText;
+  WizardForm.FinishedHeadingLabel.AutoSize := False;
+  WizardForm.FinishedHeadingLabel.Alignment := taCenter;
+  WizardForm.FinishedHeadingLabel.Left := ScaleX(24);
+  WizardForm.FinishedHeadingLabel.Width :=
+    WizardForm.FinishedPage.ClientWidth - ScaleX(48);
+  WizardForm.FinishedHeadingLabel.Font.Size := 17;
+  WizardForm.FinishedHeadingLabel.AdjustHeight;
+  WizardForm.FinishedLabel.AutoSize := False;
+  WizardForm.FinishedLabel.Alignment := taCenter;
+  WizardForm.FinishedLabel.Left := ScaleX(24);
+  WizardForm.FinishedLabel.Width :=
+    WizardForm.FinishedPage.ClientWidth - ScaleX(48);
   WizardForm.LicenseMemo.Color := UpdaterSurface;
   WizardForm.LicenseMemo.Font.Color := UpdaterText;
   WizardForm.InfoBeforeMemo.Color := UpdaterSurface;
@@ -269,18 +278,47 @@ end;
 procedure ToggleUpdaterFinishRow(Sender: TObject);
 begin
   LaunchUpdatedAppSelected := not LaunchUpdatedAppSelected;
-  if WizardForm.RunList.Items.Count > 0 then
-    WizardForm.RunList.Checked[0] := LaunchUpdatedAppSelected;
   RefreshUpdaterFinishRow;
 end;
 
-procedure CreateUpdaterFinishRow;
+procedure HideUpdaterNativeRunList;
 begin
+  { The updater deliberately has no postinstall [Run] entries.  Hide and }
+  { park the unused native host so only the themed launch row can paint. }
+  WizardForm.RunList.Visible := False;
+  WizardForm.RunList.Enabled := False;
+  WizardForm.RunList.Parent := WizardForm;
+  WizardForm.RunList.Left := -WizardForm.RunList.Width - ScaleX(64);
+  WizardForm.RunList.Top := -WizardForm.RunList.Height - ScaleY(64);
+end;
+
+procedure CreateUpdaterFinishRow;
+var
+  NativeRunLeft: Integer;
+  NativeRunTop: Integer;
+  NativeRunWidth: Integer;
+begin
+  NativeRunLeft := WizardForm.RunList.Left;
+  NativeRunTop := WizardForm.RunList.Top;
+  NativeRunWidth := WizardForm.RunList.Width;
+
+  { Keep an opaque, bounded finish-row host so high-DPI text cannot bleed }
+  { into the heading or the Finish button area. }
+  UpdaterFinishMask := TPanel.Create(WizardForm);
+  UpdaterFinishMask.Parent := WizardForm.FinishedPage;
+  UpdaterFinishMask.Left := NativeRunLeft;
+  UpdaterFinishMask.Top := NativeRunTop - ScaleY(4);
+  UpdaterFinishMask.Width := NativeRunWidth;
+  UpdaterFinishMask.Height := ScaleY(70);
+  UpdaterFinishMask.Caption := '';
+  UpdaterFinishMask.Color := UpdaterBackground;
+  UpdaterFinishMask.BevelOuter := bvNone;
+
   UpdaterFinishRow := TPanel.Create(WizardForm);
-  UpdaterFinishRow.Parent := WizardForm.FinishedPage;
-  UpdaterFinishRow.Left := WizardForm.RunList.Left;
-  UpdaterFinishRow.Top := WizardForm.RunList.Top;
-  UpdaterFinishRow.Width := WizardForm.RunList.Width;
+  UpdaterFinishRow.Parent := UpdaterFinishMask;
+  UpdaterFinishRow.Left := 0;
+  UpdaterFinishRow.Top := ScaleY(4);
+  UpdaterFinishRow.Width := UpdaterFinishMask.Width;
   UpdaterFinishRow.Height := ScaleY(58);
   UpdaterFinishRow.Caption := '';
   UpdaterFinishRow.BevelOuter := bvNone;
@@ -319,7 +357,7 @@ begin
   UpdaterFinishLabel.Font.Style := [fsBold];
   UpdaterFinishLabel.OnClick := @ToggleUpdaterFinishRow;
 
-  WizardForm.RunList.Visible := False;
+  HideUpdaterNativeRunList;
   RefreshUpdaterFinishRow;
 end;
 
@@ -334,9 +372,33 @@ procedure CurPageChanged(CurPageID: Integer);
 begin
   if CurPageID = wpFinished then
   begin
-    if WizardForm.RunList.Items.Count > 0 then
-      WizardForm.RunList.Checked[0] := LaunchUpdatedAppSelected;
+    if not UpdatedAppStartupCheckPassed then
+      LaunchUpdatedAppSelected := False;
+    HideUpdaterNativeRunList;
+    UpdaterFinishMask.BringToFront;
+    UpdaterFinishRow.BringToFront;
     RefreshUpdaterFinishRow;
+  end;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  if (CurPageID = wpFinished) and
+     UpdatedAppStartupCheckPassed and
+     LaunchUpdatedAppSelected then
+  begin
+    ResultCode := -1;
+    Exec(
+      ExpandConstant('{app}\{#AppExeName}'),
+      '',
+      ExpandConstant('{app}'),
+      SW_SHOWNORMAL,
+      ewNoWait,
+      ResultCode
+    );
   end;
 end;
 

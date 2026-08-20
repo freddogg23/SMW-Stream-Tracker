@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '2.0.0',
+    [string]$Version = '2.0.1',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -144,6 +144,21 @@ foreach ($scriptName in @('SMWStreamTrackerInstaller.iss', 'SMWStreamTrackerUpda
     if (-not (Select-String -LiteralPath $scriptPath -SimpleMatch "#define AppVersion `"$Version`"")) {
         throw "$scriptName does not use version $Version."
     }
+}
+$versionInfoPath = Join-Path $projectRoot 'version_info.txt'
+foreach ($versionInfoText in @(
+    "filevers=($($Version.Replace('.', ', ')), 0)",
+    "prodvers=($($Version.Replace('.', ', ')), 0)",
+    "StringStruct(u'FileVersion', u'$Version')",
+    "StringStruct(u'ProductVersion', u'$Version')"
+)) {
+    if (-not (Select-String -LiteralPath $versionInfoPath -SimpleMatch $versionInfoText)) {
+        throw "version_info.txt does not contain $versionInfoText."
+    }
+}
+$desktopReleaseNotesPath = Join-Path $PSScriptRoot "DESKTOP_RELEASE_NOTES_$Version.md"
+if (-not (Test-Path -LiteralPath $desktopReleaseNotesPath -PathType Leaf)) {
+    throw "Desktop release notes were not found: $desktopReleaseNotesPath"
 }
 
 if (-not $SkipAppBuild) {
