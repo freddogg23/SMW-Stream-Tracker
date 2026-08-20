@@ -66,6 +66,34 @@ except Exception as error:
     ) from error
 
 
+# MiSTer setup is a required Windows feature. Do not let collect_all() emit a
+# warning and continue with a package that can open but cannot connect over
+# SSH. This also verifies Paramiko's compiled cryptography dependencies match
+# the exact Python ABI used for the build.
+try:
+    import bcrypt
+    import cryptography
+    import nacl
+    import paramiko
+
+    if not all(
+        hasattr(paramiko, name)
+        for name in (
+            'AuthenticationException',
+            'SSHClient',
+            'SSHException',
+        )
+    ):
+        raise ImportError('Paramiko is incomplete')
+except Exception as error:
+    raise SystemExit(
+        'SMW Stream Tracker cannot be packaged without working MiSTer SSH '
+        'support. Install Paramiko and matching bcrypt, cryptography, CFFI, '
+        f'and PyNaCl wheels for this Python runtime ({type(error).__name__}: '
+        f'{error}).'
+    ) from error
+
+
 webview_datas, webview_binaries, webview_hiddenimports = collect_all('webview')
 paramiko_datas, paramiko_binaries, paramiko_hiddenimports = collect_all('paramiko')
 
@@ -83,6 +111,7 @@ a = Analysis(
         ('banner_element_assets', 'banner_element_assets'),
         ('platform_assets', 'platform_assets'),
         ('app_assets', 'app_assets'),
+        ('obs_widget', 'obs_widget'),
         ('docs', 'docs'),
         ('installer\\PRIVACY.txt', 'installer'),
         ('installer\\PRIVACY.au.txt', 'installer'),
@@ -102,11 +131,6 @@ a = Analysis(
         ('installer\\THIRD_PARTY_NOTICE.fr.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.de.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.pt-BR.txt', 'installer'),
-        (
-            'experiments\\mister_instant_states\\Main_MiSTer_20260707\\'
-            'bin_experimental\\MiSTer-SMW-Virtual-States',
-            'mister_experimental',
-        ),
     ] + webview_datas + paramiko_datas,
     hiddenimports=webview_hiddenimports + paramiko_hiddenimports,
     hookspath=[],

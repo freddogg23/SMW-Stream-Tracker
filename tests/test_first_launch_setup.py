@@ -86,6 +86,16 @@ class FirstLaunchSetupTests(unittest.TestCase):
         self.assertIn("function StreamDeskGreen: TColor;", installer)
         self.assertIn("procedure CreateDependencyOptionRows;", installer)
         self.assertIn("procedure CreateDesktopShortcutRow;", installer)
+        self.assertIn("function ShouldCreateDesktopShortcut: Boolean;", installer)
+        self.assertIn(
+            "DesktopShortcutSelected or WizardIsTaskSelected('desktopicon')",
+            installer,
+        )
+        self.assertIn(
+            'Filename: "{app}\\{#AppExeName}"; '
+            "Check: ShouldCreateDesktopShortcut",
+            installer,
+        )
         self.assertIn("procedure CreateFinishOptionRows;", installer)
         self.assertIn("WizardForm.NextButton.Font.Style := [fsBold];", installer)
         self.assertIn("WizardSizePercent=150", installer)

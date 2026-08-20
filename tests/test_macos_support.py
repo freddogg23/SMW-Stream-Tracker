@@ -114,7 +114,7 @@ class MacPlatformSupportTests(unittest.TestCase):
         ):
             self.assertRegex(checksum, r"^[0-9a-f]{64}$")
 
-    def test_mac_build_pipeline_targets_apple_silicon_and_intel(self):
+    def test_mac_build_pipeline_is_manual_only_and_never_publishes(self):
         project_root = Path(__file__).resolve().parents[1]
         workflow = (
             project_root / ".github" / "workflows" / "build-macos.yml"
@@ -136,8 +136,10 @@ class MacPlatformSupportTests(unittest.TestCase):
         self.assertIn("macos-15-intel", workflow)
         self.assertIn("arm64", workflow)
         self.assertIn("x86_64", workflow)
-        self.assertIn('tags:\n      - "v*"', workflow)
-        self.assertIn("gh release upload", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn('tags:\n      - "v*"', workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("gh release upload", workflow)
         self.assertIn("hdiutil create", build_script)
         self.assertIn("codesign --verify", build_script)
         self.assertIn("notarytool submit", build_script)

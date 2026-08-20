@@ -193,10 +193,23 @@ class RandomDownloadedOnlyTests(unittest.TestCase):
         app.update_available_version = "2.1.0"
         app._ui_px = lambda value: value
         app._translate_ui_text = lambda text: text
+        rail_settings = UpdateBadge()
+        rail_redraws = []
+        app.navigation_rail_buttons = {"settings": rail_settings}
+        app.navigation_rail_active_section = "settings"
+        app._render_navigation_rail_button = (
+            lambda canvas, section, selected: rail_redraws.append(
+                (canvas, section, selected)
+            )
+        )
 
         app._refresh_help_update_badge()
 
         self.assertIsNotNone(settings_badge.place_options)
+        self.assertEqual(
+            rail_redraws[-1],
+            (rail_settings, "settings", True),
+        )
         self.assertEqual(settings_button.options["text"], "Update Available")
         self.assertEqual(settings_button.options["bg"], self.tracker.STREAM_DESK["yellow"])
         self.assertEqual(settings_button.scheduled[0][1], 850)
@@ -207,6 +220,14 @@ class RandomDownloadedOnlyTests(unittest.TestCase):
         self.assertIsNone(settings_badge.place_options)
         self.assertEqual(settings_button.options["text"], "Updates")
         self.assertEqual(settings_button.cancelled, ["after-1"])
+
+    def test_main_settings_rail_draws_update_dot(self):
+        method_source = inspect.getsource(
+            self.tracker.TrackerApp._render_navigation_rail_button
+        )
+        self.assertIn('section == "settings"', method_source)
+        self.assertIn('getattr(self, "update_available_version", "")', method_source)
+        self.assertIn('tags=("update_badge",)', method_source)
 
     def test_retroarch_settings_are_added_and_existing_values_replaced(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

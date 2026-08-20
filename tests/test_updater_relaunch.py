@@ -89,7 +89,20 @@ class UpdaterRelaunchTests(unittest.TestCase):
             app._launch_update_package(updater)
 
         arguments, keywords = popen.call_args
-        self.assertEqual(arguments[0], [str(updater), "/SP-"])
+        self.assertEqual(
+            arguments[0],
+            [
+                str(updater),
+                "/SP-",
+                str(
+                    "/LOG="
+                    + str(
+                        self.tracker.UPDATE_DOWNLOAD_DIR
+                        / "SMWStreamTracker_Update_1.0.3.log"
+                    )
+                ),
+            ],
+        )
         child_environment = keywords["env"]
         self.assertEqual(
             child_environment["PYINSTALLER_RESET_ENVIRONMENT"],
@@ -99,6 +112,25 @@ class UpdaterRelaunchTests(unittest.TestCase):
         self.assertNotIn("_PYI_ARCHIVE_FILE", child_environment)
         self.assertIn("PATH", child_environment)
         app.shutdown.assert_called_once_with()
+
+    def test_update_dialog_keeps_visible_progress_until_updater_launch(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn('dialog._update_progress_var = tk.DoubleVar', source)
+        self.assertIn('"Downloading update... {percent}%"', source)
+        self.assertIn(
+            '"Update verified. Creating a safety backup..."',
+            source,
+        )
+        self.assertIn('"Opening the Windows updater..."', source)
+        self.assertNotIn(
+            "def _download_and_install_update(\n"
+            "        self,\n"
+            "        manifest: dict[str, Any],\n"
+            "        dialog: tk.Toplevel,\n"
+            "    ) -> None:\n"
+            "        dialog.destroy()",
+            source,
+        )
 
     def test_updater_package_resets_environment_before_final_launch(self):
         updater_script = (

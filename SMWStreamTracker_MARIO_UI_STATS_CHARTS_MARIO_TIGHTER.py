@@ -6,11 +6,13 @@ import base64
 import binascii
 import csv
 import hashlib
+import hmac
 import ipaddress
 import io
 import math
 from html import unescape
 from html.parser import HTMLParser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta, timezone
 import os
@@ -19,6 +21,8 @@ import plistlib
 import queue
 import random
 import re
+import secrets
+import select
 import shlex
 import shutil
 import stat
@@ -518,7 +522,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.0.2"
 APP_BUILD_DATE = "2026-08-20"
 
 GAME_MODE_STAGE_IMAGE_FILES = {
@@ -1245,6 +1249,20 @@ def _run_tk_startup_check() -> int:
     ``TrackerApp`` here prevents a package that crashes during ``_build_ui``
     from replacing a working installation.
     """
+    required_paramiko_api = (
+        "AuthenticationException",
+        "SSHClient",
+        "SSHException",
+    )
+    if paramiko is None or not all(
+        hasattr(paramiko, api_name) for api_name in required_paramiko_api
+    ):
+        append_error_log(
+            "Packaged dependency check failed",
+            "MiSTer SSH support is missing or incomplete.",
+        )
+        return 22
+
     _configure_installed_tcl_tk_runtime()
     probe_root = None
     try:
@@ -21703,6 +21721,38 @@ _MISTER_EXPERIMENT_LOCALIZATION_ROWS = (
         "MiSTer Main wurde seit der Installation der Speicherstände 5–11 aktualisiert oder geändert. Dieser Tracker wird die Datei weder überschreiben noch herabstufen. Stelle die ursprüngliche MiSTer-Datei wieder her oder installiere einen Tracker-Build für die neue MiSTer-Main-Version.",
         "O MiSTer Main foi atualizado ou alterado desde a instalação dos estados 5–11. Este tracker não o substituirá nem fará downgrade. Restaure o arquivo MiSTer original ou instale uma versão do tracker criada para a nova versão do MiSTer Main.",
     ),
+    (
+        "Virtual Save States Disabled",
+        "Virtual Save States Disabled",
+        "Estados de guardado virtuales desactivados",
+        "Sauvegardes virtuelles désactivées",
+        "Virtuelle Speicherstände deaktiviert",
+        "Estados de salvamento virtuais desativados",
+    ),
+    (
+        "Virtual save states 5–11 are temporarily disabled because the experimental MiSTer Main can corrupt HDMI output when a game starts. Find & Set Up MiSTer now installs only stable launching and live tracking. If the experimental version is already installed, select Restore Previous MiSTer Version.",
+        "Virtual save states 5–11 are temporarily disabled because the experimental MiSTer Main can corrupt HDMI output when a game starts. Find & Set Up MiSTer now installs only stable launching and live tracking. If the experimental version is already installed, select Restore Previous MiSTer Version, mate.",
+        "Los estados de guardado virtuales 5–11 están desactivados temporalmente porque el MiSTer Main experimental puede dañar la salida HDMI al iniciar un juego. Buscar y configurar MiSTer ahora instala únicamente el inicio estable y el seguimiento en vivo. Si la versión experimental ya está instalada, selecciona Restaurar la versión anterior de MiSTer.",
+        "Les sauvegardes virtuelles 5 à 11 sont temporairement désactivées, car le MiSTer Main expérimental peut altérer la sortie HDMI au démarrage d’un jeu. Rechercher et configurer le MiSTer n’installe désormais que le lancement stable et le suivi en direct. Si la version expérimentale est déjà installée, sélectionnez Restaurer la version précédente de MiSTer.",
+        "Die virtuellen Speicherstände 5–11 sind vorübergehend deaktiviert, weil die experimentelle MiSTer-Main-Version beim Start eines Spiels die HDMI-Ausgabe beschädigen kann. MiSTer suchen und einrichten installiert jetzt nur noch den stabilen Spielstart und die Live-Verfolgung. Wenn die experimentelle Version bereits installiert ist, wähle Vorherige MiSTer-Version wiederherstellen.",
+        "Os estados de salvamento virtuais 5–11 estão temporariamente desativados porque o MiSTer Main experimental pode corromper a saída HDMI ao iniciar um jogo. Encontrar e configurar o MiSTer agora instala somente a inicialização estável e o rastreamento ao vivo. Se a versão experimental já estiver instalada, selecione Restaurar a versão anterior do MiSTer.",
+    ),
+    (
+        "Virtual save states 5–11 are temporarily disabled because the experimental MiSTer Main can corrupt HDMI output when a game starts. Stable game launching and live tracking remain available. If you previously installed the experimental version, select Restore Previous MiSTer Version.",
+        "Virtual save states 5–11 are temporarily disabled because the experimental MiSTer Main can corrupt HDMI output when a game starts. Stable game launching and live tracking remain available. If you previously installed the experimental version, select Restore Previous MiSTer Version, mate.",
+        "Los estados de guardado virtuales 5–11 están desactivados temporalmente porque el MiSTer Main experimental puede dañar la salida HDMI al iniciar un juego. El inicio estable de juegos y el seguimiento en vivo siguen disponibles. Si instalaste anteriormente la versión experimental, selecciona Restaurar la versión anterior de MiSTer.",
+        "Les sauvegardes virtuelles 5 à 11 sont temporairement désactivées, car le MiSTer Main expérimental peut altérer la sortie HDMI au démarrage d’un jeu. Le lancement stable des jeux et le suivi en direct restent disponibles. Si vous aviez installé la version expérimentale, sélectionnez Restaurer la version précédente de MiSTer.",
+        "Die virtuellen Speicherstände 5–11 sind vorübergehend deaktiviert, weil die experimentelle MiSTer-Main-Version beim Start eines Spiels die HDMI-Ausgabe beschädigen kann. Der stabile Spielstart und die Live-Verfolgung bleiben verfügbar. Wenn du die experimentelle Version zuvor installiert hast, wähle Vorherige MiSTer-Version wiederherstellen.",
+        "Os estados de salvamento virtuais 5–11 estão temporariamente desativados porque o MiSTer Main experimental pode corromper a saída HDMI ao iniciar um jogo. A inicialização estável de jogos e o rastreamento ao vivo continuam disponíveis. Se você instalou anteriormente a versão experimental, selecione Restaurar a versão anterior do MiSTer.",
+    ),
+    (
+        "The tracker-installed experimental MiSTer Main is active and can corrupt HDMI output when a game starts. Open MiSTer Setup, select Restore Previous MiSTer Version, wait for MiSTer to restart, and then launch the game again.",
+        "The tracker-installed experimental MiSTer Main is active and can corrupt HDMI output when a game starts. Open MiSTer Setup, select Restore Previous MiSTer Version, wait for MiSTer to restart, and then launch the game again, mate.",
+        "El MiSTer Main experimental instalado por el tracker está activo y puede dañar la salida HDMI al iniciar un juego. Abre la configuración de MiSTer, selecciona Restaurar la versión anterior de MiSTer, espera a que MiSTer se reinicie y vuelve a iniciar el juego.",
+        "Le MiSTer Main expérimental installé par le tracker est actif et peut altérer la sortie HDMI au démarrage d’un jeu. Ouvrez la configuration du MiSTer, sélectionnez Restaurer la version précédente de MiSTer, attendez le redémarrage du MiSTer, puis relancez le jeu.",
+        "Die vom Tracker installierte experimentelle MiSTer-Main-Version ist aktiv und kann beim Start eines Spiels die HDMI-Ausgabe beschädigen. Öffne die MiSTer-Einrichtung, wähle Vorherige MiSTer-Version wiederherstellen, warte auf den Neustart von MiSTer und starte das Spiel dann erneut.",
+        "O MiSTer Main experimental instalado pelo tracker está ativo e pode corromper a saída HDMI ao iniciar um jogo. Abra a configuração do MiSTer, selecione Restaurar a versão anterior do MiSTer, aguarde o MiSTer reiniciar e inicie o jogo novamente.",
+    ),
 )
 for (
     _english_text,
@@ -21919,6 +21969,10 @@ _FULL_UI_LOCALIZATION_ROWS = (
     ("App rollback is available in an installed release, not while running from source.", "Rollback only works from an installed release, mate — not while running the source code in the shed.", "La restauración de la aplicación está disponible en una versión instalada, no al ejecutarla desde el código fuente.", "La restauration de l’application est disponible dans une version installée, pas lors d’une exécution depuis les sources.", "Die App-Wiederherstellung ist nur in einer installierten Version verfügbar, nicht beim Ausführen aus dem Quellcode.", "A restauração do aplicativo está disponível em uma versão instalada, não durante a execução pelo código-fonte."),
     ("Checking securely for updates...", "Checking the update paddock securely, mate...", "Buscando actualizaciones de forma segura...", "Recherche sécurisée des mises à jour...", "Sichere Suche nach Updates...", "Verificando atualizações com segurança..."),
     ("Downloading and verifying the update package...", "Fetching and checking the update package, mate...", "Descargando y verificando el paquete de actualización...", "Téléchargement et vérification du paquet de mise à jour...", "Updatepaket wird heruntergeladen und überprüft...", "Baixando e verificando o pacote de atualização..."),
+    ("Ready to download the verified update.", "Ready to fetch the verified update, mate.", "Listo para descargar la actualización verificada.", "Prêt à télécharger la mise à jour vérifiée.", "Das geprüfte Update kann heruntergeladen werden.", "Pronto para baixar a atualização verificada."),
+    ("Downloading update... {percent}%", "Fetching the update... {percent}%, mate", "Descargando actualización... {percent}%", "Téléchargement de la mise à jour... {percent} %", "Update wird heruntergeladen... {percent} %", "Baixando atualização... {percent}%"),
+    ("Update verified. Creating a safety backup...", "Update checked out. Making a safety backup, mate...", "Actualización verificada. Creando una copia de seguridad...", "Mise à jour vérifiée. Création d’une sauvegarde de sécurité...", "Update geprüft. Eine Sicherung wird erstellt...", "Atualização verificada. Criando um backup de segurança..."),
+    ("Opening the Windows updater...", "Opening the Windows updater, mate...", "Abriendo el actualizador de Windows...", "Ouverture du programme de mise à jour Windows...", "Windows-Updater wird geöffnet...", "Abrindo o atualizador do Windows..."),
     ("SMW Stream Tracker is up to date.", "Too easy — SMW Stream Tracker is bang up to date.", "SMW Stream Tracker está actualizado.", "SMW Stream Tracker est à jour.", "SMW Stream Tracker ist auf dem neuesten Stand.", "O SMW Stream Tracker está atualizado."),
     ("Rollback Available After Installation", "Rollback’s Ready After Installation, Mate", "Restauración disponible después de la instalación", "Restauration disponible après l’installation", "Wiederherstellung nach der Installation verfügbar", "Restauração disponível após a instalação"),
     ("Restore the previous app version? Your tracker data and settings will be backed up first.", "Reckon we should restore the previous version? Your tracker data and settings get a backup first, no worries.", "¿Restaurar la versión anterior de la aplicación? Primero se hará una copia de seguridad de los datos y la configuración.", "Restaurer la version précédente de l’application ? Vos données et paramètres seront d’abord sauvegardés.", "Vorherige App-Version wiederherstellen? Ihre Tracker-Daten und Einstellungen werden zuerst gesichert.", "Restaurar a versão anterior do aplicativo? Primeiro será feito um backup dos dados e das configurações."),
@@ -22396,6 +22450,15 @@ for _english_text in _all_ui_translation_keys:
 UI_TRANSLATIONS["au"].update(_AUSTRALIAN_UI_OVERRIDES)
 
 _RUNTIME_LOCALIZATION_ROWS = (
+    ("Copied", "Copied, mate", "Copiado", "Copié", "Kopiert", "Copiado"),
+    (
+        "Pick exactly what appears",
+        "Choose exactly what shows up, mate",
+        "Elige exactamente lo que aparece",
+        "Choisissez exactement ce qui apparaît",
+        "Wähle genau aus, was angezeigt wird",
+        "Escolha exatamente o que aparece",
+    ),
     ("Stop Challenge", "Stop the challenge, mate", "Detener desafío", "Arrêter le défi", "Herausforderung beenden", "Parar desafio"),
     ("Next Hack", "Next hack, mate", "Siguiente hack", "Hack suivant", "Nächster Hack", "Próximo hack"),
     ("Skip Hack", "Skip this hack, mate", "Saltar hack", "Passer ce hack", "Hack überspringen", "Pular hack"),
@@ -23949,6 +24012,7 @@ DEFAULT_CONFIG = {
     "obs_deaths_text_format": "Level Deaths: {deaths}",
     "obs_total_deaths_text_format": "Total Deaths: {total_deaths}",
     "obs_achievements_text_format": "{default}",
+    "obs_widget_port": 18765,
     # Keep tracker-owned dialogs inside the main window so a single OBS
     # Window Capture source can include them.  Native OS and third-party
     # windows (browsers, installers, file pickers) intentionally stay native.
@@ -24507,6 +24571,483 @@ def windows_foreground_executable_name() -> str | None:
                 ctypes.windll.kernel32.CloseHandle(process_handle)
             except (AttributeError, OSError):
                 pass
+
+
+OBS_WIDGET_HOST = "127.0.0.1"
+OBS_WIDGET_DEFAULT_PORT = 18765
+OBS_WIDGET_FIELDS = (
+    "hack",
+    "creator",
+    "exits",
+    "deaths",
+    "timer",
+    "achievements",
+)
+
+
+def _obs_widget_nonnegative_integer(value: object) -> int:
+    try:
+        return max(0, int(float(value or 0)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _obs_widget_achievement_item(
+    item: object,
+) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    badge_name = str(item.get("badge_name", "")).strip()
+    badge_url = retroachievements_badge_url(badge_name)
+    cached_badge = (
+        RETROACHIEVEMENTS_BADGE_CACHE_DIR / f"{badge_name}.png"
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", badge_name)
+        else None
+    )
+    if cached_badge is not None and cached_badge.is_file():
+        badge_url = f"/obs-widget/badges/{badge_name}.png"
+    return {
+        "id": _obs_widget_nonnegative_integer(item.get("id", 0)),
+        "title": str(item.get("title", "Achievement") or "Achievement")[:180],
+        "description": str(item.get("description", "") or "")[:360],
+        "points": _obs_widget_nonnegative_integer(item.get("points", 0)),
+        "badge_name": badge_name,
+        "badge_url": badge_url,
+        "unlocked": bool(item.get("unlocked")),
+        "date": str(
+            item.get("date", item.get("date_earned", "")) or ""
+        )[:80],
+    }
+
+
+def obs_widget_achievement_summary(
+    summary: object,
+) -> dict[str, Any]:
+    source = dict(summary) if isinstance(summary, dict) else {}
+    recent: list[dict[str, Any]] = []
+    for item in source.get("recent", []):
+        normalized = _obs_widget_achievement_item(item)
+        if normalized is not None:
+            recent.append(normalized)
+        if len(recent) >= 4:
+            break
+    next_item = _obs_widget_achievement_item(source.get("next"))
+    return {
+        "source": "RetroAchievements",
+        "status": str(source.get("status", "loading") or "loading")[:40],
+        "message": str(source.get("message", "") or "")[:360],
+        "game_id": _obs_widget_nonnegative_integer(source.get("game_id", 0)),
+        "game_title": str(source.get("game_title", "") or "")[:180],
+        "hardcore": bool(source.get("hardcore")),
+        "unlocked": _obs_widget_nonnegative_integer(source.get("unlocked", 0)),
+        "total": _obs_widget_nonnegative_integer(source.get("total", 0)),
+        "next": next_item,
+        "recent": recent,
+    }
+
+
+def build_obs_widget_state(
+    *,
+    hack: object = "No game detected",
+    creator: object = "Unknown",
+    exits_text: object = "Exits: 0 / Unknown",
+    level_deaths: object = 0,
+    total_deaths: object = 0,
+    game_timer: object = "00:00",
+    level_timer: object = "00:00",
+    achievements: object = None,
+    connected: bool = False,
+) -> dict[str, Any]:
+    exits_match = re.search(
+        r"(?P<completed>\d+)\s*/\s*(?P<total>\d+|[^\s]+)",
+        str(exits_text or ""),
+    )
+    completed_exits = (
+        _obs_widget_nonnegative_integer(exits_match.group("completed"))
+        if exits_match
+        else 0
+    )
+    total_text = exits_match.group("total") if exits_match else "Unknown"
+    total_exits: int | None
+    try:
+        total_exits = max(0, int(total_text))
+    except (TypeError, ValueError):
+        total_exits = None
+    clean_creator = re.sub(
+        r"^[^:]{1,36}:\s*",
+        "",
+        str(creator or "Unknown").strip(),
+        count=1,
+    ) or "Unknown"
+    return {
+        "schema": 1,
+        "app": "SMW Stream Tracker",
+        "connected": bool(connected),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "hack": str(hack or "No game detected").strip()[:220],
+        "creator": clean_creator[:180],
+        "exits": {
+            "completed": completed_exits,
+            "total": total_exits,
+            "label": (
+                f"{completed_exits} / {total_exits}"
+                if total_exits is not None
+                else f"{completed_exits} / Unknown"
+            ),
+        },
+        "deaths": {
+            "level": _obs_widget_nonnegative_integer(level_deaths),
+            "total": _obs_widget_nonnegative_integer(total_deaths),
+        },
+        "timers": {
+            "game": str(game_timer or "00:00")[:40],
+            "level": str(level_timer or "00:00")[:40],
+        },
+        "achievements": obs_widget_achievement_summary(achievements),
+    }
+
+
+class ObsWidgetHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        state_provider: Callable[[], dict[str, Any]],
+        assets_root: Path,
+        command_handler: Callable[[dict[str, Any]], None] | None = None,
+        access_token: str = "",
+    ) -> None:
+        self.state_provider = state_provider
+        self.assets_root = Path(assets_root)
+        self.command_handler = command_handler
+        self.access_token = str(access_token or "")
+        self.websocket_lock = threading.Lock()
+        self.websocket_subscribers: set[queue.Queue[bytes]] = set()
+        self.websocket_payload = b""
+        self.websocket_stop_event = threading.Event()
+        super().__init__(server_address, ObsWidgetRequestHandler)
+        self.publish_websocket_state(self.state_provider())
+
+    def _serialized_websocket_document(
+        self,
+        document: dict[str, Any],
+    ) -> bytes | None:
+        try:
+            return json.dumps(
+                document,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError):
+            return None
+
+    def _broadcast_websocket_payload(self, payload: bytes) -> None:
+        with self.websocket_lock:
+            subscribers = tuple(self.websocket_subscribers)
+        for subscriber in subscribers:
+            try:
+                subscriber.put_nowait(payload)
+            except queue.Full:
+                try:
+                    subscriber.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    subscriber.put_nowait(payload)
+                except queue.Full:
+                    pass
+
+    def publish_websocket_state(self, document: dict[str, Any]) -> None:
+        payload = self._serialized_websocket_document(document)
+        if payload is None:
+            return
+        with self.websocket_lock:
+            if payload == self.websocket_payload:
+                return
+            self.websocket_payload = payload
+        self._broadcast_websocket_payload(payload)
+
+    def publish_websocket_event(self, document: dict[str, Any]) -> None:
+        payload = self._serialized_websocket_document(document)
+        if payload is not None:
+            self._broadcast_websocket_payload(payload)
+
+    def register_websocket(self) -> queue.Queue[bytes]:
+        subscriber: queue.Queue[bytes] = queue.Queue(maxsize=48)
+        with self.websocket_lock:
+            self.websocket_subscribers.add(subscriber)
+            payload = self.websocket_payload
+        if payload:
+            subscriber.put_nowait(payload)
+        return subscriber
+
+    def unregister_websocket(self, subscriber: queue.Queue[bytes]) -> None:
+        with self.websocket_lock:
+            self.websocket_subscribers.discard(subscriber)
+
+    def dispatch_websocket_command(self, document: dict[str, Any]) -> None:
+        handler = self.command_handler
+        if handler is not None:
+            try:
+                handler(document)
+            except (RuntimeError, tk.TclError):
+                pass
+
+    def stop_websockets(self) -> None:
+        self.websocket_stop_event.set()
+        self._broadcast_websocket_payload(b"")
+
+
+class ObsWidgetRequestHandler(BaseHTTPRequestHandler):
+    server_version = "SMWStreamTrackerWidget/1.0"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+    def _send_bytes(
+        self,
+        payload: bytes,
+        content_type: str,
+        *,
+        cache_control: str = "no-store",
+    ) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_not_found(self) -> None:
+        payload = b"Not found"
+        self.send_response(404)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _serve_asset(self, filename: str, content_type: str) -> None:
+        if filename not in {"index.html", "widget.css", "widget.js"}:
+            self._send_not_found()
+            return
+        asset_path = self.server.assets_root / filename
+        try:
+            payload = asset_path.read_bytes()
+        except OSError:
+            self._send_not_found()
+            return
+        self._send_bytes(payload, content_type, cache_control="no-cache")
+
+    def _websocket_origin_allowed(self) -> bool:
+        origin = str(self.headers.get("Origin", "")).strip().casefold()
+        if not origin:
+            return True
+        port = int(self.server.server_address[1])
+        return origin in {
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
+        }
+
+    def _websocket_token_allowed(self) -> bool:
+        expected = str(getattr(self.server, "access_token", "") or "")
+        if not expected:
+            return True
+        supplied = str(
+            parse_qs(urlparse(self.path).query).get("token", [""])[0]
+        )
+        return hmac.compare_digest(supplied, expected)
+
+    @staticmethod
+    def _websocket_frame(payload: bytes, opcode: int = 1) -> bytes:
+        payload_length = len(payload)
+        first_byte = 0x80 | (int(opcode) & 0x0F)
+        if payload_length < 126:
+            header = bytes((first_byte, payload_length))
+        elif payload_length <= 0xFFFF:
+            header = bytes((first_byte, 126)) + payload_length.to_bytes(2, "big")
+        else:
+            header = bytes((first_byte, 127)) + payload_length.to_bytes(8, "big")
+        return header + payload
+
+    def _read_websocket_bytes(self, count: int) -> bytes:
+        chunks: list[bytes] = []
+        remaining = max(0, int(count))
+        while remaining:
+            chunk = self.connection.recv(remaining)
+            if not chunk:
+                raise ConnectionError("WebSocket closed")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _read_websocket_frame(self) -> tuple[int, bytes]:
+        header = self._read_websocket_bytes(2)
+        first_byte, second_byte = header
+        finished = bool(first_byte & 0x80)
+        opcode = first_byte & 0x0F
+        masked = bool(second_byte & 0x80)
+        payload_length = second_byte & 0x7F
+        if not finished or not masked:
+            raise ConnectionError("Unsupported WebSocket frame")
+        if payload_length == 126:
+            payload_length = int.from_bytes(
+                self._read_websocket_bytes(2), "big"
+            )
+        elif payload_length == 127:
+            payload_length = int.from_bytes(
+                self._read_websocket_bytes(8), "big"
+            )
+        if payload_length > 32768:
+            raise ConnectionError("WebSocket command is too large")
+        mask = self._read_websocket_bytes(4)
+        payload = self._read_websocket_bytes(payload_length)
+        return opcode, bytes(
+            value ^ mask[index % 4]
+            for index, value in enumerate(payload)
+        )
+
+    def _handle_websocket_frame(self, opcode: int, payload: bytes) -> bool:
+        if opcode == 8:
+            self.connection.sendall(
+                self._websocket_frame(payload[:125], opcode=8)
+            )
+            return False
+        if opcode == 9:
+            self.connection.sendall(
+                self._websocket_frame(payload[:125], opcode=10)
+            )
+            return True
+        if opcode == 10:
+            return True
+        if opcode != 1:
+            raise ConnectionError("Unsupported WebSocket message")
+        try:
+            document = json.loads(payload.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            return True
+        if isinstance(document, dict):
+            self.server.dispatch_websocket_command(document)
+        return True
+
+    def _open_websocket(self) -> None:
+        upgrade = str(self.headers.get("Upgrade", "")).strip().casefold()
+        connection = str(self.headers.get("Connection", "")).casefold()
+        websocket_key = str(
+            self.headers.get("Sec-WebSocket-Key", "")
+        ).strip()
+        websocket_version = str(
+            self.headers.get("Sec-WebSocket-Version", "")
+        ).strip()
+        try:
+            decoded_key = base64.b64decode(websocket_key, validate=True)
+        except (binascii.Error, ValueError):
+            decoded_key = b""
+        if (
+            upgrade != "websocket"
+            or "upgrade" not in connection
+            or websocket_version != "13"
+            or len(decoded_key) != 16
+            or not self._websocket_origin_allowed()
+            or not self._websocket_token_allowed()
+        ):
+            self.send_error(400, "Invalid WebSocket request")
+            return
+        accept_value = base64.b64encode(
+            hashlib.sha1(
+                (
+                    websocket_key
+                    + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                ).encode("ascii")
+            ).digest()
+        ).decode("ascii")
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept_value)
+        self.end_headers()
+        self.wfile.flush()
+        self.close_connection = True
+
+        subscriber = self.server.register_websocket()
+        last_ping = time.monotonic()
+        try:
+            while not self.server.websocket_stop_event.is_set():
+                while True:
+                    try:
+                        payload = subscriber.get_nowait()
+                    except queue.Empty:
+                        break
+                    if not payload:
+                        return
+                    self.connection.sendall(self._websocket_frame(payload))
+                readable, _writable, _exceptional = select.select(
+                    [self.connection], [], [], 0.12
+                )
+                if readable:
+                    opcode, payload = self._read_websocket_frame()
+                    if not self._handle_websocket_frame(opcode, payload):
+                        break
+                if time.monotonic() - last_ping >= 12.0:
+                    self.connection.sendall(
+                        self._websocket_frame(b"smw", opcode=9)
+                    )
+                    last_ping = time.monotonic()
+        except (ConnectionError, OSError, TimeoutError):
+            pass
+        finally:
+            self.server.unregister_websocket(subscriber)
+
+    def do_GET(self) -> None:
+        request_path = urlparse(self.path).path
+        if request_path in {"/", "/obs-widget", "/obs-widget/"}:
+            self._serve_asset("index.html", "text/html; charset=utf-8")
+            return
+        if request_path == "/obs-widget/widget.css":
+            self._serve_asset("widget.css", "text/css; charset=utf-8")
+            return
+        if request_path == "/obs-widget/widget.js":
+            self._serve_asset(
+                "widget.js",
+                "application/javascript; charset=utf-8",
+            )
+            return
+        if request_path == "/obs-widget/socket":
+            self._open_websocket()
+            return
+        if request_path == "/obs-widget/api/health":
+            payload = json.dumps(
+                {"ok": True, "app": "SMW Stream Tracker"},
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self._send_bytes(payload, "application/json; charset=utf-8")
+            return
+        badge_match = re.fullmatch(
+            r"/obs-widget/badges/([A-Za-z0-9_-]{1,80})\.png",
+            request_path,
+        )
+        if badge_match:
+            badge_path = (
+                RETROACHIEVEMENTS_BADGE_CACHE_DIR
+                / f"{badge_match.group(1)}.png"
+            )
+            try:
+                payload = badge_path.read_bytes()
+            except OSError:
+                self._send_not_found()
+                return
+            self._send_bytes(
+                payload,
+                "image/png",
+                cache_control="public, max-age=86400",
+            )
+            return
+        self._send_not_found()
 
 
 def render_obs_text_template(
@@ -32388,6 +32929,22 @@ class TrackerApp:
         self.smwcentral_home_feed_process: subprocess.Popen | None = None
         self.pending_smwcentral_completion: dict[str, Any] | None = None
         self.obs_settings_dialog: tk.Toplevel | None = None
+        self.obs_widget_dialog: tk.Toplevel | None = None
+        self.obs_widget_server: ObsWidgetHTTPServer | None = None
+        self.obs_widget_server_thread: threading.Thread | None = None
+        self.obs_widget_server_port = 0
+        self.obs_widget_server_error = ""
+        stored_obs_widget_token = str(
+            self.config.get("obs_widget_access_token", "") or ""
+        ).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32,160}", stored_obs_widget_token):
+            stored_obs_widget_token = secrets.token_urlsafe(32)
+            self.config["obs_widget_access_token"] = stored_obs_widget_token
+        self.obs_widget_access_token = stored_obs_widget_token
+        self.obs_widget_state_lock = threading.Lock()
+        self.obs_widget_state = build_obs_widget_state(
+            achievements=self._retroachievements_overview_summary,
+        )
         self.welcome_setup_dialog: tk.Toplevel | None = None
         self.guided_setup_dialog: tk.Toplevel | None = None
         self.obs_setup_choice_dialog: tk.Toplevel | None = None
@@ -32482,6 +33039,7 @@ class TrackerApp:
         )
 
         self._build_ui()
+        self._refresh_obs_widget_state()
         self.root.after_idle(
             lambda: self._localize_widget_tree(self.root)
         )
@@ -32537,6 +33095,7 @@ class TrackerApp:
             )
 
             self.root.after(200, self.process_events)
+            self.root.after(300, self._start_obs_widget_server)
             if bool(self.config.get("auto_connect_on_startup", True)):
                 self.root.after(400, self.start_tracker)
             self.root.after(650, self._refresh_retroachievements_obs_async)
@@ -34391,6 +34950,19 @@ class TrackerApp:
             origin_x=self._ui_px(10),
             origin_y=self._ui_px(10),
         )
+        if section == "settings" and str(
+            getattr(self, "update_available_version", "")
+        ).strip():
+            canvas.create_oval(
+                self._ui_px(34),
+                self._ui_px(5),
+                self._ui_px(43),
+                self._ui_px(14),
+                fill=STREAM_DESK["red"],
+                outline=STREAM_DESK["text_strong"],
+                width=max(1, self._ui_px(1)),
+                tags=("update_badge",),
+            )
 
     def _build_navigation_rail(self, *, defer_mapping: bool = False) -> None:
         rail = tk.Frame(
@@ -38680,6 +39252,19 @@ class TrackerApp:
         except tk.TclError:
             pass
 
+        navigation_buttons = getattr(self, "navigation_rail_buttons", {})
+        navigation_settings = navigation_buttons.get("settings")
+        try:
+            if navigation_settings is not None and navigation_settings.winfo_exists():
+                self._render_navigation_rail_button(
+                    navigation_settings,
+                    "settings",
+                    getattr(self, "navigation_rail_active_section", None)
+                    == "settings",
+                )
+        except (AttributeError, tk.TclError):
+            pass
+
         if update_available:
             if getattr(self, "settings_update_flash_after_id", None) is None:
                 self._flash_settings_update_action()
@@ -39666,11 +40251,19 @@ class TrackerApp:
                 fingerprint = self._mister_host_key_fingerprint(client)
                 self._remember_mister_host_key(client)
                 return peer, fingerprint
-            except paramiko.AuthenticationException:
-                authentication_failed = True
-                return None
-            except (OSError, RuntimeError, paramiko.SSHException):
-                return None
+            except Exception as error:
+                if (
+                    paramiko is not None
+                    and isinstance(error, paramiko.AuthenticationException)
+                ):
+                    authentication_failed = True
+                    return None
+                if isinstance(error, (OSError, RuntimeError)) or (
+                    paramiko is not None
+                    and isinstance(error, paramiko.SSHException)
+                ):
+                    return None
+                raise
             finally:
                 if client is not None:
                     client.close()
@@ -40848,12 +41441,11 @@ class TrackerApp:
         virtual_states_description = tk.Label(
             virtual_states_copy,
             text=self._translate_ui_text(
-                "Installed automatically by Find & Set Up MiSTer or by "
-                "selecting Install Virtual Save State Slots below. SNES only. "
-                "Native states 1–4 stay unchanged. F5–F11 load states 5–11, "
-                "and Alt+F5–Alt+F11 save states 5–11. F12 still opens the "
-                "MiSTer menu. State 4 is used briefly as a bridge, and an exact "
-                "backup is verified first."
+                "Virtual save states 5–11 are temporarily disabled because "
+                "the experimental MiSTer Main can corrupt HDMI output when a "
+                "game starts. Find & Set Up MiSTer now installs only stable "
+                "launching and live tracking. If the experimental version is "
+                "already installed, select Restore Previous MiSTer Version."
             ),
             font=("Segoe UI", 9),
             fg=palette["text"],
@@ -40941,7 +41533,7 @@ class TrackerApp:
                     message = (
                         "MiSTer SSH is connected. SNES live tracking is ready."
                         if live_ready
-                        else "MiSTer SSH is connected. Install Virtual Save State Slots, then load the SNES core once to start live tracking."
+                        else "MiSTer SSH is connected. Select Find & Set Up MiSTer, then load the SNES core once to start live tracking."
                     )
                     self.root.after(0, lambda: finish_task(message))
                 except Exception as error:
@@ -40952,44 +41544,17 @@ class TrackerApp:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def install_support() -> None:
-            try:
-                host, user, port = saved_values(True)
-            except Exception as error:
-                finish_task("", str(error))
-                return
-            set_busy(True)
-            status_var.set(self._translate_ui_text("Preparing MiSTer support..."))
-
-            def worker() -> None:
-                try:
-                    self._install_mister_support(
-                        host,
-                        user,
-                        port,
-                        password_var.get(),
-                        status_var,
-                    )
-                    self._install_mister_virtual_states(
-                        host,
-                        user,
-                        port,
-                        password_var.get(),
-                        status_var,
-                    )
-                    message = (
-                        "MiSTer support and save states 5–11 are installed. "
-                        "MiSTer is restarting. In the SNES core, use Alt+F5 "
-                        "through Alt+F11 to save and F5 through F11 to load "
-                        "states 5–11. F12 still "
-                        "opens the MiSTer menu."
-                    )
-                    self.root.after(0, lambda: finish_task(message))
-                except Exception as error:
-                    append_error_log("MiSTer setup failed", traceback.format_exc())
-                    self.root.after(0, lambda detail=str(error): finish_task("", detail))
-
-            threading.Thread(target=worker, daemon=True).start()
+        def show_virtual_states_unavailable() -> None:
+            self._show_localized_info(
+                "Virtual Save States Disabled",
+                "Virtual save states 5–11 are temporarily disabled because "
+                "the experimental MiSTer Main can corrupt HDMI output when a "
+                "game starts. Stable game launching and live tracking remain "
+                "available. If you previously installed the experimental "
+                "version, select Restore Previous MiSTer Version.",
+                parent=dialog,
+                kind="warning",
+            )
 
         def automatic_setup() -> None:
             try:
@@ -41048,14 +41613,6 @@ class TrackerApp:
                     self._verified_mister_peer(key_client)
                     key_client.close()
                     key_client = None
-                    self._install_mister_virtual_states(
-                        host,
-                        user,
-                        port,
-                        password,
-                        status_var,
-                    )
-
                     def complete() -> None:
                         host_var.set(host)
                         self.config["mister_ssh_fingerprint"] = fingerprint
@@ -41067,10 +41624,10 @@ class TrackerApp:
                         )
                         finish_task(
                             "MiSTer is fully set up. The tracker found it, "
-                            "installed live tracking and save states 5–11, "
-                            "created the game folders, enabled automatic "
-                            "login for this app, selected MiSTer, and verified "
-                            "the connection. MiSTer is restarting."
+                            "installed stable game launching and live "
+                            "tracking, created the game folders, enabled "
+                            "automatic login for this app, selected MiSTer, "
+                            "and verified the connection."
                         )
                         self._guided_optional_software_completed("mister")
                         if self._guided_setup_stage != "connection":
@@ -41216,10 +41773,10 @@ class TrackerApp:
         close_button.pack(side="right", padx=(0, self._ui_px(8)))
         install_button = self._make_action_button(
             virtual_states_buttons,
-            self._translate_ui_text("Install Virtual Save State Slots"),
-            install_support,
-            STREAM_DESK["green"],
-            STREAM_DESK["green_dark"],
+            self._translate_ui_text("Virtual Save States Disabled"),
+            show_virtual_states_unavailable,
+            STREAM_DESK["surface_alt"],
+            STREAM_DESK["selected"],
             width=25,
             pad_y=8,
         )
@@ -46505,8 +47062,12 @@ class TrackerApp:
         )
         obs_settings_groups = (
             (
-                "OBS Text Files",
+                "OBS Companion Tools",
                 (
+                    (
+                        "Open OBS Widget Setup...",
+                        self.open_obs_widget_setup,
+                    ),
                     (
                         self._setup_guide_text("obs_title"),
                         self.open_guided_obs_text_setup,
@@ -54256,24 +54817,36 @@ class TrackerApp:
                 )
                 return
 
-            legend_height = self._ui_px(64)
+            legend_height = self._ui_px(88)
             use_side_legend = width >= self._ui_px(360)
             if use_side_legend:
+                legend_width = max(
+                    self._ui_px(210),
+                    min(self._ui_px(280), int(width * 0.34)),
+                )
                 chart_size = min(
-                    self._ui_px(140),
-                    max(self._ui_px(90), height - self._ui_px(8)),
-                    max(self._ui_px(90), int(width * 0.40)),
+                    self._ui_px(230),
+                    max(self._ui_px(120), height - self._ui_px(16)),
+                    max(
+                        self._ui_px(120),
+                        width - legend_width - self._ui_px(48),
+                    ),
+                    max(self._ui_px(120), int(width * 0.46)),
                 )
-                center_x = max(
-                    self._ui_px(10) + chart_size / 2,
-                    width * 0.23,
+                group_width = (
+                    chart_size + self._ui_px(30) + legend_width
                 )
+                group_left = max(
+                    self._ui_px(12),
+                    (width - group_width) / 2,
+                )
+                center_x = group_left + chart_size / 2
                 center_y = height / 2
-                legend_x = center_x + chart_size / 2 + self._ui_px(18)
-                legend_y = center_y - self._ui_px(35)
+                legend_x = group_left + chart_size + self._ui_px(30)
+                legend_y = center_y - self._ui_px(42)
             else:
                 chart_size = min(
-                    self._ui_px(120),
+                    self._ui_px(155),
                     max(self._ui_px(80), width - self._ui_px(24)),
                     max(self._ui_px(80), height - legend_height - self._ui_px(8)),
                 )
@@ -54353,33 +54926,33 @@ class TrackerApp:
                 center_y - self._ui_px(8),
                 text=f"{total_tracked:,}",
                 fill=STREAM_DESK["text_strong"],
-                font=("Segoe UI", 18, "bold"),
+                font=("Segoe UI", 23, "bold"),
             )
             pie_canvas.create_text(
                 center_x,
                 center_y + self._ui_px(14),
                 text=tr("Tracked").upper(),
                 fill=STREAM_DESK["muted"],
-                font=("Segoe UI", 8, "bold"),
+                font=("Segoe UI", 10, "bold"),
             )
 
             for index, (label_text, value, color) in enumerate(status_data):
-                row_y = legend_y + index * self._ui_px(23)
+                row_y = legend_y + index * self._ui_px(28)
                 pie_canvas.create_oval(
                     legend_x,
                     row_y + self._ui_px(5),
-                    legend_x + self._ui_px(12),
-                    row_y + self._ui_px(17),
+                    legend_x + self._ui_px(14),
+                    row_y + self._ui_px(19),
                     fill=color,
                     outline="",
                 )
                 pie_canvas.create_text(
-                    legend_x + self._ui_px(22),
+                    legend_x + self._ui_px(25),
                     row_y,
                     text=label_text,
                     anchor="nw",
                     fill=STREAM_DESK["text"],
-                    font=("Segoe UI", 8),
+                    font=("Segoe UI", 10),
                 )
                 pie_canvas.create_text(
                     (
@@ -54391,7 +54964,7 @@ class TrackerApp:
                     text=f"{value:,}",
                     anchor="ne",
                     fill=STREAM_DESK["text_strong"],
-                    font=("Segoe UI", 9, "bold"),
+                    font=("Segoe UI", 11, "bold"),
                 )
 
         difficulty_body = self._stream_desk_card(
@@ -87609,6 +88182,22 @@ class TrackerApp:
         try:
             sftp = client.open_sftp()
             try:
+                current_main = self._mister_sftp_read(
+                    sftp,
+                    "/media/fat/MiSTer",
+                    maximum_bytes=MISTER_VIRTUAL_STATES_MAX_BYTES,
+                )
+                current_main_sha256 = hashlib.sha256(current_main).hexdigest()
+                if current_main_sha256 == MISTER_VIRTUAL_STATES_BINARY_SHA256:
+                    raise RuntimeError(
+                        self._translate_ui_text(
+                            "The tracker-installed experimental MiSTer Main "
+                            "is active and can corrupt HDMI output when a game "
+                            "starts. Open MiSTer Setup, select Restore Previous "
+                            "MiSTer Version, wait for MiSTer to restart, and "
+                            "then launch the game again."
+                        )
+                    )
                 if use_retroachievements_core:
                     try:
                         ra_core_ready = (
@@ -92628,6 +93217,629 @@ class TrackerApp:
         dialog.after_idle(dialog.grab_set)
         dialog.after_idle(dialog.focus_force)
 
+    def _refresh_obs_widget_state(self) -> None:
+        try:
+            author = str(
+                self.current_hack_record.get("author", "")
+                if isinstance(self.current_hack_record, dict)
+                else ""
+            ).strip()
+            if not author:
+                author = self.author_var.get()
+            state = build_obs_widget_state(
+                hack=self.game_var.get(),
+                creator=author,
+                exits_text=self.exits_var.get(),
+                level_deaths=self.death_counter_var.get(),
+                total_deaths=self.total_death_counter_var.get(),
+                game_timer=self.game_timer_var.get(),
+                level_timer=self.level_timer_var.get(),
+                achievements=self._retroachievements_overview_summary,
+                connected=self.connection_is_connected,
+            )
+        except (AttributeError, tk.TclError):
+            return
+        with self.obs_widget_state_lock:
+            current_state = dict(self.obs_widget_state)
+            current_state.pop("updated_at", None)
+            next_state = dict(state)
+            next_state.pop("updated_at", None)
+            if current_state == next_state:
+                return
+            self.obs_widget_state = state
+        server = self.obs_widget_server
+        if server is not None:
+            server.publish_websocket_state(state)
+
+    def _obs_widget_state_snapshot(self) -> dict[str, Any]:
+        with self.obs_widget_state_lock:
+            return dict(self.obs_widget_state)
+
+    def _obs_widget_url(self) -> str:
+        port = int(
+            self.obs_widget_server_port
+            or self.config.get("obs_widget_port", OBS_WIDGET_DEFAULT_PORT)
+            or OBS_WIDGET_DEFAULT_PORT
+        )
+        return (
+            f"http://{OBS_WIDGET_HOST}:{port}/obs-widget/"
+            f"?{urlencode({'token': self.obs_widget_access_token})}"
+        )
+
+    def _publish_obs_widget_event(self, document: dict[str, Any]) -> None:
+        server = self.obs_widget_server
+        if server is not None:
+            server.publish_websocket_event(document)
+
+    def _queue_obs_widget_command(self, document: dict[str, Any]) -> None:
+        if not isinstance(document, dict):
+            return
+        command = str(document.get("command", "")).strip()
+        if command not in {
+            "get_configuration",
+            "search_hacks",
+            "play_hack",
+            "play_random_hack",
+        }:
+            return
+        copied_document = dict(document)
+        try:
+            self.root.after(
+                0,
+                lambda command_document=copied_document: (
+                    self._handle_obs_widget_command(command_document)
+                ),
+            )
+        except (RuntimeError, tk.TclError):
+            pass
+
+    @staticmethod
+    def _obs_widget_request_id(document: dict[str, Any]) -> str:
+        return re.sub(
+            r"[^A-Za-z0-9_-]",
+            "",
+            str(document.get("request_id", "")),
+        )[:80]
+
+    def _obs_widget_filter_configuration(self) -> dict[str, list[str]]:
+        return {
+            "rating": ["Any", "1+", "2+", "3+", "4+", "4.5+", "5"],
+            "difficulty": ["Any", *self._difficulty_values()],
+            "type": ["Any", *self._type_tokens()],
+            "released": [
+                str(label) for label, _months in self._released_filter_options()
+            ],
+            "hall_of_fame": ["Any", "Yes", "No"],
+        }
+
+    def _obs_widget_game_id(self, game: dict[str, Any]) -> str:
+        return self._replay_hack_identity(game)[:500]
+
+    def _obs_widget_game_by_id(self, game_id: object) -> dict[str, Any] | None:
+        wanted = str(game_id or "").strip().casefold()[:500]
+        if not wanted:
+            return None
+        for game in self.hack_catalog:
+            if self._obs_widget_game_id(game).casefold() == wanted:
+                return game
+        return None
+
+    def _obs_widget_search_results(
+        self,
+        query_text: object,
+        limit: int = 16,
+    ) -> list[dict[str, Any]]:
+        query = str(query_text or "").strip()[:120]
+        if not query:
+            return []
+        matching_games = [
+            game
+            for game in self.hack_catalog
+            if str(game.get("title", "")).strip()
+            and query.casefold() in catalog_search_text(game)
+        ]
+        results: list[dict[str, Any]] = []
+        for game in matching_games:
+            if not self._catalog_game_has_downloaded_rom(game):
+                continue
+            try:
+                rating = float(game.get("rating", 0) or 0)
+            except (TypeError, ValueError):
+                rating = 0.0
+            results.append(
+                {
+                    "id": self._obs_widget_game_id(game),
+                    "title": str(game.get("title", "Unknown"))[:220],
+                    "creator": str(game.get("author", "Unknown"))[:180],
+                    "difficulty": str(game.get("difficulty", "Unknown"))[:80],
+                    "type": str(game.get("hack_type", "Unknown"))[:120],
+                    "rating": round(rating, 2),
+                    "hall_of_fame": bool(
+                        smwc_boolean_value(game.get("hall_of_fame", False))
+                    ),
+                }
+            )
+            if len(results) >= max(1, min(30, int(limit))):
+                break
+        return results
+
+    @staticmethod
+    def _obs_widget_filter_value(
+        filters: dict[str, Any],
+        key: str,
+    ) -> str:
+        return str(filters.get(key, "Any") or "Any").strip()[:120]
+
+    def _obs_widget_random_candidates(
+        self,
+        filters: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        return [
+            game
+            for game in self.hack_catalog
+            if str(game.get("title", "")).strip()
+            and self._game_matches_library_filters(
+                game,
+                "",
+                self._obs_widget_filter_value(filters, "rating"),
+                self._obs_widget_filter_value(filters, "difficulty"),
+                self._obs_widget_filter_value(filters, "type"),
+                "All",
+                self._obs_widget_filter_value(filters, "released"),
+                "Any",
+                self._obs_widget_filter_value(filters, "hall_of_fame"),
+                "Any",
+            )
+            and self._catalog_game_has_downloaded_rom(game)
+        ]
+
+    def _handle_obs_widget_command(self, document: dict[str, Any]) -> None:
+        command = str(document.get("command", "")).strip()
+        request_id = self._obs_widget_request_id(document)
+        if command == "get_configuration":
+            self._publish_obs_widget_event(
+                {
+                    "event": "configuration",
+                    "request_id": request_id,
+                    "filters": self._obs_widget_filter_configuration(),
+                }
+            )
+            return
+        if command == "search_hacks":
+            query = str(document.get("query", "")).strip()[:120]
+            results = self._obs_widget_search_results(query)
+            self._publish_obs_widget_event(
+                {
+                    "event": "search_results",
+                    "request_id": request_id,
+                    "query": query,
+                    "results": results,
+                    "message": (
+                        f"Found {len(results)} downloaded hack(s)."
+                        if results
+                        else "No downloaded hacks matched that search."
+                    ),
+                }
+            )
+            return
+        if command == "play_hack":
+            game = self._obs_widget_game_by_id(document.get("game_id"))
+            if game is None or not self._catalog_game_has_downloaded_rom(game):
+                self._publish_obs_widget_event(
+                    {
+                        "event": "command_result",
+                        "request_id": request_id,
+                        "ok": False,
+                        "message": "That downloaded hack is no longer available.",
+                    }
+                )
+                return
+            launched = self._launch_catalog_game(game)
+            title = str(game.get("title", "Unknown"))
+            self._publish_obs_widget_event(
+                {
+                    "event": "command_result",
+                    "request_id": request_id,
+                    "ok": bool(launched),
+                    "message": (
+                        f'Launching "{title}".'
+                        if launched
+                        else f'Could not launch "{title}".'
+                    ),
+                }
+            )
+            return
+        if command == "play_random_hack":
+            raw_filters = document.get("filters", {})
+            filters = raw_filters if isinstance(raw_filters, dict) else {}
+            candidates = self._obs_widget_random_candidates(filters)
+            if not candidates:
+                self._publish_obs_widget_event(
+                    {
+                        "event": "command_result",
+                        "request_id": request_id,
+                        "ok": False,
+                        "message": "No downloaded hacks match those filters.",
+                    }
+                )
+                return
+            game = random.choice(candidates)
+            launched = self._launch_catalog_game(game)
+            title = str(game.get("title", "Unknown"))
+            self._publish_obs_widget_event(
+                {
+                    "event": "command_result",
+                    "request_id": request_id,
+                    "ok": bool(launched),
+                    "message": (
+                        f'Random pick: "{title}" — launching now.'
+                        if launched
+                        else f'Could not launch "{title}".'
+                    ),
+                }
+            )
+
+    def _set_obs_widget_status(self, text: str) -> None:
+        status_var = getattr(self, "obs_widget_status_var", None)
+        if status_var is not None:
+            try:
+                status_var.set(text)
+            except tk.TclError:
+                pass
+
+    def _start_obs_widget_server(self) -> bool:
+        if self.startup_check:
+            return False
+        if self.obs_widget_server is not None:
+            return True
+        assets_root = bundled_resource_path("obs_widget")
+        required_assets = ("index.html", "widget.css", "widget.js")
+        if not all((assets_root / name).is_file() for name in required_assets):
+            self.obs_widget_server_error = (
+                "The OBS Widget files are missing. Run the complete Windows "
+                "installer again."
+            )
+            self._set_obs_widget_status(self.obs_widget_server_error)
+            return False
+        try:
+            configured_port = int(
+                self.config.get("obs_widget_port", OBS_WIDGET_DEFAULT_PORT)
+            )
+        except (TypeError, ValueError):
+            configured_port = OBS_WIDGET_DEFAULT_PORT
+        if not 1024 <= configured_port <= 65535:
+            configured_port = OBS_WIDGET_DEFAULT_PORT
+
+        server: ObsWidgetHTTPServer | None = None
+        last_error = ""
+        for offset in range(10):
+            candidate_port = configured_port + offset
+            if candidate_port > 65535:
+                break
+            try:
+                server = ObsWidgetHTTPServer(
+                    (OBS_WIDGET_HOST, candidate_port),
+                    self._obs_widget_state_snapshot,
+                    assets_root,
+                    self._queue_obs_widget_command,
+                    self.obs_widget_access_token,
+                )
+            except OSError as error:
+                last_error = str(error)
+                continue
+            self.obs_widget_server_port = candidate_port
+            break
+        if server is None:
+            self.obs_widget_server_error = (
+                "The local OBS Widget could not start. Close another tracker "
+                "window and select Retry."
+            )
+            if last_error:
+                append_error_log("OBS Widget server", last_error)
+            self._set_obs_widget_status(self.obs_widget_server_error)
+            return False
+
+        self.obs_widget_server = server
+        self.obs_widget_server_error = ""
+        self.config["obs_widget_port"] = self.obs_widget_server_port
+        self.config["obs_widget_access_token"] = self.obs_widget_access_token
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        self.obs_widget_server_thread = threading.Thread(
+            target=server.serve_forever,
+            kwargs={"poll_interval": 0.25},
+            name="OBSWidgetServer",
+            daemon=True,
+        )
+        self.obs_widget_server_thread.start()
+        self._set_obs_widget_status(
+            f"WebSocket ready — port {self.obs_widget_server_port}"
+        )
+        return True
+
+    def _stop_obs_widget_server(self) -> None:
+        server = self.obs_widget_server
+        server_thread = self.obs_widget_server_thread
+        self.obs_widget_server = None
+        self.obs_widget_server_thread = None
+        self.obs_widget_server_port = 0
+        if server is not None:
+            server.stop_websockets()
+            try:
+                server.shutdown()
+            except OSError:
+                pass
+            try:
+                server.server_close()
+            except OSError:
+                pass
+        if (
+            server_thread is not None
+            and server_thread.is_alive()
+            and server_thread is not threading.current_thread()
+        ):
+            server_thread.join(timeout=1.5)
+
+    def open_obs_widget_setup(self) -> None:
+        current = self.obs_widget_dialog
+        if current is not None:
+            try:
+                if current.winfo_exists():
+                    current.lift()
+                    current.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        self._start_obs_widget_server()
+        palette = self._library_palette()
+        dialog = self._create_tracker_dialog(self.root)
+        self.obs_widget_dialog = dialog
+        dialog._uses_stream_desk_palette = True
+        dialog.title("OBS Widget Setup")
+        dialog.configure(bg=palette["window"])
+        dialog.transient(self.root)
+        dialog.resizable(True, True)
+        self._size_dialog_for_ui(dialog, 980, 760, 820, 650)
+        self._create_stream_desk_page_header(
+            dialog,
+            kicker="OBS COMPANION",
+            title="OBS Widget Setup",
+            subtitle=(
+                "Add a live, customizable OBS dock connected directly to the "
+                "tracker over WebSocket."
+            ),
+        )
+
+        body = tk.Frame(
+            dialog,
+            bg=palette["panel"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        body.pack(
+            fill="both",
+            expand=True,
+            padx=self._ui_px(20),
+            pady=self._ui_px(16),
+        )
+        body.columnconfigure(1, weight=1)
+
+        status_text = (
+            f"WebSocket ready — port {self.obs_widget_server_port}"
+            if self.obs_widget_server is not None
+            else self.obs_widget_server_error
+        )
+        self.obs_widget_status_var = tk.StringVar(value=status_text)
+        status_card = tk.Frame(
+            body,
+            bg=palette["panel_alt"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        status_card.grid(
+            row=0,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            padx=self._ui_px(20),
+            pady=(self._ui_px(18), self._ui_px(14)),
+        )
+        tk.Label(
+            status_card,
+            text="●",
+            font=("Segoe UI", 12, "bold"),
+            fg=(
+                THEME["green"]
+                if self.obs_widget_server is not None
+                else THEME["red"]
+            ),
+            bg=palette["panel_alt"],
+        ).pack(side="left", padx=(self._ui_px(14), self._ui_px(8)), pady=12)
+        tk.Label(
+            status_card,
+            textvariable=self.obs_widget_status_var,
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, pady=12)
+
+        def copy_url(url_text: str, button: tk.Widget) -> None:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(url_text)
+            original = "Copy URL"
+            try:
+                button.configure(text=self._translate_ui_text("Copied"))
+                button.after(1300, lambda: button.configure(text=original))
+            except tk.TclError:
+                pass
+
+        def add_url_row(
+            row: int,
+            title: str,
+            detail: str,
+            url_text: str,
+        ) -> None:
+            copy_host = tk.Frame(body, bg=palette["panel"])
+            copy_host.grid(
+                row=row,
+                column=0,
+                columnspan=3,
+                sticky="ew",
+                padx=self._ui_px(20),
+                pady=self._ui_px(8),
+            )
+            copy_host.columnconfigure(0, weight=1)
+            tk.Label(
+                copy_host,
+                text=title,
+                font=("Segoe UI", 12, "bold"),
+                fg=palette["text"],
+                bg=palette["panel"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            tk.Label(
+                copy_host,
+                text=detail,
+                font=("Segoe UI", 9),
+                fg=palette["muted"],
+                bg=palette["panel"],
+                anchor="w",
+            ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 6))
+            url_var = tk.StringVar(value=url_text)
+            tk.Entry(
+                copy_host,
+                textvariable=url_var,
+                state="readonly",
+                readonlybackground=palette["entry"],
+                fg=palette["text"],
+                font=("Segoe UI", 10),
+                relief="solid",
+                bd=1,
+            ).grid(row=2, column=0, sticky="ew", ipady=7)
+            copy_button = self._make_action_button(
+                copy_host,
+                "Copy URL",
+                lambda: None,
+                palette["panel_alt"],
+                STREAM_DESK["selected"],
+                width=11,
+                pad_y=7,
+            )
+            copy_button.configure(
+                command=lambda: copy_url(url_text, copy_button)
+            )
+            copy_button.grid(row=2, column=1, padx=(10, 0))
+
+        add_url_row(
+            1,
+            "Custom Browser Dock URL",
+            (
+                "In OBS, open Docks > Custom Browser Docks and paste this URL. "
+                "The dock receives live data directly from the app over WebSocket."
+            ),
+            self._obs_widget_url(),
+        )
+
+        choose_card = tk.Frame(
+            body,
+            bg=palette["panel_alt"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        choose_card.grid(
+            row=2,
+            column=0,
+            columnspan=3,
+            sticky="nsew",
+            padx=self._ui_px(20),
+            pady=(self._ui_px(12), self._ui_px(18)),
+        )
+        tk.Label(
+            choose_card,
+            text=self._translate_ui_text("Pick exactly what appears"),
+            font=("Segoe UI", 12, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).pack(fill="x", padx=16, pady=(14, 4))
+        tk.Label(
+            choose_card,
+            text=(
+                "Open the dock and select Configure. Turn Hack, Creator, Exit "
+                "Counter, Deaths, Timers, RetroAchievements, Search & Play, "
+                "and Play Random Hack on or off. The random controls include "
+                "the same Rating, Difficulty, Type, Released, and Hall of Fame "
+                "filters as Game Library. Your choices are remembered by the dock."
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            justify="left",
+            anchor="nw",
+            wraplength=self._ui_px(850),
+        ).pack(fill="x", padx=16, pady=(0, 14))
+
+        actions = tk.Frame(dialog, bg=palette["window"])
+        actions.pack(
+            side="bottom",
+            fill="x",
+            padx=self._ui_px(20),
+            pady=(0, self._ui_px(18)),
+            before=body,
+        )
+
+        def close_dialog() -> None:
+            active = self.obs_widget_dialog
+            self.obs_widget_dialog = None
+            self.obs_widget_status_var = None
+            if active is not None:
+                try:
+                    active.destroy()
+                except tk.TclError:
+                    pass
+
+        def retry_server() -> None:
+            self._stop_obs_widget_server()
+            self._start_obs_widget_server()
+
+        self._make_action_button(
+            actions,
+            "Retry Server",
+            retry_server,
+            palette["panel_alt"],
+            STREAM_DESK["selected"],
+            width=15,
+            pad_y=8,
+        ).pack(side="left")
+        self._make_action_button(
+            actions,
+            "Open Widget Preview",
+            lambda: webbrowser.open(self._obs_widget_url()),
+            palette["panel_alt"],
+            STREAM_DESK["selected"],
+            width=20,
+            pad_y=8,
+        ).pack(side="left", padx=(8, 0))
+        self._make_action_button(
+            actions,
+            "Done",
+            close_dialog,
+            THEME["green"],
+            THEME["green_dark"],
+            width=12,
+            pad_y=8,
+        ).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self._apply_widget_appearance(
+            dialog,
+            dark=(self.appearance_var.get() == "dark"),
+        )
+        dialog.after_idle(dialog.focus_force)
+
     def _select_guided_obs_text_folder(self) -> Path | None:
         """Choose, create, save, and initialize the OBS text-file folder."""
         current_text = self.output_folder_var.get().strip()
@@ -92883,6 +94095,15 @@ class TrackerApp:
             palette["panel_alt"],
             STREAM_DESK["selected"],
             width=22,
+            pad_y=8,
+        ).pack(side="left", padx=(8, 0))
+        self._make_action_button(
+            actions,
+            "OBS Widget",
+            self.open_obs_widget_setup,
+            palette["panel_alt"],
+            STREAM_DESK["selected"],
+            width=15,
             pad_y=8,
         ).pack(side="left", padx=(8, 0))
         self._make_action_button(
@@ -93937,6 +95158,14 @@ class TrackerApp:
         else:
             self._size_dialog_for_ui(dialog, 820, 680, 680, 540)
         dialog.resizable(True, True)
+        dialog._update_download_in_progress = False
+        dialog._update_progress_var = tk.DoubleVar(master=dialog, value=0.0)
+        dialog._update_status_var = tk.StringVar(
+            master=dialog,
+            value=self._translate_ui_text(
+                "Ready to download the verified update."
+            ),
+        )
         self._add_dialog_window_controls(dialog, dialog, palette["window"])
         self._create_stream_desk_page_header(
             dialog,
@@ -93949,6 +95178,8 @@ class TrackerApp:
         )
 
         def close_dialog() -> None:
+            if bool(getattr(dialog, "_update_download_in_progress", False)):
+                return
             self.update_dialog = None
             try:
                 dialog.destroy()
@@ -93963,7 +95194,7 @@ class TrackerApp:
         )
         actions.pack(side="bottom", fill="x")
         if manifest is not None:
-            self._make_action_button(
+            download_button = self._make_action_button(
                 actions,
                 self._translate_ui_text("Download & Install"),
                 lambda: self._download_and_install_update(manifest, dialog),
@@ -93971,11 +95202,13 @@ class TrackerApp:
                 STREAM_DESK["green_dark"],
                 width=20,
                 pad_y=8,
-            ).pack(side="left")
+            )
+            download_button.pack(side="left")
+            dialog._update_download_button = download_button
             close_text = self._translate_ui_text("Later")
         else:
             close_text = self._translate_ui_text("Close")
-        self._make_action_button(
+        close_button = self._make_action_button(
             actions,
             close_text,
             close_dialog,
@@ -93983,7 +95216,9 @@ class TrackerApp:
             STREAM_DESK["selected"],
             width=12,
             pad_y=8,
-        ).pack(side="right")
+        )
+        close_button.pack(side="right")
+        dialog._update_close_button = close_button
 
         body = tk.Frame(
             dialog,
@@ -94109,6 +95344,40 @@ class TrackerApp:
             content.insert("1.0", str(notes))
             content.configure(state="disabled")
 
+            progress_frame = tk.Frame(
+                body,
+                bg=palette["panel"],
+                bd=0,
+            )
+            progress_frame.pack(
+                fill="x",
+                pady=(self._ui_px(12), 0),
+            )
+            tk.Label(
+                progress_frame,
+                textvariable=dialog._update_status_var,
+                font=("Segoe UI", 10, "bold"),
+                fg=palette["muted"],
+                bg=palette["panel"],
+                anchor="w",
+            ).pack(fill="x", pady=(0, self._ui_px(5)))
+            update_style = ttk.Style(dialog)
+            update_style.configure(
+                "Update.Horizontal.TProgressbar",
+                troughcolor=palette["entry"],
+                background=STREAM_DESK["green"],
+                bordercolor=palette["border"],
+                lightcolor=STREAM_DESK["green"],
+                darkcolor=STREAM_DESK["green_dark"],
+            )
+            ttk.Progressbar(
+                progress_frame,
+                variable=dialog._update_progress_var,
+                maximum=100.0,
+                mode="determinate",
+                style="Update.Horizontal.TProgressbar",
+            ).pack(fill="x")
+
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
 
     def _show_update_result(
@@ -94152,13 +95421,69 @@ class TrackerApp:
             manifest,
         )
 
+    def _set_update_download_ui(
+        self,
+        dialog: tk.Toplevel,
+        message: str,
+        *,
+        progress: float | None = None,
+        running: bool | None = None,
+    ) -> None:
+        try:
+            if not dialog.winfo_exists():
+                return
+            status_var = getattr(dialog, "_update_status_var", None)
+            if status_var is not None:
+                status_var.set(str(message))
+            progress_var = getattr(dialog, "_update_progress_var", None)
+            if progress is not None and progress_var is not None:
+                progress_var.set(max(0.0, min(100.0, float(progress))))
+            if running is not None:
+                dialog._update_download_in_progress = bool(running)
+                button_state = "disabled" if running else "normal"
+                download_button = getattr(
+                    dialog,
+                    "_update_download_button",
+                    None,
+                )
+                if download_button is not None:
+                    download_button.configure(state=button_state)
+                close_button = getattr(dialog, "_update_close_button", None)
+                if close_button is not None:
+                    close_button.configure(state=button_state)
+        except (AttributeError, tk.TclError, ValueError):
+            pass
+
     def _download_and_install_update(
         self,
         manifest: dict[str, Any],
         dialog: tk.Toplevel,
     ) -> None:
-        dialog.destroy()
+        if bool(getattr(dialog, "_update_download_in_progress", False)):
+            return
         self.status_var.set("Downloading and verifying the update package...")
+        self._set_update_download_ui(
+            dialog,
+            self._translate_ui_text(
+                "Downloading and verifying the update package..."
+            ),
+            progress=0.0,
+            running=True,
+        )
+
+        def show_progress(
+            message_key: str,
+            progress: float,
+            **format_values: object,
+        ) -> None:
+            def apply_progress() -> None:
+                self._set_update_download_ui(
+                    dialog,
+                    self._format_ui_text(message_key, **format_values),
+                    progress=progress,
+                )
+
+            self.root.after(0, apply_progress)
 
         def worker() -> None:
             updater_path: Path | None = None
@@ -94182,6 +95507,11 @@ class TrackerApp:
                     headers={"User-Agent": f"SMWStreamTracker/{APP_VERSION}"},
                 )
                 total = 0
+                try:
+                    expected_size = max(0, int(manifest.get("size", 0)))
+                except (TypeError, ValueError):
+                    expected_size = 0
+                last_percent = -1
                 with urlopen(request, timeout=45) as response, updater_path.open("wb") as output:
                     while True:
                         chunk = response.read(1024 * 1024)
@@ -94192,15 +95522,36 @@ class TrackerApp:
                             raise RuntimeError("The updater is larger than the 500 MB safety limit.")
                         digest.update(chunk)
                         output.write(chunk)
+                        if expected_size > 0:
+                            percent = min(99, int(total * 100 / expected_size))
+                            if percent != last_percent:
+                                last_percent = percent
+                                show_progress(
+                                    "Downloading update... {percent}%",
+                                    float(percent),
+                                    percent=percent,
+                                )
+                if expected_size > 0 and total != expected_size:
+                    raise RuntimeError(
+                        "The updater download size did not match the verified release."
+                    )
                 if digest.hexdigest().casefold() != str(manifest["sha256"]).casefold():
                     raise RuntimeError("The updater failed its SHA-256 integrity check and was deleted.")
 
+                show_progress(
+                    "Update verified. Creating a safety backup...",
+                    100.0,
+                )
                 backup = self._create_recovery_backup("before_update")
                 if backup is None:
                     raise RuntimeError("A safety backup could not be created, so the update was stopped.")
                 if IS_WINDOWS:
                     self._preserve_current_app_for_rollback()
-                self.root.after(0, lambda: self._launch_update_package(updater_path))
+                show_progress("Opening the Windows updater...", 100.0)
+                self.root.after(
+                    0,
+                    lambda: self._launch_update_package(updater_path, dialog),
+                )
             except Exception as error:
                 if updater_path is not None:
                     try:
@@ -94209,17 +95560,27 @@ class TrackerApp:
                         pass
                 append_error_log("Update installation failed", traceback.format_exc())
                 error_text = str(error)
-                self.root.after(
-                    0,
-                    lambda: messagebox.showerror(
+                def show_error() -> None:
+                    self._set_update_download_ui(
+                        dialog,
+                        error_text,
+                        progress=0.0,
+                        running=False,
+                    )
+                    messagebox.showerror(
                         "Update Stopped Safely",
                         error_text,
                         parent=self.root,
-                    ),
-                )
+                    )
+
+                self.root.after(0, show_error)
         threading.Thread(target=worker, daemon=True).start()
 
-    def _launch_update_package(self, updater_path: Path) -> None:
+    def _launch_update_package(
+        self,
+        updater_path: Path,
+        dialog: tk.Toplevel | None = None,
+    ) -> None:
         if IS_MACOS:
             try:
                 open_local_path(updater_path)
@@ -94230,6 +95591,11 @@ class TrackerApp:
                     parent=self.root,
                 )
                 return
+            if dialog is not None:
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    pass
             self._show_localized_info(
                 "Mac Update Ready",
                 (
@@ -94252,14 +95618,34 @@ class TrackerApp:
             if variable_name.startswith("_PYI_"):
                 updater_environment.pop(variable_name, None)
         updater_environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        updater_log_path = UPDATE_DOWNLOAD_DIR / (
+            updater_path.stem + ".log"
+        )
         try:
             subprocess.Popen(
-                [str(updater_path), "/SP-"],
+                [
+                    str(updater_path),
+                    "/SP-",
+                    f"/LOG={updater_log_path}",
+                ],
                 env=updater_environment,
             )
         except OSError as error:
+            if dialog is not None:
+                self._set_update_download_ui(
+                    dialog,
+                    str(error),
+                    progress=0.0,
+                    running=False,
+                )
             messagebox.showerror("Could Not Start Updater", str(error), parent=self.root)
             return
+        if dialog is not None:
+            self.update_dialog = None
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
         self.shutdown()
 
     def restore_previous_app_version(self) -> None:
@@ -99631,6 +101017,7 @@ class TrackerApp:
         except queue.Empty:
             pass
 
+        self._refresh_obs_widget_state()
         self.root.after(100, self.process_events)
 
     def hide_to_tray(self) -> None:
@@ -99686,6 +101073,7 @@ class TrackerApp:
         self._stop_feedback_webview_process()
         self._stop_smwcentral_home_feed_process()
         self._stop_smwcentral_webview_process()
+        self._stop_obs_widget_server()
 
         self.root.destroy()
 

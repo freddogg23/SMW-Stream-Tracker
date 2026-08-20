@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "2.0.1"
+#define AppVersion "2.0.2"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource
@@ -622,7 +622,7 @@ Name: "{group}\SMW Stream Tracker"; Filename: "{app}\{#AppExeName}"
 Name: "{group}\RetroArch"; Filename: "{sd}\RetroArch-Win64\retroarch.exe"; Check: ShouldInstallRetroArch
 Name: "{group}\{cm:GuideName}"; Filename: "{app}\README.txt"
 Name: "{group}\{cm:MarkdownGuideName}"; Filename: "{app}\README.md"
-Name: "{autodesktop}\SMW Stream Tracker"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\SMW Stream Tracker"; Filename: "{app}\{#AppExeName}"; Check: ShouldCreateDesktopShortcut
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; GroupDescription: "{cm:ShortcutGroup}"; Flags: unchecked
@@ -1687,6 +1687,13 @@ end;
 function ShouldInstallSNI: Boolean;
 begin
   Result := DependencyPage.Values[0];
+end;
+
+function ShouldCreateDesktopShortcut: Boolean;
+begin
+  { The themed checkbox is authoritative during interactive setup. Keep
+    /TASKS=desktopicon working for silent and managed installations too. }
+  Result := DesktopShortcutSelected or WizardIsTaskSelected('desktopicon');
 end;
 
 function ShouldInstallQUsb: Boolean;

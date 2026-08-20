@@ -228,12 +228,55 @@ class MisterSupportTests(unittest.TestCase):
             build_script,
         )
 
-    def test_normal_windows_build_contains_virtual_state_support(self):
+    def test_normal_windows_build_excludes_known_bad_virtual_state_binary(self):
         build_spec = (MODULE_PATH.parent / "SMWStreamTracker.spec").read_text(
             encoding="utf-8-sig"
         )
-        self.assertIn("MiSTer-SMW-Virtual-States", build_spec)
-        self.assertIn("mister_experimental", build_spec)
+        self.assertNotIn("MiSTer-SMW-Virtual-States", build_spec)
+        self.assertNotIn("mister_experimental", build_spec)
+
+    def test_windows_build_refuses_to_package_without_paramiko(self):
+        build_spec = (MODULE_PATH.parent / "SMWStreamTracker.spec").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("import paramiko", build_spec)
+        self.assertIn("Paramiko is incomplete", build_spec)
+        self.assertIn("cannot be packaged without working MiSTer SSH", build_spec)
+
+    def test_missing_paramiko_never_masks_the_real_setup_error(self):
+        discovery_source = inspect.getsource(
+            self.tracker.TrackerApp._discover_mister_host
+        )
+        self.assertNotIn(
+            "except paramiko.AuthenticationException",
+            discovery_source,
+        )
+        self.assertIn("paramiko is not None", discovery_source)
+
+    def test_mister_launch_blocks_the_known_bad_experimental_main(self):
+        launch_source = inspect.getsource(
+            self.tracker.TrackerApp._run_mister_game_launch
+        )
+        self.assertIn('"/media/fat/MiSTer"', launch_source)
+        self.assertIn(
+            "current_main_sha256 == MISTER_VIRTUAL_STATES_BINARY_SHA256",
+            launch_source,
+        )
+        self.assertIn("can corrupt HDMI output", launch_source)
+        self.assertLess(
+            launch_source.index("current_main_sha256"),
+            launch_source.index("mister_mgl_text("),
+        )
+
+    def test_packaged_startup_check_requires_complete_mister_ssh_support(self):
+        startup_check_source = inspect.getsource(
+            self.tracker._run_tk_startup_check
+        )
+        self.assertIn("paramiko is None", startup_check_source)
+        self.assertIn('"AuthenticationException"', startup_check_source)
+        self.assertIn('"SSHClient"', startup_check_source)
+        self.assertIn('"SSHException"', startup_check_source)
+        self.assertIn("return 22", startup_check_source)
 
     def test_tracker_update_can_replace_only_its_own_mister_build(self):
         original_hash = "1" * 64
@@ -483,10 +526,12 @@ class MisterSupportTests(unittest.TestCase):
                         row[column],
                     )
 
-    def test_normal_mister_setup_installs_states_without_experimental_button(self):
+    def test_normal_mister_setup_disables_the_known_bad_virtual_states(self):
         setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
-        self.assertEqual(setup_source.count("self._install_mister_virtual_states("), 2)
-        self.assertIn("Install Virtual Save State Slots", setup_source)
+        self.assertEqual(setup_source.count("self._install_mister_virtual_states("), 0)
+        self.assertNotIn("Install Virtual Save State Slots", setup_source)
+        self.assertIn("Virtual Save States Disabled", setup_source)
+        self.assertIn("can corrupt HDMI output", setup_source)
         self.assertIn("Find & Set Up MiSTer", setup_source)
         self.assertNotIn("Install Experimental States", setup_source)
         self.assertNotIn("install_experimental_button", setup_source)

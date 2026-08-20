@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 2.0.1**
+**Version 2.0.2**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -9,6 +9,27 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
+
+## What’s new in v2.0.2
+
+- Adds an authenticated **OBS companion dock** that communicates directly
+  with the running tracker over a local WebSocket and receives its own unique,
+  persistent dock URL on every Windows installation.
+- Lets users choose which dock cards are visible and optionally enable
+  **Search & Play** and **Play Random Hack**, with the tracker’s rating,
+  difficulty, type, release, and Hall of Fame filters built into Configure.
+- Repairs **Download and Install**, restores the Settings update badge, and
+  makes the first-install desktop-shortcut option create the shortcut reliably.
+- Packages complete MiSTer SSH support in the Windows EXE and prevents missing
+  Paramiko dependencies from producing broken setup dialogs or releases.
+- Removes the unstable experimental MiSTer Main from automatic setup and the
+  Windows package, blocks launches through that known-bad build, and preserves
+  the verified **Restore Previous MiSTer Version** recovery path.
+- Keeps the Overview stable and better filled, while preserving the fitted
+  Stream Desk setup and OBS pages delivered in v2.0.1.
+
+This is a Windows-only release. No macOS artifacts are published because the
+macOS build has not been tested.
 
 ## What’s new in v2.0.1
 

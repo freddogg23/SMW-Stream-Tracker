@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SMW Stream Tracker Widget</title>
+  <link rel="stylesheet" href="/obs-widget/widget.css">
+</head>
+<body>
+  <main class="widget-shell" aria-live="polite">
+    <header class="widget-header">
+      <div class="brand-mark" aria-hidden="true">★</div>
+      <div class="brand-copy">
+        <p class="eyebrow">SMW STREAM TRACKER</p>
+        <h1>Live Companion</h1>
+      </div>
+      <div class="header-actions">
+        <span class="connection" id="connectionState">
+          <span class="connection-dot"></span>
+          <span id="connectionText">Connecting</span>
+        </span>
+        <button class="settings-button" id="settingsButton" type="button" aria-expanded="false" aria-controls="settingsPanel">
+          <span aria-hidden="true">☰</span>
+          Configure
+        </button>
+      </div>
+    </header>
+
+    <section class="settings-panel" id="settingsPanel" hidden>
+      <div>
+        <p class="eyebrow">WIDGET CONTENT</p>
+        <h2>Choose what to display</h2>
+        <p class="settings-note">Changes are instant and remembered by OBS on this computer.</p>
+      </div>
+      <div class="field-picker" id="fieldPicker">
+        <label><input type="checkbox" value="hack"> <span>Hack</span></label>
+        <label><input type="checkbox" value="creator"> <span>Creator</span></label>
+        <label><input type="checkbox" value="exits"> <span>Exit Counter</span></label>
+        <label><input type="checkbox" value="deaths"> <span>Deaths</span></label>
+        <label><input type="checkbox" value="timer"> <span>Timers</span></label>
+        <label><input type="checkbox" value="achievements"> <span>Achievements</span></label>
+      </div>
+      <div class="settings-subsection">
+        <p class="eyebrow">DOCK CONTROLS</p>
+        <h3>Choose which launch buttons appear</h3>
+      </div>
+      <div class="field-picker control-picker" id="controlPicker">
+        <label><input id="searchControlToggle" type="checkbox" value="search"> <span>Search &amp; Play</span></label>
+        <label><input id="randomControlToggle" type="checkbox" value="random"> <span>Play Random Hack</span></label>
+      </div>
+      <div class="random-filter-settings" id="randomFilterSettings">
+        <div class="filter-heading">
+          <div>
+            <p class="eyebrow">RANDOM HACK FILTERS</p>
+            <h3>Use the same filters as Game Library</h3>
+          </div>
+          <button id="resetFiltersButton" type="button">Reset</button>
+        </div>
+        <div class="filter-grid">
+          <label>Rating<select id="ratingFilter" data-random-filter="rating"><option>Any</option></select></label>
+          <label>Difficulty<select id="difficultyFilter" data-random-filter="difficulty"><option>Any</option></select></label>
+          <label>Type<select id="typeFilter" data-random-filter="type"><option>Any</option></select></label>
+          <label>Released<select id="releasedFilter" data-random-filter="released"><option>Any</option></select></label>
+          <label>Hall of Fame<select id="hallOfFameFilter" data-random-filter="hall_of_fame"><option>Any</option></select></label>
+        </div>
+      </div>
+      <div class="picker-actions">
+        <button id="selectAllButton" type="button">Show all</button>
+        <button id="clearButton" type="button">Clear</button>
+        <button class="done-button" id="doneButton" type="button">Done</button>
+      </div>
+    </section>
+
+    <section class="dock-controls" id="dockControls">
+      <article class="dock-control-card search-control" id="searchControl">
+        <div class="control-heading">
+          <div>
+            <p class="eyebrow">HACK LIBRARY</p>
+            <h2>Search &amp; Play</h2>
+          </div>
+          <span class="mini-icon blue" aria-hidden="true">⌕</span>
+        </div>
+        <form class="search-form" id="hackSearchForm">
+          <label class="sr-only" for="hackSearchInput">Search downloaded hacks</label>
+          <input id="hackSearchInput" type="search" maxlength="120" autocomplete="off" placeholder="Title, creator, tag, difficulty…">
+          <button class="primary-control-button" id="hackSearchButton" type="submit">Search</button>
+        </form>
+        <p class="control-note">Searches hacks that are downloaded and ready on your selected platform.</p>
+        <div class="search-results" id="searchResults" hidden></div>
+      </article>
+
+      <article class="dock-control-card random-control" id="randomControl">
+        <div class="control-heading">
+          <div>
+            <p class="eyebrow">SURPRISE ME</p>
+            <h2>Random Hack</h2>
+          </div>
+          <span class="mini-icon" aria-hidden="true">⚄</span>
+        </div>
+        <p class="filter-summary" id="filterSummary">Any rating · Any difficulty · Any type · Any release · Any Hall of Fame status</p>
+        <button class="primary-control-button random-button" id="playRandomButton" type="button">Play Random Hack</button>
+      </article>
+    </section>
+
+    <div class="command-status" id="commandStatus" role="status" hidden></div>
+
+    <section class="empty-selection" id="emptySelection" hidden>
+      <span aria-hidden="true">✦</span>
+      <h2>Nothing selected</h2>
+      <p>Select Configure and choose tracker details or dock controls to show.</p>
+    </section>
+
+    <section class="card-grid" id="cardGrid">
+      <article class="data-card hero-card" data-field="hack">
+        <div class="card-icon" aria-hidden="true">★</div>
+        <div class="card-content">
+          <p class="card-label">Current Hack</p>
+          <h2 id="hackValue">No game detected</h2>
+        </div>
+      </article>
+
+      <article class="data-card" data-field="creator">
+        <div class="card-topline">
+          <p class="card-label">Creator</p>
+          <span class="mini-icon" aria-hidden="true">✎</span>
+        </div>
+        <p class="primary-value" id="creatorValue">Unknown</p>
+      </article>
+
+      <article class="data-card" data-field="exits">
+        <div class="card-topline">
+          <p class="card-label">Exit Counter</p>
+          <span class="mini-icon blue" aria-hidden="true">◆</span>
+        </div>
+        <p class="primary-value" id="exitsValue">0 / Unknown</p>
+        <div class="progress-track" role="progressbar" id="exitProgress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span id="exitProgressFill"></span>
+        </div>
+      </article>
+
+      <article class="data-card" data-field="deaths">
+        <div class="card-topline">
+          <p class="card-label">Deaths</p>
+          <span class="mini-icon red" aria-hidden="true">×</span>
+        </div>
+        <div class="split-values">
+          <div><strong id="gameDeathsValue">0</strong><span>Game</span></div>
+          <div><strong id="levelDeathsValue">0</strong><span>Level</span></div>
+        </div>
+      </article>
+
+      <article class="data-card" data-field="timer">
+        <div class="card-topline">
+          <p class="card-label">Timers</p>
+          <span class="mini-icon green" aria-hidden="true">◷</span>
+        </div>
+        <div class="split-values timer-values">
+          <div><strong id="gameTimerValue">00:00</strong><span>Game</span></div>
+          <div><strong id="levelTimerValue">00:00</strong><span>Level</span></div>
+        </div>
+      </article>
+
+      <article class="data-card achievements-card" data-field="achievements">
+        <div class="achievement-heading">
+          <div>
+            <p class="card-label">RetroAchievements</p>
+            <h2 id="achievementGame">Waiting for a supported game</h2>
+          </div>
+          <span class="hardcore-pill" id="hardcorePill" hidden>Hardcore</span>
+        </div>
+        <div id="achievementReady" hidden>
+          <div class="achievement-progress-row">
+            <strong id="achievementProgressText">0 / 0</strong>
+            <span id="achievementPercent">0%</span>
+          </div>
+          <div class="progress-track achievement-track" role="progressbar" id="achievementProgress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span id="achievementProgressFill"></span>
+          </div>
+          <div class="next-achievement" id="nextAchievement" hidden></div>
+          <div class="recent-heading" id="recentHeading" hidden>
+            <span>Recent unlocks</span>
+            <span class="recent-rule"></span>
+          </div>
+          <div class="recent-achievements" id="recentAchievements"></div>
+        </div>
+        <p class="achievement-message" id="achievementMessage">Set up RetroAchievements in the tracker to show progress and badges.</p>
+      </article>
+    </section>
+
+    <footer>
+      <span>Updates live from the desktop tracker</span>
+      <span id="lastUpdate">Waiting for data…</span>
+    </footer>
+  </main>
+  <script src="/obs-widget/widget.js" defer></script>
+</body>
+</html>

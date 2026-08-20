@@ -119,6 +119,10 @@ class StatsOverviewLayoutTests(unittest.TestCase):
         self.assertIn('tr("Planned")', method_source)
         self.assertIn("Image.LANCZOS", method_source)
         self.assertIn('"pie_canvas": pie_canvas', method_source)
+        self.assertIn("self._ui_px(230)", method_source)
+        self.assertIn("group_width = (", method_source)
+        self.assertIn('font=("Segoe UI", 23, "bold")', method_source)
+        self.assertIn('font=("Segoe UI", 10)', method_source)
 
     def test_stream_desk_overview_reflows_for_the_available_width(self):
         method_source = ast.get_source_segment(self.source, self.stream_method)
