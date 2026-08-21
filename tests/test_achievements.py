@@ -191,9 +191,28 @@ class AchievementTests(unittest.TestCase):
         )
         self.assertIn("render_retroachievements_overview", overview_source)
         self.assertIn("_retroachievements_badge_photo", overview_source)
+        self.assertIn("toggle_overview_achievements", overview_source)
+        self.assertIn("render_overview_achievement_list", overview_source)
+        self.assertIn("overview_achievement_expanded_shell", overview_source)
+        self.assertIn('summary.get("items", [])', overview_source)
+        self.assertIn('item.get("description")', overview_source)
+        self.assertIn('item.get("points", 0)', overview_source)
+        self.assertIn(
+            "command=overview_achievement_list_canvas.yview",
+            overview_source,
+        )
+        self.assertIn('"<Button-1>"', overview_source)
         self.assertIn("update_selected_achievements", library_source)
         self.assertIn("_retroachievements_game_id", library_source)
         self.assertIn("_start_retroachievements_progress_refresh", library_source)
+        self.assertIn("toggle_selected_achievements", library_source)
+        self.assertIn("render_selected_achievement_list", library_source)
+        self.assertIn("selected_achievement_expanded_shell", library_source)
+        self.assertIn('summary.get("items", [])', library_source)
+        self.assertIn('item.get("description")', library_source)
+        self.assertIn('item.get("points", 0)', library_source)
+        self.assertIn('command=selected_achievement_list_canvas.yview', library_source)
+        self.assertIn('"<Button-1>"', library_source)
         self.assertIn("RetroAchievements Web API Key", setup_source)
         self.assertNotIn("One-Hour Run", library_source)
 

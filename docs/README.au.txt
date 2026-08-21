@@ -65,7 +65,7 @@ WHAT'S NEW IN VERSION 1.1.0, MATE
 * MiSTer FPGA is now a proper playable platform, mate. One-click setup sniffs
   it out on your local network, sorts remote launching and live tracking, and
   works with both standard MiSTer and MiSTer Multisystem² gear. Too easy.
-* Game Modes now serves up Play Random Hack, Hack Draft, Difficulty Ladder,
+* Game Modes now serves up Play Random Hack, Hack Draft, Difficulty Vine,
   Creator Spotlight, Time Capsule, and Hall of Fame Tour, each with a blue
   window and a handy hover yarn explaining what it does.
 * Spreadsheet Settings can smart-import Excel files, Google Sheets syncs both

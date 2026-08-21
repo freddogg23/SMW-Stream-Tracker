@@ -149,9 +149,14 @@ class StatsOverviewLayoutTests(unittest.TestCase):
         self.assertIn('vertical_mode == "ultra"', method_source)
         self.assertIn("else 2", method_source)
         self.assertNotIn("def resize_overview_body", method_source)
-        self.assertNotIn("scroll_overview", method_source)
+        self.assertNotIn("scroll_overview_page", method_source)
+        self.assertIn("scroll_overview_achievement_list", method_source)
         self.assertNotIn("body_scrollbar", method_source)
-        self.assertNotIn('"<MouseWheel>"', method_source)
+        page_layout_source = method_source[
+            : method_source.index("overview_achievement_expanded_shell =")
+        ]
+        self.assertNotIn('"<MouseWheel>"', page_layout_source)
+        self.assertIn('"<MouseWheel>"', method_source)
         self.assertIn("available_height", method_source)
         self.assertIn(
             "available_width, available_height = overview_viewport_size()",
@@ -178,12 +183,17 @@ class StatsOverviewLayoutTests(unittest.TestCase):
 
     def test_stream_desk_overview_never_requires_vertical_scrolling(self):
         method_source = ast.get_source_segment(self.source, self.stream_method)
-        self.assertNotIn("YellowCanvasScrollbar", method_source)
-        self.assertNotIn("tk.Canvas(\n            body_host", method_source)
-        self.assertNotIn("yscrollcommand", method_source)
-        self.assertNotIn("yview_scroll", method_source)
-        self.assertNotIn("scrollregion", method_source)
-        self.assertNotIn("yview_moveto", method_source)
+        page_layout_source = method_source[
+            : method_source.index("overview_achievement_expanded_shell =")
+        ]
+        self.assertNotIn("YellowCanvasScrollbar", page_layout_source)
+        self.assertNotIn("tk.Canvas(\n            body_host", page_layout_source)
+        self.assertNotIn("yscrollcommand", page_layout_source)
+        self.assertNotIn("yview_scroll", page_layout_source)
+        self.assertNotIn("scrollregion", page_layout_source)
+        self.assertNotIn("yview_moveto", page_layout_source)
+        self.assertIn("YellowCanvasScrollbar", method_source)
+        self.assertIn("overview_achievement_list_canvas", method_source)
         self.assertIn(
             'show_in_app_banner = page_key != "overview"',
             self.source,

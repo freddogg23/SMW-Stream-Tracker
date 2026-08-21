@@ -1,5 +1,5 @@
 #define AppName "SMW Stream Tracker"
-#define AppVersion "2.0.2"
+#define AppVersion "2.0.3"
 #define AppPublisher "FredDOGG23"
 #define AppExeName "SMWStreamTracker.exe"
 #ifndef AppExeSource

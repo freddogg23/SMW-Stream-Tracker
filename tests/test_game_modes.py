@@ -36,7 +36,7 @@ class GameModesTests(unittest.TestCase):
         expected_modes = {
             "Play Random Hack": "self._play_random_main_hack",
             "Hack Draft": "self._open_hack_draft",
-            "Difficulty Ladder": "self._open_difficulty_ladder",
+            "Difficulty Vine": "self._open_difficulty_ladder",
             "Creator Spotlight": "self._open_creator_spotlight",
             "Time Capsule": "self._open_time_capsule",
             "Hall of Fame Tour": "self._open_hall_of_fame_tour",
@@ -204,7 +204,7 @@ class GameModesTests(unittest.TestCase):
         )
         launch_new_mode = mock.Mock()
 
-        app._request_game_mode_start("Difficulty Ladder", launch_new_mode)
+        app._request_game_mode_start("Difficulty Vine", launch_new_mode)
 
         app._ask_localized_yes_no.assert_called_once()
         self.assertEqual(app.active_game_mode_name, "")
@@ -257,7 +257,7 @@ class GameModesTests(unittest.TestCase):
             "Mario Kaizo Challenge",
             "Play Random Hack",
             "Hack Draft",
-            "Difficulty Ladder",
+            "Difficulty Vine",
             "Creator Spotlight",
             "Time Capsule",
             "Hall of Fame Tour",
@@ -267,16 +267,32 @@ class GameModesTests(unittest.TestCase):
         self.assertEqual(
             self.tracker.GAME_MODE_ICON_KEYS,
             {
-                "hot_potato": "hot_potato",
-                "mario_kaizo_challenge": "mario_hat",
-                "play_random_hack": "random",
-                "hack_draft": "hack_draft",
-                "difficulty_ladder": "ladder",
-                "creator_spotlight": "spotlight",
-                "time_capsule": "time_attack",
-                "hall_of_fame_tour": "first_place_medal",
+                "hot_potato": "game_mode_hot_potato",
+                "mario_kaizo_challenge": "game_mode_mario_kaizo_challenge",
+                "play_random_hack": "game_mode_play_random_hack",
+                "hack_draft": "game_mode_hack_draft",
+                "difficulty_ladder": "game_mode_difficulty_vine",
+                "creator_spotlight": "game_mode_creator_spotlight",
+                "time_capsule": "game_mode_time_capsule",
+                "hall_of_fame_tour": "game_mode_hall_of_fame_tour",
             },
         )
+        self.assertEqual(
+            set(self.tracker.GAME_MODE_ICON_IMAGE_FILES),
+            set(self.tracker.GAME_MODE_ICON_KEYS.values()),
+        )
+        asset_directory = MODULE_PATH.parent / "game_mode_assets"
+        for filename in self.tracker.GAME_MODE_ICON_IMAGE_FILES.values():
+            with self.subTest(filename=filename):
+                asset_path = asset_directory / filename
+                self.assertTrue(asset_path.is_file())
+                with self.tracker.Image.open(asset_path) as image:
+                    self.assertEqual(image.mode, "RGBA")
+                    self.assertIsNotNone(image.getchannel("A").getbbox())
+        spec_source = (MODULE_PATH.parent / "SMWStreamTracker.spec").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("('game_mode_assets', 'game_mode_assets')", spec_source)
 
         builder_source = inspect.getsource(
             self.tracker.TrackerApp._build_stream_desk_game_modes
@@ -284,6 +300,43 @@ class GameModesTests(unittest.TestCase):
         self.assertIn("_draw_stream_desk_icon", builder_source)
         self.assertIn("mode_icon_canvases", builder_source)
         self.assertIn("symbol_var.get()", builder_source)
+
+    def test_smwcentral_sidebar_icon_removes_only_the_connected_backdrop(self):
+        asset_path = MODULE_PATH.parent / "app_assets" / "smwcentral_logo.png"
+        with self.tracker.Image.open(asset_path) as source:
+            source_rgb = source.convert("RGB")
+            pixel_count = source.width * source.height
+            extracted = self.tracker.remove_connected_edge_image_background(source)
+
+        self.assertEqual(extracted.mode, "RGBA")
+        self.assertEqual(extracted.getpixel((0, 0))[3], 0)
+        self.assertGreater(
+            extracted.getchannel("A").histogram()[0],
+            round(pixel_count * 0.70),
+        )
+        self.assertEqual(source_rgb.tobytes(), extracted.convert("RGB").tobytes())
+        self.assertIsNotNone(extracted.getchannel("A").getbbox())
+
+        renderer_source = inspect.getsource(
+            self.tracker.TrackerApp._draw_stream_desk_icon
+        )
+        self.assertIn("remove_connected_edge_image_background", renderer_source)
+        self.assertIn("_smwcentral_logo_source_image", renderer_source)
+        self.assertIn("Image.Resampling.NEAREST", renderer_source)
+        self.assertIn("logo_target = max(1, round(44 * unit))", renderer_source)
+        self.assertIn("logo_target / max(1, logo_image.width)", renderer_source)
+        self.assertIn("logo_image = logo_image.resize", renderer_source)
+        self.assertNotIn("smwc_letters", renderer_source)
+
+    def test_obs_logo_asset_has_a_transparent_background(self):
+        asset_path = MODULE_PATH.parent / "app_assets" / "obs_logo.png"
+        self.assertTrue(asset_path.is_file())
+        self.assertIsNotNone(self.tracker.Image)
+        with self.tracker.Image.open(asset_path) as image:
+            rgba = image.convert("RGBA")
+        self.assertEqual(rgba.getpixel((0, 0))[3], 0)
+        center = (rgba.width // 2, rgba.height // 2)
+        self.assertEqual(rgba.getpixel(center)[3], 255)
 
     def test_active_game_modes_layout_is_large_and_responsive(self):
         source = inspect.getsource(
@@ -339,7 +392,7 @@ class GameModesTests(unittest.TestCase):
         self.assertIn("page_width < self._ui_px(900)", source)
         self.assertIn("copy_wraplength", source)
 
-    def test_game_mode_popups_use_line_icons_without_gif_assets(self):
+    def test_game_mode_popups_use_bundled_image_icons_without_gif_assets(self):
         shell_source = inspect.getsource(
             self.tracker.TrackerApp._game_mode_dialog_shell
         )
@@ -349,6 +402,7 @@ class GameModesTests(unittest.TestCase):
 
         self.assertFalse(hasattr(self.tracker, "GAME_MODE_GIF_FILES"))
         self.assertIn("GAME_MODE_ICON_KEYS", shell_source)
+        self.assertTrue(hasattr(self.tracker, "GAME_MODE_ICON_IMAGE_FILES"))
         self.assertIn("_draw_stream_desk_icon", shell_source)
         self.assertNotIn("_create_game_mode_stage", shell_source)
         self.assertNotIn("_create_game_mode_stage", random_source)
@@ -481,11 +535,11 @@ class GameModesTests(unittest.TestCase):
         self.assertIn("_create_game_mode_stage", menu_source)
         self.assertIn("symbol_panel.grid", menu_source)
 
-    def test_game_mode_animation_assets_are_not_packaged(self):
+    def test_game_mode_artwork_is_packaged_with_the_windows_app(self):
         spec_text = (MODULE_PATH.parent / "SMWStreamTracker.spec").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn(
+        self.assertIn(
             "('game_mode_assets', 'game_mode_assets')",
             spec_text,
         )
@@ -535,7 +589,7 @@ class GameModesTests(unittest.TestCase):
             "Select a mode on the left to preview its rules, then start it when you are ready.",
             "Game modes only use downloaded and patched hacks that are ready on your selected platform. Selecting a mode does not launch anything until you press Start Mode.",
             "Hack Draft",
-            "Difficulty Ladder",
+            "Difficulty Vine",
             "Creator Spotlight",
             "Time Capsule",
             "Hall of Fame Tour",

@@ -1,10 +1,19 @@
-Release 2.0.2
+Release 2.0.3
 
-* Adds an authenticated local-WebSocket OBS companion dock with a unique persistent URL for every Windows installation.
-* Adds configurable Hack, Creator, Exit Counter, Deaths, Timers, and RetroAchievements cards without requiring an OBS Browser Source.
-* Adds optional Search & Play and Play Random Hack dock controls with rating, difficulty, type, release, and Hall of Fame filters.
-* Repairs Download and Install, the Settings update badge, and desktop-shortcut creation during the initial Windows install.
-* Packages complete Paramiko and cryptography support so MiSTer setup works in the released Windows EXE.
-* Removes the unstable experimental MiSTer Main from setup and release packages, blocks launches through that known-bad build, and keeps the verified restore path available.
-* Improves Overview sizing and stability while preserving the fitted Stream Desk setup and OBS pages.
-* Publishes Windows downloads only; macOS remains untested and is not included in this release.
+* Adds direct Streamer.bot WebSocket integration with a new Settings submenu above OBS, server testing, enabled-action loading, optional password authentication, and per-event action mappings.
+* Sends confirmed game launch, death, exit, level completion, achievement unlock, game-timer, hack-completion, and tracker-connection events without delaying live game polling.
+* Replaces the generic Settings symbols with colored Super Nintendo console, Windows file, NVMe, Streamer.bot, OBS, stopwatch, open-book, and notification-bell artwork.
+* Gives the main sidebar full-color artwork, uses the colored Super Famicom controller for Game Modes, and enlarges the supplied blue SMW Central storefront to match the other sidebar symbols with a transparent background and no unrelated Banzai Bill or lettering.
+* Shows a reliable in-app name box beside the pointer when any icon-only main sidebar item is hovered.
+* Gives all eight Game Modes dedicated color artwork and renames Difficulty Ladder to Difficulty Vine without breaking existing saved sessions.
+* Stabilizes RA-SNES/SNI live-memory samples before they reach the dashboard, preventing random deaths, temporary zero or inflated exits, save-slot timer jumps, and timeline movement caused by one inconsistent bridge reading.
+* Excludes SMW's pipe, door, and scripted-entrance actions from the retry-only death fallback, including transitions that return to the same room number.
+* Replaces the redundant dashboard Game Modes button with Finish Game Timer, positioned between Add to My Tracker and the far-right Complete Hack action.
+* Makes the Game Library RetroAchievements summary expandable into a scrollable list of every badge, requirement, point value, unlock state, and earned date for the selected game.
+* Makes the Overview RetroAchievements card expandable too, filling the Overview chart area with the same complete, scrollable achievement list and restoring the dashboard cards when collapsed.
+* Updates the live death counter before slower progress and OBS-file persistence work, reducing visible delay after a confirmed death.
+* Keeps the dashboard exit denominator numeric by retaining the selected library game's known total when an RA-compatible core or MiSTer reports the ROM path differently.
+* Centers MiSTer's native RetroAchievements popups and keeps descriptions on one line to prevent HDMI cropping in the visible 4:3 SNES area.
+* Hides MiSTer's persistent live leaderboard tracker during gameplay while preserving the final submitted-score popup.
+* Refreshes the Windows documentation with new Dashboard, Settings, and expanded RetroAchievements screenshots, replacing the older interface captures.
+* Publishes a Windows updater only; macOS remains untested and is not included in this release.

@@ -1,5 +1,13 @@
 # Game Mode Sprite Animations
 
+## Game Mode Menu Icons
+
+The eight transparent PNG menu icons were created with OpenAI ImageGen for
+this project from the tester-supplied visual directions. They cover Hot Potato,
+Mario Kaizo Challenge, Play Random Hack, Hack Draft, Difficulty Vine, Creator
+Spotlight, Time Capsule, and Hall of Fame Tour. The Mario likeness remains the
+property of Nintendo; the other icons are original UI artwork.
+
 These small Super Mario World sprite GIFs are displayed in the Game Modes UI.
 They were downloaded from the Super Mario Wiki file pages listed below. The
 wiki identifies each one as a fair-use game sprite; the underlying characters

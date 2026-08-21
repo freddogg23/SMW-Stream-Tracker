@@ -48,6 +48,19 @@ class DashboardGameActionTests(unittest.TestCase):
         self.assertIn("self._open_current_game_in_library", dashboard)
         self.assertIn("self.current_hack_record", current_game)
 
+    def test_current_run_actions_finish_timer_before_completing_hack(self):
+        dashboard = self.method_source("_build_stream_desk_dashboard")
+        add_position = dashboard.index('text="Add to My Tracker"')
+        finish_position = dashboard.index('text="Finish Game Timer"')
+        complete_position = dashboard.index('else "Complete Hack"')
+
+        self.assertLess(add_position, finish_position)
+        self.assertLess(finish_position, complete_position)
+        self.assertIn("command=self.finish_game_timer", dashboard)
+        self.assertNotIn('text="Game Modes"', dashboard)
+        self.assertIn("run_action_buttons[2]", dashboard)
+        self.assertIn('uniform="dashboard_run_actions"', dashboard)
+
     def test_mister_login_uses_the_stream_desk_card_treatment(self):
         login = self.method_source("_prompt_mister_password")
         self.assertIn('STREAM_DESK["surface_deep"]', login)

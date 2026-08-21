@@ -435,6 +435,7 @@ class InAppNavigationTests(unittest.TestCase):
             "Platform",
             "File Locations",
             "Storage",
+            "Streamer.bot",
             "OBS",
             "Timers",
             "About & Updates",
@@ -466,15 +467,25 @@ class InAppNavigationTests(unittest.TestCase):
             '("General", "Connections", "Files & folders", "Timers", "Language")',
             source,
         )
-        self.assertIn('"Storage": "storage"', source)
-        self.assertIn('"File Locations": "file_locations"', source)
+        self.assertIn('"Platform": "super_nintendo_console"', source)
+        self.assertIn('"Storage": "nvme"', source)
+        self.assertIn('"File Locations": "windows_file"', source)
+        self.assertIn('"Streamer.bot": "streamerbot"', source)
         self.assertIn('"OBS": "obs"', source)
-        self.assertIn('"Timers": "timer"', source)
+        self.assertIn('"Timers": "stopwatch"', source)
         self.assertIn('"About & Updates": "bell"', source)
         self.assertIn('"Help": "open_book"', source)
+        self.assertNotIn("self._bind_pointer_tooltip(section_row, section_name)", source)
+        self.assertNotIn("self._bind_pointer_tooltip(section, section_name)", source)
+        self.assertNotIn("self._bind_pointer_tooltip(section_icon, section_name)", source)
+        self.assertNotIn("self._bind_pointer_tooltip(update_badge, section_name)", source)
         self.assertNotIn('settings_panels["Language"]', source)
         self.assertNotIn('settings_panels["SMW Central"]', source)
         self.assertIn('build_action_settings_page(\n            "Storage"', source)
+        self.assertLess(
+            sidebar_source.index('"Streamer.bot"'),
+            sidebar_source.index('"OBS"'),
+        )
         self.assertNotIn('build_action_settings_page(\n            "Stats"', source)
         self.assertNotIn('("Overview…", self.open_stats_overview)', source)
         self.assertNotIn('("My Tracker…", self.open_my_tracker)', source)
@@ -527,7 +538,7 @@ class InAppNavigationTests(unittest.TestCase):
             with self.subTest(caption=caption):
                 self.assertIn(caption, source)
         self.assertIn('platform_box.bind("<<ComboboxSelected>>"', source)
-        self.assertIn('"controller"', source)
+        self.assertIn('"super_nintendo_console"', source)
         self.assertIn("apply_settings_responsive_layout", source)
         self.assertIn("capture_settings_font_baselines", source)
         self.assertIn('tier = "wide"', source)
@@ -566,15 +577,23 @@ class InAppNavigationTests(unittest.TestCase):
     def test_stream_desk_icon_renderer_includes_platform_controller(self):
         method = self.methods["_draw_stream_desk_icon"]
         source = ast.get_source_segment(self.source, method)
+        self.assertIn('key == "super_nintendo_console"', source)
+        self.assertIn('key == "super_famicom_controller"', source)
+        self.assertIn('key in {"windows_file", "file_locations"}', source)
+        self.assertIn('key in {"nvme", "storage"}', source)
         self.assertIn('{"controller", "platform"}', source)
-        self.assertIn('{"database", "storage"}', source)
-        self.assertIn('{"file_locations", "folder"}', source)
         self.assertIn('key == "obs"', source)
+        self.assertIn('"obs_logo.png"', source)
+        self.assertIn('self._obs_logo_source_image', source)
         self.assertIn('{"timer", "stopwatch"}', source)
         self.assertIn('{"language", "translate"}', source)
         self.assertIn('{"updates", "bell"}', source)
         self.assertIn('{"help", "open_book", "book"}', source)
         self.assertIn('{"smw_central", "smwcentral", "storefront"}', source)
+        self.assertIn('"smwcentral_logo.png"', source)
+        self.assertIn("round(44 * unit)", source)
+        self.assertNotIn("smwc_letters", source)
+        self.assertIn("Image.Resampling.NEAREST", source)
         self.assertIn("splinesteps=24", source)
 
     def test_settings_responsive_redraw_preserves_each_section_icon(self):
@@ -994,13 +1013,14 @@ class InAppNavigationTests(unittest.TestCase):
                 ("overview", "overview", "Overview"),
                 ("tracker", "tracker", "My Tracker"),
                 ("library", "library", "Game Library"),
-                ("modes", "controller", "Game Modes"),
+                ("modes", "super_famicom_controller", "Game Modes"),
                 ("smwcentral", "smw_central", "SMW Central"),
                 ("language", "language", "Language"),
                 ("settings", "settings", "Settings"),
             ),
         )
         self.assertNotIn('text="★"', build_rail)
+        self.assertIn("self._bind_pointer_tooltip(button, accessible_name)", build_rail)
         self.assertIn("_render_navigation_rail_button", self.source)
         self.assertIn("_draw_stream_desk_icon", self.source)
 
@@ -1030,6 +1050,22 @@ class InAppNavigationTests(unittest.TestCase):
         )
         self.assertIn('fill=STREAM_DESK["surface_alt"]', render_source)
         self.assertIn('STREAM_DESK["text_strong"] if selected', render_source)
+        self.assertIn("full_color=True", render_source)
+
+        tooltip_source = ast.get_source_segment(
+            self.source,
+            self.methods["_bind_pointer_tooltip"],
+        )
+        self.assertIn("tk.Label", tooltip_source)
+        self.assertIn("tooltip_label.place", tooltip_source)
+        self.assertIn("tooltip_label.lift", tooltip_source)
+        self.assertIn("self.root.winfo_rootx()", tooltip_source)
+        self.assertIn("self.root.winfo_rooty()", tooltip_source)
+        self.assertIn('widget.bind("<Enter>"', tooltip_source)
+        self.assertIn('widget.bind("<Motion>"', tooltip_source)
+        self.assertIn('widget.bind("<Leave>"', tooltip_source)
+        self.assertIn("event.x_root", tooltip_source)
+        self.assertIn("event.y_root", tooltip_source)
 
         for language in ("au", "es", "fr", "de", "pt-BR"):
             translation_pattern = re.compile(

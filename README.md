@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 2.0.2**
+**Version 2.0.3**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -9,6 +9,43 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
+
+## What’s new in v2.0.3
+
+- Fixes the icon-only main sidebar hover labels so they reliably appear beside
+  the pointer inside the tracker window. Settings entries keep their existing
+  visible text without redundant tooltips.
+
+- Adds a direct **Streamer.bot WebSocket integration** with its own Settings
+  page above OBS. Users can connect to their local Streamer.bot server, load
+  enabled actions, and independently map confirmed game, death, exit, level,
+  timer, completion, connection, and RetroAchievements events.
+- Gives every Settings section its requested color icon: a Super Nintendo
+  console for Platform, Windows file, NVMe drive, Streamer.bot links, OBS
+  logo, stopwatch, open book, and notification bell.
+- Adds full-color artwork to the main navigation, uses the colored Super
+  Famicom controller for Game Modes, and uses the supplied SMW Central
+  pixel-art logo for its catalog button.
+- Stabilizes RA-SNES/SNI memory readings before they reach the dashboard so a
+  temporary bad sample cannot add a random death, flash exits to zero, restore
+  another Mario slot's timers, or move the session timeline back and forth.
+- Prevents horizontal pipes, vertical pipes, and doors—including same-room
+  transitions—from being interpreted as retry-only deaths in the RA core.
+- Makes the live death counter respond immediately after a confirmed death by
+  notifying the app and WebSocket dock before slower progress and OBS-file
+  persistence work.
+- Keeps the dashboard exit denominator numeric by carrying the selected
+  library game's known total into live tracking, even when an RA-compatible
+  core or MiSTer reports a shortened or platform-specific ROM path.
+- Uses MiSTer's supported centered, single-line RetroAchievements popup layout
+  to keep achievement notifications inside the visible 4:3 SNES HDMI area.
+- Hides MiSTer's persistent RetroAchievements leaderboard tracker during a
+  level while preserving the submitted-score popup at the end of the attempt.
+- Existing MiSTer users can rerun RetroAchievements Setup once to apply the
+  HDMI-safe popup settings without changing their account or progress.
+
+This is a Windows-only release. No macOS artifacts are published because the
+macOS build has not been tested.
 
 ## What’s new in v2.0.2
 
@@ -102,7 +139,7 @@ macOS build has not been tested.
 - Adds full **MiSTer FPGA** support with one-click network discovery and setup,
   ROM upload and launch, live tracking, controller restoration after switching
   games, and compatibility with standard MiSTer and MiSTer Multisystem² setups.
-- Adds **Game Modes** with Play Random Hack, Hack Draft, Difficulty Ladder,
+- Adds **Game Modes** with Play Random Hack, Hack Draft, Difficulty Vine,
   Creator Spotlight, Time Capsule, and Hall of Fame Tour. Each mode has a
   translated blue window and a description shown when its button is hovered.
 - Adds smart Excel import, Google Sheets synchronization, Spreadsheet Settings,
@@ -127,12 +164,30 @@ macOS build has not been tested.
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v2.0.0 Stream Desk dashboard with live-session controls, timeline, counters, and playlist">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v2.0.3 Stream Desk dashboard with live-session controls, timeline, counters, and playlist">
 </p>
 
-The v2.0.0 Stream Desk dashboard keeps the active hack, session timeline,
-death and exit counters, game-mode controls, and upcoming playlist together in
-one responsive view.
+The current Stream Desk dashboard keeps the active hack, session timeline,
+death and exit counters, finish controls, and upcoming playlist together in one
+responsive view.
+
+### Settings
+
+<p align="center">
+  <img src="docs/screenshots/settings.png" alt="Current SMW Stream Tracker Settings page with colored navigation and MiSTer platform controls">
+</p>
+
+Settings groups platform, file, storage, Streamer.bot, OBS, timer, help, and
+update controls into one labeled menu with dedicated color symbols.
+
+### RetroAchievements
+
+<p align="center">
+  <img src="docs/screenshots/retroachievements.png" alt="Expanded RetroAchievements list for the selected Game Library title with badges, requirements, points, and lock status">
+</p>
+
+Select the RetroAchievements card in Game Library to expand every badge,
+requirement, point value, and locked or unlocked state for that game.
 
 <table>
   <tr>

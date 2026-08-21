@@ -74,6 +74,18 @@ class ObsWidgetTests(unittest.TestCase):
         )
         self.assertNotIn("web_api_key", json.dumps(state).casefold())
 
+    def test_widget_exit_denominator_uses_authoritative_values(self):
+        state = self.tracker.build_obs_widget_state(
+            exits_text="Custom exit wording without a slash",
+            exits_completed=7,
+            exits_total="12.0",
+        )
+
+        self.assertEqual(
+            state["exits"],
+            {"completed": 7, "total": 12, "label": "7 / 12"},
+        )
+
     def test_widget_server_serves_dock_assets_and_pushes_websocket_state(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             assets = Path(temporary_directory)

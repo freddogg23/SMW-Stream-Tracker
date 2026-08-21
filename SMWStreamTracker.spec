@@ -111,6 +111,7 @@ a = Analysis(
         ('banner_element_assets', 'banner_element_assets'),
         ('platform_assets', 'platform_assets'),
         ('app_assets', 'app_assets'),
+        ('game_mode_assets', 'game_mode_assets'),
         ('obs_widget', 'obs_widget'),
         ('docs', 'docs'),
         ('installer\\PRIVACY.txt', 'installer'),

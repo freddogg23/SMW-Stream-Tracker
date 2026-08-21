@@ -28,6 +28,29 @@ class ConnectionServiceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tracker = load_tracker_module()
 
+    def make_live_state(self, **overrides):
+        state = {
+            "mode": self.tracker.LEVEL_MODE,
+            "level_number": 0x0105,
+            "save_slot": 0,
+            "player_state": 0,
+            "sprite_lock": 0,
+            "player_lives": 5,
+            "paused": 0,
+            "translevel": 3,
+            "midway_point": 0,
+            "level_flags": 0,
+            "exits": 9,
+            "level_end_timer": 0,
+            "secret_goal_flag": 0,
+            "joypad": 0,
+            "joypad_pressed": 0,
+            "joypad_axlr": 0,
+            "joypad_axlr_pressed": 0,
+        }
+        state.update(overrides)
+        return state
+
     def test_automatic_prefers_sni_and_keeps_qusb_fallback(self):
         config = {
             "sni_path": "C:/Tools/SNI/sni.exe",
@@ -155,13 +178,146 @@ class ConnectionServiceTests(unittest.TestCase):
         worker.read_memory = read_snapshot_chunk
         state = worker.read_game_state(object())
 
-        self.assertEqual(calls, list(self.tracker.LIVE_STATE_WINDOWS))
+        self.assertEqual(
+            calls,
+            list(self.tracker.LIVE_STATE_WINDOWS)
+            + [(self.tracker.PLAYER_STATE_ADDRESS, 1)],
+        )
         self.assertEqual(state["mode"], 0x14)
         self.assertEqual(state["save_slot"], 0x02)
         self.assertEqual(state["player_state"], 0x09)
         self.assertEqual(state["player_lives"], 0x04)
         self.assertEqual(state["translevel"], 0x2A)
         self.assertEqual(state["exits"], 0x11)
+
+    def test_game_state_rejects_unconfirmed_late_death_value(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        primary_snapshot = bytearray(self.tracker.LIVE_STATE_SIZE)
+        base = int(self.tracker.LIVE_STATE_BASE_ADDRESS, 16)
+        calls = []
+
+        def read_snapshot_chunk(_ws, address, size):
+            calls.append((address, size))
+            if (address, size) == (self.tracker.PLAYER_STATE_ADDRESS, 1):
+                return b"\x09"
+            offset = int(address, 16) - base
+            return bytes(primary_snapshot[offset : offset + size])
+
+        worker.read_memory = read_snapshot_chunk
+        state = worker.read_game_state(object())
+
+        self.assertEqual(state["player_state"], 0x00)
+        self.assertEqual(
+            calls[-1],
+            (self.tracker.PLAYER_STATE_ADDRESS, 1),
+        )
+
+    def test_live_state_waits_for_a_coherent_initial_sample(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        state = self.make_live_state()
+
+        self.assertIsNone(worker.stabilize_live_state(state))
+        self.assertEqual(worker.stabilize_live_state(state), state)
+
+    def test_live_state_holds_transient_ra_counter_and_slot_values(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        state = self.make_live_state()
+        worker.stabilize_live_state(state)
+        worker.stabilize_live_state(state)
+        worker.game_started = True
+        worker.active_save_slot = 0
+
+        glitch = self.make_live_state(
+            mode=0,
+            level_number=0,
+            save_slot=2,
+            player_state=0x09,
+            player_lives=0,
+            translevel=0,
+            exits=0,
+        )
+        filtered = worker.stabilize_live_state(glitch)
+
+        self.assertEqual(filtered["mode"], self.tracker.LEVEL_MODE)
+        self.assertEqual(filtered["level_number"], 0x0105)
+        self.assertEqual(filtered["save_slot"], 0)
+        self.assertEqual(filtered["player_state"], 0)
+        self.assertEqual(filtered["player_lives"], 5)
+        self.assertEqual(filtered["translevel"], 3)
+        self.assertEqual(filtered["exits"], 9)
+
+        recovered = worker.stabilize_live_state(state)
+        self.assertEqual(recovered, state)
+
+    def test_live_state_never_allows_running_exit_progress_to_jump(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        state = self.make_live_state()
+        worker.stabilize_live_state(state)
+        worker.stabilize_live_state(state)
+        worker.game_started = True
+        worker.active_save_slot = 0
+
+        for invalid_exits in (0, 0, 0, 40, 40, 40):
+            filtered = worker.stabilize_live_state(
+                self.make_live_state(exits=invalid_exits)
+            )
+            self.assertEqual(filtered["exits"], 9)
+
+    def test_live_state_confirms_a_real_lives_decrease(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        state = self.make_live_state()
+        worker.stabilize_live_state(state)
+        worker.stabilize_live_state(state)
+
+        first = worker.stabilize_live_state(
+            self.make_live_state(player_lives=4)
+        )
+        second = worker.stabilize_live_state(
+            self.make_live_state(player_lives=4)
+        )
+
+        self.assertEqual(first["player_lives"], 5)
+        self.assertEqual(second["player_lives"], 4)
+
+    def test_live_state_requires_repeated_confirmed_death_state(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        state = self.make_live_state()
+        worker.stabilize_live_state(state)
+        worker.stabilize_live_state(state)
+
+        transient = worker.stabilize_live_state(
+            self.make_live_state(player_state=0x09)
+        )
+        recovered = worker.stabilize_live_state(state)
+        first_real = worker.stabilize_live_state(
+            self.make_live_state(player_state=0x09)
+        )
+        second_real = worker.stabilize_live_state(
+            self.make_live_state(player_state=0x09)
+        )
+
+        self.assertEqual(transient["player_state"], 0)
+        self.assertEqual(recovered["player_state"], 0)
+        self.assertEqual(first_real["player_state"], 0)
+        self.assertEqual(second_real["player_state"], 0x09)
 
     def test_retroarch_game_name_is_used_before_bridge_info(self):
         config = dict(self.tracker.DEFAULT_CONFIG)

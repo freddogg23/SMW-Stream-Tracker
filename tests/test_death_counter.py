@@ -230,6 +230,28 @@ class DeathCounterTests(unittest.TestCase):
             "Total Deaths: 42",
         )
 
+    def test_live_death_counter_updates_before_obs_file_writes(self):
+        worker = self.make_worker()
+        worker.level_death_count = 4
+        worker.death_count = 19
+        calls = []
+        worker.send_event = lambda event_type, **payload: calls.append(
+            ("event", event_type, payload)
+        )
+        worker.write_text_file = lambda filename, text: calls.append(
+            ("file", filename, text)
+        )
+
+        worker.update_death_file()
+
+        self.assertEqual(calls[0][0:2], ("event", "deaths"))
+        self.assertEqual(calls[0][2]["level_deaths"], 4)
+        self.assertEqual(calls[0][2]["total_deaths"], 19)
+        self.assertEqual(
+            [call[1] for call in calls[1:]],
+            ["level_deaths.txt", "death_counter.txt", "total_deaths.txt"],
+        )
+
     def test_first_observed_death_counts_once_and_writes_obs_file(self):
         worker = self.make_worker()
         worker.select_save_slot(0)
@@ -538,6 +560,14 @@ class DeathCounterTests(unittest.TestCase):
             delta=0.1,
             now=25.1,
         )
+        self.assertEqual(worker.death_count, 0)
+
+        worker.update_timers_from_state(
+            self.make_state(self.tracker.LEVEL_MODE, translevel=1)
+            | {"player_lives": 5},
+            delta=0.1,
+            now=25.2,
+        )
         self.assertEqual(worker.level_death_count, 1)
         self.assertEqual(worker.death_count, 1)
 
@@ -571,13 +601,86 @@ class DeathCounterTests(unittest.TestCase):
                 worker.update_timers_from_state(
                     self.make_state(
                         self.tracker.LEVEL_MODE,
-                        level_number=0x0106,
+                        # RA_SNES can expose the old room for the first
+                        # returned gameplay sample.
+                        level_number=0x0105,
                     )
                     | {"player_lives": 5},
                     delta=0.1,
                     now=28.2,
                 )
+                self.assertEqual(worker.death_count, 0)
 
+                worker.update_timers_from_state(
+                    self.make_state(
+                        self.tracker.LEVEL_MODE,
+                        level_number=0x0106,
+                    )
+                    | {"player_lives": 5},
+                    delta=0.1,
+                    now=28.3,
+                )
+
+                self.assertEqual(worker.level_death_count, 0)
+                self.assertEqual(worker.death_count, 0)
+
+    def test_same_room_pipe_and_door_cycles_are_not_retry_deaths(self):
+        transition_actions = (
+            (0x05, "horizontal pipe"),
+            (0x06, "vertical pipe"),
+            (0x0D, "door"),
+        )
+        for player_action, label in transition_actions:
+            with self.subTest(transition=label):
+                worker = self.make_worker()
+                worker.select_save_slot(0)
+                worker.previous_mode = self.tracker.LEVEL_MODE
+                worker.previous_player_state = 0x00
+                worker.previous_player_lives = 5
+
+                # SMW announces the intentional transition through $71 while
+                # the player is still in gameplay mode.
+                worker.update_timers_from_state(
+                    self.make_state(
+                        self.tracker.LEVEL_MODE,
+                        player_state=player_action,
+                        level_number=0x0105,
+                    )
+                    | {"player_lives": 5},
+                    delta=0.1,
+                    now=29.0,
+                )
+                worker.update_timers_from_state(
+                    self.make_state(0x10, level_number=0x0105)
+                    | {"player_lives": 5},
+                    delta=0.1,
+                    now=29.1,
+                )
+
+                # A same-room door/pipe makes both the translevel and $010B
+                # match the origin, so room identity alone must not count it.
+                worker.update_timers_from_state(
+                    self.make_state(
+                        self.tracker.LEVEL_MODE,
+                        level_number=0x0105,
+                    )
+                    | {"player_lives": 5},
+                    delta=0.1,
+                    now=29.2,
+                )
+                worker.update_timers_from_state(
+                    self.make_state(
+                        self.tracker.LEVEL_MODE,
+                        level_number=0x0105,
+                    )
+                    | {"player_lives": 5},
+                    delta=0.1,
+                    now=29.3,
+                )
+
+                self.assertFalse(
+                    worker.intentional_level_transition_pending
+                )
                 self.assertEqual(worker.level_death_count, 0)
                 self.assertEqual(worker.death_count, 0)
 
@@ -600,6 +703,14 @@ class DeathCounterTests(unittest.TestCase):
             | {"player_lives": 5},
             delta=0.1,
             now=30.1,
+        )
+        self.assertEqual(worker.death_count, 0)
+
+        worker.update_timers_from_state(
+            self.make_state(self.tracker.LEVEL_MODE, translevel=1)
+            | {"player_lives": 5},
+            delta=0.1,
+            now=30.2,
         )
         self.assertEqual(worker.level_death_count, 1)
         self.assertEqual(worker.death_count, 1)

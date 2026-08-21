@@ -522,8 +522,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "2.0.2"
-APP_BUILD_DATE = "2026-08-20"
+APP_VERSION = "2.0.3"
+APP_BUILD_DATE = "2026-08-21"
 
 GAME_MODE_STAGE_IMAGE_FILES = {
     "play_random_hack": "stage_scene_yoshis_island_2.png",
@@ -1285,6 +1285,12 @@ def _run_tk_startup_check() -> int:
                 "Packaged app is missing required runtime callback(s): "
                 + ", ".join(missing_callbacks)
             )
+        # Exercise the lazy Streamer.bot form as part of every Windows build
+        # so a bad field, icon, or responsive layout cannot ship unnoticed.
+        # The Settings builder uses ``wait_window``; schedule its normal page
+        # close first so the nested Tk event loop has a deterministic finish.
+        probe_root.after(500, probe_app._close_in_app_page)
+        probe_app._open_settings_dialog("Streamer.bot")
         probe_root.update_idletasks()
         return 0
     except Exception as error:
@@ -1310,6 +1316,77 @@ def bundled_resource_path(*parts: str) -> Path:
         )
     )
     return base_path.joinpath(*parts)
+
+
+def remove_connected_edge_image_background(source_image):
+    """Make only the uniform backdrop connected to the canvas edge transparent."""
+
+    if Image is None:
+        return source_image
+    extracted = source_image.convert("RGBA").copy()
+    width, height = extracted.size
+    if width <= 0 or height <= 0:
+        return extracted
+    pixels = extracted.load()
+    opaque_corner_colors = [
+        pixels[x, y][:3]
+        for x, y in (
+            (0, 0),
+            (width - 1, 0),
+            (0, height - 1),
+            (width - 1, height - 1),
+        )
+        if pixels[x, y][3] > 0
+    ]
+    if not opaque_corner_colors:
+        return extracted
+    background_color = tuple(
+        round(
+            sum(sample[channel] for sample in opaque_corner_colors)
+            / len(opaque_corner_colors)
+        )
+        for channel in range(3)
+    )
+    visited = bytearray(width * height)
+    pending = [
+        *((x, 0) for x in range(width)),
+        *((x, height - 1) for x in range(width)),
+        *((0, y) for y in range(1, height - 1)),
+        *((width - 1, y) for y in range(1, height - 1)),
+    ]
+
+    while pending:
+        x, y = pending.pop()
+        pixel_index = (y * width) + x
+        if visited[pixel_index]:
+            continue
+        visited[pixel_index] = 1
+        red, green, blue, alpha = pixels[x, y]
+        # Match only the corner-colored field and flood it from the edge. This
+        # handles either a light or dark screenshot backdrop while protecting
+        # every enclosed pixel in the supplied symbol.
+        if alpha > 0 and max(
+            abs(red - background_color[0]),
+            abs(green - background_color[1]),
+            abs(blue - background_color[2]),
+        ) > 12:
+            continue
+        pixels[x, y] = (red, green, blue, 0)
+        if x > 0:
+            pending.append((x - 1, y))
+        if x + 1 < width:
+            pending.append((x + 1, y))
+        if y > 0:
+            pending.append((x, y - 1))
+        if y + 1 < height:
+            pending.append((x, y + 1))
+    return extracted
+
+
+def remove_connected_light_image_background(source_image):
+    """Compatibility alias for older callers and saved test integrations."""
+
+    return remove_connected_edge_image_background(source_image)
 
 
 def repair_bowser_toenail_image(source_image):
@@ -6149,21 +6226,43 @@ STREAM_DESK_NAVIGATION_ITEMS = (
     ("overview", "overview", "Overview"),
     ("tracker", "tracker", "My Tracker"),
     ("library", "library", "Game Library"),
-    ("modes", "controller", "Game Modes"),
+    ("modes", "super_famicom_controller", "Game Modes"),
     ("smwcentral", "smw_central", "SMW Central"),
     ("language", "language", "Language"),
     ("settings", "settings", "Settings"),
 )
 
 GAME_MODE_ICON_KEYS = {
-    "hot_potato": "hot_potato",
-    "mario_kaizo_challenge": "mario_hat",
-    "play_random_hack": "random",
-    "hack_draft": "hack_draft",
-    "difficulty_ladder": "ladder",
-    "creator_spotlight": "spotlight",
-    "time_capsule": "time_attack",
-    "hall_of_fame_tour": "first_place_medal",
+    "hot_potato": "game_mode_hot_potato",
+    "mario_kaizo_challenge": "game_mode_mario_kaizo_challenge",
+    "play_random_hack": "game_mode_play_random_hack",
+    "hack_draft": "game_mode_hack_draft",
+    "difficulty_ladder": "game_mode_difficulty_vine",
+    "creator_spotlight": "game_mode_creator_spotlight",
+    "time_capsule": "game_mode_time_capsule",
+    "hall_of_fame_tour": "game_mode_hall_of_fame_tour",
+}
+
+GAME_MODE_ICON_IMAGE_FILES = {
+    "game_mode_hot_potato": "hot_potato_icon.png",
+    "game_mode_mario_kaizo_challenge": "mario_kaizo_challenge_icon.png",
+    "game_mode_play_random_hack": "play_random_hack_icon.png",
+    "game_mode_hack_draft": "hack_draft_icon.png",
+    "game_mode_difficulty_vine": "difficulty_vine_icon.png",
+    "game_mode_creator_spotlight": "creator_spotlight_icon.png",
+    "game_mode_time_capsule": "time_capsule_icon.png",
+    "game_mode_hall_of_fame_tour": "hall_of_fame_tour_icon.png",
+}
+
+GAME_MODE_ICON_FALLBACK_KEYS = {
+    "game_mode_hot_potato": "hot_potato",
+    "game_mode_mario_kaizo_challenge": "mario_hat",
+    "game_mode_play_random_hack": "random",
+    "game_mode_hack_draft": "hack_draft",
+    "game_mode_difficulty_vine": "ladder",
+    "game_mode_creator_spotlight": "spotlight",
+    "game_mode_time_capsule": "time_attack",
+    "game_mode_hall_of_fame_tour": "first_place_medal",
 }
 
 
@@ -14618,6 +14717,17 @@ def mister_retroachievements_config_text(
             "username": normalized_username,
             "password": normalized_password,
             "hardcore": "1" if hardcore else "0",
+            # MiSTer's native RA client documents centered popups for HDMI
+            # displays that crop the sides of a 4:3 image. Keeping the
+            # description on one line also prevents the popup from growing
+            # beyond the visible SNES play area.
+            "popup_position": "center",
+            "multiline_desc": "0",
+            # Hide the always-on leaderboard timer/score tracker while a
+            # level is active, but retain MiSTer's submitted-score and
+            # scoreboard result popup when the leaderboard attempt ends.
+            "show_leaderboards_updates": "0",
+            "show_leaderboards_submission": "1",
         },
         separator="=",
     )
@@ -22706,12 +22816,12 @@ _RUNTIME_LOCALIZATION_ROWS = (
     ("Deal three random ready-to-play hacks, then choose one to launch.", "Deal three ready-to-rip hacks and pick your champion, mate.", "Recibe tres hacks aleatorios listos para jugar y elige uno para iniciarlo.", "Recevez trois hacks aléatoires prêts à jouer, puis choisissez celui à lancer.", "Lass dir drei zufällige spielbereite Hacks geben und wähle einen zum Starten aus.", "Receba três hacks aleatórios prontos para jogar e escolha um para iniciar."),
     ("Three ready-to-play hacks are dealt below. Choose one to launch, or deal three different choices.", "Three ready-to-rip hacks are on the table. Pick one or deal another hand, mate.", "A continuación aparecen tres hacks listos para jugar. Elige uno para iniciarlo o reparte tres opciones diferentes.", "Trois hacks prêts à jouer sont proposés ci-dessous. Choisissez-en un ou demandez trois nouvelles options.", "Unten werden drei spielbereite Hacks angeboten. Wähle einen aus oder lass dir drei neue Optionen geben.", "Três hacks prontos para jogar são exibidos abaixo. Escolha um ou sorteie três opções diferentes."),
     ("Deal Again", "Deal another hand, mate", "Repartir de nuevo", "Redistribuer", "Neu auswählen", "Sortear novamente"),
-    ("Difficulty Ladder", "Difficulty Ladder, mate", "Escalera de dificultad", "Échelle de difficulté", "Schwierigkeitsleiter", "Escada de dificuldade"),
-    ("DIFFICULTY LADDER", "DIFFICULTY LADDER, MATE", "ESCALERA DE DIFICULTAD", "ÉCHELLE DE DIFFICULTÉ", "SCHWIERIGKEITSLEITER", "ESCADA DE DIFICULDADE"),
+    ("Difficulty Vine", "Difficulty Vine, mate", "Enredadera de dificultad", "Liane de difficulté", "Schwierigkeitsranke", "Vinha de dificuldade"),
+    ("DIFFICULTY VINE", "DIFFICULTY VINE, MATE", "ENREDADERA DE DIFICULTAD", "LIANE DE DIFFICULTÉ", "SCHWIERIGKEITSRANKE", "VINHA DE DIFICULDADE"),
     ("Climb from the easiest available difficulty to Grandmaster, one complete hack at a time.", "Climb from a gentle warm-up to Grandmaster, one whole hack at a time, mate.", "Sube desde la dificultad disponible más fácil hasta Gran maestro, un hack completo cada vez.", "Progressez de la difficulté disponible la plus facile jusqu’à Grand maître, un hack complet à la fois.", "Steige vom leichtesten verfügbaren Schwierigkeitsgrad bis zum Großmeister auf, jeweils einen vollständigen Hack.", "Suba da dificuldade disponível mais fácil até Grão-mestre, um hack completo de cada vez."),
-    ("Choose your current rung and complete one full hack before climbing to the next available difficulty.", "Pick your rung and finish the whole hack before climbing higher, mate.", "Elige tu peldaño actual y completa un hack entero antes de subir a la siguiente dificultad disponible.", "Choisissez votre échelon actuel et terminez un hack complet avant de passer à la difficulté disponible suivante.", "Wähle deine aktuelle Stufe und schließe einen vollständigen Hack ab, bevor du zur nächsten verfügbaren Schwierigkeit aufsteigst.", "Escolha seu degrau atual e conclua um hack inteiro antes de subir para a próxima dificuldade disponível."),
-    ("Ladder Rung", "Your rung on the ladder", "Peldaño", "Échelon", "Leiterstufe", "Degrau"),
-    ("Random Hack from This Rung", "Random hack from this rung, mate", "Hack aleatorio de este peldaño", "Hack aléatoire de cet échelon", "Zufälliger Hack dieser Stufe", "Hack aleatório deste degrau"),
+    ("Choose your current section of the vine and complete one full hack before climbing to the next available difficulty.", "Pick your spot on the vine and finish the whole hack before climbing higher, mate.", "Elige tu sección actual de la enredadera y completa un hack entero antes de subir a la siguiente dificultad disponible.", "Choisissez votre section actuelle de la liane et terminez un hack complet avant de passer à la difficulté disponible suivante.", "Wähle deinen aktuellen Abschnitt der Ranke und schließe einen vollständigen Hack ab, bevor du zur nächsten verfügbaren Schwierigkeit aufsteigst.", "Escolha sua seção atual da vinha e conclua um hack inteiro antes de subir para a próxima dificuldade disponível."),
+    ("Vine Section", "Your spot on the vine", "Sección de la enredadera", "Section de la liane", "Rankenabschnitt", "Seção da vinha"),
+    ("Random Hack from This Section", "Random hack from this bit of the vine, mate", "Hack aleatorio de esta sección", "Hack aléatoire de cette section", "Zufälliger Hack aus diesem Abschnitt", "Hack aleatório desta seção"),
     ("Creator Spotlight", "Creator Spotlight, mate", "Creador destacado", "Créateur à l’honneur", "Ersteller im Rampenlicht", "Criador em destaque"),
     ("CREATOR SPOTLIGHT", "CREATOR SPOTLIGHT, MATE", "CREADOR DESTACADO", "CRÉATEUR À L’HONNEUR", "ERSTELLER IM RAMPENLICHT", "CRIADOR EM DESTAQUE"),
     ("Choose a creator and launch one of their downloaded hacks.", "Pick a creator and give one of their downloaded beauties a burl, mate.", "Elige un creador e inicia uno de sus hacks descargados.", "Choisissez un créateur et lancez l’un de ses hacks téléchargés.", "Wähle einen Ersteller und starte einen seiner heruntergeladenen Hacks.", "Escolha um criador e inicie um dos hacks baixados dele."),
@@ -23995,6 +24105,489 @@ for _language_code, _mac_timer_copy in _MAC_TIMER_SETUP_TRANSLATIONS.items():
     SETUP_GUIDE_TRANSLATIONS[_language_code].update(_mac_timer_copy)
 
 
+_STREAMERBOT_UI_TRANSLATIONS = {
+    "es": {
+        "Streamer.bot": "Streamer.bot",
+        "Connect directly to Streamer.bot and run your own actions when the tracker confirms a game, death, exit, timer, or RetroAchievements event.": "Conéctate directamente a Streamer.bot y ejecuta tus propias acciones cuando el rastreador confirme un juego, muerte, salida, cronómetro o evento de RetroAchievements.",
+        "In Streamer.bot, open Servers/Clients → WebSocket Server, enable Auto Start, and start the server. The default address is 127.0.0.1:8080 with endpoint /.": "En Streamer.bot, abre Servidores/Clientes → Servidor WebSocket, activa Inicio automático e inicia el servidor. La dirección predeterminada es 127.0.0.1:8080 con el punto de conexión /.",
+        "WebSocket Connection": "Conexión WebSocket",
+        "Enable Streamer.bot integration": "Activar integración con Streamer.bot",
+        "Host": "Servidor",
+        "Port": "Puerto",
+        "Endpoint": "Punto de conexión",
+        "WebSocket Password (only if enabled in Streamer.bot)": "Contraseña WebSocket (solo si está activada en Streamer.bot)",
+        "Show Password": "Mostrar contraseña",
+        "Test & Load Actions": "Probar y cargar acciones",
+        "Action Mappings": "Asignación de acciones",
+        "Disabled": "Desactivado",
+        "Game launched": "Juego iniciado",
+        "Death added": "Muerte añadida",
+        "Exit collected": "Salida conseguida",
+        "Level completed": "Nivel completado",
+        "Achievement unlocked": "Logro desbloqueado",
+        "Game timer started": "Cronómetro del juego iniciado",
+        "Game timer finished": "Cronómetro del juego terminado",
+        "Hack completed": "Hack completado",
+        "Tracker connected or disconnected": "Tracker conectado o desconectado",
+        "Streamer.bot is disabled.": "Streamer.bot está desactivado.",
+        "Ready to send confirmed events to Streamer.bot.": "Listo para enviar eventos confirmados a Streamer.bot.",
+    },
+    "fr": {
+        "Streamer.bot": "Streamer.bot",
+        "Connect directly to Streamer.bot and run your own actions when the tracker confirms a game, death, exit, timer, or RetroAchievements event.": "Connectez-vous directement à Streamer.bot et exécutez vos propres actions lorsque le tracker confirme un jeu, une mort, une sortie, un chronomètre ou un événement RetroAchievements.",
+        "In Streamer.bot, open Servers/Clients → WebSocket Server, enable Auto Start, and start the server. The default address is 127.0.0.1:8080 with endpoint /.": "Dans Streamer.bot, ouvrez Serveurs/Clients → Serveur WebSocket, activez le démarrage automatique, puis démarrez le serveur. L’adresse par défaut est 127.0.0.1:8080 avec le point de terminaison /.",
+        "WebSocket Connection": "Connexion WebSocket",
+        "Enable Streamer.bot integration": "Activer l’intégration Streamer.bot",
+        "Host": "Hôte",
+        "Port": "Port",
+        "Endpoint": "Point de terminaison",
+        "WebSocket Password (only if enabled in Streamer.bot)": "Mot de passe WebSocket (uniquement s’il est activé dans Streamer.bot)",
+        "Show Password": "Afficher le mot de passe",
+        "Test & Load Actions": "Tester et charger les actions",
+        "Action Mappings": "Mappage des actions",
+        "Disabled": "Désactivé",
+        "Game launched": "Jeu lancé",
+        "Death added": "Mort ajoutée",
+        "Exit collected": "Sortie obtenue",
+        "Level completed": "Niveau terminé",
+        "Achievement unlocked": "Succès déverrouillé",
+        "Game timer started": "Chronomètre de jeu démarré",
+        "Game timer finished": "Chronomètre de jeu terminé",
+        "Hack completed": "Hack terminé",
+        "Tracker connected or disconnected": "Tracker connecté ou déconnecté",
+        "Streamer.bot is disabled.": "Streamer.bot est désactivé.",
+        "Ready to send confirmed events to Streamer.bot.": "Prêt à envoyer les événements confirmés à Streamer.bot.",
+    },
+    "de": {
+        "Streamer.bot": "Streamer.bot",
+        "Connect directly to Streamer.bot and run your own actions when the tracker confirms a game, death, exit, timer, or RetroAchievements event.": "Verbinde dich direkt mit Streamer.bot und führe eigene Aktionen aus, wenn der Tracker ein Spiel-, Todes-, Ausgangs-, Timer- oder RetroAchievements-Ereignis bestätigt.",
+        "In Streamer.bot, open Servers/Clients → WebSocket Server, enable Auto Start, and start the server. The default address is 127.0.0.1:8080 with endpoint /.": "Öffne in Streamer.bot Server/Clients → WebSocket Server, aktiviere Auto Start und starte den Server. Die Standardadresse ist 127.0.0.1:8080 mit dem Endpunkt /.",
+        "WebSocket Connection": "WebSocket-Verbindung",
+        "Enable Streamer.bot integration": "Streamer.bot-Integration aktivieren",
+        "Host": "Host",
+        "Port": "Port",
+        "Endpoint": "Endpunkt",
+        "WebSocket Password (only if enabled in Streamer.bot)": "WebSocket-Passwort (nur falls in Streamer.bot aktiviert)",
+        "Show Password": "Passwort anzeigen",
+        "Test & Load Actions": "Testen und Aktionen laden",
+        "Action Mappings": "Aktionszuordnung",
+        "Disabled": "Deaktiviert",
+        "Game launched": "Spiel gestartet",
+        "Death added": "Tod hinzugefügt",
+        "Exit collected": "Ausgang gesammelt",
+        "Level completed": "Level abgeschlossen",
+        "Achievement unlocked": "Erfolg freigeschaltet",
+        "Game timer started": "Spiel-Timer gestartet",
+        "Game timer finished": "Spiel-Timer beendet",
+        "Hack completed": "Hack abgeschlossen",
+        "Tracker connected or disconnected": "Tracker verbunden oder getrennt",
+        "Streamer.bot is disabled.": "Streamer.bot ist deaktiviert.",
+        "Ready to send confirmed events to Streamer.bot.": "Bereit, bestätigte Ereignisse an Streamer.bot zu senden.",
+    },
+    "pt-BR": {
+        "Streamer.bot": "Streamer.bot",
+        "Connect directly to Streamer.bot and run your own actions when the tracker confirms a game, death, exit, timer, or RetroAchievements event.": "Conecte-se diretamente ao Streamer.bot e execute suas próprias ações quando o rastreador confirmar um jogo, morte, saída, cronômetro ou evento do RetroAchievements.",
+        "In Streamer.bot, open Servers/Clients → WebSocket Server, enable Auto Start, and start the server. The default address is 127.0.0.1:8080 with endpoint /.": "No Streamer.bot, abra Servidores/Clientes → Servidor WebSocket, ative a inicialização automática e inicie o servidor. O endereço padrão é 127.0.0.1:8080 com o endpoint /.",
+        "WebSocket Connection": "Conexão WebSocket",
+        "Enable Streamer.bot integration": "Ativar integração com o Streamer.bot",
+        "Host": "Host",
+        "Port": "Porta",
+        "Endpoint": "Endpoint",
+        "WebSocket Password (only if enabled in Streamer.bot)": "Senha do WebSocket (somente se ativada no Streamer.bot)",
+        "Show Password": "Mostrar senha",
+        "Test & Load Actions": "Testar e carregar ações",
+        "Action Mappings": "Mapeamento de ações",
+        "Disabled": "Desativado",
+        "Game launched": "Jogo iniciado",
+        "Death added": "Morte adicionada",
+        "Exit collected": "Saída coletada",
+        "Level completed": "Fase concluída",
+        "Achievement unlocked": "Conquista desbloqueada",
+        "Game timer started": "Cronômetro do jogo iniciado",
+        "Game timer finished": "Cronômetro do jogo finalizado",
+        "Hack completed": "Hack concluído",
+        "Tracker connected or disconnected": "Tracker conectado ou desconectado",
+        "Streamer.bot is disabled.": "Streamer.bot está desativado.",
+        "Ready to send confirmed events to Streamer.bot.": "Pronto para enviar eventos confirmados ao Streamer.bot.",
+    },
+    "au": {
+        "Streamer.bot": "Streamer.bot",
+        "Connect directly to Streamer.bot and run your own actions when the tracker confirms a game, death, exit, timer, or RetroAchievements event.": "Connect directly to Streamer.bot and run your own actions when the tracker confirms a game, death, exit, timer, or RetroAchievements event.",
+        "In Streamer.bot, open Servers/Clients → WebSocket Server, enable Auto Start, and start the server. The default address is 127.0.0.1:8080 with endpoint /.": "In Streamer.bot, open Servers/Clients → WebSocket Server, enable Auto Start, and start the server. The default address is 127.0.0.1:8080 with endpoint /.",
+        "WebSocket Connection": "WebSocket Connection",
+        "Enable Streamer.bot integration": "Enable Streamer.bot integration",
+        "Host": "Host",
+        "Port": "Port",
+        "Endpoint": "Endpoint",
+        "WebSocket Password (only if enabled in Streamer.bot)": "WebSocket Password (only if enabled in Streamer.bot)",
+        "Show Password": "Show Password",
+        "Test & Load Actions": "Test & Load Actions",
+        "Action Mappings": "Action Mappings",
+        "Disabled": "Disabled",
+        "Game launched": "Game launched",
+        "Death added": "Death added",
+        "Exit collected": "Exit collected",
+        "Level completed": "Level completed",
+        "Achievement unlocked": "Achievement unlocked",
+        "Game timer started": "Game timer started",
+        "Game timer finished": "Game timer finished",
+        "Hack completed": "Hack completed",
+        "Tracker connected or disconnected": "Tracker connected or disconnected",
+        "Streamer.bot is disabled.": "Streamer.bot is disabled.",
+        "Ready to send confirmed events to Streamer.bot.": "Ready to send confirmed events to Streamer.bot.",
+    },
+}
+for _language_code, _streamerbot_copy in (
+    _STREAMERBOT_UI_TRANSLATIONS.items()
+):
+    UI_TRANSLATIONS[_language_code].update(_streamerbot_copy)
+
+
+STREAMERBOT_EVENT_DEFINITIONS: tuple[tuple[str, str], ...] = (
+    ("game_started", "Game launched"),
+    ("death_added", "Death added"),
+    ("exit_collected", "Exit collected"),
+    ("level_completed", "Level completed"),
+    ("achievement_unlocked", "Achievement unlocked"),
+    ("game_timer_started", "Game timer started"),
+    ("game_timer_finished", "Game timer finished"),
+    ("hack_completed", "Hack completed"),
+    ("connection_changed", "Tracker connected or disconnected"),
+)
+STREAMERBOT_EVENT_LABELS = dict(STREAMERBOT_EVENT_DEFINITIONS)
+
+
+def streamerbot_websocket_url(
+    host: object,
+    port: object,
+    endpoint: object = "/",
+) -> str:
+    """Return a normalized local Streamer.bot WebSocket address."""
+
+    clean_host = str(host or "127.0.0.1").strip() or "127.0.0.1"
+    if clean_host.startswith("ws://") or clean_host.startswith("wss://"):
+        parsed = urlparse(clean_host)
+        scheme = parsed.scheme or "ws"
+        clean_host = parsed.hostname or "127.0.0.1"
+        if parsed.port is not None:
+            port = parsed.port
+        if parsed.path and str(endpoint or "/").strip() in {"", "/"}:
+            endpoint = parsed.path
+    else:
+        scheme = "ws"
+    try:
+        clean_port = int(port)
+    except (TypeError, ValueError):
+        clean_port = 8080
+    if not 1 <= clean_port <= 65535:
+        raise ValueError("Streamer.bot port must be between 1 and 65535.")
+    clean_endpoint = str(endpoint or "/").strip() or "/"
+    if not clean_endpoint.startswith("/"):
+        clean_endpoint = "/" + clean_endpoint
+    clean_endpoint = clean_endpoint.split("?", 1)[0].split("#", 1)[0] or "/"
+    return f"{scheme}://{clean_host}:{clean_port}{clean_endpoint}"
+
+
+def streamerbot_authentication_value(
+    password: object,
+    salt: object,
+    challenge: object,
+) -> str:
+    """Create Streamer.bot's documented challenge-response value."""
+
+    secret_digest = hashlib.sha256(
+        (str(password or "") + str(salt or "")).encode("utf-8")
+    ).digest()
+    secret = base64.b64encode(secret_digest).decode("ascii")
+    authentication_digest = hashlib.sha256(
+        (secret + str(challenge or "")).encode("utf-8")
+    ).digest()
+    return base64.b64encode(authentication_digest).decode("ascii")
+
+
+class StreamerBotConnection:
+    """Small synchronous client for Streamer.bot's official WebSocket API."""
+
+    def __init__(
+        self,
+        *,
+        host: object = "127.0.0.1",
+        port: object = 8080,
+        endpoint: object = "/",
+        password: object = "",
+        timeout: float = 4.0,
+    ) -> None:
+        self.url = streamerbot_websocket_url(host, port, endpoint)
+        self.password = str(password or "")
+        self.timeout = max(0.5, float(timeout))
+        self.socket = None
+        self.info: dict[str, Any] = {}
+
+    @staticmethod
+    def _document(payload: object) -> dict[str, Any]:
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8", errors="replace")
+        document = json.loads(str(payload))
+        if not isinstance(document, dict):
+            raise ValueError("Streamer.bot returned an invalid response.")
+        return document
+
+    def connect(self) -> dict[str, Any]:
+        self.close()
+        self.socket = websocket.create_connection(
+            self.url,
+            timeout=self.timeout,
+            enable_multithread=True,
+        )
+        hello = self._document(self.socket.recv())
+        if str(hello.get("request", "")).casefold() != "hello":
+            self.close()
+            raise ConnectionError("Streamer.bot did not send its Hello response.")
+        info = hello.get("info", {})
+        self.info = dict(info) if isinstance(info, dict) else {}
+        authentication = hello.get("authentication")
+        if isinstance(authentication, dict):
+            if not self.password:
+                self.close()
+                raise PermissionError(
+                    "Streamer.bot requires its WebSocket password."
+                )
+            request_id = "smw-auth-" + secrets.token_hex(6)
+            self.socket.send(
+                json.dumps(
+                    {
+                        "request": "Authenticate",
+                        "id": request_id,
+                        "authentication": streamerbot_authentication_value(
+                            self.password,
+                            authentication.get("salt", ""),
+                            authentication.get("challenge", ""),
+                        ),
+                    },
+                    separators=(",", ":"),
+                )
+            )
+            response = self._receive_response(request_id)
+            if str(response.get("status", "")).casefold() != "ok":
+                self.close()
+                raise PermissionError(
+                    str(response.get("error", "Streamer.bot authentication failed."))
+                )
+        return dict(self.info)
+
+    def _receive_response(self, request_id: str) -> dict[str, Any]:
+        if self.socket is None:
+            raise ConnectionError("Streamer.bot is not connected.")
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            response = self._document(self.socket.recv())
+            if str(response.get("id", "")) == str(request_id):
+                return response
+        raise TimeoutError("Streamer.bot did not answer the request in time.")
+
+    def request(self, request: str, **values: Any) -> dict[str, Any]:
+        if self.socket is None:
+            self.connect()
+        request_id = "smw-" + secrets.token_hex(8)
+        document = {"request": str(request), "id": request_id}
+        document.update(values)
+        self.socket.send(
+            json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+        )
+        response = self._receive_response(request_id)
+        if str(response.get("status", "ok")).casefold() == "error":
+            raise RuntimeError(
+                str(response.get("error", "Streamer.bot rejected the request."))
+            )
+        return response
+
+    def get_actions(self) -> list[dict[str, Any]]:
+        response = self.request("GetActions")
+        actions = [
+            dict(action)
+            for action in response.get("actions", [])
+            if isinstance(action, dict) and bool(action.get("enabled", True))
+        ]
+        actions.sort(
+            key=lambda action: (
+                str(action.get("group") or "").casefold(),
+                str(action.get("name") or "").casefold(),
+            )
+        )
+        return actions
+
+    def do_action(
+        self,
+        action: dict[str, Any],
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        action_id = str(action.get("id", "")).strip()
+        action_name = str(action.get("name", "")).strip()
+        if not action_id and not action_name:
+            raise ValueError("No Streamer.bot action is selected.")
+        action_reference: dict[str, str] = {}
+        if action_id:
+            action_reference["id"] = action_id
+        if action_name:
+            action_reference["name"] = action_name
+        return self.request(
+            "DoAction",
+            action=action_reference,
+            args=dict(arguments),
+        )
+
+    def close(self) -> None:
+        active_socket = self.socket
+        self.socket = None
+        if active_socket is not None:
+            try:
+                active_socket.close()
+            except Exception:
+                pass
+
+
+class StreamerBotDispatcher:
+    """Queue confirmed tracker events without delaying live-memory polling."""
+
+    def __init__(
+        self,
+        settings: dict[str, Any],
+        status_callback: Callable[[bool, str], None] | None = None,
+    ) -> None:
+        self._settings_lock = threading.Lock()
+        self._settings = dict(settings)
+        self._status_callback = status_callback
+        self._queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(
+            maxsize=96
+        )
+        self._stop_event = threading.Event()
+        self._connection: StreamerBotConnection | None = None
+        self._connection_signature: tuple[Any, ...] | None = None
+        self._last_status: tuple[bool, str] | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="StreamerBotDispatcher",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def configure(self, settings: dict[str, Any]) -> None:
+        with self._settings_lock:
+            self._settings = dict(settings)
+        self._close_connection()
+
+    def dispatch(self, event_name: str, arguments: dict[str, Any]) -> bool:
+        with self._settings_lock:
+            settings = dict(self._settings)
+        if not bool(settings.get("enabled", False)):
+            return False
+        mappings = settings.get("event_actions", {})
+        action = mappings.get(str(event_name), {}) if isinstance(mappings, dict) else {}
+        if not isinstance(action, dict) or not (
+            str(action.get("id", "")).strip()
+            or str(action.get("name", "")).strip()
+        ):
+            return False
+        item = (str(event_name), dict(arguments))
+        try:
+            self._queue.put_nowait(item)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(item)
+            except queue.Full:
+                return False
+        return True
+
+    def _status(self, connected: bool, message: str) -> None:
+        status = (bool(connected), str(message))
+        if status == self._last_status:
+            return
+        self._last_status = status
+        if callable(self._status_callback):
+            try:
+                self._status_callback(*status)
+            except Exception:
+                pass
+
+    def _settings_snapshot(self) -> dict[str, Any]:
+        with self._settings_lock:
+            return dict(self._settings)
+
+    @staticmethod
+    def _signature(settings: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            str(settings.get("host", "127.0.0.1")),
+            int(settings.get("port", 8080) or 8080),
+            str(settings.get("endpoint", "/")),
+            str(settings.get("password", "")),
+        )
+
+    def _connect(self, settings: dict[str, Any]) -> StreamerBotConnection:
+        signature = self._signature(settings)
+        if self._connection is not None and self._connection_signature == signature:
+            return self._connection
+        self._close_connection()
+        connection = StreamerBotConnection(
+            host=settings.get("host", "127.0.0.1"),
+            port=settings.get("port", 8080),
+            endpoint=settings.get("endpoint", "/"),
+            password=settings.get("password", ""),
+        )
+        info = connection.connect()
+        self._connection = connection
+        self._connection_signature = signature
+        version = str(info.get("version", "")).strip()
+        self._status(
+            True,
+            "Connected to Streamer.bot" + (f" {version}" if version else ""),
+        )
+        return connection
+
+    def _close_connection(self) -> None:
+        connection = self._connection
+        self._connection = None
+        self._connection_signature = None
+        if connection is not None:
+            connection.close()
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                event_name, arguments = self._queue.get(timeout=0.4)
+            except queue.Empty:
+                continue
+            if not event_name:
+                continue
+            settings = self._settings_snapshot()
+            mappings = settings.get("event_actions", {})
+            action = mappings.get(event_name, {}) if isinstance(mappings, dict) else {}
+            if not bool(settings.get("enabled", False)) or not isinstance(action, dict):
+                continue
+            for attempt in range(2):
+                try:
+                    connection = self._connect(settings)
+                    connection.do_action(action, arguments)
+                    break
+                except Exception as error:
+                    self._close_connection()
+                    if attempt == 0 and not self._stop_event.wait(0.35):
+                        continue
+                    self._status(False, f"Streamer.bot: {error}")
+                    break
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        try:
+            self._queue.put_nowait(("", {}))
+        except queue.Full:
+            pass
+        self._close_connection()
+
+
 DEFAULT_CONFIG = {
     "app_language": "en",
     "sni_path": "",
@@ -24013,6 +24606,12 @@ DEFAULT_CONFIG = {
     "obs_total_deaths_text_format": "Total Deaths: {total_deaths}",
     "obs_achievements_text_format": "{default}",
     "obs_widget_port": 18765,
+    "streamerbot_enabled": False,
+    "streamerbot_host": "127.0.0.1",
+    "streamerbot_port": 8080,
+    "streamerbot_endpoint": "/",
+    "streamerbot_password": "",
+    "streamerbot_event_actions": {},
     # Keep tracker-owned dialogs inside the main window so a single OBS
     # Window Capture source can include them.  Native OS and third-party
     # windows (browsers, installers, file pickers) intentionally stay native.
@@ -24326,6 +24925,8 @@ GAME_MODE_ADDRESS = "F50100"       # $7E0100
 LEVEL_NUMBER_ADDRESS = "F5010B"    # $7E010B-$7E010C; current room/level ID
 SAVE_SLOT_ADDRESS = "F5010A"       # $7E010A; 0=A, 1=B, 2=C
 PLAYER_STATE_ADDRESS = "F50071"    # $7E0071; 09 = death animation
+PIPE_TIMER_ADDRESS = "F50088"      # $7E0088; active pipe travel countdown
+PIPE_ACTION_ADDRESS = "F50089"     # $7E0089; pipe entry/exit direction
 SPRITE_LOCK_ADDRESS = "F5009D"      # $7E009D; gameplay/sprites are frozen
 PLAYER_LIVES_ADDRESS = "F50DBE"    # $7E0DBE; current player's lives
 PAUSE_FLAG_ADDRESS = "F513D4"      # $7E13D4
@@ -24341,10 +24942,12 @@ JOYPAD_HELD_ADDRESS = "F50015"      # $7E0015; Start = bit 0x10
 JOYPAD_PRESSED_ADDRESS = "F50016"   # $7E0016; newly pressed B/Y/Start
 JOYPAD_AXLR_ADDRESS = "F50017"      # $7E0017; L = bit 0x20
 JOYPAD_AXLR_PRESSED_ADDRESS = "F50018"  # $7E0018; newly pressed A/X/L/R
-# Read four small WRAM windows that contain every live value the tracker uses.
+# Read five small WRAM windows that contain every live value the tracker uses.
 # This keeps Mario's $7E:0071 death byte authoritative without restoring the
 # old burst of ten one-byte requests, and avoids transferring a full 8 KiB on
-# every RetroArch polling cycle.
+# every RetroArch polling cycle. read_game_state() samples $7E:0071 once more
+# after these windows so a death state must agree at both ends of the shared
+# sample instead of trusting one transient RA_SNES value.
 LIVE_STATE_BASE_ADDRESS = "F50000"
 LIVE_STATE_SIZE = 0x2000
 LIVE_STATE_WINDOWS = (
@@ -24353,6 +24956,32 @@ LIVE_STATE_WINDOWS = (
     ("F51380", 0x0120),  # translevel, pause and goal timer
     ("F51EA2", 0x0060),  # per-translevel beaten/exit flags
     ("F51F00", 0x0040),  # exit counter
+)
+
+# SNI/RA_SNES exposes the five memory windows through separate requests, so
+# one polling pass is not an atomic SNES frame.  Confirm fields that can cause
+# irreversible or highly visible tracker changes before they reach the timer,
+# death, exit, and dashboard logic.  Exits and save slots receive the longest
+# confirmation because a transient value there can restore a different saved
+# session or move the whole Stream Desk timeline.
+LIVE_STATE_CONFIRMATION_SAMPLES = {
+    "mode": 2,
+    "level_number": 2,
+    "save_slot": 3,
+    "player_state": 2,
+    "player_lives": 2,
+    "translevel": 2,
+    "exits": 3,
+}
+LIVE_STATE_INITIAL_CONFIRMATION_SAMPLES = 2
+
+# Standard SMW $7E0071 actions that deliberately move Mario through a pipe,
+# door, or scripted entrance.  These can leave mode $14 and even return to the
+# same $010B room, so room identity alone cannot distinguish them from an
+# instant retry.  They suppress only the transition-only fallback; the real
+# $09 death byte and lives decrement remain authoritative.
+INTENTIONAL_LEVEL_TRANSITION_PLAYER_STATES = frozenset(
+    {0x05, 0x06, 0x07, 0x08, 0x0A, 0x0C, 0x0D}
 )
 
 PLAYER_SELECT_MODE = 0x0A
@@ -24651,6 +25280,8 @@ def build_obs_widget_state(
     hack: object = "No game detected",
     creator: object = "Unknown",
     exits_text: object = "Exits: 0 / Unknown",
+    exits_completed: object = None,
+    exits_total: object = None,
     level_deaths: object = 0,
     total_deaths: object = 0,
     game_timer: object = "00:00",
@@ -24659,20 +25290,37 @@ def build_obs_widget_state(
     connected: bool = False,
 ) -> dict[str, Any]:
     exits_match = re.search(
-        r"(?P<completed>\d+)\s*/\s*(?P<total>\d+|[^\s]+)",
+        r"(?P<completed>\d+)\s*/\s*(?P<total>\d+(?:\.\d+)?|[^\s]+)",
         str(exits_text or ""),
     )
-    completed_exits = (
-        _obs_widget_nonnegative_integer(exits_match.group("completed"))
-        if exits_match
-        else 0
+
+    parsed_completed: int | None = None
+    if exits_completed not in (None, ""):
+        try:
+            parsed_completed = max(0, int(float(str(exits_completed).strip())))
+        except (TypeError, ValueError, OverflowError):
+            parsed_completed = None
+    completed_exit_count = (
+        parsed_completed
+        if parsed_completed is not None
+        else (
+            _obs_widget_nonnegative_integer(exits_match.group("completed"))
+            if exits_match
+            else 0
+        )
     )
-    total_text = exits_match.group("total") if exits_match else "Unknown"
-    total_exits: int | None
+
+    total_source = (
+        exits_total
+        if exits_total not in (None, "")
+        else (exits_match.group("total") if exits_match else "Unknown")
+    )
+    total_exit_count: int | None
     try:
-        total_exits = max(0, int(total_text))
-    except (TypeError, ValueError):
-        total_exits = None
+        parsed_total = int(float(str(total_source).strip()))
+        total_exit_count = parsed_total if parsed_total > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        total_exit_count = None
     clean_creator = re.sub(
         r"^[^:]{1,36}:\s*",
         "",
@@ -24687,12 +25335,12 @@ def build_obs_widget_state(
         "hack": str(hack or "No game detected").strip()[:220],
         "creator": clean_creator[:180],
         "exits": {
-            "completed": completed_exits,
-            "total": total_exits,
+            "completed": completed_exit_count,
+            "total": total_exit_count,
             "label": (
-                f"{completed_exits} / {total_exits}"
-                if total_exits is not None
-                else f"{completed_exits} / Unknown"
+                f"{completed_exit_count} / {total_exit_count}"
+                if total_exit_count is not None
+                else f"{completed_exit_count} / Unknown"
             ),
         },
         "deaths": {
@@ -25666,6 +26314,15 @@ class TrackerWorker:
         self.current_time_key: str | None = None
         self.active_save_slot: int | None = None
         self.pending_save_slot: int | None = None
+        # Live WRAM arrives through several non-atomic bridge reads.  These
+        # values debounce the handful of fields that can otherwise make the
+        # RA core flash zero exits, restore the wrong Mario slot, reset a
+        # level, or invent a death from one inconsistent sample.
+        self.confirmed_live_state_fields: dict[str, int] = {}
+        self.pending_live_state_fields: dict[str, tuple[int, int]] = {}
+        self.initial_live_state_candidate: dict[str, int] | None = None
+        self.initial_live_state_candidate_samples = 0
+        self.last_stabilized_live_state: dict[str, int] | None = None
         # True from the Mario A/B/C confirmation input until SMW leaves the
         # file-select mode.  The fade can remain in mode $0A for several
         # samples, so this keeps both elapsed clocks moving immediately rather
@@ -25722,6 +26379,7 @@ class TrackerWorker:
         # retry identity used by the no-death-byte fallback.
         self.last_gameplay_level_number: int | None = None
         self.death_retry_origin_level_number: int | None = None
+        self.intentional_level_transition_pending = False
         # File selection/loading can expose a stale $71 = 09 or a lives-byte
         # handoff. Require one normal playable sample before accepting either
         # as a real death for the newly selected slot.
@@ -25746,6 +26404,13 @@ class TrackerWorker:
         self.hack_catalog: list[dict[str, Any]] = []
         self.fxpak_settings: dict[str, str] = {}
         self.fxpak_path_map: dict[str, str] = {}
+        # A successful library launch already has the authoritative catalog
+        # record. Keep it briefly so RetroArch/RA-compatible cores and MiSTer
+        # cannot turn a known exit total into "Unknown" merely by reporting a
+        # shortened or platform-specific ROM path on their next live sample.
+        self.pending_catalog_launch_game: dict[str, Any] = {}
+        self.pending_catalog_launch_path = ""
+        self.pending_catalog_launch_at = 0.0
         self.current_mode: int | None = None
         self.current_translevel: int | None = None
 
@@ -25862,9 +26527,22 @@ class TrackerWorker:
         self.config["spreadsheet_path"] = spreadsheet_path
         self.command_queue.put("reload_spreadsheet")
 
-    def notify_catalog_launch(self) -> None:
-        """Re-arm ROM detection after an app-initiated platform launch."""
-        self.command_queue.put("catalog_launch")
+    def notify_catalog_launch(
+        self,
+        game: dict[str, Any] | None = None,
+        rom_path: str = "",
+    ) -> None:
+        """Re-arm ROM detection and preserve the known launched-game total."""
+        payload = json.dumps(
+            {
+                "game": dict(game or {}),
+                "rom_path": str(rom_path or ""),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        self.command_queue.put(f"catalog_launch:{payload}")
 
     def request_hot_potato_safe_rotation(self, request_id: str) -> None:
         """Wait for a stable post-death state before allowing a ROM switch."""
@@ -26267,6 +26945,7 @@ class TrackerWorker:
         self.death_retry_origin_level = None
         self.last_gameplay_level_number = None
         self.death_retry_origin_level_number = None
+        self.intentional_level_transition_pending = False
         # File selection/loading can expose a stale $71 = 09 or a lives-byte
         # handoff. Require one normal playable sample before accepting either
         # as a real death for the newly selected slot.
@@ -26565,9 +27244,9 @@ class TrackerWorker:
             "Total Deaths: {total_deaths}",
             total_deaths=total_deaths,
         )
-        self.write_text_file("level_deaths.txt", level_death_text)
-        self.write_text_file("death_counter.txt", level_death_text)
-        self.write_text_file("total_deaths.txt", total_death_text)
+        # Notify the UI and websocket dock before doing filesystem work. OBS
+        # text files may live in a synchronized folder or be scanned by
+        # antivirus, and those writes should never hold up the live counter.
         self.send_event(
             "deaths",
             # deaths remains for compatibility with older UI consumers.
@@ -26575,6 +27254,9 @@ class TrackerWorker:
             level_deaths=level_deaths,
             total_deaths=total_deaths,
         )
+        self.write_text_file("level_deaths.txt", level_death_text)
+        self.write_text_file("death_counter.txt", level_death_text)
+        self.write_text_file("total_deaths.txt", total_death_text)
 
     def update_timer_files(self) -> None:
         game_text = format_timer(self.game_elapsed, milliseconds=False)
@@ -26654,6 +27336,7 @@ class TrackerWorker:
         self.death_retry_origin_level = None
         self.last_gameplay_level_number = None
         self.death_retry_origin_level_number = None
+        self.intentional_level_transition_pending = False
         self.death_startup_guard_active = False
         self.displayed_exit_count = None
         self.provisional_goal_exit = False
@@ -26679,6 +27362,11 @@ class TrackerWorker:
         self.run_reached_gameplay = False
         self.parked_time_key = None
         self.pending_save_slot = None
+        self.confirmed_live_state_fields = {}
+        self.pending_live_state_fields = {}
+        self.initial_live_state_candidate = None
+        self.initial_live_state_candidate_samples = 0
+        self.last_stabilized_live_state = None
         self.file_selection_confirmed = False
         self.last_progress_exit_count = None
         self.current_mode = None
@@ -26901,7 +27589,32 @@ class TrackerWorker:
                     )
                 continue
 
-            elif command == "catalog_launch":
+            elif command == "catalog_launch" or command.startswith(
+                "catalog_launch:"
+            ):
+                launch_payload: dict[str, Any] = {}
+                if command.startswith("catalog_launch:"):
+                    try:
+                        decoded_payload = json.loads(command.split(":", 1)[1])
+                        if isinstance(decoded_payload, dict):
+                            launch_payload = decoded_payload
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        launch_payload = {}
+
+                launched_game = launch_payload.get("game", {})
+                if isinstance(launched_game, dict):
+                    self.pending_catalog_launch_game = dict(launched_game)
+                else:
+                    self.pending_catalog_launch_game = {}
+                self.pending_catalog_launch_path = str(
+                    launch_payload.get("rom_path", "") or ""
+                ).strip()
+                self.pending_catalog_launch_at = (
+                    time.monotonic()
+                    if self.pending_catalog_launch_game
+                    else 0.0
+                )
+
                 # A platform can replace one ROM with another without ever
                 # exposing a blank ROM path between USB/network samples. In
                 # that case normal path-change detection cannot know a fresh
@@ -30021,6 +30734,78 @@ finally {
             f'No database match for detected title "{detected_title}"',
         )
 
+    def pending_catalog_hack_for_rom(
+        self,
+        rom_path: str,
+    ) -> dict[str, Any] | None:
+        """Return a recent launched-game record only for its matching ROM."""
+        pending = self.pending_catalog_launch_game
+        launched_at = self.pending_catalog_launch_at
+        if not pending or launched_at <= 0.0:
+            return None
+
+        if time.monotonic() - launched_at > 45.0:
+            self.pending_catalog_launch_game = {}
+            self.pending_catalog_launch_path = ""
+            self.pending_catalog_launch_at = 0.0
+            return None
+
+        try:
+            total_exits = int(pending.get("total_exits"))
+        except (TypeError, ValueError):
+            return None
+        if total_exits < 0:
+            return None
+
+        def normalized_path(value: object) -> str:
+            return (
+                str(value or "")
+                .strip()
+                .replace("\\", "/")
+                .rstrip("/")
+                .casefold()
+            )
+
+        observed_path = normalized_path(rom_path)
+        expected_path = normalized_path(self.pending_catalog_launch_path)
+        path_matches = bool(
+            observed_path
+            and expected_path
+            and observed_path == expected_path
+        )
+        if observed_path and expected_path and not path_matches:
+            observed_name = normalize_title(clean_rom_filename(rom_path))
+            expected_name = normalize_title(
+                clean_rom_filename(self.pending_catalog_launch_path)
+            )
+            path_matches = bool(
+                observed_name
+                and expected_name
+                and observed_name == expected_name
+            )
+        elif observed_path and not expected_path:
+            observed_name = normalize_title(clean_rom_filename(rom_path))
+            launched_title = normalize_title(pending.get("title", ""))
+            path_matches = bool(
+                observed_name
+                and launched_title
+                and observed_name == launched_title
+            )
+
+        if not path_matches:
+            return None
+
+        hack = dict(pending)
+        hack["title"] = str(
+            hack.get("title") or clean_rom_filename(rom_path)
+        )
+        hack["author"] = str(hack.get("author") or "Unknown")
+        hack["total_exits"] = total_exits
+        self.pending_catalog_launch_game = {}
+        self.pending_catalog_launch_path = ""
+        self.pending_catalog_launch_at = 0.0
+        return hack
+
     def refresh_current_hack_metadata(self) -> None:
         rom_path = self.previous_rom_path or ""
 
@@ -30037,6 +30822,11 @@ finally {
             detected_title,
             self.database,
         )
+        if hack is None:
+            launched_hack = self.pending_catalog_hack_for_rom(rom_path)
+            if launched_hack is not None:
+                hack = launched_hack
+                match_result = "verified app launch mapping"
 
         completed = (
             self.displayed_exit_count
@@ -30849,6 +31639,36 @@ finally {
                 byte_at(f"{numeric_address + 1:06X}") << 8
             )
 
+        player_state = byte_at(PLAYER_STATE_ADDRESS)
+        primary_player_state = player_state
+        try:
+            late_player_state = self.read_byte(
+                ws,
+                PLAYER_STATE_ADDRESS,
+            )
+        except Exception:
+            # This is a confirmation sample only. The complete primary
+            # snapshot remains usable if a bridge disconnect begins between
+            # the main reads and this optional one-byte check.
+            late_player_state = None
+        # A genuine SMW death state normally persists across both reads.  A
+        # lone $09 at either edge is an incoherent bridge sample and must not
+        # become an irreversible death event.  Lives and retry transitions
+        # remain independent fallbacks for unusually short custom routines.
+        if player_state == 0x09 and late_player_state != 0x09:
+            player_state = 0x00
+        elif player_state != 0x09 and late_player_state == 0x09:
+            player_state = 0x00
+
+        pipe_timer = byte_at(PIPE_TIMER_ADDRESS)
+        intentional_transition = bool(
+            primary_player_state
+            in INTENTIONAL_LEVEL_TRANSITION_PLAYER_STATES
+            or late_player_state
+            in INTENTIONAL_LEVEL_TRANSITION_PLAYER_STATES
+            or pipe_timer != 0
+        )
+
         translevel = byte_at(TRANSLEVEL_ADDRESS)
         level_flags_address = (
             LEVEL_FLAGS_BASE_ADDRESS + translevel
@@ -30858,7 +31678,10 @@ finally {
             "mode": byte_at(GAME_MODE_ADDRESS),
             "level_number": little_endian_word_at(LEVEL_NUMBER_ADDRESS),
             "save_slot": byte_at(SAVE_SLOT_ADDRESS),
-            "player_state": byte_at(PLAYER_STATE_ADDRESS),
+            "player_state": player_state,
+            "pipe_timer": pipe_timer,
+            "pipe_action": byte_at(PIPE_ACTION_ADDRESS),
+            "intentional_transition": int(intentional_transition),
             "sprite_lock": byte_at(SPRITE_LOCK_ADDRESS),
             "player_lives": byte_at(PLAYER_LIVES_ADDRESS),
             "paused": byte_at(PAUSE_FLAG_ADDRESS),
@@ -30875,6 +31698,116 @@ finally {
                 JOYPAD_AXLR_PRESSED_ADDRESS
             ),
         }
+
+    def stabilize_live_state(
+        self,
+        state: dict[str, int],
+    ) -> dict[str, int] | None:
+        """Return a coherent live sample, holding transient bridge values.
+
+        RA_SNES/SNI memory windows are sequential rather than atomic.  This
+        filter deliberately runs before all timer, death, exit, and dashboard
+        updates so every consumer sees the same confirmed values.
+        """
+        raw = {key: int(value) for key, value in state.items()}
+        sensitive_snapshot = {
+            field: raw[field]
+            for field in LIVE_STATE_CONFIRMATION_SAMPLES
+        }
+
+        if not self.confirmed_live_state_fields:
+            if sensitive_snapshot == self.initial_live_state_candidate:
+                self.initial_live_state_candidate_samples += 1
+            else:
+                self.initial_live_state_candidate = sensitive_snapshot
+                self.initial_live_state_candidate_samples = 1
+
+            if (
+                self.initial_live_state_candidate_samples
+                < LIVE_STATE_INITIAL_CONFIRMATION_SAMPLES
+            ):
+                return None
+
+            self.confirmed_live_state_fields = dict(sensitive_snapshot)
+            self.pending_live_state_fields = {}
+            self.initial_live_state_candidate = None
+            self.initial_live_state_candidate_samples = 0
+            self.last_stabilized_live_state = dict(raw)
+            return dict(raw)
+
+        filtered = dict(raw)
+        previous_state = self.last_stabilized_live_state or {}
+
+        for field, required_samples in LIVE_STATE_CONFIRMATION_SAMPLES.items():
+            value = raw[field]
+            confirmed = self.confirmed_live_state_fields[field]
+
+            # A running Mario A/B/C session cannot legitimately change slots
+            # without first returning to file select, which stops the run.
+            # Holding this byte prevents a prolonged RA read glitch from
+            # restoring another slot's deaths and elapsed times.
+            if (
+                field == "save_slot"
+                and self.game_started
+                and self.active_save_slot in {0, 1, 2}
+                and value != self.active_save_slot
+            ):
+                self.confirmed_live_state_fields[field] = int(
+                    self.active_save_slot
+                )
+                self.pending_live_state_fields.pop(field, None)
+                filtered[field] = int(self.active_save_slot)
+                continue
+
+            # Exit progress is monotonic inside one running save.  Reject a
+            # decrease or a multi-exit leap outright; a real slot/ROM change
+            # passes through the normal reset/file-select path and reseeds the
+            # filter.  A normal +1 still receives the confirmation below.
+            if (
+                field == "exits"
+                and self.game_started
+                and self.active_save_slot in {0, 1, 2}
+                and (value < confirmed or value > confirmed + 1)
+            ):
+                self.pending_live_state_fields.pop(field, None)
+                filtered[field] = confirmed
+                continue
+
+            if value == confirmed:
+                self.pending_live_state_fields.pop(field, None)
+                filtered[field] = confirmed
+                continue
+
+            pending_value, pending_samples = (
+                self.pending_live_state_fields.get(field, (value, 0))
+            )
+            if pending_value == value:
+                pending_samples += 1
+            else:
+                pending_value = value
+                pending_samples = 1
+
+            if pending_samples >= required_samples:
+                self.confirmed_live_state_fields[field] = value
+                self.pending_live_state_fields.pop(field, None)
+                filtered[field] = value
+            else:
+                self.pending_live_state_fields[field] = (
+                    pending_value,
+                    pending_samples,
+                )
+                filtered[field] = confirmed
+
+        # level_flags is indexed using the raw translevel.  If that level ID
+        # is being held for confirmation, keep its matching prior flag too.
+        if (
+            filtered["translevel"] != raw["translevel"]
+            and "level_flags" in previous_state
+        ):
+            filtered["level_flags"] = previous_state["level_flags"]
+
+        self.last_stabilized_live_state = dict(filtered)
+        return filtered
 
     def update_death_counter_from_state(
         self,
@@ -31078,8 +32011,6 @@ finally {
         self.death_latch_saw_lives_drop = lives_signal
         self.level_death_count += 1
         self.death_count += 1
-        self.save_current_death_count()
-        self.save_current_level_progress()
         self.update_death_file()
         self.send_event(
             "death_recorded",
@@ -31087,6 +32018,8 @@ finally {
             total_deaths=max(0, int(self.death_count)),
             reason=source,
         )
+        self.save_current_death_count()
+        self.save_current_level_progress()
         self.append_streamerbot_level_event("death", reason=source)
         self.log(
             f"Level death {self.level_death_count}; total death "
@@ -31166,6 +32099,7 @@ finally {
         level_number: int | None,
         exits: int,
         level_end_timer: int,
+        intentional_transition: bool = False,
     ) -> bool:
         """Count retry/reload deaths that expose no reliable death byte.
 
@@ -31180,6 +32114,26 @@ finally {
         death; the event is confirmed only if the same level is entered again.
         """
         previous_mode = self.previous_mode
+
+        # Pipes and doors have their own standard $71 actions, and pipe travel
+        # also exposes $88.  Once either is seen, suppress the ambiguous
+        # transition-only retry detector until gameplay has cleanly settled at
+        # the destination. This also covers same-room doors and teleports where
+        # $010B cannot distinguish the destination from the origin.
+        if intentional_transition:
+            self.intentional_level_transition_pending = True
+        if self.intentional_level_transition_pending:
+            self.death_retry_transition_pending = False
+            self.death_retry_origin_level = None
+            self.death_retry_origin_level_number = None
+            if (
+                mode == LEVEL_MODE
+                and previous_mode == LEVEL_MODE
+                and not intentional_transition
+            ):
+                self.intentional_level_transition_pending = False
+            return False
+
         previous_gameplay_level_number = self.last_gameplay_level_number
         if mode == LEVEL_MODE and level_number is not None:
             self.last_gameplay_level_number = int(level_number) & 0xFFFF
@@ -31253,6 +32207,14 @@ finally {
             return recorded
 
         if mode != LEVEL_MODE:
+            return False
+
+        # Require one full playable sample after returning to mode $14 before
+        # confirming a same-room retry. On RA_SNES, a pipe or door can briefly
+        # report gameplay again while $010B still contains the room being
+        # exited. Waiting for the next shared sample lets the destination room
+        # settle and prevents that ordinary transition from becoming a death.
+        if previous_mode != LEVEL_MODE:
             return False
 
         origin_level = self.death_retry_origin_level
@@ -31633,6 +32595,12 @@ finally {
             level_number=state.get("level_number"),
             exits=exits,
             level_end_timer=level_end_timer,
+            intentional_transition=bool(
+                state.get("intentional_transition", 0)
+                or state.get("pipe_timer", 0)
+                or state.get("player_state", 0)
+                in INTENTIONAL_LEVEL_TRANSITION_PLAYER_STATES
+            ),
         )
 
         if entered_title_screen and self.level_finished:
@@ -32242,8 +33210,12 @@ finally {
         )
         self.log(f"Connected to {device}.")
 
-        self.current_total = "Unknown"
-        self.current_matched = False
+        # Keep the matched game's metadata across a transient bridge
+        # reconnect. MiSTer/RA_SNES can briefly reconnect as a completed game
+        # enters its ending, and clearing these values here changed a correct
+        # "12 / 12" display into "12 / Unknown" even though the same ROM was
+        # still loaded. A genuine ROM-path change below still clears and
+        # rematches the metadata normally.
         last_tick = time.monotonic()
         last_timer_write = 0.0
 
@@ -32321,8 +33293,15 @@ finally {
                 last_tick = now
 
                 if rom_path:
-                    state = self.read_game_state(ws)
+                    raw_state = self.read_game_state(ws)
                     self.last_successful_connection_sample_at = now
+                    state = self.stabilize_live_state(raw_state)
+                    if state is None:
+                        # Do not let the first unconfirmed bridge frame reach
+                        # any live counter. A stable game supplies the matching
+                        # confirmation on the next normal polling cycle.
+                        self.stop_event.wait(CHECK_INTERVAL_SECONDS)
+                        continue
                     self.update_timers_from_state(
                         state,
                         delta,
@@ -32525,6 +33504,9 @@ class TrackerApp:
         self._last_root_configure_size: tuple[int, int] | None = None
         self._last_root_configure_at: float | None = None
         self.responsive_ui_waiting_for_quiet = False
+        self._pointer_tooltip_window: tk.Label | None = None
+        self._pointer_tooltip_after_id: str | None = None
+        self._pointer_tooltip_owner: tk.Misc | None = None
         self.main_canvas_layout_after_id: str | None = None
         self.main_canvas_window_size: tuple[int, int] | None = None
         self.main_scrollbar_visible = False
@@ -32580,6 +33562,41 @@ class TrackerApp:
             self._bootstrap_stats_database()
         )
         self.event_queue: queue.Queue = queue.Queue()
+        self.streamerbot_dispatcher: StreamerBotDispatcher | None = None
+        self.streamerbot_status_var = tk.StringVar(
+            value=self._translate_ui_text("Streamer.bot is disabled.")
+        )
+        self.streamerbot_last_game_identity = ""
+        self.streamerbot_last_exit_count: int | None = None
+        self.streamerbot_last_connection_state: bool | None = None
+        self.streamerbot_last_game_timer_running: bool | None = None
+        self.streamerbot_seen_achievement_ids: set[int] = set()
+        self.streamerbot_achievement_baseline_games: set[int] = set()
+        try:
+            cached_achievement_game_id = int(
+                self._retroachievements_overview_summary.get("game_id", 0)
+                or 0
+            )
+        except (TypeError, ValueError):
+            cached_achievement_game_id = 0
+        if cached_achievement_game_id:
+            self.streamerbot_achievement_baseline_games.add(
+                cached_achievement_game_id
+            )
+        for achievement_item in self._retroachievements_overview_summary.get(
+            "items",
+            [],
+        ):
+            if not isinstance(achievement_item, dict) or not bool(
+                achievement_item.get("unlocked", False)
+            ):
+                continue
+            try:
+                achievement_id = int(achievement_item.get("id", 0) or 0)
+            except (TypeError, ValueError):
+                achievement_id = 0
+            if achievement_id:
+                self.streamerbot_seen_achievement_ids.add(achievement_id)
         self.worker: TrackerWorker | None = None
         configured_fxpak_mappings = self.config.get(
             "fxpak_rom_mappings",
@@ -32942,6 +33959,8 @@ class TrackerApp:
             self.config["obs_widget_access_token"] = stored_obs_widget_token
         self.obs_widget_access_token = stored_obs_widget_token
         self.obs_widget_state_lock = threading.Lock()
+        self.obs_widget_completed_exits = 0
+        self.obs_widget_total_exits: int | None = None
         self.obs_widget_state = build_obs_widget_state(
             achievements=self._retroachievements_overview_summary,
         )
@@ -33040,6 +34059,7 @@ class TrackerApp:
 
         self._build_ui()
         self._refresh_obs_widget_state()
+        self._configure_streamerbot_dispatcher()
         self.root.after_idle(
             lambda: self._localize_widget_tree(self.root)
         )
@@ -34432,6 +35452,116 @@ class TrackerApp:
             **kwargs,
         )
 
+    def _hide_pointer_tooltip(self) -> None:
+        """Close the shared sidebar label and cancel any pending appearance."""
+
+        pending = getattr(self, "_pointer_tooltip_after_id", None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except (AttributeError, tk.TclError):
+                pass
+        self._pointer_tooltip_after_id = None
+        popup = getattr(self, "_pointer_tooltip_window", None)
+        if popup is not None:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+        self._pointer_tooltip_window = None
+        self._pointer_tooltip_owner = None
+
+    def _bind_pointer_tooltip(
+        self,
+        widget: tk.Misc,
+        label_text: str,
+    ) -> None:
+        """Show a small translated label beside a main-rail icon."""
+
+        def tooltip_position(pointer_x: int, pointer_y: int) -> tuple[int, int]:
+            root_x = int(self.root.winfo_rootx())
+            root_y = int(self.root.winfo_rooty())
+            return (
+                max(0, int(pointer_x) - root_x + self._ui_px(16)),
+                max(0, int(pointer_y) - root_y + self._ui_px(18)),
+            )
+
+        def place_tooltip(
+            tooltip_label: tk.Label,
+            pointer_x: int,
+            pointer_y: int,
+        ) -> None:
+            tooltip_x, tooltip_y = tooltip_position(pointer_x, pointer_y)
+            tooltip_label.update_idletasks()
+            root_width = max(1, int(self.root.winfo_width()))
+            root_height = max(1, int(self.root.winfo_height()))
+            tooltip_width = max(1, int(tooltip_label.winfo_reqwidth()))
+            tooltip_height = max(1, int(tooltip_label.winfo_reqheight()))
+            tooltip_x = min(
+                tooltip_x,
+                max(0, root_width - tooltip_width - self._ui_px(8)),
+            )
+            tooltip_y = min(
+                tooltip_y,
+                max(0, root_height - tooltip_height - self._ui_px(8)),
+            )
+            tooltip_label.place(x=tooltip_x, y=tooltip_y)
+            tooltip_label.lift()
+
+        def show_at(pointer_x: int, pointer_y: int) -> None:
+            self._pointer_tooltip_after_id = None
+            try:
+                if not widget.winfo_exists() or not widget.winfo_viewable():
+                    return
+                tooltip_label = tk.Label(
+                    self.root,
+                    text=self._translate_ui_text(label_text),
+                    font=("Segoe UI", 9, "bold"),
+                    fg=STREAM_DESK["text_strong"],
+                    bg=STREAM_DESK["surface_alt"],
+                    bd=0,
+                    padx=self._ui_px(10),
+                    pady=self._ui_px(6),
+                    highlightbackground=STREAM_DESK["border_strong"],
+                    highlightthickness=1,
+                )
+                place_tooltip(tooltip_label, pointer_x, pointer_y)
+                self._pointer_tooltip_window = tooltip_label
+                self._pointer_tooltip_owner = widget
+            except (AttributeError, tk.TclError):
+                self._pointer_tooltip_window = None
+                self._pointer_tooltip_owner = None
+
+        def queue_show(event) -> None:
+            self._hide_pointer_tooltip()
+            try:
+                pointer_x = int(event.x_root)
+                pointer_y = int(event.y_root)
+                self._pointer_tooltip_after_id = self.root.after(
+                    100,
+                    lambda: show_at(pointer_x, pointer_y),
+                )
+            except (AttributeError, tk.TclError, TypeError, ValueError):
+                self._pointer_tooltip_after_id = None
+
+        def follow_pointer(event) -> None:
+            popup = getattr(self, "_pointer_tooltip_window", None)
+            if popup is None or getattr(self, "_pointer_tooltip_owner", None) is not widget:
+                return
+            try:
+                place_tooltip(popup, int(event.x_root), int(event.y_root))
+            except (AttributeError, tk.TclError, TypeError, ValueError):
+                pass
+
+        widget.bind("<Enter>", queue_show, add="+")
+        widget.bind("<Motion>", follow_pointer, add="+")
+        widget.bind("<Leave>", lambda _event: self._hide_pointer_tooltip(), add="+")
+        widget.bind(
+            "<ButtonPress>",
+            lambda _event: self._hide_pointer_tooltip(),
+            add="+",
+        )
+
     def _draw_stream_desk_icon(
         self,
         canvas: tk.Canvas,
@@ -34441,6 +35571,7 @@ class TrackerApp:
         size: int,
         origin_x: int = 0,
         origin_y: int = 0,
+        full_color: bool = False,
     ) -> None:
         """Draw one scalable line icon shared by navigation and Game Modes."""
 
@@ -34448,6 +35579,104 @@ class TrackerApp:
         stroke = max(1, round(2.25 * scale))
 
         key = str(icon_key or "").casefold()
+        game_mode_asset_name = GAME_MODE_ICON_IMAGE_FILES.get(key)
+        if (
+            game_mode_asset_name is not None
+            and Image is not None
+            and ImageTk is not None
+        ):
+            try:
+                asset_path = bundled_resource_path(
+                    "game_mode_assets",
+                    game_mode_asset_name,
+                )
+                with Image.open(asset_path) as asset_source:
+                    asset_image = asset_source.convert("RGBA")
+                alpha_bounds = asset_image.getchannel("A").getbbox()
+                if alpha_bounds is not None:
+                    asset_image = asset_image.crop(alpha_bounds)
+                target_size = max(1, int(size))
+                resampling = (
+                    Image.Resampling.NEAREST
+                    if key == "game_mode_mario_kaizo_challenge"
+                    else Image.Resampling.LANCZOS
+                )
+                asset_image.thumbnail(
+                    (target_size, target_size),
+                    resampling,
+                )
+                composed = Image.new(
+                    "RGBA",
+                    (target_size, target_size),
+                    (0, 0, 0, 0),
+                )
+                composed.alpha_composite(
+                    asset_image,
+                    (
+                        (target_size - asset_image.width) // 2,
+                        (target_size - asset_image.height) // 2,
+                    ),
+                )
+                icon_photo = ImageTk.PhotoImage(composed, master=canvas)
+                canvas.create_image(
+                    origin_x,
+                    origin_y,
+                    anchor="nw",
+                    image=icon_photo,
+                )
+                canvas._stream_desk_icon_photo = icon_photo
+                return
+            except (OSError, ValueError, AttributeError, tk.TclError):
+                pass
+        if key == "obs" and Image is not None and ImageTk is not None:
+            try:
+                cached_obs_logo = getattr(
+                    self,
+                    "_obs_logo_source_image",
+                    None,
+                )
+                if cached_obs_logo is None:
+                    obs_logo_path = bundled_resource_path(
+                        "app_assets",
+                        "obs_logo.png",
+                    )
+                    with Image.open(obs_logo_path) as obs_logo_source:
+                        obs_logo = obs_logo_source.convert("RGBA")
+                    alpha_bounds = obs_logo.getchannel("A").getbbox()
+                    if alpha_bounds is not None:
+                        obs_logo = obs_logo.crop(alpha_bounds)
+                    self._obs_logo_source_image = obs_logo.copy()
+                else:
+                    obs_logo = cached_obs_logo.copy()
+                target_size = max(1, int(size))
+                obs_logo.thumbnail(
+                    (target_size, target_size),
+                    Image.Resampling.LANCZOS,
+                )
+                composed = Image.new(
+                    "RGBA",
+                    (target_size, target_size),
+                    (0, 0, 0, 0),
+                )
+                composed.alpha_composite(
+                    obs_logo,
+                    (
+                        (target_size - obs_logo.width) // 2,
+                        (target_size - obs_logo.height) // 2,
+                    ),
+                )
+                icon_photo = ImageTk.PhotoImage(composed, master=canvas)
+                canvas.create_image(
+                    origin_x,
+                    origin_y,
+                    anchor="nw",
+                    image=icon_photo,
+                )
+                canvas._stream_desk_icon_photo = icon_photo
+                return
+            except (OSError, ValueError, AttributeError, tk.TclError):
+                pass
+        key = GAME_MODE_ICON_FALLBACK_KEYS.get(key, key)
         reference_icon_keys = {
             "dashboard",
             "overview",
@@ -34456,11 +35685,26 @@ class TrackerApp:
             "random",
             "controller",
             "platform",
+            "super_nintendo_console",
+            "super_famicom_controller",
+            "windows_file",
+            "file_locations",
+            "nvme",
+            "storage",
+            "obs",
+            "timer",
+            "stopwatch",
+            "open_book",
+            "book",
+            "help",
+            "bell",
+            "updates",
             "modes",
             "settings",
             "language",
             "smw_central",
             "mario_hat",
+            "streamerbot",
         }
         if (
             key in reference_icon_keys
@@ -34491,11 +35735,13 @@ class TrackerApp:
                 coordinates: tuple[tuple[float, float], ...],
                 *,
                 width: int = antialiased_stroke,
+                line_color: str | None = None,
             ) -> None:
                 points = [aa_point(x, y) for x, y in coordinates]
+                resolved_color = line_color or color
                 icon_draw.line(
                     points,
-                    fill=color,
+                    fill=resolved_color,
                     width=width,
                     joint="curve",
                 )
@@ -34508,7 +35754,7 @@ class TrackerApp:
                             round(endpoint[0] + radius),
                             round(endpoint[1] + radius),
                         ),
-                        fill=color,
+                        fill=resolved_color,
                     )
 
             def aa_curve(
@@ -34516,6 +35762,8 @@ class TrackerApp:
                 control_1: tuple[float, float],
                 control_2: tuple[float, float],
                 end: tuple[float, float],
+                *,
+                line_color: str | None = None,
             ) -> None:
                 points: list[tuple[float, float]] = []
                 for step_index in range(17):
@@ -34534,35 +35782,62 @@ class TrackerApp:
                         + progress ** 3 * end[1]
                     )
                     points.append((x, y))
-                aa_line(tuple(points))
+                aa_line(tuple(points), line_color=line_color)
 
             if key == "dashboard":
-                for x1, y1, x2, y2 in (
-                    (8, 8, 22, 27),
-                    (28, 8, 41, 20),
-                    (8, 32, 22, 41),
-                    (28, 25, 41, 41),
-                ):
+                dashboard_tiles = (
+                    (8, 8, 22, 27, "#3B82F6"),
+                    (28, 8, 41, 20, "#22C55E"),
+                    (8, 32, 22, 41, "#A855F7"),
+                    (28, 25, 41, 41, "#F59E0B"),
+                )
+                for x1, y1, x2, y2, tile_color in dashboard_tiles:
                     icon_draw.rounded_rectangle(
                         (*aa_point(x1, y1), *aa_point(x2, y2)),
                         radius=round(2.7 * unit),
-                        outline=color,
+                        fill=(tile_color if full_color else None),
+                        outline=(tile_color if full_color else color),
                         width=antialiased_stroke,
                     )
             elif key == "tracker":
                 icon_draw.rounded_rectangle(
                     (*aa_point(8, 8), *aa_point(40, 40)),
                     radius=round(3.0 * unit),
-                    outline=color,
+                    fill=("#173B59" if full_color else None),
+                    outline=("#38BDF8" if full_color else color),
                     width=antialiased_stroke,
                 )
-                aa_line(((8, 19), (40, 19)))
-                aa_line(((19, 8), (19, 40)))
+                aa_line(
+                    ((8, 19), (40, 19)),
+                    line_color=("#FACC15" if full_color else color),
+                )
+                aa_line(
+                    ((19, 8), (19, 40)),
+                    line_color=("#22C55E" if full_color else color),
+                )
             elif key == "library":
-                aa_line(((11, 13), (11, 38)))
-                aa_line(((19, 16), (19, 38)))
-                aa_line(((27, 16), (27, 38)))
-                aa_line(((34, 15), (40, 37)))
+                book_colors = (
+                    "#3B82F6",
+                    "#22C55E",
+                    "#A855F7",
+                    "#F59E0B",
+                )
+                aa_line(
+                    ((11, 13), (11, 38)),
+                    line_color=(book_colors[0] if full_color else color),
+                )
+                aa_line(
+                    ((19, 16), (19, 38)),
+                    line_color=(book_colors[1] if full_color else color),
+                )
+                aa_line(
+                    ((27, 16), (27, 38)),
+                    line_color=(book_colors[2] if full_color else color),
+                )
+                aa_line(
+                    ((34, 15), (40, 37)),
+                    line_color=(book_colors[3] if full_color else color),
+                )
             elif key in {"random", "modes"}:
                 aa_line(((7, 16), (12, 16)))
                 aa_curve((12, 16), (18, 16), (20, 32), (29, 32))
@@ -34572,6 +35847,253 @@ class TrackerApp:
                 aa_curve((12, 32), (18, 32), (20, 16), (29, 16))
                 aa_line(((29, 16), (39, 16)))
                 aa_line(((34, 11), (39, 16), (34, 21)))
+            elif key == "super_nintendo_console":
+                # Compact North American Super Nintendo console: gray shell,
+                # dark cartridge slot, purple controls, and twin front ports.
+                icon_draw.rounded_rectangle(
+                    (*aa_point(4, 9), *aa_point(44, 40)),
+                    radius=round(5.0 * unit),
+                    fill="#D8DDE5",
+                    outline="#8C97A6",
+                    width=antialiased_stroke,
+                )
+                icon_draw.rounded_rectangle(
+                    (*aa_point(13, 13), *aa_point(35, 22)),
+                    radius=round(2.0 * unit),
+                    fill="#303A46",
+                    outline="#596574",
+                    width=max(3, round(1.5 * unit)),
+                )
+                icon_draw.rounded_rectangle(
+                    (*aa_point(8, 25), *aa_point(19, 30)),
+                    radius=round(1.5 * unit),
+                    fill="#7A5CE5",
+                )
+                icon_draw.rounded_rectangle(
+                    (*aa_point(21, 25), *aa_point(27, 30)),
+                    radius=round(1.5 * unit),
+                    fill="#A78BFA",
+                )
+                aa_line(
+                    ((6, 33), (42, 33)),
+                    width=max(3, round(1.6 * unit)),
+                    line_color="#A6AFBA",
+                )
+                for port_x in (32, 39):
+                    port_radius = 2.6 * unit
+                    center_x, center_y = aa_point(port_x, 37)
+                    icon_draw.ellipse(
+                        (
+                            round(center_x - port_radius),
+                            round(center_y - port_radius),
+                            round(center_x + port_radius),
+                            round(center_y + port_radius),
+                        ),
+                        fill="#303A46",
+                        outline="#596574",
+                        width=max(2, round(1.0 * unit)),
+                    )
+            elif key == "super_famicom_controller":
+                # The rounded Super Famicom pad, including its cross-shaped
+                # D-pad, paired Select/Start buttons, and four original-color
+                # face buttons. Brand colors remain visible when unselected.
+                icon_draw.rounded_rectangle(
+                    (*aa_point(3, 12), *aa_point(45, 37)),
+                    radius=round(11.5 * unit),
+                    fill="#D8DDE5",
+                    outline="#8C97A6",
+                    width=antialiased_stroke,
+                )
+                dpad_stroke = max(5, round(3.8 * unit))
+                aa_line(
+                    ((12, 19), (12, 31)),
+                    width=dpad_stroke,
+                    line_color="#303A46",
+                )
+                aa_line(
+                    ((6, 25), (18, 25)),
+                    width=dpad_stroke,
+                    line_color="#303A46",
+                )
+                select_stroke = max(3, round(2.1 * unit))
+                aa_line(
+                    ((20, 28), (23, 27)),
+                    width=select_stroke,
+                    line_color="#596574",
+                )
+                aa_line(
+                    ((25, 27), (28, 26)),
+                    width=select_stroke,
+                    line_color="#596574",
+                )
+                famicom_buttons = (
+                    (36, 18.5, "#3B82F6"),
+                    (41, 23.5, "#EF4444"),
+                    (36, 28.5, "#FACC15"),
+                    (31, 23.5, "#22C55E"),
+                )
+                for button_x, button_y, button_color in famicom_buttons:
+                    button_radius = 2.7 * unit
+                    center_x, center_y = aa_point(button_x, button_y)
+                    icon_draw.ellipse(
+                        (
+                            round(center_x - button_radius),
+                            round(center_y - button_radius),
+                            round(center_x + button_radius),
+                            round(center_y + button_radius),
+                        ),
+                        fill=button_color,
+                        outline="#596574",
+                        width=max(2, round(0.8 * unit)),
+                    )
+            elif key in {"windows_file", "file_locations"}:
+                # A Windows document rather than a generic folder: folded
+                # page corner outside, four familiar Windows panes inside.
+                icon_draw.polygon(
+                    (
+                        *aa_point(10, 5),
+                        *aa_point(30, 5),
+                        *aa_point(40, 15),
+                        *aa_point(40, 43),
+                        *aa_point(10, 43),
+                    ),
+                    fill="#EAF4FF",
+                )
+                aa_line(
+                    ((10, 5), (30, 5), (40, 15), (40, 43), (10, 43), (10, 5)),
+                    line_color="#69AEEA",
+                )
+                aa_line(
+                    ((30, 5), (30, 15), (40, 15)),
+                    line_color="#69AEEA",
+                )
+                windows_blue = "#3A9DF8"
+                for x1, y1, x2, y2 in (
+                    (15, 20, 23, 28),
+                    (25, 19, 35, 28),
+                    (15, 30, 23, 38),
+                    (25, 30, 35, 39),
+                ):
+                    icon_draw.rectangle(
+                        (*aa_point(x1, y1), *aa_point(x2, y2)),
+                        fill=windows_blue,
+                    )
+            elif key in {"nvme", "storage"}:
+                # Horizontal M.2 NVMe board with mounting holes, controller
+                # packages, and the gold edge connector/notch at the right.
+                icon_draw.rounded_rectangle(
+                    (*aa_point(3, 14), *aa_point(45, 34)),
+                    radius=round(2.8 * unit),
+                    fill="#2FAF73",
+                    outline="#79D9A4",
+                    width=antialiased_stroke,
+                )
+                for hole_x in (8, 41):
+                    icon_draw.ellipse(
+                        (*aa_point(hole_x - 2, 22), *aa_point(hole_x + 2, 26)),
+                        fill="#D9A928",
+                        outline="#FFE08A",
+                        width=max(3, round(1.8 * unit)),
+                    )
+                for x1, y1, x2, y2 in (
+                    (13, 18, 24, 30),
+                    (27, 18, 35, 30),
+                ):
+                    icon_draw.rounded_rectangle(
+                        (*aa_point(x1, y1), *aa_point(x2, y2)),
+                        radius=round(1.2 * unit),
+                        fill="#23313E",
+                        outline="#A6B4C0",
+                        width=max(3, round(1.7 * unit)),
+                    )
+                contact_color = "#D9A928"
+                for contact_y in (18, 21, 27, 30):
+                    aa_line(
+                        ((44, contact_y), (47, contact_y)),
+                        width=max(2, round(1.4 * unit)),
+                        line_color=contact_color,
+                    )
+                aa_line(
+                    ((45, 23), (45, 25)),
+                    width=max(3, round(1.7 * unit)),
+                    line_color=contact_color,
+                )
+            elif key == "obs":
+                # The OBS three-blade mark: outer ring, three interlocking
+                # lobes, and the small center aperture.
+                icon_draw.ellipse(
+                    (*aa_point(4, 4), *aa_point(44, 44)),
+                    fill="#101317",
+                    outline="#F4F6F8",
+                    width=antialiased_stroke,
+                )
+                for bounds in (
+                    (17, 7, 31, 24),
+                    (26, 21, 41, 37),
+                    (7, 23, 23, 40),
+                ):
+                    icon_draw.ellipse(
+                        (*aa_point(bounds[0], bounds[1]), *aa_point(bounds[2], bounds[3])),
+                        outline="#F4F6F8",
+                        width=antialiased_stroke,
+                    )
+                icon_draw.ellipse(
+                    (*aa_point(19, 19), *aa_point(29, 29)),
+                    fill="#101317",
+                    outline="#F4F6F8",
+                    width=max(4, round(2.4 * unit)),
+                )
+            elif key in {"timer", "stopwatch"}:
+                icon_draw.ellipse(
+                    (*aa_point(8, 12), *aa_point(40, 44)),
+                    fill="#2E91E5",
+                    outline="#9BD2FF",
+                    width=antialiased_stroke,
+                )
+                aa_line(((24, 12), (24, 6)), line_color="#F4C542")
+                aa_line(((18, 6), (30, 6)), line_color="#F4C542")
+                aa_line(((35, 15), (40, 10)), line_color="#F4C542")
+                aa_line(((24, 20), (24, 28), (31, 32)), line_color="#FFFFFF")
+            elif key in {"help", "open_book", "book"}:
+                left_page = ((5, 12), (11, 9), (18, 10), (24, 15), (24, 41), (18, 37), (11, 36), (5, 39))
+                right_page = ((43, 12), (37, 9), (30, 10), (24, 15), (24, 41), (30, 37), (37, 36), (43, 39))
+                icon_draw.polygon(
+                    tuple(aa_point(x, y) for x, y in left_page),
+                    fill="#3A9DF8",
+                )
+                icon_draw.polygon(
+                    tuple(aa_point(x, y) for x, y in right_page),
+                    fill="#7A5CE5",
+                )
+                aa_line((*left_page, left_page[0]), line_color="#DDEEFF")
+                aa_line((*right_page, right_page[0]), line_color="#E6DDFF")
+                aa_line(((10, 18), (17, 17), (21, 20)), width=max(3, round(1.8 * unit)), line_color="#FFFFFF")
+                aa_line(((38, 18), (31, 17), (27, 20)), width=max(3, round(1.8 * unit)), line_color="#FFFFFF")
+            elif key in {"updates", "bell"}:
+                bell_gold = "#F4C542"
+                bell_outline = "#FFE39A"
+                icon_draw.polygon(
+                    tuple(
+                        aa_point(x, y)
+                        for x, y in (
+                            (10, 35), (15, 28), (15, 20), (18, 13),
+                            (24, 9), (30, 13), (33, 20), (33, 28),
+                            (38, 35),
+                        )
+                    ),
+                    fill=bell_gold,
+                )
+                aa_curve((10, 35), (14, 31), (15, 28), (15, 21), line_color=bell_outline)
+                aa_curve((15, 21), (15, 13), (19, 9), (24, 9), line_color=bell_outline)
+                aa_curve((24, 9), (29, 9), (33, 13), (33, 21), line_color=bell_outline)
+                aa_curve((33, 21), (33, 28), (34, 31), (38, 35), line_color=bell_outline)
+                aa_line(((10, 35), (38, 35)), line_color=bell_outline)
+                icon_draw.ellipse(
+                    (*aa_point(20, 37), *aa_point(28, 44)),
+                    fill="#E9892E",
+                    outline=bell_outline,
+                    width=max(2, round(1.3 * unit)),
+                )
             elif key in {"controller", "platform"}:
                 aa_line((
                     (16, 16), (13, 17), (9, 29), (9, 35),
@@ -34588,6 +36110,7 @@ class TrackerApp:
                         fill=color,
                     )
             elif key == "settings":
+                settings_color = "#22C55E" if full_color else color
                 aa_line((
                     (21, 7), (27, 7), (29, 12), (33, 14),
                     (38, 12), (42, 18), (38, 22), (38, 26),
@@ -34595,37 +36118,98 @@ class TrackerApp:
                     (27, 41), (21, 41), (19, 36), (15, 34),
                     (10, 36), (6, 30), (10, 26), (10, 22),
                     (6, 18), (10, 12), (15, 14), (19, 12), (21, 7),
-                ))
+                ), line_color=settings_color)
                 icon_draw.ellipse(
                     (*aa_point(18, 18), *aa_point(30, 30)),
-                    outline=color,
+                    fill=("#FACC15" if full_color else None),
+                    outline=settings_color,
                     width=antialiased_stroke,
                 )
             elif key == "language":
-                aa_line(((8, 12), (27, 12)))
-                aa_line(((18, 7), (18, 12)))
-                aa_line(((11, 18), (16, 24), (23, 17)))
-                aa_line(((26, 12), (23, 20), (18, 27), (10, 32)))
-                aa_line(((28, 40), (35, 18), (42, 40)))
-                aa_line(((31, 32), (39, 32)))
+                source_language_color = "#27DCE5" if full_color else color
+                translated_language_color = "#A855F7" if full_color else color
+                aa_line(((8, 12), (27, 12)), line_color=source_language_color)
+                aa_line(((18, 7), (18, 12)), line_color=source_language_color)
+                aa_line(((11, 18), (16, 24), (23, 17)), line_color=source_language_color)
+                aa_line(((26, 12), (23, 20), (18, 27), (10, 32)), line_color=source_language_color)
+                aa_line(((28, 40), (35, 18), (42, 40)), line_color=translated_language_color)
+                aa_line(((31, 32), (39, 32)), line_color=translated_language_color)
             elif key == "smw_central":
-                aa_line(((10, 17), (13, 13), (35, 13), (39, 17)))
-                icon_draw.rectangle(
-                    (*aa_point(9, 17), *aa_point(39, 24)),
-                    outline=color,
-                    width=antialiased_stroke,
+                # Use the supplied blue SMW Central storefront logo. Its dark
+                # screenshot backdrop is removed by a connected-edge flood.
+                # The art fills the same icon box as the other rail symbols,
+                # and NEAREST scaling preserves every deliberate pixel edge.
+                logo_path = bundled_resource_path(
+                    "app_assets",
+                    "smwcentral_logo.png",
                 )
-                aa_line((
-                    (9, 24), (12, 27), (15, 24), (18, 27),
-                    (21, 24), (24, 27), (27, 24), (30, 27),
-                    (33, 24), (36, 27), (39, 24),
-                ))
-                aa_line(((13, 28), (13, 40)))
-                aa_line(((35, 28), (35, 40)))
-                aa_line(((13, 33), (35, 33)))
-                for divider_x in (19, 25, 31):
-                    aa_line(((divider_x, 33), (divider_x, 40)))
-                aa_line(((35, 13), (35, 8), (40, 8), (40, 16)))
+                try:
+                    cached_logo = getattr(
+                        self,
+                        "_smwcentral_logo_source_image",
+                        None,
+                    )
+                    if cached_logo is None:
+                        with Image.open(logo_path) as logo_source:
+                            logo_image = remove_connected_edge_image_background(
+                                logo_source
+                            )
+                        alpha_bounds = logo_image.getchannel("A").getbbox()
+                        if alpha_bounds is not None:
+                            logo_image = logo_image.crop(alpha_bounds)
+                        self._smwcentral_logo_source_image = logo_image.copy()
+                    else:
+                        logo_image = cached_logo.copy()
+                    logo_target = max(1, round(44 * unit))
+                    logo_scale = min(
+                        logo_target / max(1, logo_image.width),
+                        logo_target / max(1, logo_image.height),
+                    )
+                    logo_image = logo_image.resize(
+                        (
+                            max(1, round(logo_image.width * logo_scale)),
+                            max(1, round(logo_image.height * logo_scale)),
+                        ),
+                        Image.Resampling.NEAREST,
+                    )
+                    logo_left = (render_size - logo_image.width) // 2
+                    logo_top = (render_size - logo_image.height) // 2
+                    icon_image.alpha_composite(
+                        logo_image,
+                        (logo_left, logo_top),
+                    )
+                except (OSError, ValueError, AttributeError):
+                    # Branded pixel-art fallback, matching the same four-color
+                    # palette if the bundled file cannot be opened.
+                    icon_draw.rectangle(
+                        (*aa_point(9, 16), *aa_point(39, 38)),
+                        fill="#000000",
+                    )
+                    icon_draw.rectangle(
+                        (*aa_point(12, 21), *aa_point(36, 27)),
+                        fill="#00B8F8",
+                    )
+                    for divider_x in (14, 20, 26, 32):
+                        icon_draw.rectangle(
+                            (*aa_point(divider_x, 29), *aa_point(divider_x + 3, 38)),
+                            fill="#C09878",
+                        )
+            elif key == "streamerbot":
+                # Streamer.bot's two interlocking diamond links, redrawn as
+                # smooth line art to match the supplied sidebar reference.
+                brand_cyan = "#27DCE5"
+                brand_purple = "#9A4DE3"
+                brand_stroke = max(6, round(4.2 * unit))
+                aa_line(
+                    ((25, 9), (39, 23), (30, 32), (21, 23), (26, 18), (31, 23)),
+                    width=brand_stroke,
+                    line_color=brand_purple,
+                )
+                aa_line(
+                    ((23, 39), (9, 25), (18, 16), (27, 25), (22, 30), (17, 25)),
+                    width=brand_stroke,
+                    line_color=brand_cyan,
+                )
             elif key == "mario_hat":
                 # Mario's cap: rounded crown, long brim, and the centered M
                 # badge.  It is kept as line art so it matches every other
@@ -34642,13 +36226,35 @@ class TrackerApp:
                 )
                 aa_line(((22, 23), (22, 18), (25.5, 22), (29, 18), (29, 23)))
             else:  # Overview
-                for x, top in ((9, 31), (17, 27), (25, 31), (34, 22)):
-                    aa_line(((x, top), (x, 40)))
-                aa_line(((8, 27), (17, 17), (25, 22), (39, 8)))
+                overview_bar_colors = (
+                    "#22C55E",
+                    "#3B82F6",
+                    "#A855F7",
+                    "#F59E0B",
+                )
+                for bar_index, (x, top) in enumerate(
+                    ((9, 31), (17, 27), (25, 31), (34, 22))
+                ):
+                    aa_line(
+                        ((x, top), (x, 40)),
+                        line_color=(
+                            overview_bar_colors[bar_index]
+                            if full_color
+                            else color
+                        ),
+                    )
+                aa_line(
+                    ((8, 27), (17, 17), (25, 22), (39, 8)),
+                    line_color=("#27DCE5" if full_color else color),
+                )
 
             icon_image = icon_image.resize(
                 (target_size, target_size),
-                Image.Resampling.LANCZOS,
+                (
+                    Image.Resampling.NEAREST
+                    if key == "smw_central"
+                    else Image.Resampling.LANCZOS
+                ),
             )
             try:
                 icon_photo = ImageTk.PhotoImage(icon_image, master=canvas)
@@ -34673,10 +36279,12 @@ class TrackerApp:
             for index in range(0, len(coordinates), 2):
                 x, y = point(coordinates[index], coordinates[index + 1])
                 scaled.extend((x, y))
+            resolved_fill = kwargs.pop("fill", color)
+            resolved_width = kwargs.pop("width", stroke)
             return canvas.create_line(
                 *scaled,
-                fill=color,
-                width=stroke,
+                fill=resolved_fill,
+                width=resolved_width,
                 capstyle="round",
                 joinstyle="round",
                 **kwargs,
@@ -34759,7 +36367,19 @@ class TrackerApp:
             )
             line(*gear_points)
             oval(18, 18, 30, 30)
-        elif key in {"controller", "platform"}:
+        elif key == "super_nintendo_console":
+            rounded_rectangle(4, 9, 44, 40, 5, fill="#D8DDE5")
+            rounded_rectangle(13, 13, 35, 22, 2, fill="#303A46")
+            rounded_rectangle(8, 25, 19, 30, 1.5, fill="#7A5CE5")
+            rounded_rectangle(21, 25, 27, 30, 1.5, fill="#A78BFA")
+            line(6, 33, 42, 33, fill="#A6AFBA")
+            oval(29, 34, 35, 40, fill="#303A46")
+            oval(36, 34, 42, 40, fill="#303A46")
+        elif key in {
+            "controller",
+            "platform",
+            "super_famicom_controller",
+        }:
             # A compact outlined gamepad matching the Settings reference.
             # Keep it code-drawn so it scales cleanly at every DPI instead of
             # depending on a platform-specific emoji glyph.
@@ -34774,7 +36394,7 @@ class TrackerApp:
             line(11, 28, 19, 28)
             oval(29, 24, 32, 27)
             oval(33, 28, 36, 31)
-        elif key in {"database", "storage"}:
+        elif key in {"database", "storage", "nvme"}:
             # Outlined database cylinder matching the Storage reference.
             oval(10, 7, 38, 17)
             line(10, 12, 10, 36)
@@ -34789,7 +36409,7 @@ class TrackerApp:
                 smooth=True,
                 splinesteps=24,
             )
-        elif key in {"file_locations", "folder"}:
+        elif key in {"file_locations", "folder", "windows_file"}:
             # Outlined folder used by the dedicated File Locations page.
             # This follows the same single-stroke treatment as every other
             # Settings icon and remains crisp at non-default Windows DPI.
@@ -34804,6 +36424,18 @@ class TrackerApp:
             oval(27, 22, 40, 36)
             oval(8, 24, 23, 38)
             oval(19, 19, 29, 29)
+        elif key == "streamerbot":
+            brand_stroke = max(2, round(4.2 * scale))
+            line(
+                25, 9, 39, 23, 30, 32, 21, 23, 26, 18, 31, 23,
+                fill="#9A4DE3",
+                width=brand_stroke,
+            )
+            line(
+                23, 39, 9, 25, 18, 16, 27, 25, 22, 30, 17, 25,
+                fill="#27DCE5",
+                width=brand_stroke,
+            )
         elif key in {"timer", "stopwatch"}:
             oval(9, 12, 39, 42)
             line(24, 12, 24, 6)
@@ -34832,25 +36464,20 @@ class TrackerApp:
             line(11, 18, 18, 17, 22, 20)
             line(37, 18, 30, 17, 26, 20)
         elif key in {"smw_central", "smwcentral", "storefront"}:
-            # Line-art storefront inspired by the SMW Central building icon.
-            # It intentionally uses the same single-color stroke treatment as
-            # the rest of the Settings navigation rather than embedding the
-            # original low-resolution pixel art.
-            line(10, 17, 13, 13, 35, 13, 39, 17)
-            rectangle(9, 17, 39, 24)
-            line(
-                9, 24, 12, 27, 15, 24, 18, 27, 21, 24,
-                24, 27, 27, 24, 30, 27, 33, 24, 36, 27, 39, 24,
-                smooth=True,
-                splinesteps=16,
-            )
-            line(13, 28, 13, 40)
-            line(35, 28, 35, 40)
-            line(13, 33, 35, 33)
-            line(19, 33, 19, 40)
-            line(25, 33, 25, 40)
-            line(31, 33, 31, 40)
-            line(35, 13, 35, 8, 40, 8, 40, 16)
+            # Canvas-only fallback for the supplied blue storefront. It uses
+            # the full icon box and never substitutes unrelated artwork.
+            rectangle(5, 15, 43, 42, fill="#000000")
+            rectangle(8, 17, 40, 26, fill="#00B8F8")
+            for divider_x in (10, 18, 26, 34):
+                rectangle(
+                    divider_x,
+                    28,
+                    divider_x + 5,
+                    42,
+                    fill="#C09878",
+                )
+            rectangle(36, 8, 44, 17, fill="#000000")
+            rectangle(39, 11, 42, 14, fill="#C09878")
         elif key == "hot_potato":
             line(
                 25, 7, 29, 15, 27, 21, 35, 17, 39, 26, 37, 35,
@@ -34949,6 +36576,7 @@ class TrackerApp:
             size=self._ui_px(26),
             origin_x=self._ui_px(10),
             origin_y=self._ui_px(10),
+            full_color=True,
         )
         if section == "settings" and str(
             getattr(self, "update_available_version", "")
@@ -35003,6 +36631,7 @@ class TrackerApp:
             button.bind("<Button-1>", lambda _event, action=command: action())
             button.bind("<Return>", lambda _event, action=command: action())
             button.bind("<space>", lambda _event, action=command: action())
+            self._bind_pointer_tooltip(button, accessible_name)
             self.navigation_rail_buttons[section] = button
 
         connection_state = str(
@@ -37544,7 +39173,7 @@ class TrackerApp:
             "Mario Kaizo Challenge": "Choose 500 levels in 50 hours, 1000 in 100, 2000 in 200, or 3000 in 300. Complete a hack and the next playlist hack launches immediately.",
             "Play Random Hack": "The random button applies its own Rating, Difficulty, Type, Released, and Hall of Fame filters, then launches the selected ROM.",
             "Hack Draft": "Three ready-to-play hacks are dealt below. Choose one to launch, or deal three different choices.",
-            "Difficulty Ladder": "Choose your current rung and complete one full hack before climbing to the next available difficulty.",
+            "Difficulty Vine": "Choose your current section of the vine and complete one full hack before climbing to the next available difficulty.",
             "Creator Spotlight": "Pick a creator to browse every downloaded hack credited to them, or launch a random spotlight selection.",
             "Time Capsule": "Choose an SMW Central release year, then select a downloaded hack or let the tracker surprise you.",
             "Hall of Fame Tour": "Tour downloaded SMW Central Hall of Fame hacks. Choose a difficulty and launch any available stop.",
@@ -37565,7 +39194,10 @@ class TrackerApp:
             pass
 
     def _set_active_game_mode_session(self, mode_name: str | None) -> None:
-        self.active_game_mode_name = str(mode_name or "").strip()
+        resolved_name = str(mode_name or "").strip()
+        if resolved_name == "Difficulty Ladder":
+            resolved_name = "Difficulty Vine"
+        self.active_game_mode_name = resolved_name
         self._refresh_session_mode_heading()
         self._refresh_game_mode_dashboard_controls()
         self._refresh_game_mode_dashboard_rule()
@@ -37975,6 +39607,12 @@ class TrackerApp:
 
         actions = tk.Frame(run_body, bg=STREAM_DESK["surface"], bd=0)
         actions.pack(fill="x", pady=(self._ui_px(3), 0))
+        for action_column in range(3):
+            actions.columnconfigure(
+                action_column,
+                weight=1,
+                uniform="dashboard_run_actions",
+            )
         mario_kaizo_active = bool(
             self.config.get("mario_kaizo_challenge_active", False)
         )
@@ -37985,6 +39623,15 @@ class TrackerApp:
                 command=self.add_current_hack_to_tracker,
                 bg=STREAM_DESK["green"],
                 active_bg=STREAM_DESK["green_dark"],
+                width=18,
+                pad_y=7,
+            ),
+            self._make_action_button(
+                actions,
+                text="Finish Game Timer",
+                command=self.finish_game_timer,
+                bg=STREAM_DESK["surface_alt"],
+                active_bg=STREAM_DESK["selected"],
                 width=18,
                 pad_y=7,
             ),
@@ -38001,18 +39648,9 @@ class TrackerApp:
                 width=16,
                 pad_y=7,
             ),
-            self._make_action_button(
-                actions,
-                text="Game Modes",
-                command=self._open_game_modes_page,
-                bg=STREAM_DESK["surface_alt"],
-                active_bg=STREAM_DESK["selected"],
-                width=14,
-                pad_y=7,
-            ),
         ]
         self.stream_dashboard_challenge_complete_button = (
-            run_action_buttons[1]
+            run_action_buttons[2]
         )
         for index, button in enumerate(run_action_buttons):
             button.grid(
@@ -45965,6 +47603,7 @@ class TrackerApp:
             "Platform",
             "File Locations",
             "Storage",
+            "Streamer.bot",
             "OBS",
             "Timers",
             "About & Updates",
@@ -46052,6 +47691,7 @@ class TrackerApp:
             "Platform",
             "File Locations",
             "Storage",
+            "Streamer.bot",
             "OBS",
             "Timers",
             "Help",
@@ -46061,17 +47701,19 @@ class TrackerApp:
             "Platform",
             "File Locations",
             "Storage",
+            "Streamer.bot",
             "OBS",
             "Timers",
             "Help",
             "About & Updates",
         )
         settings_section_icons = {
-            "Platform": "controller",
-            "File Locations": "file_locations",
-            "Storage": "storage",
+            "Platform": "super_nintendo_console",
+            "File Locations": "windows_file",
+            "Storage": "nvme",
+            "Streamer.bot": "streamerbot",
             "OBS": "obs",
-            "Timers": "timer",
+            "Timers": "stopwatch",
             "About & Updates": "bell",
             "Help": "open_book",
         }
@@ -46544,6 +48186,72 @@ class TrackerApp:
         local_auto_save = tk.BooleanVar(
             value=bool(self.config.get("save_tracker_data_automatically", True))
         )
+        local_streamerbot_enabled = tk.BooleanVar(
+            value=bool(self.config.get("streamerbot_enabled", False))
+        )
+        local_streamerbot_host = tk.StringVar(
+            value=str(
+                self.config.get("streamerbot_host", "127.0.0.1")
+                or "127.0.0.1"
+            )
+        )
+        local_streamerbot_port = tk.StringVar(
+            value=str(self.config.get("streamerbot_port", 8080) or 8080)
+        )
+        local_streamerbot_endpoint = tk.StringVar(
+            value=str(self.config.get("streamerbot_endpoint", "/") or "/")
+        )
+        local_streamerbot_password = tk.StringVar(
+            value=str(self.config.get("streamerbot_password", "") or "")
+        )
+        local_streamerbot_show_password = tk.BooleanVar(value=False)
+        configured_streamerbot_actions = self.config.get(
+            "streamerbot_event_actions",
+            {},
+        )
+        if not isinstance(configured_streamerbot_actions, dict):
+            configured_streamerbot_actions = {}
+        streamerbot_action_choices: dict[str, dict[str, str]] = {
+            "Disabled": {},
+        }
+        local_streamerbot_action_vars: dict[str, tk.StringVar] = {}
+        for streamerbot_event_name, _streamerbot_event_label in (
+            STREAMERBOT_EVENT_DEFINITIONS
+        ):
+            configured_action = configured_streamerbot_actions.get(
+                streamerbot_event_name,
+                {},
+            )
+            if not isinstance(configured_action, dict):
+                configured_action = {}
+            configured_action_name = str(
+                configured_action.get("name", "")
+            ).strip()
+            configured_action_id = str(
+                configured_action.get("id", "")
+            ).strip()
+            configured_display = "Disabled"
+            if configured_action_name or configured_action_id:
+                configured_display = configured_action_name or configured_action_id
+                existing_action = streamerbot_action_choices.get(
+                    configured_display,
+                    {},
+                )
+                if (
+                    isinstance(existing_action, dict)
+                    and existing_action
+                    and str(existing_action.get("id", ""))
+                    != configured_action_id
+                ):
+                    configured_display += f" [{configured_action_id[:8]}]"
+                streamerbot_action_choices[configured_display] = {
+                    "id": configured_action_id,
+                    "name": configured_action_name,
+                }
+            local_streamerbot_action_vars[streamerbot_event_name] = (
+                tk.StringVar(value=configured_display)
+            )
+        streamerbot_action_boxes: list[ttk.Combobox] = []
 
         def open_from_settings(action) -> None:
             """Run a settings tool without losing the user's place.
@@ -47018,6 +48726,483 @@ class TrackerApp:
         )
         file_locations_body.rowconfigure(6, weight=1)
         settings_sections_built.add("File Locations")
+
+        def build_streamerbot_settings_page() -> None:
+            streamerbot_body = self._create_centered_page_panel(
+                settings_panels["Streamer.bot"],
+                outer_bg=STREAM_DESK["window"],
+                panel_bg=STREAM_DESK["surface"],
+                border=STREAM_DESK["border"],
+                max_width=1500,
+                padx=30,
+                pady=24,
+                outer_pad=0,
+            )
+            streamerbot_body.columnconfigure(0, weight=1)
+            settings_section_bodies["Streamer.bot"] = streamerbot_body
+
+            heading_row = tk.Frame(
+                streamerbot_body,
+                bg=STREAM_DESK["surface"],
+                bd=0,
+            )
+            heading_row.grid(row=0, column=0, sticky="ew")
+            heading_row.columnconfigure(0, weight=1)
+            tk.Label(
+                heading_row,
+                text=tr("Streamer.bot"),
+                font=("Segoe UI", 20, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            brand_icon = tk.Canvas(
+                heading_row,
+                width=self._ui_px(44),
+                height=self._ui_px(44),
+                bg=STREAM_DESK["surface"],
+                bd=0,
+                highlightthickness=0,
+            )
+            brand_icon.grid(row=0, column=1, sticky="e")
+            self._draw_stream_desk_icon(
+                brand_icon,
+                "streamerbot",
+                STREAM_DESK["text_strong"],
+                size=self._ui_px(38),
+                origin_x=self._ui_px(3),
+                origin_y=self._ui_px(3),
+            )
+            tk.Label(
+                streamerbot_body,
+                text=tr(
+                    "Connect directly to Streamer.bot and run your own actions "
+                    "when the tracker confirms a game, death, exit, timer, or "
+                    "RetroAchievements event."
+                ),
+                font=("Segoe UI", 11),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(1050),
+            ).grid(
+                row=1,
+                column=0,
+                sticky="ew",
+                pady=(self._ui_px(5), self._ui_px(14)),
+            )
+
+            connection_card = tk.Frame(
+                streamerbot_body,
+                bg=STREAM_DESK["surface_alt"],
+                padx=self._ui_px(18),
+                pady=self._ui_px(15),
+                highlightbackground=STREAM_DESK["border"],
+                highlightthickness=1,
+                bd=0,
+            )
+            connection_card.grid(row=2, column=0, sticky="ew")
+            connection_card.columnconfigure(0, weight=1)
+            connection_card.columnconfigure(1, weight=1)
+            tk.Label(
+                connection_card,
+                text="WebSocket Connection",
+                font=("Segoe UI", 14, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            MarioCheckbutton(
+                connection_card,
+                text="Enable Streamer.bot integration",
+                variable=local_streamerbot_enabled,
+                font=("Segoe UI", 11, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                activebackground=STREAM_DESK["surface_alt"],
+                activeforeground=STREAM_DESK["text_strong"],
+                selectcolor=STREAM_DESK["surface_alt"],
+            ).grid(row=0, column=1, sticky="e")
+
+            entry_style = {
+                "font": ("Segoe UI", 11),
+                "fg": STREAM_DESK["text_strong"],
+                "bg": STREAM_DESK["surface_deep"],
+                "insertbackground": STREAM_DESK["text_strong"],
+                "relief": "flat",
+                "highlightbackground": STREAM_DESK["border"],
+                "highlightcolor": STREAM_DESK["green"],
+                "highlightthickness": 1,
+            }
+
+            def add_connection_field(
+                row: int,
+                column: int,
+                label_text: str,
+                variable: tk.StringVar,
+                *,
+                show: str = "",
+            ) -> tk.Entry:
+                field = tk.Frame(
+                    connection_card,
+                    bg=STREAM_DESK["surface_alt"],
+                    bd=0,
+                )
+                field.grid(
+                    row=row,
+                    column=column,
+                    sticky="ew",
+                    padx=(
+                        (0, self._ui_px(8))
+                        if column == 0
+                        else (self._ui_px(8), 0)
+                    ),
+                    pady=(self._ui_px(11), 0),
+                )
+                field.columnconfigure(0, weight=1)
+                tk.Label(
+                    field,
+                    text=label_text,
+                    font=("Segoe UI", 9, "bold"),
+                    fg=STREAM_DESK["muted"],
+                    bg=STREAM_DESK["surface_alt"],
+                    anchor="w",
+                ).grid(row=0, column=0, sticky="ew", pady=(0, self._ui_px(4)))
+                entry = tk.Entry(
+                    field,
+                    textvariable=variable,
+                    show=show,
+                    **entry_style,
+                )
+                entry.grid(row=1, column=0, sticky="ew", ipady=self._ui_px(7))
+                return entry
+
+            add_connection_field(
+                1,
+                0,
+                "Host",
+                local_streamerbot_host,
+            )
+            add_connection_field(
+                1,
+                1,
+                "Port",
+                local_streamerbot_port,
+            )
+            add_connection_field(
+                2,
+                0,
+                "Endpoint",
+                local_streamerbot_endpoint,
+            )
+            password_entry = add_connection_field(
+                2,
+                1,
+                "WebSocket Password (only if enabled in Streamer.bot)",
+                local_streamerbot_password,
+                show="•",
+            )
+            MarioCheckbutton(
+                connection_card,
+                text="Show Password",
+                variable=local_streamerbot_show_password,
+                command=lambda: password_entry.configure(
+                    show="" if local_streamerbot_show_password.get() else "•"
+                ),
+                font=("Segoe UI", 10),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface_alt"],
+                activebackground=STREAM_DESK["surface_alt"],
+                activeforeground=STREAM_DESK["text_strong"],
+                selectcolor=STREAM_DESK["surface_alt"],
+            ).grid(
+                row=3,
+                column=1,
+                sticky="e",
+                pady=(self._ui_px(6), 0),
+            )
+
+            connection_status = tk.Label(
+                connection_card,
+                textvariable=self.streamerbot_status_var,
+                font=("Segoe UI", 10, "bold"),
+                fg=STREAM_DESK["green"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(760),
+            )
+            connection_status.grid(
+                row=4,
+                column=0,
+                sticky="ew",
+                pady=(self._ui_px(10), 0),
+            )
+
+            test_button_holder = tk.Frame(
+                connection_card,
+                bg=STREAM_DESK["surface_alt"],
+                bd=0,
+            )
+            test_button_holder.grid(
+                row=4,
+                column=1,
+                sticky="e",
+                pady=(self._ui_px(8), 0),
+            )
+
+            mappings_card = tk.Frame(
+                streamerbot_body,
+                bg=STREAM_DESK["surface_alt"],
+                padx=self._ui_px(18),
+                pady=self._ui_px(15),
+                highlightbackground=STREAM_DESK["border"],
+                highlightthickness=1,
+                bd=0,
+            )
+            mappings_card.grid(
+                row=3,
+                column=0,
+                sticky="ew",
+                pady=(self._ui_px(12), 0),
+            )
+            mappings_card.columnconfigure(1, weight=1)
+            tk.Label(
+                mappings_card,
+                text="Action Mappings",
+                font=("Segoe UI", 14, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+            ).grid(row=0, column=0, columnspan=2, sticky="ew")
+            tk.Label(
+                mappings_card,
+                text=(
+                    "Choose which Streamer.bot action runs for each confirmed "
+                    "tracker event. Leave an event Disabled to ignore it."
+                ),
+                font=("Segoe UI", 10),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(950),
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(self._ui_px(3), self._ui_px(8)),
+            )
+            for mapping_index, (
+                event_name,
+                event_label,
+            ) in enumerate(STREAMERBOT_EVENT_DEFINITIONS, start=2):
+                tk.Label(
+                    mappings_card,
+                    text=event_label,
+                    font=("Segoe UI", 10, "bold"),
+                    fg=STREAM_DESK["text_strong"],
+                    bg=STREAM_DESK["surface_alt"],
+                    anchor="w",
+                ).grid(
+                    row=mapping_index,
+                    column=0,
+                    sticky="w",
+                    padx=(0, self._ui_px(18)),
+                    pady=self._ui_px(4),
+                )
+                action_box = ttk.Combobox(
+                    mappings_card,
+                    textvariable=local_streamerbot_action_vars[event_name],
+                    values=tuple(streamerbot_action_choices),
+                    state="readonly",
+                    font=("Segoe UI", 10),
+                    width=46,
+                )
+                action_box.grid(
+                    row=mapping_index,
+                    column=1,
+                    sticky="ew",
+                    pady=self._ui_px(4),
+                )
+                streamerbot_action_boxes.append(action_box)
+
+            tk.Label(
+                streamerbot_body,
+                text=tr(
+                    "In Streamer.bot, open Servers/Clients → WebSocket Server, "
+                    "enable Auto Start, and start the server. The default address "
+                    "is 127.0.0.1:8080 with endpoint /."
+                ),
+                font=("Segoe UI", 10),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(1050),
+            ).grid(
+                row=4,
+                column=0,
+                sticky="ew",
+                pady=(self._ui_px(11), 0),
+            )
+
+            def apply_loaded_streamerbot_actions(
+                info: dict[str, Any],
+                actions: list[dict[str, Any]],
+            ) -> None:
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                except tk.TclError:
+                    return
+                new_choices: dict[str, dict[str, str]] = {"Disabled": {}}
+                used_labels: set[str] = {"Disabled"}
+                for action in actions:
+                    action_name = str(action.get("name", "")).strip()
+                    action_id = str(action.get("id", "")).strip()
+                    action_group = str(action.get("group", "")).strip()
+                    if not action_name and not action_id:
+                        continue
+                    display_name = (
+                        f"{action_group} / {action_name}"
+                        if action_group and action_name
+                        else action_name or action_id
+                    )
+                    if display_name in used_labels:
+                        display_name += f" [{action_id[:8]}]"
+                    used_labels.add(display_name)
+                    new_choices[display_name] = {
+                        "id": action_id,
+                        "name": action_name,
+                    }
+
+                previous_actions = {
+                    event_name: streamerbot_action_choices.get(
+                        variable.get(),
+                        {},
+                    )
+                    for event_name, variable in local_streamerbot_action_vars.items()
+                }
+                streamerbot_action_choices.clear()
+                streamerbot_action_choices.update(new_choices)
+                choices_tuple = tuple(new_choices)
+                for action_box in streamerbot_action_boxes:
+                    action_box.configure(values=choices_tuple)
+                for event_name, variable in local_streamerbot_action_vars.items():
+                    previous_action = previous_actions.get(event_name, {})
+                    selected_label = "Disabled"
+                    for display_name, action in new_choices.items():
+                        if display_name == "Disabled":
+                            continue
+                        if (
+                            str(previous_action.get("id", ""))
+                            and str(previous_action.get("id", ""))
+                            == str(action.get("id", ""))
+                        ) or (
+                            not str(previous_action.get("id", ""))
+                            and str(previous_action.get("name", ""))
+                            and str(previous_action.get("name", ""))
+                            == str(action.get("name", ""))
+                        ):
+                            selected_label = display_name
+                            break
+                    variable.set(selected_label)
+                version = str(info.get("version", "")).strip()
+                self.streamerbot_status_var.set(
+                    "Connected to Streamer.bot"
+                    + (f" {version}" if version else "")
+                    + f" — {len(actions)} enabled actions loaded."
+                )
+
+            def report_streamerbot_test_error(error: Exception) -> None:
+                try:
+                    if dialog.winfo_exists():
+                        self.streamerbot_status_var.set(
+                            f"Could not connect to Streamer.bot: {error}"
+                        )
+                except tk.TclError:
+                    pass
+
+            def test_and_load_streamerbot_actions() -> None:
+                host_value = local_streamerbot_host.get()
+                port_value = local_streamerbot_port.get()
+                endpoint_value = local_streamerbot_endpoint.get()
+                password_value = local_streamerbot_password.get()
+                try:
+                    connection_url = streamerbot_websocket_url(
+                        host_value,
+                        port_value,
+                        endpoint_value,
+                    )
+                except ValueError as error:
+                    report_streamerbot_test_error(error)
+                    return
+                self.streamerbot_status_var.set(
+                    f"Connecting to {connection_url}…"
+                )
+
+                def load_actions_worker() -> None:
+                    connection = StreamerBotConnection(
+                        host=host_value,
+                        port=port_value,
+                        endpoint=endpoint_value,
+                        password=password_value,
+                        timeout=5.0,
+                    )
+                    try:
+                        info = connection.connect()
+                        actions = connection.get_actions()
+                    except Exception as error:
+                        try:
+                            self.root.after(
+                                0,
+                                lambda captured_error=error: (
+                                    report_streamerbot_test_error(captured_error)
+                                ),
+                            )
+                        except tk.TclError:
+                            pass
+                    else:
+                        try:
+                            self.root.after(
+                                0,
+                                lambda: apply_loaded_streamerbot_actions(
+                                    info,
+                                    actions,
+                                ),
+                            )
+                        except tk.TclError:
+                            pass
+                    finally:
+                        connection.close()
+
+                threading.Thread(
+                    target=load_actions_worker,
+                    name="StreamerBotSettingsTest",
+                    daemon=True,
+                ).start()
+
+            test_button = self._make_action_button(
+                test_button_holder,
+                text="Test & Load Actions",
+                command=test_and_load_streamerbot_actions,
+                bg=STREAM_DESK["green"],
+                active_bg=STREAM_DESK["green_dark"],
+                width=20,
+                pad_y=7,
+                font_size=10,
+            )
+            test_button.pack(side="right")
+            self.settings_action_buttons[
+                ("Streamer.bot", "Test & Load Actions")
+            ] = test_button
+
+        settings_section_builders[
+            "Streamer.bot"
+        ] = build_streamerbot_settings_page
 
         settings_section_builders["Storage"] = lambda: build_action_settings_page(
             "Storage",
@@ -47958,6 +50143,20 @@ class TrackerApp:
                 level_port = int(
                     local_level_port.get().strip()
                 )
+                streamerbot_port = int(
+                    local_streamerbot_port.get().strip()
+                )
+                streamerbot_host = (
+                    local_streamerbot_host.get().strip() or "127.0.0.1"
+                )
+                streamerbot_endpoint = (
+                    local_streamerbot_endpoint.get().strip() or "/"
+                )
+                streamerbot_websocket_url(
+                    streamerbot_host,
+                    streamerbot_port,
+                    streamerbot_endpoint,
+                )
 
                 if idle_seconds < 0:
                     raise ValueError
@@ -47974,7 +50173,8 @@ class TrackerApp:
                     (
                         "AutoStop must be 0 or greater. "
                         "LiveSplit ports must be different numbers "
-                        "between 1 and 65535."
+                        "between 1 and 65535. The Streamer.bot port "
+                        "must also be between 1 and 65535."
                     ),
                     parent=dialog,
                 )
@@ -48042,6 +50242,21 @@ class TrackerApp:
                 str(level_port)
             )
             self.platform_var.set(new_platform)
+            streamerbot_event_actions: dict[str, dict[str, str]] = {}
+            for event_name, _event_label in STREAMERBOT_EVENT_DEFINITIONS:
+                selected_action = streamerbot_action_choices.get(
+                    local_streamerbot_action_vars[event_name].get(),
+                    {},
+                )
+                if not isinstance(selected_action, dict):
+                    continue
+                action_id = str(selected_action.get("id", "")).strip()
+                action_name = str(selected_action.get("name", "")).strip()
+                if action_id or action_name:
+                    streamerbot_event_actions[event_name] = {
+                        "id": action_id,
+                        "name": action_name,
+                    }
             self.config.update(
                 {
                     "selected_platform": new_platform,
@@ -48094,6 +50309,16 @@ class TrackerApp:
                     "save_tracker_data_automatically": bool(
                         local_auto_save.get()
                     ),
+                    "streamerbot_enabled": bool(
+                        local_streamerbot_enabled.get()
+                    ),
+                    "streamerbot_host": streamerbot_host,
+                    "streamerbot_port": streamerbot_port,
+                    "streamerbot_endpoint": streamerbot_endpoint,
+                    "streamerbot_password": (
+                        local_streamerbot_password.get()
+                    ),
+                    "streamerbot_event_actions": streamerbot_event_actions,
                 }
             )
             self.config["platform_interface_path"] = (
@@ -48112,6 +50337,7 @@ class TrackerApp:
 
             if not self.save_settings():
                 return
+            self._configure_streamerbot_dispatcher()
 
             appearance_changed = selected_appearance != old_appearance
             language_changed = selected_language != old_language
@@ -55090,6 +57316,18 @@ class TrackerApp:
         )
         achievement_card = achievement_body.stream_card
         achievement_count_var = tk.StringVar(master=dialog, value="0 / 0")
+        overview_achievement_expanded = {"value": False}
+        overview_achievement_summary = {"value": achievement_summary}
+        overview_achievement_expand_var = tk.StringVar(
+            master=dialog,
+            value="RetroAchievements  ▶",
+        )
+        achievement_body.stream_trailing_label.configure(
+            textvariable=overview_achievement_expand_var,
+            cursor="hand2",
+        )
+        achievement_body.stream_header.configure(cursor="hand2")
+        achievement_body.stream_title_label.configure(cursor="hand2")
         achievement_game_var = tk.StringVar(
             master=dialog,
             value=tr("Loading RetroAchievements..."),
@@ -55200,6 +57438,314 @@ class TrackerApp:
             pady=(self._ui_px(3), 0),
         )
 
+        overview_achievement_expanded_shell = tk.Frame(
+            achievement_body,
+            bg=STREAM_DESK["surface_deep"],
+            highlightbackground=STREAM_DESK["border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        overview_achievement_list_heading = tk.Label(
+            overview_achievement_expanded_shell,
+            text=tr("All Achievements").upper(),
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["surface_deep"],
+            anchor="w",
+            padx=self._ui_px(12),
+            pady=self._ui_px(8),
+        )
+        overview_achievement_list_heading.pack(fill="x")
+        overview_achievement_list_shell = tk.Frame(
+            overview_achievement_expanded_shell,
+            bg=STREAM_DESK["surface_deep"],
+            bd=0,
+        )
+        overview_achievement_list_shell.pack(fill="both", expand=True)
+        overview_achievement_list_canvas = tk.Canvas(
+            overview_achievement_list_shell,
+            bg=STREAM_DESK["surface_deep"],
+            bd=0,
+            highlightthickness=0,
+            yscrollincrement=max(12, self._ui_px(24)),
+        )
+        overview_achievement_list_scrollbar = YellowCanvasScrollbar(
+            overview_achievement_list_shell,
+            orient=tk.VERTICAL,
+            command=overview_achievement_list_canvas.yview,
+            bg=STREAM_DESK["yellow"],
+            activebackground="#FFE56B",
+            troughcolor=STREAM_DESK["surface_deep"],
+            width=self._ui_px(12),
+        )
+        overview_achievement_list_canvas.configure(
+            yscrollcommand=overview_achievement_list_scrollbar.set
+        )
+        overview_achievement_list_scrollbar.pack(side="right", fill="y")
+        overview_achievement_list_canvas.pack(
+            side="left",
+            fill="both",
+            expand=True,
+        )
+        overview_achievement_list_content = tk.Frame(
+            overview_achievement_list_canvas,
+            bg=STREAM_DESK["surface_deep"],
+            bd=0,
+        )
+        overview_achievement_list_window = (
+            overview_achievement_list_canvas.create_window(
+                (0, 0),
+                window=overview_achievement_list_content,
+                anchor="nw",
+            )
+        )
+        overview_achievement_list_content.columnconfigure(0, weight=1)
+        overview_achievement_description_labels: list[tk.Label] = []
+        dialog._overview_ra_all_badge_photos = []
+
+        def fit_overview_achievement_list(_event=None) -> None:
+            try:
+                width = max(
+                    1,
+                    int(overview_achievement_list_canvas.winfo_width()),
+                )
+                overview_achievement_list_canvas.itemconfigure(
+                    overview_achievement_list_window,
+                    width=width,
+                )
+                description_width = max(
+                    self._ui_px(260),
+                    width - self._ui_px(125),
+                )
+                for description_label in overview_achievement_description_labels:
+                    description_label.configure(wraplength=description_width)
+                overview_achievement_list_canvas.configure(
+                    scrollregion=overview_achievement_list_canvas.bbox("all")
+                )
+            except (AttributeError, tk.TclError, TypeError, ValueError):
+                pass
+
+        overview_achievement_list_content.bind(
+            "<Configure>",
+            fit_overview_achievement_list,
+            add="+",
+        )
+        overview_achievement_list_canvas.bind(
+            "<Configure>",
+            fit_overview_achievement_list,
+            add="+",
+        )
+
+        def scroll_overview_achievement_list(event) -> str:
+            units = self._fast_scroll_units(event, rows_per_notch=2)
+            if units:
+                try:
+                    overview_achievement_list_canvas.yview_scroll(units, "units")
+                except tk.TclError:
+                    pass
+            return "break"
+
+        def bind_overview_achievement_wheel(widget: tk.Widget) -> None:
+            widget.bind(
+                "<MouseWheel>",
+                scroll_overview_achievement_list,
+                add="+",
+            )
+            widget.bind(
+                "<Button-4>",
+                scroll_overview_achievement_list,
+                add="+",
+            )
+            widget.bind(
+                "<Button-5>",
+                scroll_overview_achievement_list,
+                add="+",
+            )
+
+        bind_overview_achievement_wheel(overview_achievement_list_canvas)
+
+        def render_overview_achievement_list() -> None:
+            for child in overview_achievement_list_content.winfo_children():
+                child.destroy()
+            overview_achievement_description_labels.clear()
+            dialog._overview_ra_all_badge_photos = []
+            summary = overview_achievement_summary["value"]
+            items = [
+                item
+                for item in summary.get("items", [])
+                if isinstance(item, dict)
+            ]
+            items.sort(
+                key=lambda item: (
+                    int(item.get("display_order", 0) or 0),
+                    int(item.get("id", 0) or 0),
+                )
+            )
+            if not items:
+                empty_label = tk.Label(
+                    overview_achievement_list_content,
+                    text=str(
+                        summary.get("message")
+                        or tr("No RetroAchievements data is available.")
+                    ),
+                    font=("Segoe UI", 10),
+                    fg=STREAM_DESK["muted"],
+                    bg=STREAM_DESK["surface_deep"],
+                    anchor="nw",
+                    justify="left",
+                    wraplength=self._ui_px(620),
+                    padx=self._ui_px(12),
+                    pady=self._ui_px(14),
+                )
+                empty_label.grid(row=0, column=0, sticky="ew")
+                bind_overview_achievement_wheel(empty_label)
+
+            for row_index, item in enumerate(items):
+                unlocked_item = bool(item.get("unlocked", False))
+                item_row = tk.Frame(
+                    overview_achievement_list_content,
+                    bg=STREAM_DESK["surface"],
+                    highlightbackground=(
+                        STREAM_DESK["green"]
+                        if unlocked_item
+                        else STREAM_DESK["border"]
+                    ),
+                    highlightthickness=1,
+                    padx=self._ui_px(10),
+                    pady=self._ui_px(9),
+                    bd=0,
+                )
+                item_row.grid(
+                    row=row_index,
+                    column=0,
+                    sticky="ew",
+                    padx=self._ui_px(8),
+                    pady=(
+                        self._ui_px(7) if row_index == 0 else 0,
+                        self._ui_px(7),
+                    ),
+                )
+                item_row.columnconfigure(1, weight=1)
+                photo = self._retroachievements_badge_photo(
+                    dialog,
+                    item.get("badge_name", ""),
+                    size=56,
+                    unlocked=unlocked_item,
+                )
+                if photo is not None:
+                    dialog._overview_ra_all_badge_photos.append(photo)
+                badge_label = tk.Label(
+                    item_row,
+                    image=photo,
+                    text="RA" if photo is None else "",
+                    font=("Segoe UI", 9, "bold"),
+                    fg=(
+                        STREAM_DESK["yellow"]
+                        if unlocked_item
+                        else STREAM_DESK["muted_dim"]
+                    ),
+                    bg=STREAM_DESK["surface"],
+                    width=0 if photo is not None else self._ui_px(6),
+                )
+                badge_label.grid(
+                    row=0,
+                    column=0,
+                    rowspan=3,
+                    sticky="n",
+                    padx=(0, self._ui_px(12)),
+                )
+                title_row = tk.Frame(
+                    item_row,
+                    bg=STREAM_DESK["surface"],
+                    bd=0,
+                )
+                title_row.grid(row=0, column=1, sticky="ew")
+                title_row.columnconfigure(0, weight=1)
+                title_label = tk.Label(
+                    title_row,
+                    text=str(item.get("title") or "Achievement"),
+                    font=("Segoe UI", 10, "bold"),
+                    fg=STREAM_DESK["text_strong"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="w",
+                    justify="left",
+                )
+                title_label.grid(row=0, column=0, sticky="ew")
+                points = max(0, int(item.get("points", 0) or 0))
+                status_label = tk.Label(
+                    title_row,
+                    text=(
+                        "✓ " + tr("UNLOCKED")
+                        if unlocked_item
+                        else "○ " + tr("LOCKED")
+                    ),
+                    font=("Segoe UI", 8, "bold"),
+                    fg=(
+                        STREAM_DESK["green"]
+                        if unlocked_item
+                        else STREAM_DESK["yellow"]
+                    ),
+                    bg=STREAM_DESK["surface"],
+                    padx=self._ui_px(8),
+                )
+                status_label.grid(row=0, column=1, sticky="e")
+                description_label = tk.Label(
+                    item_row,
+                    text=str(
+                        item.get("description")
+                        or tr("No achievement description was provided.")
+                    ),
+                    font=("Segoe UI", 9),
+                    fg=STREAM_DESK["text"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="nw",
+                    justify="left",
+                    wraplength=self._ui_px(520),
+                )
+                description_label.grid(
+                    row=1,
+                    column=1,
+                    sticky="ew",
+                    pady=(self._ui_px(4), 0),
+                )
+                overview_achievement_description_labels.append(
+                    description_label
+                )
+                earned_date = format_display_date(
+                    item.get("date_earned", ""),
+                    empty="",
+                )
+                detail_text = f"{points} {tr('POINTS')}"
+                if earned_date:
+                    detail_text += "  ·  " + earned_date
+                item_detail_label = tk.Label(
+                    item_row,
+                    text=detail_text,
+                    font=("Segoe UI", 8, "bold"),
+                    fg=STREAM_DESK["muted"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="w",
+                )
+                item_detail_label.grid(
+                    row=2,
+                    column=1,
+                    sticky="ew",
+                    pady=(self._ui_px(5), 0),
+                )
+                for scroll_widget in (
+                    item_row,
+                    badge_label,
+                    title_row,
+                    title_label,
+                    status_label,
+                    description_label,
+                    item_detail_label,
+                ):
+                    bind_overview_achievement_wheel(scroll_widget)
+
+            overview_achievement_list_canvas.yview_moveto(0.0)
+            dialog.after_idle(fit_overview_achievement_list)
+
         def render_retroachievements_overview(
             summary: dict[str, Any],
         ) -> None:
@@ -55208,6 +57754,7 @@ class TrackerApp:
                     return
             except (AttributeError, tk.TclError):
                 return
+            overview_achievement_summary["value"] = summary
             total = max(0, int(summary.get("total", 0) or 0))
             unlocked = max(0, int(summary.get("unlocked", 0) or 0))
             achievement_ratio["value"] = unlocked / max(1, total)
@@ -55340,6 +57887,8 @@ class TrackerApp:
             else:
                 achievement_next_var.set(str(summary.get("message", "")))
             draw_achievement_progress()
+            if overview_achievement_expanded["value"]:
+                render_overview_achievement_list()
 
         render_retroachievements_overview(achievement_summary)
         self._start_retroachievements_progress_refresh(
@@ -55566,10 +58115,31 @@ class TrackerApp:
                         ),
                     )
 
-                if ultra_compact:
+                if overview_achievement_expanded["value"]:
+                    achievement_progress_row.pack_forget()
+                    achievement_progress_canvas.pack_forget()
                     badge_strip.pack_forget()
                     achievement_recent_label.pack_forget()
+                    achievement_next_label.pack_forget()
+                elif ultra_compact:
+                    achievement_progress_row.pack(fill="x")
+                    achievement_progress_canvas.pack(
+                        fill="x",
+                        pady=(self._ui_px(5), self._ui_px(7)),
+                    )
+                    badge_strip.pack_forget()
+                    achievement_recent_label.pack_forget()
+                    achievement_next_label.pack(
+                        fill="x",
+                        pady=(self._ui_px(2), 0),
+                        after=achievement_progress_canvas,
+                    )
                 else:
+                    achievement_progress_row.pack(fill="x")
+                    achievement_progress_canvas.pack(
+                        fill="x",
+                        pady=(self._ui_px(5), self._ui_px(7)),
+                    )
                     badge_strip.pack(
                         fill="x",
                         after=achievement_progress_canvas,
@@ -55579,15 +58149,11 @@ class TrackerApp:
                         pady=(self._ui_px(7), 0),
                         after=badge_strip,
                     )
-                achievement_next_label.pack(
-                    fill="x",
-                    pady=(self._ui_px(2 if ultra_compact else 3), 0),
-                    after=(
-                        achievement_progress_canvas
-                        if ultra_compact
-                        else achievement_recent_label
-                    ),
-                )
+                    achievement_next_label.pack(
+                        fill="x",
+                        pady=(self._ui_px(3), 0),
+                        after=achievement_recent_label,
+                    )
 
             metric_columns = (
                 4
@@ -55620,6 +58186,31 @@ class TrackerApp:
                             0,
                         ),
                     )
+
+            if overview_achievement_expanded["value"]:
+                responsive_state["panels"] = "achievements_expanded"
+                responsive_state["laid_out_vertical"] = vertical_mode
+                for card in (
+                    status_card,
+                    difficulty_card,
+                    achievement_card,
+                    recent_card,
+                ):
+                    card.grid_forget()
+                for column in range(2):
+                    panels.columnconfigure(column, weight=0, uniform="")
+                for row_index in range(4):
+                    panels.rowconfigure(row_index, weight=0, uniform="")
+                panels.columnconfigure(0, weight=1)
+                panels.rowconfigure(0, weight=1)
+                achievement_card.grid(
+                    row=0,
+                    column=0,
+                    columnspan=2,
+                    rowspan=2,
+                    sticky="nsew",
+                )
+                return
 
             if available_width >= self._ui_px(980):
                 panel_mode = "wide"
@@ -55699,6 +58290,71 @@ class TrackerApp:
                     padx=(0, gap),
                 )
                 recent_card.grid(row=1, column=1, sticky="nsew")
+
+        def toggle_overview_achievements(_event=None) -> str:
+            expanded = not bool(overview_achievement_expanded["value"])
+            overview_achievement_expanded["value"] = expanded
+            overview_achievement_expand_var.set(
+                "RetroAchievements  ▼" if expanded else "RetroAchievements  ▶"
+            )
+            if expanded:
+                achievement_progress_row.pack_forget()
+                achievement_progress_canvas.pack_forget()
+                badge_strip.pack_forget()
+                achievement_recent_label.pack_forget()
+                achievement_next_label.pack_forget()
+                overview_achievement_expanded_shell.pack(
+                    fill="both",
+                    expand=True,
+                )
+                render_overview_achievement_list()
+            else:
+                overview_achievement_expanded_shell.pack_forget()
+                achievement_progress_row.pack(fill="x")
+                achievement_progress_canvas.pack(
+                    fill="x",
+                    pady=(self._ui_px(5), self._ui_px(7)),
+                )
+                ultra_compact = responsive_state.get("vertical") == "ultra"
+                if ultra_compact:
+                    badge_strip.pack_forget()
+                    achievement_recent_label.pack_forget()
+                    achievement_next_label.pack(
+                        fill="x",
+                        pady=(self._ui_px(2), 0),
+                        after=achievement_progress_canvas,
+                    )
+                else:
+                    badge_strip.pack(
+                        fill="x",
+                        after=achievement_progress_canvas,
+                    )
+                    achievement_recent_label.pack(
+                        fill="x",
+                        pady=(self._ui_px(7), 0),
+                        after=badge_strip,
+                    )
+                    achievement_next_label.pack(
+                        fill="x",
+                        pady=(self._ui_px(3), 0),
+                        after=achievement_recent_label,
+                    )
+            responsive_state["panels"] = None
+            responsive_state["laid_out_vertical"] = None
+            reflow_overview()
+            return "break"
+
+        for overview_achievement_heading_widget in (
+            achievement_body.stream_header,
+            achievement_body.stream_title_label,
+            achievement_body.stream_trailing_label,
+        ):
+            overview_achievement_heading_widget.bind(
+                "<Button-1>",
+                toggle_overview_achievements,
+                add="+",
+            )
+
         overview_layout_state = {
             "after_id": None,
             "running": False,
@@ -55757,6 +58413,8 @@ class TrackerApp:
             "difficulty_panel": difficulty_card,
             "achievement_panel": achievement_card,
             "achievement_progress_canvas": achievement_progress_canvas,
+            "achievement_expanded_shell": overview_achievement_expanded_shell,
+            "toggle_achievements": toggle_overview_achievements,
             "recent_panel": recent_card,
             "reflow": reflow_overview,
             "queue_reflow": queue_overview_layout,
@@ -75475,6 +78133,17 @@ class TrackerApp:
                     self._ui_px(96),
                     int(float(symbol_canvas.cget("width"))),
                 )
+                if symbol_var.get() in GAME_MODE_ICON_IMAGE_FILES:
+                    asset_inset = max(self._ui_px(7), round(size * 0.055))
+                    self._draw_stream_desk_icon(
+                        symbol_canvas,
+                        symbol_var.get(),
+                        STREAM_DESK["window"],
+                        size=size - (asset_inset * 2),
+                        origin_x=asset_inset,
+                        origin_y=asset_inset,
+                    )
+                    return
                 inset = max(self._ui_px(10), round(size * 0.10))
                 glow = max(self._ui_px(2), round(size * 0.025))
                 symbol_canvas.create_oval(
@@ -75882,9 +78551,9 @@ class TrackerApp:
                 "hack_draft",
             ),
             (
-                "Difficulty Ladder",
+                "Difficulty Vine",
                 "Climb from the easiest available difficulty to Grandmaster, one complete hack at a time.",
-                "Choose your current rung and complete one full hack before climbing to the next available difficulty.",
+                "Choose your current section of the vine and complete one full hack before climbing to the next available difficulty.",
                 self._open_difficulty_ladder,
                 THEME["orange"],
                 "#C65312",
@@ -78395,7 +81064,7 @@ class TrackerApp:
         return {
             "play_random_hack": "Play Random Hack",
             "hack_draft": "Hack Draft",
-            "difficulty_ladder": "Difficulty Ladder",
+            "difficulty_ladder": "Difficulty Vine",
             "creator_spotlight": "Creator Spotlight",
             "time_capsule": "Time Capsule",
             "hall_of_fame_tour": "Hall of Fame Tour",
@@ -78453,9 +81122,10 @@ class TrackerApp:
             self.config.get("mario_kaizo_challenge_active", False)
         ):
             return "Mario Kaizo Challenge"
-        return str(
+        mode_name = str(
             getattr(self, "active_game_mode_name", "") or ""
         ).strip()
+        return "Difficulty Vine" if mode_name == "Difficulty Ladder" else mode_name
 
     def _stop_active_game_mode_for_switch(self) -> None:
         """End a mode without showing its normal completion/result popup."""
@@ -80737,12 +83407,12 @@ class TrackerApp:
         ]
         self._open_grouped_game_mode_picker(
             key="difficulty_ladder",
-            title="Difficulty Ladder",
-            heading="DIFFICULTY LADDER",
-            description="Choose your current rung and complete one full hack before climbing to the next available difficulty.",
-            group_label="Ladder Rung",
+            title="Difficulty Vine",
+            heading="DIFFICULTY VINE",
+            description="Choose your current section of the vine and complete one full hack before climbing to the next available difficulty.",
+            group_label="Vine Section",
             groups=groups,
-            random_button_text="Random Hack from This Rung",
+            random_button_text="Random Hack from This Section",
         )
 
     def _open_creator_spotlight(self) -> None:
@@ -82942,6 +85612,8 @@ class TrackerApp:
                 if game_id is None:
                     self._retroachievements_overview_summary = dict(summary)
                     self._export_achievements_to_obs(summary)
+                    self._refresh_obs_widget_state()
+                    self._dispatch_new_streamerbot_achievements(summary)
                 if callable(on_complete):
                     on_complete(dict(summary))
 
@@ -83777,6 +86449,14 @@ class TrackerApp:
             value=tr("Select a game to see its achievement progress."),
         )
         selected_achievement_ratio = {"value": 0.0}
+        selected_achievement_expanded = {"value": False}
+        selected_achievement_summary = {
+            "value": empty_retroachievements_summary()
+        }
+        selected_achievement_expand_var = tk.StringVar(
+            master=dialog,
+            value="▶",
+        )
         selected_achievement_panel = tk.Frame(
             detail_body,
             bg=STREAM_DESK["surface_alt"],
@@ -83794,23 +86474,40 @@ class TrackerApp:
             selected_achievement_panel,
             bg=STREAM_DESK["surface_alt"],
             bd=0,
+            cursor="hand2",
         )
         selected_achievement_heading.pack(fill="x")
-        tk.Label(
+        selected_achievement_title_label = tk.Label(
             selected_achievement_heading,
             text=tr("RetroAchievements").upper(),
             font=("Segoe UI", 9, "bold"),
             fg=STREAM_DESK["yellow"],
             bg=STREAM_DESK["surface_alt"],
             anchor="w",
-        ).pack(side="left")
-        tk.Label(
+            cursor="hand2",
+        )
+        selected_achievement_title_label.pack(side="left")
+        selected_achievement_expand_label = tk.Label(
+            selected_achievement_heading,
+            textvariable=selected_achievement_expand_var,
+            font=("Segoe UI Symbol", 10, "bold"),
+            fg=STREAM_DESK["yellow"],
+            bg=STREAM_DESK["surface_alt"],
+            cursor="hand2",
+        )
+        selected_achievement_expand_label.pack(
+            side="right",
+            padx=(self._ui_px(8), 0),
+        )
+        selected_achievement_count_label = tk.Label(
             selected_achievement_heading,
             textvariable=selected_achievement_count_var,
             font=("Segoe UI", 9, "bold"),
             fg=STREAM_DESK["text_strong"],
             bg=STREAM_DESK["surface_alt"],
-        ).pack(side="right")
+            cursor="hand2",
+        )
+        selected_achievement_count_label.pack(side="right")
 
         selected_achievement_progress = tk.Canvas(
             selected_achievement_panel,
@@ -83865,7 +86562,7 @@ class TrackerApp:
         )
         selected_achievement_badge_strip.pack(fill="x")
 
-        tk.Label(
+        selected_achievement_next_label = tk.Label(
             selected_achievement_panel,
             textvariable=selected_achievement_next_var,
             font=("Segoe UI", 8),
@@ -83874,7 +86571,111 @@ class TrackerApp:
             anchor="w",
             justify="left",
             wraplength=self._ui_px(420),
-        ).pack(fill="x", pady=(self._ui_px(7), 0))
+        )
+        selected_achievement_next_label.pack(
+            fill="x",
+            pady=(self._ui_px(7), 0),
+        )
+
+        selected_achievement_expanded_shell = tk.Frame(
+            selected_achievement_panel,
+            bg=STREAM_DESK["surface_deep"],
+            highlightbackground=STREAM_DESK["border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        selected_achievement_list_heading = tk.Label(
+            selected_achievement_expanded_shell,
+            text=tr("All Achievements").upper(),
+            font=("Segoe UI", 8, "bold"),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["surface_deep"],
+            anchor="w",
+            padx=self._ui_px(10),
+            pady=self._ui_px(7),
+        )
+        selected_achievement_list_heading.pack(fill="x")
+        selected_achievement_list_shell = tk.Frame(
+            selected_achievement_expanded_shell,
+            bg=STREAM_DESK["surface_deep"],
+            bd=0,
+        )
+        selected_achievement_list_shell.pack(fill="both", expand=True)
+        selected_achievement_list_canvas = tk.Canvas(
+            selected_achievement_list_shell,
+            bg=STREAM_DESK["surface_deep"],
+            bd=0,
+            highlightthickness=0,
+            yscrollincrement=max(12, self._ui_px(24)),
+        )
+        selected_achievement_list_scrollbar = YellowCanvasScrollbar(
+            selected_achievement_list_shell,
+            orient=tk.VERTICAL,
+            command=selected_achievement_list_canvas.yview,
+            bg=STREAM_DESK["yellow"],
+            activebackground="#FFE56B",
+            troughcolor=STREAM_DESK["surface_deep"],
+            width=self._ui_px(12),
+        )
+        selected_achievement_list_canvas.configure(
+            yscrollcommand=selected_achievement_list_scrollbar.set
+        )
+        selected_achievement_list_scrollbar.pack(side="right", fill="y")
+        selected_achievement_list_canvas.pack(
+            side="left",
+            fill="both",
+            expand=True,
+        )
+        selected_achievement_list_content = tk.Frame(
+            selected_achievement_list_canvas,
+            bg=STREAM_DESK["surface_deep"],
+            bd=0,
+        )
+        selected_achievement_list_window = (
+            selected_achievement_list_canvas.create_window(
+                (0, 0),
+                window=selected_achievement_list_content,
+                anchor="nw",
+            )
+        )
+        selected_achievement_list_content.columnconfigure(0, weight=1)
+        selected_achievement_description_labels: list[tk.Label] = []
+        dialog._selected_ra_all_badge_photos = []
+
+        def fit_selected_achievement_list(_event=None) -> None:
+            try:
+                width = max(
+                    1,
+                    int(selected_achievement_list_canvas.winfo_width()),
+                )
+                selected_achievement_list_canvas.itemconfigure(
+                    selected_achievement_list_window,
+                    width=width,
+                )
+                description_width = max(
+                    self._ui_px(180),
+                    width - self._ui_px(105),
+                )
+                for description_label in selected_achievement_description_labels:
+                    description_label.configure(
+                        wraplength=description_width,
+                    )
+                selected_achievement_list_canvas.configure(
+                    scrollregion=selected_achievement_list_canvas.bbox("all")
+                )
+            except (AttributeError, tk.TclError, TypeError, ValueError):
+                pass
+
+        selected_achievement_list_content.bind(
+            "<Configure>",
+            fit_selected_achievement_list,
+            add="+",
+        )
+        selected_achievement_list_canvas.bind(
+            "<Configure>",
+            fit_selected_achievement_list,
+            add="+",
+        )
 
         detail_actions = tk.Frame(
             detail_body,
@@ -83903,20 +86704,28 @@ class TrackerApp:
             pad_y=6,
         ).pack(side="left", padx=(self._ui_px(8), 0))
 
-        tk.Frame(
+        detail_divider = tk.Frame(
             detail_body,
             bg=STREAM_DESK["border"],
             height=1,
             bd=0,
-        ).pack(fill="x", pady=(self._ui_px(14), self._ui_px(10)))
-        tk.Label(
+        )
+        detail_divider.pack(
+            fill="x",
+            pady=(self._ui_px(14), self._ui_px(10)),
+        )
+        detail_heading_label = tk.Label(
             detail_body,
             text=tr("Hack Details"),
             font=("Segoe UI", 11, "bold"),
             fg=STREAM_DESK["text_strong"],
             bg=STREAM_DESK["surface"],
             anchor="w",
-        ).pack(fill="x", pady=(0, self._ui_px(7)))
+        )
+        detail_heading_label.pack(
+            fill="x",
+            pady=(0, self._ui_px(7)),
+        )
 
         detail_scroll_shell = tk.Frame(
             detail_body,
@@ -84040,6 +86849,273 @@ class TrackerApp:
         detail_generation = {"value": 0}
         dialog._game_library_detail_photos = []
 
+        def scroll_selected_achievement_list(event) -> str:
+            units = self._fast_scroll_units(event, rows_per_notch=2)
+            if units:
+                try:
+                    selected_achievement_list_canvas.yview_scroll(
+                        units,
+                        "units",
+                    )
+                except tk.TclError:
+                    pass
+            return "break"
+
+        def bind_selected_achievement_wheel(widget: tk.Widget) -> None:
+            widget.bind(
+                "<MouseWheel>",
+                scroll_selected_achievement_list,
+                add="+",
+            )
+            widget.bind(
+                "<Button-4>",
+                scroll_selected_achievement_list,
+                add="+",
+            )
+            widget.bind(
+                "<Button-5>",
+                scroll_selected_achievement_list,
+                add="+",
+            )
+
+        bind_selected_achievement_wheel(selected_achievement_list_canvas)
+
+        def render_selected_achievement_list() -> None:
+            for child in selected_achievement_list_content.winfo_children():
+                child.destroy()
+            selected_achievement_description_labels.clear()
+            dialog._selected_ra_all_badge_photos = []
+            summary = selected_achievement_summary["value"]
+            items = [
+                item
+                for item in summary.get("items", [])
+                if isinstance(item, dict)
+            ]
+            items.sort(
+                key=lambda item: (
+                    int(item.get("display_order", 0) or 0),
+                    int(item.get("id", 0) or 0),
+                )
+            )
+            if not items:
+                empty_label = tk.Label(
+                    selected_achievement_list_content,
+                    text=str(
+                        summary.get("message")
+                        or tr("No RetroAchievements data is available.")
+                    ),
+                    font=("Segoe UI", 9),
+                    fg=STREAM_DESK["muted"],
+                    bg=STREAM_DESK["surface_deep"],
+                    anchor="nw",
+                    justify="left",
+                    wraplength=self._ui_px(380),
+                    padx=self._ui_px(10),
+                    pady=self._ui_px(12),
+                )
+                empty_label.grid(row=0, column=0, sticky="ew")
+                bind_selected_achievement_wheel(empty_label)
+
+            for row_index, item in enumerate(items):
+                unlocked_item = bool(item.get("unlocked", False))
+                item_row = tk.Frame(
+                    selected_achievement_list_content,
+                    bg=STREAM_DESK["surface"],
+                    highlightbackground=(
+                        STREAM_DESK["green"]
+                        if unlocked_item
+                        else STREAM_DESK["border"]
+                    ),
+                    highlightthickness=1,
+                    padx=self._ui_px(8),
+                    pady=self._ui_px(8),
+                    bd=0,
+                )
+                item_row.grid(
+                    row=row_index,
+                    column=0,
+                    sticky="ew",
+                    padx=self._ui_px(7),
+                    pady=(
+                        self._ui_px(6)
+                        if row_index == 0
+                        else 0,
+                        self._ui_px(6),
+                    ),
+                )
+                item_row.columnconfigure(1, weight=1)
+                photo = self._retroachievements_badge_photo(
+                    dialog,
+                    item.get("badge_name", ""),
+                    size=52,
+                    unlocked=unlocked_item,
+                )
+                if photo is not None:
+                    dialog._selected_ra_all_badge_photos.append(photo)
+                badge_label = tk.Label(
+                    item_row,
+                    image=photo,
+                    text="RA" if photo is None else "",
+                    font=("Segoe UI", 9, "bold"),
+                    fg=(
+                        STREAM_DESK["yellow"]
+                        if unlocked_item
+                        else STREAM_DESK["muted_dim"]
+                    ),
+                    bg=STREAM_DESK["surface"],
+                    width=0 if photo is not None else self._ui_px(6),
+                )
+                badge_label.grid(
+                    row=0,
+                    column=0,
+                    rowspan=3,
+                    sticky="n",
+                    padx=(0, self._ui_px(10)),
+                )
+                title_row = tk.Frame(
+                    item_row,
+                    bg=STREAM_DESK["surface"],
+                    bd=0,
+                )
+                title_row.grid(row=0, column=1, sticky="ew")
+                title_row.columnconfigure(0, weight=1)
+                title_label = tk.Label(
+                    title_row,
+                    text=str(item.get("title") or "Achievement"),
+                    font=("Segoe UI", 9, "bold"),
+                    fg=STREAM_DESK["text_strong"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="w",
+                    justify="left",
+                )
+                title_label.grid(row=0, column=0, sticky="ew")
+                points = max(0, int(item.get("points", 0) or 0))
+                status_label = tk.Label(
+                    title_row,
+                    text=(
+                        "✓ " + tr("UNLOCKED")
+                        if unlocked_item
+                        else "○ " + tr("LOCKED")
+                    ),
+                    font=("Segoe UI", 7, "bold"),
+                    fg=(
+                        STREAM_DESK["green"]
+                        if unlocked_item
+                        else STREAM_DESK["yellow"]
+                    ),
+                    bg=STREAM_DESK["surface"],
+                    padx=self._ui_px(6),
+                )
+                status_label.grid(row=0, column=1, sticky="e")
+                description_label = tk.Label(
+                    item_row,
+                    text=str(
+                        item.get("description")
+                        or tr("No achievement description was provided.")
+                    ),
+                    font=("Segoe UI", 8),
+                    fg=STREAM_DESK["text"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="nw",
+                    justify="left",
+                    wraplength=self._ui_px(310),
+                )
+                description_label.grid(
+                    row=1,
+                    column=1,
+                    sticky="ew",
+                    pady=(self._ui_px(3), 0),
+                )
+                selected_achievement_description_labels.append(
+                    description_label
+                )
+                earned_date = format_display_date(
+                    item.get("date_earned", ""),
+                    empty="",
+                )
+                detail_text = f"{points} {tr('POINTS')}"
+                if earned_date:
+                    detail_text += "  ·  " + earned_date
+                item_detail_label = tk.Label(
+                    item_row,
+                    text=detail_text,
+                    font=("Segoe UI", 7, "bold"),
+                    fg=STREAM_DESK["muted"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="w",
+                )
+                item_detail_label.grid(
+                    row=2,
+                    column=1,
+                    sticky="ew",
+                    pady=(self._ui_px(4), 0),
+                )
+                for scroll_widget in (
+                    item_row,
+                    badge_label,
+                    title_row,
+                    title_label,
+                    status_label,
+                    description_label,
+                    item_detail_label,
+                ):
+                    bind_selected_achievement_wheel(scroll_widget)
+
+            selected_achievement_list_canvas.yview_moveto(0.0)
+            dialog.after_idle(fit_selected_achievement_list)
+
+        def toggle_selected_achievements(_event=None) -> str:
+            expanded = not bool(selected_achievement_expanded["value"])
+            selected_achievement_expanded["value"] = expanded
+            selected_achievement_expand_var.set("▼" if expanded else "▶")
+            if expanded:
+                detail_actions.pack_forget()
+                detail_divider.pack_forget()
+                detail_heading_label.pack_forget()
+                detail_scroll_shell.pack_forget()
+                selected_achievement_panel.pack_configure(
+                    fill="both",
+                    expand=True,
+                )
+                selected_achievement_expanded_shell.pack(
+                    fill="both",
+                    expand=True,
+                    pady=(self._ui_px(9), 0),
+                )
+                render_selected_achievement_list()
+            else:
+                selected_achievement_expanded_shell.pack_forget()
+                selected_achievement_panel.pack_configure(
+                    fill="x",
+                    expand=False,
+                )
+                detail_actions.pack(
+                    fill="x",
+                    pady=(self._ui_px(14), 0),
+                )
+                detail_divider.pack(
+                    fill="x",
+                    pady=(self._ui_px(14), self._ui_px(10)),
+                )
+                detail_heading_label.pack(
+                    fill="x",
+                    pady=(0, self._ui_px(7)),
+                )
+                detail_scroll_shell.pack(fill="both", expand=True)
+            return "break"
+
+        for achievement_heading_widget in (
+            selected_achievement_heading,
+            selected_achievement_title_label,
+            selected_achievement_count_label,
+            selected_achievement_expand_label,
+        ):
+            achievement_heading_widget.bind(
+                "<Button-1>",
+                toggle_selected_achievements,
+                add="+",
+            )
+
         tracked_by_key = {
             str(record.get("catalog_key") or ""): record
             for record in self.stats_db.list_tracked()
@@ -84069,6 +87145,7 @@ class TrackerApp:
                     current_game_id = 0
                 if current_game_id != game_id:
                     return
+                selected_achievement_summary["value"] = dict(summary)
                 total = max(0, int(summary.get("total", 0) or 0))
                 unlocked = max(0, int(summary.get("unlocked", 0) or 0))
                 selected_achievement_count_var.set(
@@ -84203,6 +87280,8 @@ class TrackerApp:
                     or str(summary.get("message", ""))
                 )
                 draw_selected_achievement_progress()
+                if selected_achievement_expanded["value"]:
+                    render_selected_achievement_list()
 
             if game_id <= 0:
                 render_summary(
@@ -87258,7 +90337,7 @@ class TrackerApp:
         # blank interval, and replaying the same title otherwise leaves the
         # previous stopped timer state attached to the new run.
         if self.worker:
-            self.worker.notify_catalog_launch()
+            self.worker.notify_catalog_launch(game, rom_path)
 
         selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
         if rom_path and selected_platform == "FXPAK Pro":
@@ -93217,6 +96296,219 @@ class TrackerApp:
         dialog.after_idle(dialog.grab_set)
         dialog.after_idle(dialog.focus_force)
 
+    def _streamerbot_settings_snapshot(self) -> dict[str, Any]:
+        mappings = self.config.get("streamerbot_event_actions", {})
+        if not isinstance(mappings, dict):
+            mappings = {}
+        normalized_mappings: dict[str, dict[str, str]] = {}
+        for event_name, _event_label in STREAMERBOT_EVENT_DEFINITIONS:
+            action = mappings.get(event_name, {})
+            if not isinstance(action, dict):
+                continue
+            action_id = str(action.get("id", "")).strip()
+            action_name = str(action.get("name", "")).strip()
+            if action_id or action_name:
+                normalized_mappings[event_name] = {
+                    "id": action_id,
+                    "name": action_name,
+                }
+        try:
+            port = int(self.config.get("streamerbot_port", 8080) or 8080)
+        except (TypeError, ValueError):
+            port = 8080
+        return {
+            "enabled": bool(self.config.get("streamerbot_enabled", False)),
+            "host": str(
+                self.config.get("streamerbot_host", "127.0.0.1")
+                or "127.0.0.1"
+            ).strip(),
+            "port": port,
+            "endpoint": str(
+                self.config.get("streamerbot_endpoint", "/") or "/"
+            ).strip(),
+            "password": str(self.config.get("streamerbot_password", "") or ""),
+            "event_actions": normalized_mappings,
+        }
+
+    def _queue_streamerbot_status(self, connected: bool, message: str) -> None:
+        try:
+            self.event_queue.put_nowait(
+                {
+                    "type": "streamerbot_status",
+                    "connected": bool(connected),
+                    "message": str(message),
+                }
+            )
+        except queue.Full:
+            pass
+
+    def _configure_streamerbot_dispatcher(self) -> None:
+        settings = self._streamerbot_settings_snapshot()
+        if self.startup_check or not bool(settings.get("enabled", False)):
+            dispatcher = self.streamerbot_dispatcher
+            self.streamerbot_dispatcher = None
+            if dispatcher is not None:
+                dispatcher.stop()
+            try:
+                self.streamerbot_status_var.set(
+                    self._translate_ui_text("Streamer.bot is disabled.")
+                )
+            except (AttributeError, tk.TclError):
+                pass
+            return
+        if self.streamerbot_dispatcher is None:
+            self.streamerbot_dispatcher = StreamerBotDispatcher(
+                settings,
+                status_callback=self._queue_streamerbot_status,
+            )
+        else:
+            self.streamerbot_dispatcher.configure(settings)
+        try:
+            self.streamerbot_status_var.set(
+                self._translate_ui_text(
+                    "Ready to send confirmed events to Streamer.bot."
+                )
+            )
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _streamerbot_event_arguments(
+        self,
+        event_name: str,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        state = self._obs_widget_state_snapshot()
+        exits = state.get("exits", {})
+        deaths = state.get("deaths", {})
+        timers = state.get("timers", {})
+        achievements = state.get("achievements", {})
+        exits = exits if isinstance(exits, dict) else {}
+        deaths = deaths if isinstance(deaths, dict) else {}
+        timers = timers if isinstance(timers, dict) else {}
+        achievements = achievements if isinstance(achievements, dict) else {}
+        arguments: dict[str, Any] = {
+            "eventName": str(event_name),
+            "eventLabel": STREAMERBOT_EVENT_LABELS.get(
+                str(event_name),
+                str(event_name).replace("_", " ").title(),
+            ),
+            "eventTimestamp": datetime.now(timezone.utc).isoformat(),
+            "appName": APP_NAME,
+            "appVersion": APP_VERSION,
+            "hackTitle": str(state.get("hack", "")),
+            "creator": str(state.get("creator", "")),
+            "currentExits": _obs_widget_nonnegative_integer(
+                exits.get("completed", 0)
+            ),
+            "totalExits": (
+                _obs_widget_nonnegative_integer(exits.get("total", 0))
+                if exits.get("total") is not None
+                else "Unknown"
+            ),
+            "exitsLabel": str(exits.get("label", "")),
+            "levelDeaths": _obs_widget_nonnegative_integer(
+                deaths.get("level", 0)
+            ),
+            "gameDeaths": _obs_widget_nonnegative_integer(
+                deaths.get("total", 0)
+            ),
+            "gameTimer": str(timers.get("game", "00:00")),
+            "levelTimer": str(timers.get("level", "00:00")),
+            "trackerConnected": bool(state.get("connected", False)),
+            "achievementProgress": str(achievements.get("progress", "")),
+            "achievementUnlocked": _obs_widget_nonnegative_integer(
+                achievements.get("unlocked", 0)
+            ),
+            "achievementTotal": _obs_widget_nonnegative_integer(
+                achievements.get("total", 0)
+            ),
+        }
+        if isinstance(extra, dict):
+            arguments.update(extra)
+        try:
+            arguments["trackerStateJson"] = json.dumps(
+                state,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            arguments["trackerStateJson"] = "{}"
+        return arguments
+
+    def _dispatch_streamerbot_event(
+        self,
+        event_name: str,
+        extra: dict[str, Any] | None = None,
+    ) -> bool:
+        dispatcher = self.streamerbot_dispatcher
+        if dispatcher is None:
+            return False
+        return dispatcher.dispatch(
+            str(event_name),
+            self._streamerbot_event_arguments(event_name, extra),
+        )
+
+    def _dispatch_new_streamerbot_achievements(
+        self,
+        summary: dict[str, Any],
+    ) -> None:
+        seen_ids = self.streamerbot_seen_achievement_ids
+        try:
+            game_id = int(summary.get("game_id", 0) or 0)
+        except (TypeError, ValueError):
+            game_id = 0
+        if not game_id:
+            return
+        if game_id not in self.streamerbot_achievement_baseline_games:
+            for item in summary.get("items", []):
+                if not isinstance(item, dict) or not bool(
+                    item.get("unlocked", False)
+                ):
+                    continue
+                try:
+                    achievement_id = int(item.get("id", 0) or 0)
+                except (TypeError, ValueError):
+                    achievement_id = 0
+                if achievement_id:
+                    seen_ids.add(achievement_id)
+            self.streamerbot_achievement_baseline_games.add(game_id)
+            return
+        newly_unlocked: list[dict[str, Any]] = []
+        for item in summary.get("items", []):
+            if not isinstance(item, dict) or not bool(item.get("unlocked", False)):
+                continue
+            try:
+                achievement_id = int(item.get("id", 0) or 0)
+            except (TypeError, ValueError):
+                achievement_id = 0
+            if not achievement_id:
+                continue
+            if achievement_id not in seen_ids:
+                newly_unlocked.append(item)
+            seen_ids.add(achievement_id)
+        newly_unlocked.sort(
+            key=lambda item: str(item.get("date_earned", ""))
+        )
+        for item in newly_unlocked:
+            self._dispatch_streamerbot_event(
+                "achievement_unlocked",
+                {
+                    "achievementId": int(item.get("id", 0) or 0),
+                    "achievementTitle": str(
+                        item.get("title", "Achievement")
+                    ),
+                    "achievementDescription": str(
+                        item.get("description", "")
+                    ),
+                    "achievementPoints": _obs_widget_nonnegative_integer(
+                        item.get("points", 0)
+                    ),
+                    "achievementBadge": str(item.get("badge_name", "")),
+                    "achievementEarnedAt": str(item.get("date_earned", "")),
+                    "achievementGame": str(summary.get("game_title", "")),
+                },
+            )
+
     def _refresh_obs_widget_state(self) -> None:
         try:
             author = str(
@@ -93230,6 +96522,8 @@ class TrackerApp:
                 hack=self.game_var.get(),
                 creator=author,
                 exits_text=self.exits_var.get(),
+                exits_completed=self.obs_widget_completed_exits,
+                exits_total=self.obs_widget_total_exits,
                 level_deaths=self.death_counter_var.get(),
                 total_deaths=self.total_death_counter_var.get(),
                 game_timer=self.game_timer_var.get(),
@@ -100461,6 +103755,9 @@ class TrackerApp:
                         self._populate_game_library()
 
                 elif event_type == "connection":
+                    previous_streamerbot_connection = (
+                        self.streamerbot_last_connection_state
+                    )
                     self.connection_is_connected = bool(
                         event.get("connected")
                     )
@@ -100516,6 +103813,34 @@ class TrackerApp:
                     self._set_tracking_icon(
                         bool(event.get("connected"))
                     )
+                    current_streamerbot_connection = bool(
+                        event.get("connected")
+                    )
+                    self.streamerbot_last_connection_state = (
+                        current_streamerbot_connection
+                    )
+                    if (
+                        previous_streamerbot_connection is None
+                        or previous_streamerbot_connection
+                        != current_streamerbot_connection
+                    ):
+                        self._refresh_obs_widget_state()
+                        self._dispatch_streamerbot_event(
+                            "connection_changed",
+                            {
+                                "connectionState": (
+                                    "connected"
+                                    if current_streamerbot_connection
+                                    else "disconnected"
+                                ),
+                                "connectionDevice": str(
+                                    event.get("device", "")
+                                ),
+                                "connectionError": str(
+                                    event.get("error", "")
+                                ),
+                            },
+                        )
 
                 elif event_type == "game":
                     event_author = smwc_author_text(
@@ -100539,6 +103864,16 @@ class TrackerApp:
                         + " / "
                         + str(event.get("total", "Unknown"))
                     )
+                    self.obs_widget_completed_exits = (
+                        _obs_widget_nonnegative_integer(event.get("completed", 0))
+                    )
+                    try:
+                        event_total = int(float(str(event.get("total", "")).strip()))
+                        self.obs_widget_total_exits = (
+                            event_total if event_total > 0 else None
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        self.obs_widget_total_exits = None
                     self.current_hack_url = str(
                         event.get(
                             "page_url",
@@ -100600,6 +103935,33 @@ class TrackerApp:
                     self._remember_last_launched_hack(
                         self.current_hack_record
                     )
+                    game_identity = (
+                        str(event.get("catalog_key", "")).strip().casefold()
+                        or str(event.get("title", "")).strip().casefold()
+                    )
+                    previous_game_identity = self.streamerbot_last_game_identity
+                    self.streamerbot_last_game_identity = game_identity
+                    self.streamerbot_last_exit_count = (
+                        _obs_widget_nonnegative_integer(event.get("completed", 0))
+                    )
+                    if (
+                        game_identity
+                        and game_identity != previous_game_identity
+                        and str(event.get("title", "")).strip().casefold()
+                        not in {"", "no game detected"}
+                    ):
+                        self._refresh_obs_widget_state()
+                        self._dispatch_streamerbot_event(
+                            "game_started",
+                            {
+                                "gameCatalogKey": str(
+                                    event.get("catalog_key", "")
+                                ),
+                                "gameDifficulty": difficulty_text,
+                                "gameType": hack_type_text,
+                                "gamePageUrl": self.current_hack_url,
+                            },
+                        )
 
                 elif event_type == "exits":
                     self.exits_var.set(
@@ -100609,9 +103971,41 @@ class TrackerApp:
                         + " / "
                         + str(event.get("total", "Unknown"))
                     )
+                    self.obs_widget_completed_exits = (
+                        _obs_widget_nonnegative_integer(event.get("completed", 0))
+                    )
+                    try:
+                        event_total = int(float(str(event.get("total", "")).strip()))
+                        self.obs_widget_total_exits = (
+                            event_total if event_total > 0 else None
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        self.obs_widget_total_exits = None
                     self._handle_hot_potato_exits(
                         event.get("completed", 0)
                     )
+                    completed_exits = _obs_widget_nonnegative_integer(
+                        event.get("completed", 0)
+                    )
+                    previous_exits = self.streamerbot_last_exit_count
+                    if previous_exits is None:
+                        self.streamerbot_last_exit_count = completed_exits
+                    elif completed_exits > previous_exits:
+                        self.streamerbot_last_exit_count = completed_exits
+                        self._refresh_obs_widget_state()
+                        exit_arguments = {
+                            "exitsGained": completed_exits - previous_exits,
+                            "previousExits": previous_exits,
+                            "currentExits": completed_exits,
+                        }
+                        self._dispatch_streamerbot_event(
+                            "exit_collected",
+                            exit_arguments,
+                        )
+                        self._dispatch_streamerbot_event(
+                            "level_completed",
+                            exit_arguments,
+                        )
 
                 elif event_type == "deaths":
                     self.death_counter_var.set(
@@ -100638,11 +104032,27 @@ class TrackerApp:
 
                 elif event_type == "death_recorded":
                     self._handle_hot_potato_death(event)
+                    self._refresh_obs_widget_state()
+                    self._dispatch_streamerbot_event(
+                        "death_added",
+                        {
+                            "deathSource": str(event.get("source", "")),
+                            "deathAmount": max(
+                                1,
+                                _obs_widget_nonnegative_integer(
+                                    event.get("amount", 1)
+                                ),
+                            ),
+                        },
+                    )
 
                 elif event_type == "hot_potato_rotation_ready":
                     self._handle_hot_potato_rotation_ready(event)
 
                 elif event_type == "timers":
+                    previous_game_timer_running = (
+                        self.streamerbot_last_game_timer_running
+                    )
                     self.game_timer_var.set(
                         str(event.get("game", "00:00"))
                     )
@@ -100683,6 +104093,28 @@ class TrackerApp:
                             else "▶  "
                             + self._translate_ui_text("Start Timers")
                         )
+                    )
+                    self.streamerbot_last_game_timer_running = game_running
+                    if (
+                        previous_game_timer_running is not None
+                        and previous_game_timer_running != game_running
+                    ):
+                        self._refresh_obs_widget_state()
+                        self._dispatch_streamerbot_event(
+                            (
+                                "game_timer_started"
+                                if game_running
+                                else "game_timer_finished"
+                            ),
+                            {
+                                "gameTimerRunning": game_running,
+                                "levelTimerRunning": level_running,
+                            },
+                        )
+
+                elif event_type == "streamerbot_status":
+                    self.streamerbot_status_var.set(
+                        str(event.get("message", "Streamer.bot status updated."))
                     )
 
                 elif event_type == "timer_action":
@@ -100800,6 +104232,17 @@ class TrackerApp:
                         self.status_var.set(message)
                         self._refresh_database_status()
                         self._queue_google_sheets_sync()
+                        if is_complete:
+                            self._refresh_obs_widget_state()
+                            self._dispatch_streamerbot_event(
+                                "hack_completed",
+                                {
+                                    "completionPercentage": percentage,
+                                    "completionRating": rating,
+                                    "completionDeaths": total_deaths,
+                                    "completionTime": game_time,
+                                },
+                            )
                         if self.tracker_list_dialog is not None and self.tracker_list_dialog.winfo_exists():
                             self._refresh_my_tracker()
                         messagebox.showinfo(
@@ -101073,6 +104516,10 @@ class TrackerApp:
         self._stop_feedback_webview_process()
         self._stop_smwcentral_home_feed_process()
         self._stop_smwcentral_webview_process()
+        streamerbot_dispatcher = self.streamerbot_dispatcher
+        self.streamerbot_dispatcher = None
+        if streamerbot_dispatcher is not None:
+            streamerbot_dispatcher.stop()
         self._stop_obs_widget_server()
 
         self.root.destroy()

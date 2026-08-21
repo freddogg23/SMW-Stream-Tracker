@@ -61,7 +61,7 @@ NEW IN VERSION 1.1.0
 * MiSTer FPGA is now a complete playable platform. One-click setup discovers
   the console on the local network, prepares remote launching and live tracking,
   and works with standard MiSTer and MiSTer Multisystem² consoles.
-* Game Modes now includes Play Random Hack, Hack Draft, Difficulty Ladder,
+* Game Modes now includes Play Random Hack, Hack Draft, Difficulty Vine,
   Creator Spotlight, Time Capsule, and Hall of Fame Tour, with translated blue
   windows and hover descriptions.
 * Spreadsheet Settings now includes smart Excel import. Google Sheets can sync

@@ -95,7 +95,8 @@ class RetroAchievementsSetupTests(unittest.TestCase):
 
     def test_mister_setup_updates_credentials_and_preserves_other_values(self):
         text = self.tracker.mister_retroachievements_config_text(
-            "volume=70\nusername=old\nhardcore=0\n",
+            "volume=70\nusername=old\nhardcore=0\npopup_position=left\n"
+            "show_leaderboards_updates=1\nshow_leaderboards_submission=0\n",
             username="LuigiPlayer",
             password="secret",
             hardcore=True,
@@ -105,6 +106,13 @@ class RetroAchievementsSetupTests(unittest.TestCase):
         self.assertIn("username=LuigiPlayer", text)
         self.assertIn("password=secret", text)
         self.assertIn("hardcore=1", text)
+        self.assertEqual(text.count("popup_position="), 1)
+        self.assertIn("popup_position=center", text)
+        self.assertIn("multiline_desc=0", text)
+        self.assertEqual(text.count("show_leaderboards_updates="), 1)
+        self.assertIn("show_leaderboards_updates=0", text)
+        self.assertEqual(text.count("show_leaderboards_submission="), 1)
+        self.assertIn("show_leaderboards_submission=1", text)
 
     def test_mister_ini_enables_ra_main_and_preserves_other_sections(self):
         text = self.tracker.mister_retroachievements_ini_text(
