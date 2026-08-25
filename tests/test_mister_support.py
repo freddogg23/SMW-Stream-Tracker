@@ -1,9 +1,13 @@
 import importlib.util
+import hashlib
+import io
 import inspect
 import json
 from pathlib import Path
 import queue
+import shlex
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -58,6 +62,206 @@ class MisterSupportTests(unittest.TestCase):
             self.tracker.DEFAULT_CONFIG["mister_rom_root"],
             "/media/fat/games/SNES/SMW Stream Tracker",
         )
+        self.assertFalse(
+            self.tracker.DEFAULT_CONFIG["rom_builder_upload_to_mister"]
+        )
+
+    def test_mister_rom_root_stays_inside_the_snes_sd_folder(self):
+        self.assertEqual(
+            self.tracker.normalize_mister_rom_root(
+                "/media/fat/games/SNES/My Hacks"
+            ),
+            "/media/fat/games/SNES/My Hacks",
+        )
+        with self.assertRaises(ValueError):
+            self.tracker.normalize_mister_rom_root(
+                "/media/fat/games/SNES/../../config"
+            )
+        with self.assertRaises(ValueError):
+            self.tracker.normalize_mister_rom_root(
+                "/media/fat/games/Genesis"
+            )
+
+    def test_mister_sd_upload_is_verified_and_atomic(self):
+        class FakeSftp:
+            def __init__(self):
+                self.files = {}
+                self.directories = {
+                    "/",
+                    "/media",
+                    "/media/fat",
+                    "/media/fat/games",
+                    "/media/fat/games/SNES",
+                }
+
+            def stat(self, path):
+                if path in self.files:
+                    return SimpleNamespace(st_size=len(self.files[path]))
+                if path in self.directories:
+                    return SimpleNamespace(st_size=0)
+                raise OSError(path)
+
+            def mkdir(self, path):
+                self.directories.add(path)
+
+            def put(self, local_path, remote_path):
+                self.files[remote_path] = Path(local_path).read_bytes()
+
+            def open(self, path, mode):
+                if mode != "rb" or path not in self.files:
+                    raise OSError(path)
+                import io
+
+                return io.BytesIO(self.files[path])
+
+            def remove(self, path):
+                if path not in self.files:
+                    raise OSError(path)
+                del self.files[path]
+
+            def posix_rename(self, source, destination):
+                self.files[destination] = self.files.pop(source)
+
+        app = object.__new__(self.tracker.TrackerApp)
+        sftp = FakeSftp()
+        payload = b"verified-rom" * 64
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            local_rom = Path(temporary_directory) / "Hack.sfc"
+            local_rom.write_bytes(payload)
+            remote_path, status = app._upload_rom_to_mister_sd(
+                mock.Mock(),
+                sftp,
+                local_rom,
+                self.tracker.MISTER_DEFAULT_ROM_ROOT,
+                {"title": "Hack", "smwc_id": "123"},
+            )
+            self.assertEqual(status, "uploaded")
+            self.assertEqual(sftp.files[remote_path], payload)
+            self.assertNotIn(remote_path + ".smwtracker-upload", sftp.files)
+
+            repeated_path, repeated_status = app._upload_rom_to_mister_sd(
+                mock.Mock(),
+                sftp,
+                local_rom,
+                self.tracker.MISTER_DEFAULT_ROM_ROOT,
+                {"title": "Hack", "smwc_id": "123"},
+            )
+            self.assertEqual(repeated_path, remote_path)
+            self.assertEqual(repeated_status, "already_on_mister")
+
+    def test_mister_bulk_upload_hashes_on_device_without_downloading_rom(self):
+        class FakeSftp:
+            def __init__(self):
+                self.files = {}
+                self.read_count = 0
+                self.stat_count = 0
+                self.directories = {
+                    "/",
+                    "/media",
+                    "/media/fat",
+                    "/media/fat/games",
+                    "/media/fat/games/SNES",
+                }
+
+            def stat(self, path):
+                self.stat_count += 1
+                if path in self.files:
+                    return SimpleNamespace(st_size=len(self.files[path]))
+                if path in self.directories:
+                    return SimpleNamespace(st_size=0)
+                raise OSError(path)
+
+            def mkdir(self, path):
+                self.directories.add(path)
+
+            def put(self, local_path, remote_path, *, confirm=True):
+                self.files[remote_path] = Path(local_path).read_bytes()
+
+            def open(self, path, mode):
+                if mode != "rb" or path not in self.files:
+                    raise OSError(path)
+                self.read_count += 1
+                return io.BytesIO(self.files[path])
+
+            def remove(self, path):
+                if path not in self.files:
+                    raise OSError(path)
+                del self.files[path]
+
+            def posix_rename(self, source, destination):
+                self.files[destination] = self.files.pop(source)
+
+        class FakeChannel:
+            @staticmethod
+            def recv_exit_status():
+                return 0
+
+        class FakeStream(io.BytesIO):
+            def __init__(self, payload=b""):
+                super().__init__(payload)
+                self.channel = FakeChannel()
+
+        class FakeClient:
+            def __init__(self, sftp):
+                self.sftp = sftp
+                self.commands = []
+
+            def exec_command(self, command, timeout=120):
+                self.commands.append(command)
+                remote_path = shlex.split(command)[1]
+                digest = hashlib.sha256(self.sftp.files[remote_path]).hexdigest()
+                return (
+                    FakeStream(),
+                    FakeStream(f"{digest}  {remote_path}\n".encode("ascii")),
+                    FakeStream(),
+                )
+
+        app = object.__new__(self.tracker.TrackerApp)
+        sftp = FakeSftp()
+        client = FakeClient(sftp)
+        payload = b"fast-verified-rom" * 256
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            local_rom = Path(temporary_directory) / "Fast Hack.sfc"
+            local_rom.write_bytes(payload)
+            remote_path, status = app._upload_rom_to_mister_sd(
+                client,
+                sftp,
+                local_rom,
+                self.tracker.MISTER_DEFAULT_ROM_ROOT,
+                {"title": "Fast Hack", "smwc_id": "456"},
+            )
+            first_directory_stat_count = sftp.stat_count
+            repeated_path, repeated_status = app._upload_rom_to_mister_sd(
+                client,
+                sftp,
+                local_rom,
+                self.tracker.MISTER_DEFAULT_ROM_ROOT,
+                {"title": "Fast Hack", "smwc_id": "456"},
+            )
+
+        self.assertEqual(status, "uploaded")
+        self.assertEqual(repeated_status, "already_on_mister")
+        self.assertEqual(repeated_path, remote_path)
+        self.assertEqual(sftp.files[remote_path], payload)
+        self.assertEqual(sftp.read_count, 0)
+        self.assertGreaterEqual(len(client.commands), 2)
+        self.assertLessEqual(sftp.stat_count - first_directory_stat_count, 1)
+
+    def test_mister_downloader_checkbox_is_platform_specific(self):
+        downloader_source = inspect.getsource(
+            self.tracker.TrackerApp.open_hack_downloader
+        )
+        worker_source = inspect.getsource(
+            self.tracker.TrackerApp._filtered_hack_download_worker
+        )
+        self.assertIn('selected_platform == "MiSTer"', downloader_source)
+        self.assertIn('"Send to MiSTer SD Card"', downloader_source)
+        self.assertIn('"mister_sd_option"', downloader_source)
+        self.assertIn('selected_platform == "FXPAK Pro"', downloader_source)
+        self.assertIn('upload_to_mister_var.set(False)', downloader_source)
+        self.assertIn("mister_root", worker_source)
+        self.assertIn("_verified_mister_peer", worker_source)
+        self.assertIn("_upload_rom_to_mister_sd", worker_source)
 
     def test_mister_uses_the_transparent_cat_asset_not_the_old_badge(self):
         asset_path = MODULE_PATH.parent / "platform_assets" / "mister.png"
@@ -228,12 +432,15 @@ class MisterSupportTests(unittest.TestCase):
             build_script,
         )
 
-    def test_normal_windows_build_excludes_known_bad_virtual_state_binary(self):
+    def test_normal_windows_build_packages_the_rebased_virtual_state_binary(self):
         build_spec = (MODULE_PATH.parent / "SMWStreamTracker.spec").read_text(
             encoding="utf-8-sig"
         )
-        self.assertNotIn("MiSTer-SMW-Virtual-States", build_spec)
-        self.assertNotIn("mister_experimental", build_spec)
+        self.assertIn("MiSTer-SMW-Virtual-States", build_spec)
+        self.assertIn("mister_experimental", build_spec)
+        self.assertIn("Main_MiSTer_20260707", build_spec)
+        self.assertIn("UPSTREAM_SOURCE.txt", build_spec)
+        self.assertIn("Main_MiSTer_20260707\\\\LICENSE", build_spec)
 
     def test_windows_build_refuses_to_package_without_paramiko(self):
         build_spec = (MODULE_PATH.parent / "SMWStreamTracker.spec").read_text(
@@ -253,20 +460,16 @@ class MisterSupportTests(unittest.TestCase):
         )
         self.assertIn("paramiko is not None", discovery_source)
 
-    def test_mister_launch_blocks_the_known_bad_experimental_main(self):
+    def test_mister_launch_allows_the_rebased_virtual_state_main(self):
         launch_source = inspect.getsource(
             self.tracker.TrackerApp._run_mister_game_launch
         )
-        self.assertIn('"/media/fat/MiSTer"', launch_source)
-        self.assertIn(
+        self.assertNotIn(
             "current_main_sha256 == MISTER_VIRTUAL_STATES_BINARY_SHA256",
             launch_source,
         )
-        self.assertIn("can corrupt HDMI output", launch_source)
-        self.assertLess(
-            launch_source.index("current_main_sha256"),
-            launch_source.index("mister_mgl_text("),
-        )
+        self.assertNotIn("can corrupt HDMI output", launch_source)
+        self.assertIn("mister_mgl_text(", launch_source)
 
     def test_packaged_startup_check_requires_complete_mister_ssh_support(self):
         startup_check_source = inspect.getsource(
@@ -409,6 +612,7 @@ class MisterSupportTests(unittest.TestCase):
         )
         self.assertIn("_discover_mister_host", setup_source)
         self.assertIn("_install_mister_support", setup_source)
+        self.assertIn("_install_mister_virtual_states", setup_source)
         self.assertIn("_verified_mister_peer(key_client)", setup_source)
         self.assertIn("mister_id_rsa", key_source)
         self.assertIn("authorized_keys", key_source)
@@ -495,11 +699,9 @@ class MisterSupportTests(unittest.TestCase):
                     "Recommended",
                     "Connection details",
                     "Find & Set Up MiSTer",
-                    "Install Virtual Save State Slots",
                     "Save & Select MiSTer",
                     "Looking for MiSTer on your network...",
                     "MiSTer is fully set up. The tracker found it, installed live tracking and save states 5–11, created the game folders, enabled automatic login for this app, selected MiSTer, and verified the connection. MiSTer is restarting.",
-                    "MiSTer Save States 5–11",
                     "Restore Previous MiSTer Version",
                     "Restore the Previous MiSTer Version?",
                     "Checking compatibility with this MiSTer...",
@@ -526,47 +728,76 @@ class MisterSupportTests(unittest.TestCase):
                         row[column],
                     )
 
-    def test_normal_mister_setup_disables_the_known_bad_virtual_states(self):
+    def test_normal_mister_setup_installs_the_rebased_virtual_states(self):
         setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
-        self.assertEqual(setup_source.count("self._install_mister_virtual_states("), 0)
+        self.assertEqual(
+            setup_source.count("self._install_mister_virtual_states("),
+            1,
+        )
         self.assertNotIn("Install Virtual Save State Slots", setup_source)
-        self.assertIn("Virtual Save States Disabled", setup_source)
-        self.assertIn("can corrupt HDMI output", setup_source)
+        self.assertNotIn("MiSTer Save States 5–11", setup_source)
+        self.assertNotIn("virtual_states_body", setup_source)
+        self.assertNotIn("Virtual Save States Disabled", setup_source)
+        self.assertNotIn("can corrupt HDMI output", setup_source)
         self.assertIn("Find & Set Up MiSTer", setup_source)
         self.assertNotIn("Install Experimental States", setup_source)
-        self.assertNotIn("install_experimental_button", setup_source)
         self.assertIn(
             "restore_original_button = self._make_action_button(\n"
             "            buttons,",
             setup_source,
         )
-        self.assertIn(
-            "install_button = self._make_action_button(\n"
-            "            virtual_states_buttons,",
-            setup_source,
-        )
+        self.assertNotIn("install_button = self._make_action_button(", setup_source)
+
+    def test_mister_automatic_setup_instructions_are_complete(self):
+        setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
+        self.assertIn("The default SSH password is 1.", setup_source)
+        self.assertIn("Virtual Save State Slots", setup_source)
+        self.assertIn("smaller buttons to the right", setup_source)
+        self.assertNotIn("smaller buttons below", setup_source)
 
     def test_mister_setup_uses_compact_stream_desk_cards(self):
         setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
         self.assertIn("self._create_stream_desk_page_header(", setup_source)
         self.assertIn('kicker="MISTER CONNECTION"', setup_source)
-        self.assertGreaterEqual(setup_source.count("self._stream_desk_card("), 3)
+        self.assertEqual(setup_source.count("self._stream_desk_card("), 2)
         self.assertIn("dialog._uses_stream_desk_palette = True", setup_source)
         self.assertIn("self._size_dialog_for_ui(dialog, 980, 840, 820, 700)", setup_source)
         self.assertIn("footer = tk.Frame(", setup_source)
         self.assertIn("content.columnconfigure(0, weight=3", setup_source)
         self.assertNotIn('bg=THEME["blue"]', setup_source)
 
-    def test_mister_test_and_restore_buttons_share_a_full_height_row(self):
+    def test_add_mister_profile_uses_themed_text_prompt(self):
+        setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
+        add_profile_start = setup_source.index("def add_mister_profile()")
+        remove_profile_start = setup_source.index(
+            "def remove_mister_profile()",
+            add_profile_start,
+        )
+        add_profile_source = setup_source[
+            add_profile_start:remove_profile_start
+        ]
+        self.assertIn("self._ask_stream_desk_string(", add_profile_source)
+        self.assertNotIn("simpledialog.askstring(", add_profile_source)
+
+    def test_mister_restore_button_uses_its_own_full_width_row(self):
         setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
         self.assertIn('self._translate_ui_text("Test Connection")', setup_source)
         self.assertGreaterEqual(setup_source.count("pad_y=11"), 2)
         self.assertIn('test_button.grid(\n            row=0', setup_source)
         self.assertIn(
-            'restore_original_button.grid(\n            row=0',
+            'restore_original_button.grid(\n            row=1',
             setup_source,
         )
-        self.assertIn('uniform="mister_manual_actions"', setup_source)
+        self.assertIn("buttons.columnconfigure(0, weight=1", setup_source)
+        self.assertNotIn('uniform="mister_manual_actions"', setup_source)
+        restore_start = setup_source.index("restore_original_button =")
+        restore_end = setup_source.index(
+            "restore_original_button.grid(",
+            restore_start,
+        )
+        restore_source = setup_source[restore_start:restore_end]
+        self.assertIn("width=34", restore_source)
+        self.assertIn("font_size=10", restore_source)
 
 
 if __name__ == "__main__":

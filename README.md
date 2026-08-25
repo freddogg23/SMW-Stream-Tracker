@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 2.0.3**
+**Version 2.1.0**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -9,6 +9,40 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
+
+## What’s new in v2.1.0
+
+- Adds a dedicated **SNES ROMs** tab to Game Library with cleaned display
+  names, folder-wide importing, matching search and filters, bulk selection and
+  deletion, centered columns, and the existing MiSTer SD-card workflow.
+- Extends **RetroAchievements** identification to imported SNES games, with
+  trophy markers and the same expandable official badge, requirement, point,
+  and unlock details used by SMW hacks.
+- Adds dated “new since refresh” tracking for moderated and waiting SMW Central
+  hacks, with notification dots on Game Library and the matching refresh and
+  download actions.
+- Adds multiple named MiSTer profiles, automatic online-console failover, and
+  automatic Ethernet/Wi-Fi address discovery while retaining manual controls.
+- Speeds up bulk MiSTer ROM transfers with verified on-device hashing and
+  atomic uploads, and makes **Find & Set Up MiSTer** install virtual save-state
+  slots 5–11 automatically.
+- Expands Streamer.bot from outbound events to approved tracker controls,
+  prevents action feedback loops, and adds suggested one-click action mapping.
+- Adds tracker automation for adaptive polling, crash recovery, automatic
+  backups, library maintenance, post-stream summaries, completion detection,
+  and automatic statistic reconciliation.
+- Adds **Always Ask to Confirm Final Exit** under Platform settings and only
+  suggests completion when the final exit and completion state agree.
+- Automatically hides SMW-only creator and exit information for ordinary SNES
+  games while keeping hack/game name, deaths, and level/game timers available.
+- Rejects suspicious death samples during pipes, doors, level transitions,
+  loading screens, and save-state restoration, including RA-SNES/SNI sessions.
+- Compacts the MiSTer and RetroArch platform pages into single-page layouts,
+  modernizes remaining setup/detail dialogs, and keeps Tracker Automation under
+  Platform settings.
+
+This is a Windows-only release. No macOS artifacts are published because the
+macOS build has not been tested.
 
 ## What’s new in v2.0.3
 
@@ -164,7 +198,7 @@ macOS build has not been tested.
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v2.0.3 Stream Desk dashboard with live-session controls, timeline, counters, and playlist">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v2.1.0 Stream Desk dashboard with live-session controls, timeline, counters, and playlist">
 </p>
 
 The current Stream Desk dashboard keeps the active hack, session timeline,

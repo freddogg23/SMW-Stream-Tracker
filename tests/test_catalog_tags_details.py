@@ -196,7 +196,7 @@ class CatalogTagsAndDetailsTests(unittest.TestCase):
                     self.assertIn(label, translations)
                     self.assertTrue(translations[label].strip())
 
-    def test_ui_uses_shared_tag_index_and_blue_details_popup(self):
+    def test_ui_uses_shared_tag_index_and_modern_details_popup(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
         tree = ast.parse(source)
         methods = {
@@ -212,7 +212,13 @@ class CatalogTagsAndDetailsTests(unittest.TestCase):
             source,
             methods["open_current_hack_page"],
         )
-        self.assertIn('bg=THEME["blue"]', popup_source)
+        self.assertIn("dialog._uses_stream_desk_palette = True", popup_source)
+        self.assertIn("self._create_stream_desk_page_header", popup_source)
+        self.assertIn('kicker="SMW CENTRAL"', popup_source)
+        self.assertIn('bg=STREAM_DESK["green"]', popup_source)
+        self.assertIn("description_body = self._stream_desk_card", popup_source)
+        self.assertIn("screenshots_body = self._stream_desk_card", popup_source)
+        self.assertNotIn("title_bar = tk.Frame", popup_source)
         self.assertIn('"Description"', popup_source)
         self.assertIn('"Screenshots"', popup_source)
         self.assertIn("open_hack_details", current_source)

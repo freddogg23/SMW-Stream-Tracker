@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +77,8 @@ class StreamerBotWebSocketIntegrationTests(unittest.TestCase):
     def test_default_settings_are_local_and_disabled(self):
         config = self.tracker.DEFAULT_CONFIG
         self.assertFalse(config["streamerbot_enabled"])
+        self.assertFalse(config["streamerbot_controls_enabled"])
+        self.assertEqual(config["streamerbot_control_actions"], {})
         self.assertEqual(config["streamerbot_host"], "127.0.0.1")
         self.assertEqual(config["streamerbot_port"], 8080)
         self.assertEqual(config["streamerbot_endpoint"], "/")
@@ -138,6 +140,23 @@ class StreamerBotWebSocketIntegrationTests(unittest.TestCase):
         self.assertEqual(do_action["args"]["gameDeaths"], 7)
         self.assertTrue(fake_socket.closed)
 
+    def test_connection_subscribes_to_raw_action_events(self):
+        fake_socket = FakeStreamerBotSocket()
+        with patch.object(
+            self.tracker.websocket,
+            "create_connection",
+            return_value=fake_socket,
+        ):
+            connection = self.tracker.StreamerBotConnection()
+            connection.connect()
+            response = connection.subscribe_action_events()
+            connection.close()
+
+        self.assertEqual(response["status"], "ok")
+        subscribe = fake_socket.sent[-1]
+        self.assertEqual(subscribe["request"], "Subscribe")
+        self.assertEqual(subscribe["events"], {"raw": ["Action"]})
+
     def test_password_challenge_is_answered_before_requests(self):
         authentication = {"salt": "salt", "challenge": "challenge"}
         fake_socket = FakeStreamerBotSocket(authentication=authentication)
@@ -182,6 +201,17 @@ class StreamerBotWebSocketIntegrationTests(unittest.TestCase):
         self.assertIn('brand_purple = "#9A4DE3"', source)
         self.assertIn('text="Test & Load Actions"', source)
         self.assertIn('connection.get_actions()', source)
+        self.assertIn(
+            "def build_streamerbot_settings_page() -> None:\n"
+            "            tr = self._translate_ui_text",
+            source,
+        )
+        self.assertIn('text=tr("Tracker Controls")', source)
+        self.assertIn(
+            'text=tr("Allow Streamer.bot to control the tracker")',
+            source,
+        )
+        self.assertIn("class StreamerBotControlListener", source)
 
     def test_confirmed_tracker_events_are_available_for_mapping(self):
         labels = dict(self.tracker.STREAMERBOT_EVENT_DEFINITIONS)
@@ -197,6 +227,104 @@ class StreamerBotWebSocketIntegrationTests(unittest.TestCase):
         ):
             with self.subTest(event=event_name):
                 self.assertIn(event_name, labels)
+
+    def test_only_mapped_raw_actions_become_tracker_controls(self):
+        mappings = {
+            "toggle_game_timer": {
+                "id": "timer-action",
+                "name": "Toggle Timer",
+            }
+        }
+        document = {
+            "event": {"source": "Raw", "type": "Action"},
+            "data": {
+                "id": "action-run-instance",
+                "actionId": "timer-action",
+                "name": "Toggle Timer",
+                "arguments": {"source": "chat"},
+            },
+        }
+        self.assertEqual(
+            self.tracker.streamerbot_control_from_action_event(
+                document,
+                mappings,
+            ),
+            ("toggle_game_timer", {"source": "chat"}),
+        )
+        document["data"]["actionId"] = "not-approved"
+        document["data"]["name"] = "Not Approved"
+        self.assertIsNone(
+            self.tracker.streamerbot_control_from_action_event(
+                document,
+                mappings,
+            )
+        )
+
+    def test_tracker_generated_actions_cannot_loop_back_as_controls(self):
+        document = {
+            "event": {"source": "Raw", "type": "Action"},
+            "data": {
+                "id": "action-run-instance",
+                "actionId": "same-action",
+                "name": "Toggle Timer",
+                "arguments": {
+                    "appName": self.tracker.APP_NAME,
+                    "eventName": "death_added",
+                },
+            },
+        }
+        self.assertIsNone(
+            self.tracker.streamerbot_control_from_action_event(
+                document,
+                {
+                    "toggle_game_timer": {
+                        "id": "same-action",
+                        "name": "Toggle Timer",
+                    }
+                },
+            )
+        )
+
+    def test_approved_control_runs_on_tracker_command_handler(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        app.config = {
+            "streamerbot_enabled": True,
+            "streamerbot_controls_enabled": True,
+        }
+        app.toggle_game_timer = MagicMock()
+        app.finish_game_timer = MagicMock()
+        app.complete_in_spreadsheet = MagicMock()
+        app.open_game_library = MagicMock()
+        app._set_streamerbot_control_status = MagicMock()
+
+        app._handle_streamerbot_control_command("toggle_game_timer", {})
+
+        app.toggle_game_timer.assert_called_once_with()
+        app._set_streamerbot_control_status.assert_called_once()
+
+    def test_search_control_accepts_chat_command_raw_input(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        app.config = {
+            "streamerbot_enabled": True,
+            "streamerbot_controls_enabled": True,
+        }
+        result = {"id": "hack-1", "title": "Grand Poo World 2"}
+        game = {"id": "hack-1", "title": "Grand Poo World 2"}
+        app._obs_widget_search_results = MagicMock(return_value=[result])
+        app._obs_widget_game_by_id = MagicMock(return_value=game)
+        app._launch_catalog_game = MagicMock(return_value=True)
+        app._set_streamerbot_control_status = MagicMock()
+
+        app._handle_streamerbot_control_command(
+            "search_and_play_hack",
+            {"rawInput": "Grand Poo World 2"},
+        )
+
+        app._obs_widget_search_results.assert_called_once_with(
+            "Grand Poo World 2",
+            limit=30,
+        )
+        app._launch_catalog_game.assert_called_once_with(game)
 
 
 if __name__ == "__main__":

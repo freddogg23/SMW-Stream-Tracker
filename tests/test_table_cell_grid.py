@@ -45,7 +45,7 @@ class TableCellGridTests(unittest.TestCase):
             if self._is_grid_install(node)
         ]
 
-        self.assertEqual(len(constructors), 8)
+        self.assertEqual(len(constructors), 9)
         self.assertEqual(len(installers), len(constructors))
 
         for method in (

@@ -684,6 +684,54 @@ class DeathCounterTests(unittest.TestCase):
                 self.assertEqual(worker.level_death_count, 0)
                 self.assertEqual(worker.death_count, 0)
 
+    def test_suspicious_pipe_lives_drop_is_consumed_not_counted_later(self):
+        worker = self.make_worker()
+        worker.select_save_slot(0)
+        worker.previous_player_state = 0x00
+        worker.previous_player_lives = 5
+        worker.last_level_player_lives = 5
+        state = self.make_state(self.tracker.LEVEL_MODE) | {
+            "player_lives": 4,
+            "pipe_action": 1,
+        }
+        suspicious = self.tracker.death_sample_is_suspicious(
+            state,
+            previous_mode=self.tracker.LEVEL_MODE,
+            slot_lives_baseline_pending=False,
+            intentional_transition_pending=False,
+        )
+        self.assertTrue(suspicious)
+        self.assertFalse(
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.LEVEL_MODE,
+                4,
+                suspicious_transition=suspicious,
+            )
+        )
+        self.assertFalse(
+            worker.update_death_counter_from_state(
+                0x00,
+                self.tracker.LEVEL_MODE,
+                4,
+            )
+        )
+        self.assertEqual(worker.death_count, 0)
+
+    def test_save_restore_lives_sample_is_rejected(self):
+        state = self.make_state(
+            self.tracker.LEVEL_MODE,
+            player_state=0x00,
+        )
+        self.assertTrue(
+            self.tracker.death_sample_is_suspicious(
+                state,
+                previous_mode=self.tracker.LEVEL_MODE,
+                slot_lives_baseline_pending=True,
+                intentional_transition_pending=False,
+            )
+        )
+
     def test_instant_retry_loading_cycle_counts_without_life_drop(self):
         worker = self.make_worker()
         worker.select_save_slot(0)

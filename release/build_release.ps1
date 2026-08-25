@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '2.0.3',
+    [string]$Version = '2.1.0',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -297,6 +297,21 @@ if (Test-Path -LiteralPath $sourceStaging) {
 New-Item -ItemType Directory -Path $sourceStaging | Out-Null
 foreach ($sourceItem in $sourceItems) {
     Copy-Item -LiteralPath $sourceItem -Destination $sourceStaging -Recurse -Force
+}
+$misterSourceItems = @(
+    'experiments\mister_instant_states\README.md',
+    'experiments\mister_instant_states\UPSTREAM_SOURCE.txt',
+    'experiments\mister_instant_states\build_mister_experimental.ps1',
+    'experiments\mister_instant_states\Main_MiSTer_20260707\LICENSE',
+    'experiments\mister_instant_states\Main_MiSTer_20260707\user_io.cpp',
+    'experiments\mister_instant_states\Main_MiSTer_20260707\releases\MiSTer_20260707',
+    'experiments\mister_instant_states\Main_MiSTer_20260707\bin_experimental\MiSTer-SMW-Virtual-States'
+)
+foreach ($relativePath in $misterSourceItems) {
+    $sourcePath = Join-Path $projectRoot $relativePath
+    $stagedPath = Join-Path $sourceStaging $relativePath
+    New-Item -ItemType Directory -Path (Split-Path -Parent $stagedPath) -Force | Out-Null
+    Copy-Item -LiteralPath $sourcePath -Destination $stagedPath -Force
 }
 $nonWindowsBuildMaterial = @(
     '.github\workflows\build-macos.yml',

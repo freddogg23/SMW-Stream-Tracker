@@ -151,6 +151,156 @@ class RetroAchievementsSetupTests(unittest.TestCase):
         )
         self.assertEqual(parsed, {valid_hash: 123})
 
+    def test_achievement_hash_parser_excludes_games_without_sets(self):
+        supported_hash = "a" * 32
+        empty_set_hash = "b" * 32
+        parsed = (
+            self.tracker.parse_retroachievements_achievement_hash_library(
+                [
+                    {
+                        "ID": 123,
+                        "NumAchievements": 20,
+                        "Hashes": [supported_hash],
+                    },
+                    {
+                        "ID": 456,
+                        "NumAchievements": 0,
+                        "Hashes": [empty_set_hash],
+                    },
+                ]
+            )
+        )
+        self.assertEqual(parsed, {supported_hash: 123})
+
+    def test_achievement_hash_fetch_requests_filtered_games_and_hashes(self):
+        requests = []
+
+        def fake_api_get(endpoint, parameters, **kwargs):
+            requests.append((endpoint, parameters, kwargs))
+            return [
+                {
+                    "ID": 321,
+                    "NumAchievements": 10,
+                    "Hashes": ["c" * 32],
+                }
+            ]
+
+        original = self.tracker.retroachievements_api_get
+        self.tracker.retroachievements_api_get = fake_api_get
+        try:
+            hashes = (
+                self.tracker.fetch_retroachievements_snes_achievement_hash_library(
+                    "secret"
+                )
+            )
+        finally:
+            self.tracker.retroachievements_api_get = original
+
+        self.assertEqual(hashes, {"c" * 32: 321})
+        self.assertEqual(requests[0][0], "API_GetGameList.php")
+        self.assertEqual(requests[0][1]["f"], 1)
+        self.assertEqual(requests[0][1]["h"], 1)
+
+    def test_cached_identification_without_achievements_is_removed(self):
+        body = bytes(range(256)) * 4
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            rom_path = Path(temporary_directory) / "empty-set.sfc"
+            rom_path.write_bytes(body)
+            stat_result = rom_path.stat()
+            supported_hash = "d" * 32
+            game_id, refreshed = (
+                self.tracker.resolve_retroachievements_snes_rom(
+                    rom_path,
+                    {supported_hash: 123},
+                    {
+                        "size": stat_result.st_size,
+                        "mtime_ns": stat_result.st_mtime_ns,
+                        "game_id": 456,
+                        "hash_revision": "old",
+                    },
+                    hash_revision="new",
+                    supported_game_ids=frozenset({123}),
+                )
+            )
+
+        self.assertEqual(game_id, 0)
+        self.assertEqual(refreshed["game_id"], 0)
+
+    def test_hash_library_revision_is_stable_and_detects_changes(self):
+        first = self.tracker.retroachievements_hash_library_revision(
+            {"a" * 32: 123, "b" * 32: 456}
+        )
+        reordered = self.tracker.retroachievements_hash_library_revision(
+            {"b" * 32: 456, "a" * 32: 123}
+        )
+        changed = self.tracker.retroachievements_hash_library_revision(
+            {"a" * 32: 123, "b" * 32: 789}
+        )
+        self.assertEqual(first, reordered)
+        self.assertNotEqual(first, changed)
+
+    def test_cached_no_match_is_rechecked_when_hash_library_changes(self):
+        body = bytes(range(256)) * 4
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            rom_path = Path(temporary_directory) / "newly-supported.sfc"
+            rom_path.write_bytes(body)
+            stat_result = rom_path.stat()
+            old_library = {"a" * 32: 1}
+            new_library = {hashlib.md5(body).hexdigest(): 9876}
+            cached_entry = {
+                "size": stat_result.st_size,
+                "mtime_ns": stat_result.st_mtime_ns,
+                "game_id": 0,
+                "hash_revision": (
+                    self.tracker.retroachievements_hash_library_revision(
+                        old_library
+                    )
+                ),
+            }
+
+            game_id, refreshed = (
+                self.tracker.resolve_retroachievements_snes_rom(
+                    rom_path,
+                    new_library,
+                    cached_entry,
+                    hash_revision=(
+                        self.tracker.retroachievements_hash_library_revision(
+                            new_library
+                        )
+                    ),
+                )
+            )
+
+        self.assertEqual(game_id, 9876)
+        self.assertEqual(refreshed["game_id"], 9876)
+        self.assertIn(hashlib.md5(body).hexdigest(), refreshed["digests"])
+
+    def test_cached_digests_pick_up_support_without_rereading_rom(self):
+        digest = "c" * 32
+        cached_entry = {
+            "size": 1024,
+            "mtime_ns": 22,
+            "game_id": 0,
+            "digests": [digest],
+            "hash_revision": "old",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            rom_path = Path(temporary_directory) / "cached.sfc"
+            rom_path.write_bytes(b"x" * 1024)
+            current_stat = rom_path.stat()
+            cached_entry["mtime_ns"] = current_stat.st_mtime_ns
+            game_id, refreshed = (
+                self.tracker.resolve_retroachievements_snes_rom(
+                    rom_path,
+                    {digest: 2468},
+                    cached_entry,
+                    hash_revision="new",
+                )
+            )
+
+        self.assertEqual(game_id, 2468)
+        self.assertEqual(refreshed["digests"], [digest])
+
     def test_ra2snes_asset_selection_prefers_current_platform(self):
         release = {
             "assets": [
@@ -230,10 +380,14 @@ class RetroAchievementsSetupTests(unittest.TestCase):
         scan_source = inspect.getsource(
             self.tracker.TrackerApp._start_game_library_retroachievements_scan
         )
+        resolver_source = inspect.getsource(
+            self.tracker.resolve_retroachievements_snes_rom
+        )
         library_source = inspect.getsource(
             self.tracker.TrackerApp._build_stream_desk_game_library
         )
-        self.assertIn("retroachievements_snes_hash_candidates", scan_source)
+        self.assertIn("resolve_retroachievements_snes_rom", scan_source)
+        self.assertIn("retroachievements_snes_hash_candidates", resolver_source)
         self.assertIn("_cached_retroachievements_snes_hash_library", scan_source)
         self.assertIn("_retroachievements_trophy_photo", library_source)
         self.assertIn("_start_game_library_retroachievements_scan", library_source)
@@ -276,7 +430,7 @@ class RetroAchievementsSetupTests(unittest.TestCase):
             self.tracker.TrackerApp._build_stream_desk_game_library
         )
 
-        self.assertIn('tree.bbox(iid, "#0")', overlay_source)
+        self.assertIn("tree.bbox(iid, title_column)", overlay_source)
         self.assertIn('STREAM_DESK["yellow"]', overlay_source)
         self.assertIn('STREAM_DESK["red"]', overlay_source)
         self.assertIn('text=tr("Hall of Fame")', library_source)

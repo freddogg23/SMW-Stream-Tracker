@@ -522,7 +522,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "2.0.3"
+APP_VERSION = "2.1.0"
 APP_BUILD_DATE = "2026-08-21"
 
 GAME_MODE_STAGE_IMAGE_FILES = {
@@ -1543,7 +1543,7 @@ RETROACHIEVEMENTS_RUNTIME_URL = (
     "https://retroachievements.org/dorequest.php"
 )
 RETROACHIEVEMENTS_SNES_CONSOLE_ID = 3
-RETROACHIEVEMENTS_HASH_CACHE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+RETROACHIEVEMENTS_HASH_CACHE_MAX_AGE_SECONDS = 6 * 60 * 60
 MISTER_RETROACHIEVEMENTS_DB_URL = (
     "https://raw.githubusercontent.com/theypsilon/"
     "RetroAchievementsDB_MiSTer/db/db.json.zip"
@@ -1695,6 +1695,23 @@ def format_display_datetime(
         f"{parsed:%Y} "
         f"{hour}:{parsed:%M %p}"
     )
+
+
+def catalog_new_keys_from_metadata(value: object) -> set[str]:
+    """Return the catalog keys stored for the most recent refresh."""
+    if value in (None, ""):
+        return set()
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return set()
+    if not isinstance(decoded, list):
+        return set()
+    return {
+        str(item).strip()
+        for item in decoded
+        if str(item).strip()
+    }
 
 
 class SMWCentralCatalogHTMLParser(HTMLParser):
@@ -3771,6 +3788,25 @@ def catalog_available_new_hack_count(
     return max(0, remote_count - local_count)
 
 
+def catalog_available_waiting_hack_count(
+    local_games: list[dict[str, Any]],
+    remote_games: list[dict[str, Any]],
+) -> int:
+    """Count waiting submissions present remotely but absent locally."""
+    local_ids = {
+        str(game.get("smwc_id") or "").strip()
+        for game in local_games
+        if bool(smwc_boolean_value(game.get("is_waiting", False)))
+        and str(game.get("smwc_id") or "").strip()
+    }
+    remote_ids = {
+        str(game.get("smwc_id") or "").strip()
+        for game in remote_games
+        if str(game.get("smwc_id") or "").strip()
+    }
+    return len(remote_ids - local_ids)
+
+
 def github_catalog_rating(
     value: object,
 ) -> float | None:
@@ -4796,6 +4832,7 @@ class OutlinedButton(tk.Canvas):
         self._image = image
         self._compound = str(compound)
         self._stream_style = bool(stream_style)
+        self._notification_badge = False
         self._shape_photo = None
         self._shape_photo_cache: dict[tuple[int, int, str, str], object] = {}
 
@@ -5121,6 +5158,27 @@ class OutlinedButton(tk.Canvas):
             fill=foreground,
             anchor="center",
         )
+        if self._notification_badge:
+            badge_radius = max(4, min(6, int(height * 0.13)))
+            badge_x = width - badge_radius - 3
+            badge_y = badge_radius + 3
+            self.create_oval(
+                badge_x - badge_radius,
+                badge_y - badge_radius,
+                badge_x + badge_radius,
+                badge_y + badge_radius,
+                fill=STREAM_DESK["red"],
+                outline=STREAM_DESK["text_strong"],
+                width=1,
+                tags=("notification_badge",),
+            )
+
+    def set_notification_badge(self, visible: bool) -> None:
+        visible = bool(visible)
+        if visible == self._notification_badge:
+            return
+        self._notification_badge = visible
+        self._redraw()
 
     def _on_enter(self, event=None) -> None:
         if self._is_enabled():
@@ -13654,6 +13712,9 @@ def rom_builder_write_reports(
 
 
 APP_DATA_DIR = platform_application_data_directory()
+NON_SMW_ROM_LIBRARY_DIR = APP_DATA_DIR / "Non-SMW ROMs"
+NON_SMW_ROM_LIBRARY_FILE = APP_DATA_DIR / "NonSMWRomLibrary.json"
+NON_SMW_ROM_EXTENSIONS = {".sfc", ".smc"}
 RETROACHIEVEMENTS_SNES_HASH_CACHE_FILE = (
     APP_DATA_DIR / "RetroAchievementsSNESHashes.json"
 )
@@ -13686,7 +13747,294 @@ ROLLBACK_HASH_FILE = ROLLBACK_DIR / "SMWStreamTracker_previous.sha256"
 UPDATE_DOWNLOAD_DIR = APP_DATA_DIR / "Updates"
 LOG_DIR = APP_DATA_DIR / "Logs"
 CRASH_LOG_FILE = LOG_DIR / "SMWStreamTracker-errors.log"
+SESSION_RECOVERY_FILE = APP_DATA_DIR / "ActiveSessionRecovery.json"
+STATISTICS_RECONCILIATION_LOG_FILE = (
+    LOG_DIR / "StatisticsReconciliation.jsonl"
+)
+POST_STREAM_SUMMARY_DIR = (
+    Path.home() / "Documents" / "SMW Stream Tracker" / "Session Summaries"
+)
 UNINSTALL_OBS_PATH_FILE = APP_DATA_DIR / "UninstallObsOutputPath.txt"
+
+
+def write_json_atomic(path: Path, payload: object) -> None:
+    """Replace one JSON file atomically so a crash cannot leave half a file."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(
+        destination.name
+        + f".{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(temporary, destination)
+
+
+def clean_snes_rom_display_name(value: object) -> str:
+    """Remove common dump, region, and archive-date tags from a ROM name."""
+    raw_name = Path(str(value or "").strip()).name
+    if Path(raw_name).suffix.casefold() in NON_SMW_ROM_EXTENSIONS:
+        raw_name = Path(raw_name).stem
+    cleaned = raw_name.replace("_", " ")
+    timestamp_tag = re.compile(
+        r"\s*[\[(]\d{4}(?:[\s_-]+\d{2}){5}[\s_-]*UTC[\])]\s*$",
+        flags=re.IGNORECASE,
+    )
+    known_parenthetical_tag = re.compile(
+        r"\s*\((?:"
+        r"U|E|J|USA|US|Europe|EUR|Japan|JPN|World|"
+        r"En(?:,[A-Za-z]{2})*|Rev(?:ision)?\s*[A-Za-z0-9.]+|"
+        r"Beta|Proto(?:type)?|Sample|Demo|Unl|Pirate|Hack"
+        r")\)\s*$",
+        flags=re.IGNORECASE,
+    )
+    dump_tag = re.compile(
+        r"\s*\[(?:!|a\d*|b\d*|f\d*|h\d*|o\d*|p\d*|t[^\]]*|x)\]\s*$",
+        flags=re.IGNORECASE,
+    )
+    while True:
+        previous = cleaned
+        cleaned = timestamp_tag.sub("", cleaned)
+        cleaned = known_parenthetical_tag.sub("", cleaned)
+        cleaned = dump_tag.sub("", cleaned)
+        if cleaned == previous:
+            break
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ._-")
+    return cleaned or raw_name.strip() or "Untitled ROM"
+
+
+def find_snes_rom_files(folder: Path) -> tuple[Path, ...]:
+    """Return every supported SNES ROM below a selected import folder."""
+    root = Path(folder)
+    if not root.is_dir():
+        return ()
+    try:
+        candidates = (
+            path
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix.casefold() in NON_SMW_ROM_EXTENSIONS
+        )
+        return tuple(sorted(candidates, key=lambda path: str(path).casefold()))
+    except OSError:
+        return ()
+
+
+def load_non_smw_rom_library(
+    library_file: Path = NON_SMW_ROM_LIBRARY_FILE,
+) -> list[dict[str, Any]]:
+    """Load the user's local non-SMW SNES ROM collection."""
+    try:
+        payload = json.loads(
+            Path(library_file).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+
+    records: list[dict[str, Any]] = []
+    for raw_record in payload:
+        if not isinstance(raw_record, dict):
+            continue
+        local_path = str(raw_record.get("local_rom_path", "")).strip()
+        title = clean_snes_rom_display_name(
+            raw_record.get("title")
+            or raw_record.get("filename")
+            or Path(local_path).name
+        )
+        if not local_path or not title:
+            continue
+        record = dict(raw_record)
+        record["title"] = title
+        record["local_rom_path"] = local_path
+        record["rom_path"] = local_path
+        record["_non_smw_rom"] = True
+        record["author"] = ""
+        record["total_exits"] = 0
+        record["hack_type"] = "Non-SMW ROM"
+        records.append(record)
+    return records
+
+
+def save_non_smw_rom_library(
+    records: list[dict[str, Any]],
+    library_file: Path = NON_SMW_ROM_LIBRARY_FILE,
+) -> None:
+    """Persist non-SMW ROM metadata without storing transient UI fields."""
+    path = Path(library_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cleaned: list[dict[str, Any]] = []
+    for record in records:
+        local_path = str(record.get("local_rom_path", "")).strip()
+        title = clean_snes_rom_display_name(record.get("title", ""))
+        if not local_path or not title:
+            continue
+        try:
+            retroachievements_game_id = max(
+                0,
+                int(record.get("_retroachievements_game_id", 0) or 0),
+            )
+        except (TypeError, ValueError):
+            retroachievements_game_id = 0
+        cleaned.append(
+            {
+                "id": str(record.get("id", "")).strip(),
+                "title": title,
+                "filename": str(
+                    record.get("filename") or Path(local_path).name
+                ),
+                "local_rom_path": local_path,
+                "file_size": max(0, int(record.get("file_size", 0) or 0)),
+                "added_at": str(record.get("added_at", "")),
+                "last_played": str(record.get("last_played", "")),
+                "_retroachievements_game_id": retroachievements_game_id,
+            }
+        )
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(cleaned, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def maintain_non_smw_rom_library(
+    records: Iterable[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Normalize library metadata and remove duplicate rows without ROM deletion."""
+    maintained: list[dict[str, Any]] = []
+    identities: set[str] = set()
+    duplicates = 0
+    renamed = 0
+    missing = 0
+    invalid = 0
+    for raw_record in records:
+        if not isinstance(raw_record, dict):
+            invalid += 1
+            continue
+        record = dict(raw_record)
+        local_path = str(record.get("local_rom_path", "")).strip()
+        if not local_path:
+            invalid += 1
+            continue
+        old_title = str(record.get("title", "")).strip()
+        title = clean_snes_rom_display_name(
+            old_title or record.get("filename") or Path(local_path).name
+        )
+        if title != old_title:
+            renamed += 1
+        record["title"] = title
+        record["local_rom_path"] = local_path
+        record["rom_path"] = local_path
+        record["_non_smw_rom"] = True
+        record["author"] = ""
+        record["total_exits"] = 0
+        record["hack_type"] = "Non-SMW ROM"
+        identity = str(record.get("id", "")).strip().casefold()
+        if not identity:
+            identity = str(Path(local_path)).replace("\\", "/").casefold()
+        if identity in identities:
+            duplicates += 1
+            continue
+        identities.add(identity)
+        if not Path(local_path).is_file():
+            missing += 1
+        maintained.append(record)
+    return maintained, {
+        "records": len(maintained),
+        "duplicates_removed": duplicates,
+        "titles_cleaned": renamed,
+        "missing_files": missing,
+        "invalid_removed": invalid,
+    }
+
+
+def find_non_smw_rom_record(
+    rom_path: str,
+    records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Match a loaded ROM to the managed non-SMW library."""
+    observed_path = str(rom_path or "").strip().replace("\\", "/")
+    if not observed_path:
+        return None
+    observed_path_key = observed_path.rstrip("/").casefold()
+    observed_name_key = observed_path.rsplit("/", 1)[-1].casefold()
+    candidates = records if records is not None else load_non_smw_rom_library()
+
+    for record in candidates:
+        local_path = str(record.get("local_rom_path", "")).strip()
+        local_path_key = local_path.replace("\\", "/").rstrip("/").casefold()
+        if local_path_key and local_path_key == observed_path_key:
+            return dict(record)
+
+    for record in candidates:
+        filename = str(
+            record.get("filename")
+            or Path(str(record.get("local_rom_path", ""))).name
+        ).strip().casefold()
+        if filename and filename == observed_name_key:
+            return dict(record)
+    return None
+
+
+def import_non_smw_rom(
+    source_path: Path,
+    records: list[dict[str, Any]],
+    library_dir: Path = NON_SMW_ROM_LIBRARY_DIR,
+) -> tuple[dict[str, Any], bool]:
+    """Copy one SNES ROM into the managed library and deduplicate it."""
+    source = Path(source_path)
+    if not source.is_file():
+        raise FileNotFoundError(f"ROM file not found: {source}")
+    if source.suffix.casefold() not in NON_SMW_ROM_EXTENSIONS:
+        raise ValueError("Select a .sfc or .smc SNES ROM file.")
+
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    for existing in records:
+        if str(existing.get("id", "")).casefold() == digest:
+            return dict(existing), False
+
+    destination_root = Path(library_dir)
+    destination_root.mkdir(parents=True, exist_ok=True)
+    destination = destination_root / source.name
+    suffix_number = 2
+    while destination.exists():
+        try:
+            if hashlib.sha256(destination.read_bytes()).hexdigest() == digest:
+                break
+        except OSError:
+            pass
+        destination = destination_root / (
+            f"{source.stem} ({suffix_number}){source.suffix.casefold()}"
+        )
+        suffix_number += 1
+    try:
+        same_file = source.resolve() == destination.resolve()
+    except OSError:
+        same_file = False
+    if not same_file and not destination.exists():
+        shutil.copy2(source, destination)
+
+    title = clean_snes_rom_display_name(source.name)
+    record = {
+        "id": digest,
+        "title": title,
+        "filename": destination.name,
+        "local_rom_path": str(destination),
+        "rom_path": str(destination),
+        "file_size": max(0, int(destination.stat().st_size)),
+        "added_at": datetime.now(timezone.utc).isoformat(),
+        "last_played": "",
+        "_non_smw_rom": True,
+        "author": "",
+        "total_exits": 0,
+        "difficulty": "",
+        "hack_type": "Non-SMW ROM",
+    }
+    records.append(record)
+    return dict(record), True
 
 
 RETROACHIEVEMENTS_WEB_API_URL = "https://retroachievements.org/API/"
@@ -14821,6 +15169,78 @@ def fetch_retroachievements_snes_hash_library(
     return parse_retroachievements_hash_library(payload)
 
 
+def parse_retroachievements_achievement_hash_library(
+    payload: Any,
+) -> dict[str, int]:
+    """Return exact hashes only for games with active achievement sets."""
+    if not isinstance(payload, list):
+        raise ValueError(
+            "RetroAchievements did not return a valid SNES game list."
+        )
+    hashes: dict[str, int] = {}
+    for raw_game in payload:
+        if not isinstance(raw_game, dict):
+            continue
+        try:
+            game_id = int(
+                _retroachievements_value(
+                    raw_game,
+                    "ID",
+                    "id",
+                    default=0,
+                )
+                or 0
+            )
+            achievement_count = int(
+                _retroachievements_value(
+                    raw_game,
+                    "NumAchievements",
+                    "numAchievements",
+                    default=0,
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            continue
+        if game_id <= 0 or achievement_count <= 0:
+            continue
+        raw_hashes = _retroachievements_value(
+            raw_game,
+            "Hashes",
+            "hashes",
+            default=[],
+        )
+        if not isinstance(raw_hashes, list):
+            continue
+        for raw_digest in raw_hashes:
+            digest = str(raw_digest).strip().casefold()
+            if re.fullmatch(r"[0-9a-f]{32}", digest):
+                hashes[digest] = game_id
+    if not hashes:
+        raise ValueError(
+            "RetroAchievements returned no SNES games with achievements."
+        )
+    return hashes
+
+
+def fetch_retroachievements_snes_achievement_hash_library(
+    web_api_key: str,
+    timeout: float = 30.0,
+) -> dict[str, int]:
+    """Fetch exact SNES hashes restricted to active achievement sets."""
+    payload = retroachievements_api_get(
+        "API_GetGameList.php",
+        {
+            "i": RETROACHIEVEMENTS_SNES_CONSOLE_ID,
+            "f": 1,
+            "h": 1,
+        },
+        web_api_key=web_api_key,
+        timeout=timeout,
+    )
+    return parse_retroachievements_achievement_hash_library(payload)
+
+
 def retroachievements_snes_hash_candidates(rom_path: Path) -> tuple[str, ...]:
     """Return full and copier-header-free hashes used by SNES achievement sets."""
     path = Path(rom_path)
@@ -14833,6 +15253,132 @@ def retroachievements_snes_hash_candidates(rom_path: Path) -> tuple[str, ...]:
         candidates.append(hashlib.md5(payload[512:]).hexdigest())
     candidates.append(hashlib.md5(payload).hexdigest())
     return tuple(dict.fromkeys(candidates))
+
+
+def retroachievements_hash_library_revision(
+    hash_library: dict[str, int],
+) -> str:
+    """Return a stable revision for an exact RetroAchievements hash map."""
+    revision = hashlib.sha256()
+    accepted = 0
+    for raw_digest, raw_game_id in sorted(hash_library.items()):
+        digest = str(raw_digest).strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{32}", digest):
+            continue
+        try:
+            game_id = int(raw_game_id)
+        except (TypeError, ValueError):
+            continue
+        if game_id <= 0:
+            continue
+        revision.update(f"{digest}:{game_id}\n".encode("ascii"))
+        accepted += 1
+    return revision.hexdigest() if accepted else ""
+
+
+def resolve_retroachievements_snes_rom(
+    rom_path: Path,
+    hash_library: dict[str, int],
+    cached_entry: dict[str, Any] | None = None,
+    *,
+    hash_revision: str = "",
+    legacy_cache_current: bool = False,
+    supported_game_ids: frozenset[int] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Resolve one exact ROM while safely refreshing cached no-match results."""
+    path = Path(rom_path)
+    stat_result = path.stat()
+    current_revision = (
+        str(hash_revision).strip()
+        or retroachievements_hash_library_revision(hash_library)
+    )
+    active_game_ids = (
+        supported_game_ids
+        if isinstance(supported_game_ids, frozenset)
+        else frozenset(
+            int(game_id)
+            for game_id in hash_library.values()
+            if int(game_id or 0) > 0
+        )
+    )
+    cached = cached_entry if isinstance(cached_entry, dict) else {}
+    cache_matches_file = (
+        int(cached.get("size", -1)) == int(stat_result.st_size)
+        and int(cached.get("mtime_ns", -1))
+        == int(stat_result.st_mtime_ns)
+    )
+    raw_cached_digests = cached.get("digests", [])
+    if not isinstance(raw_cached_digests, (list, tuple)):
+        raw_cached_digests = []
+    cached_digests = tuple(
+        dict.fromkeys(
+            str(value).strip().casefold()
+            for value in raw_cached_digests
+            if re.fullmatch(r"[0-9a-fA-F]{32}", str(value).strip())
+        )
+    )
+    if cache_matches_file and cached_digests:
+        game_id = next(
+            (
+                int(hash_library.get(digest, 0) or 0)
+                for digest in cached_digests
+                if int(hash_library.get(digest, 0) or 0) > 0
+            ),
+            0,
+        )
+        return game_id, {
+            "size": int(stat_result.st_size),
+            "mtime_ns": int(stat_result.st_mtime_ns),
+            "game_id": game_id,
+            "digests": list(cached_digests),
+            "hash_revision": current_revision,
+        }
+    if cache_matches_file:
+        try:
+            cached_game_id = max(0, int(cached.get("game_id", 0) or 0))
+        except (TypeError, ValueError):
+            cached_game_id = 0
+        cached_revision = str(cached.get("hash_revision", "")).strip()
+        if (
+            (
+                current_revision
+                and cached_game_id > 0
+                and cached_game_id in active_game_ids
+            )
+            or (
+                current_revision
+                and cached_game_id == 0
+                and cached_revision == current_revision
+            )
+            or (
+                current_revision
+                and not cached_revision
+                and legacy_cache_current
+            )
+        ):
+            return cached_game_id, {
+                "size": int(stat_result.st_size),
+                "mtime_ns": int(stat_result.st_mtime_ns),
+                "game_id": cached_game_id,
+                "hash_revision": current_revision,
+            }
+
+    digests = retroachievements_snes_hash_candidates(path)
+    game_id = next(
+        (
+            int(hash_library.get(digest, 0) or 0)
+            for digest in digests
+            if int(hash_library.get(digest, 0) or 0) > 0
+        ),
+        0,
+    )
+    return game_id, {
+        "size": int(stat_result.st_size),
+        "mtime_ns": int(stat_result.st_mtime_ns),
+        "game_id": game_id,
+        "digests": list(digests),
+        "hash_revision": current_revision,
+    }
 
 
 def select_ra2snes_release_asset(
@@ -17295,6 +17841,7 @@ class TrackerDatabase:
             }
             new_count = 0
             updated_count = 0
+            new_keys: set[str] = set()
 
             comparison_fields = (
                 "smwc_id",
@@ -17331,6 +17878,7 @@ class TrackerDatabase:
 
                 if existing is None:
                     new_count += 1
+                    new_keys.add(catalog_key)
                 else:
                     normalized_new = {
                         "smwc_id": self._normalize_smwc_id(
@@ -17474,6 +18022,11 @@ class TrackerDatabase:
                 "Catalog Version": catalog_version,
                 "Catalog Last Refresh": refreshed_at,
                 "Catalog Source": "SMWCentral",
+                "Catalog New Since Last Refresh": new_count,
+                "Catalog New Keys Since Last Refresh": json.dumps(
+                    sorted(new_keys)
+                ),
+                "Catalog New Refresh Date": refreshed_at,
             }
 
             for key, value in (
@@ -17576,9 +18129,14 @@ class TrackerDatabase:
                     'Catalog Last Refresh',
                     'Catalog Source',
                     'Catalog Repository URL',
+                    'Catalog New Since Last Refresh',
+                    'Catalog New Keys Since Last Refresh',
+                    'Catalog New Refresh Date',
                     'Waiting Last Refresh',
                     'Waiting Count',
-                    'Waiting New Since Last Refresh'
+                    'Waiting New Since Last Refresh',
+                    'Waiting New Keys Since Last Refresh',
+                    'Waiting New Refresh Date'
                 )
                 """
             )
@@ -17643,11 +18201,16 @@ class TrackerDatabase:
                 )
                 removed += 1
 
-            new_count = len(incoming_keys - existing_waiting_keys)
+            new_keys = incoming_keys - existing_waiting_keys
+            new_count = len(new_keys)
             for key, value in {
                 "Waiting Last Refresh": refreshed_at,
                 "Waiting Count": len(games),
                 "Waiting New Since Last Refresh": new_count,
+                "Waiting New Keys Since Last Refresh": json.dumps(
+                    sorted(new_keys)
+                ),
+                "Waiting New Refresh Date": refreshed_at,
             }.items():
                 connection.execute(
                     "INSERT INTO app_metadata (key, value) VALUES (?, ?) "
@@ -21661,6 +22224,11 @@ for (
 _MISTER_LOCALIZATION_ROWS = (
     # English, Australian, Spanish, French, German, Portuguese (Brazil)
     ("MiSTer", "MiSTer", "MiSTer", "MiSTer", "MiSTer", "MiSTer"),
+    ("MiSTer Profile", "MiSTer Profile, mate", "Perfil de MiSTer", "Profil MiSTer", "MiSTer-Profil", "Perfil do MiSTer"),
+    ("Add Profile", "Add Profile, mate", "Añadir perfil", "Ajouter un profil", "Profil hinzufügen", "Adicionar perfil"),
+    ("Remove", "Remove, mate", "Eliminar", "Supprimer", "Entfernen", "Remover"),
+    ("MiSTer profile selected: {name}", "MiSTer profile selected: {name}, mate", "Perfil de MiSTer seleccionado: {name}", "Profil MiSTer sélectionné : {name}", "MiSTer-Profil ausgewählt: {name}", "Perfil do MiSTer selecionado: {name}"),
+    ('Remove the MiSTer profile "{name}"? No files on the console will be changed.', 'Remove the MiSTer profile "{name}"? No files on the console will be changed, mate.', '¿Eliminar el perfil de MiSTer "{name}"? No se cambiará ningún archivo de la consola.', 'Supprimer le profil MiSTer « {name} » ? Aucun fichier de la console ne sera modifié.', 'Das MiSTer-Profil „{name}“ entfernen? Dateien auf der Konsole werden nicht geändert.', 'Remover o perfil do MiSTer "{name}"? Nenhum arquivo do console será alterado.'),
     ("Set Up MiSTer...", "Sort out the MiSTer, mate...", "Configurar MiSTer...", "Configurer MiSTer...", "MiSTer einrichten...", "Configurar o MiSTer..."),
     ("MiSTer Setup", "MiSTer wrangling", "Configuración de MiSTer", "Configuration de MiSTer", "MiSTer-Einrichtung", "Configuração do MiSTer"),
     ("MISTER SETUP", "MISTER WRANGLING", "CONFIGURACIÓN DE MISTER", "CONFIGURATION DE MISTER", "MISTER-EINRICHTUNG", "CONFIGURAÇÃO DO MISTER"),
@@ -21701,7 +22269,7 @@ _MISTER_LOCALIZATION_ROWS = (
     ("Live tracking is connected, but MiSTer game launching still needs MiSTer Setup and a local ROM library.", "Live tracking is connected, but launching still needs the MiSTer sorted and a local ROM stash, mate.", "El seguimiento en vivo está conectado, pero iniciar juegos en MiSTer aún requiere configurar MiSTer y una biblioteca local de ROM.", "Le suivi en direct est connecté, mais le lancement sur MiSTer nécessite encore sa configuration et une bibliothèque ROM locale.", "Live-Verfolgung ist verbunden, aber zum Spielstart fehlen noch die MiSTer-Einrichtung und eine lokale ROM-Bibliothek.", "O rastreamento ao vivo está conectado, mas iniciar jogos no MiSTer ainda requer a configuração do MiSTer e uma biblioteca local de ROMs."),
     ("Enter the MiSTer SSH password. The factory default is 1. Leave it blank if you use an SSH key. The password is kept only until the tracker closes.", "Pop in the MiSTer SSH password, mate. The factory default is 1. Leave it blank for an SSH key. We only hang onto it until the tracker closes.", "Introduce la contraseña SSH de MiSTer. El valor de fábrica es 1. Déjala vacía si usas una clave SSH. Solo se conserva hasta cerrar el tracker.", "Saisissez le mot de passe SSH du MiSTer. La valeur d’usine est 1. Laissez vide si vous utilisez une clé SSH. Il est conservé uniquement jusqu’à la fermeture du tracker.", "Gib das MiSTer-SSH-Passwort ein. Die Werkseinstellung ist 1. Bei Nutzung eines SSH-Schlüssels leer lassen. Es wird nur bis zum Schließen des Trackers behalten.", "Digite a senha SSH do MiSTer. O padrão de fábrica é 1. Deixe em branco se usar uma chave SSH. Ela é mantida somente até o tracker fechar."),
     ("The password is used only for this tracker session and is never saved. Leave it blank if your MiSTer uses an SSH key.", "The password only sticks around for this tracker session, mate, and is never saved. Leave it blank if you use an SSH key.", "La contraseña solo se usa durante esta sesión del tracker y nunca se guarda. Déjala vacía si tu MiSTer usa una clave SSH.", "Le mot de passe est utilisé uniquement pendant cette session et n’est jamais enregistré. Laissez vide si votre MiSTer utilise une clé SSH.", "Das Passwort wird nur für diese Tracker-Sitzung verwendet und nie gespeichert. Bei einem SSH-Schlüssel leer lassen.", "A senha é usada somente nesta sessão do tracker e nunca é salva. Deixe em branco se o MiSTer usar uma chave SSH."),
-    ("1. Connect MiSTer to your router with Ethernet or Wi-Fi and power it on.\n2. Keep this computer on the same network.\n3. Select Find & Set Up MiSTer. The tracker will find its address, install live tracking, create its game folders, enable automatic login for this app, select MiSTer, and test everything.\n4. The fields and smaller buttons below are only needed for manual setup.", "1. Hook MiSTer to your router by Ethernet or Wi-Fi and fire it up, mate.\n2. Keep this computer on the same network.\n3. Pick Find & Set Up MiSTer. The tracker will hunt it down, sort live tracking, make the game folders, set up its own automatic login, pick MiSTer, and test the whole lot.\n4. The fields and little buttons below are only for doing it the hard way. Crikey, easy as.", "1. Conecta MiSTer al router por Ethernet o Wi-Fi y enciéndelo.\n2. Mantén este equipo en la misma red.\n3. Selecciona Buscar y configurar MiSTer. El tracker encontrará su dirección, instalará el seguimiento en vivo, creará sus carpetas de juegos, habilitará el acceso automático para esta aplicación, seleccionará MiSTer y probará todo.\n4. Los campos y botones pequeños de abajo solo son necesarios para la configuración manual.", "1. Connectez le MiSTer au routeur par Ethernet ou Wi-Fi et allumez-le.\n2. Gardez cet ordinateur sur le même réseau.\n3. Choisissez Rechercher et configurer le MiSTer. Le tracker trouvera son adresse, installera le suivi en direct, créera les dossiers de jeux, activera la connexion automatique pour cette application, sélectionnera MiSTer et vérifiera l’ensemble.\n4. Les champs et les petits boutons ci-dessous servent uniquement à la configuration manuelle.", "1. Verbinde MiSTer per Ethernet oder WLAN mit dem Router und schalte ihn ein.\n2. Dieser Computer muss im selben Netzwerk sein.\n3. Wähle MiSTer suchen und einrichten. Der Tracker findet seine Adresse, installiert die Live-Verfolgung, erstellt die Spieleordner, aktiviert die automatische Anmeldung für diese App, wählt MiSTer aus und testet alles.\n4. Die Felder und kleineren Schaltflächen unten werden nur für die manuelle Einrichtung benötigt.", "1. Conecte o MiSTer ao roteador por Ethernet ou Wi-Fi e ligue-o.\n2. Mantenha este computador na mesma rede.\n3. Selecione Encontrar e configurar o MiSTer. O tracker encontrará o endereço, instalará o rastreamento ao vivo, criará as pastas de jogos, ativará o login automático para este aplicativo, selecionará o MiSTer e testará tudo.\n4. Os campos e botões menores abaixo são necessários somente para a configuração manual."),
+    ("1. Connect MiSTer to your router with Ethernet or Wi-Fi and power it on.\n2. Keep this computer on the same network. The default SSH password is 1.\n3. Select Find & Set Up MiSTer. The tracker will find its address, install live tracking and Virtual Save State Slots 5–11, create its game folders, enable automatic login for this app, select MiSTer, and test everything.\n4. The fields and smaller buttons to the right are only needed for manual setup.", "1. Hook MiSTer to your router by Ethernet or Wi-Fi and fire it up, mate.\n2. Keep this computer on the same network. The default SSH password is 1.\n3. Pick Find & Set Up MiSTer. The tracker will hunt it down, sort live tracking and Virtual Save State Slots 5–11, make the game folders, set up its own automatic login, pick MiSTer, and test the whole lot.\n4. The fields and little buttons to the right are only for manual setup. Crikey, easy as.", "1. Conecta MiSTer al router por Ethernet o Wi-Fi y enciéndelo.\n2. Mantén este equipo en la misma red. La contraseña SSH predeterminada es 1.\n3. Selecciona Buscar y configurar MiSTer. El tracker encontrará su dirección, instalará el seguimiento en vivo y las ranuras de estados virtuales 5–11, creará sus carpetas de juegos, habilitará el acceso automático para esta aplicación, seleccionará MiSTer y probará todo.\n4. Los campos y botones pequeños de la derecha solo son necesarios para la configuración manual.", "1. Connectez le MiSTer au routeur par Ethernet ou Wi-Fi et allumez-le.\n2. Gardez cet ordinateur sur le même réseau. Le mot de passe SSH par défaut est 1.\n3. Choisissez Rechercher et configurer le MiSTer. Le tracker trouvera son adresse, installera le suivi en direct et les emplacements d’état virtuels 5 à 11, créera les dossiers de jeux, activera la connexion automatique pour cette application, sélectionnera MiSTer et vérifiera l’ensemble.\n4. Les champs et les petits boutons à droite servent uniquement à la configuration manuelle.", "1. Verbinde MiSTer per Ethernet oder WLAN mit dem Router und schalte ihn ein.\n2. Dieser Computer muss im selben Netzwerk sein. Das Standard-SSH-Passwort ist 1.\n3. Wähle MiSTer suchen und einrichten. Der Tracker findet seine Adresse, installiert die Live-Verfolgung und die virtuellen Speicherplätze 5–11, erstellt die Spieleordner, aktiviert die automatische Anmeldung für diese App, wählt MiSTer aus und testet alles.\n4. Die Felder und kleineren Schaltflächen auf der rechten Seite werden nur für die manuelle Einrichtung benötigt.", "1. Conecte o MiSTer ao roteador por Ethernet ou Wi-Fi e ligue-o.\n2. Mantenha este computador na mesma rede. A senha SSH padrão é 1.\n3. Selecione Encontrar e configurar o MiSTer. O tracker encontrará o endereço, instalará o rastreamento ao vivo e os slots de estados virtuais 5–11, criará as pastas de jogos, ativará o login automático para este aplicativo, selecionará o MiSTer e testará tudo.\n4. Os campos e botões menores à direita são necessários somente para a configuração manual."),
     ("Manual setup options", "Manual setup bits, mate", "Opciones de configuración manual", "Options de configuration manuelle", "Optionen für die manuelle Einrichtung", "Opções de configuração manual"),
     ("MiSTer was found, but the SSH login was not accepted. Use the MiSTer SSH password shown above (the factory default is 1), then try again.", "Found the MiSTer, mate, but the SSH login was knocked back. Use the password shown above (factory default is 1) and have another go.", "Se encontró MiSTer, pero no se aceptó el acceso SSH. Usa la contraseña SSH de MiSTer que aparece arriba (el valor de fábrica es 1) y vuelve a intentarlo.", "Le MiSTer a été trouvé, mais la connexion SSH a été refusée. Utilisez le mot de passe SSH indiqué ci-dessus (la valeur d’usine est 1), puis réessayez.", "MiSTer wurde gefunden, aber die SSH-Anmeldung wurde abgelehnt. Verwende das oben angezeigte MiSTer-SSH-Passwort (Werkseinstellung 1) und versuche es erneut.", "O MiSTer foi encontrado, mas o login SSH não foi aceito. Use a senha SSH do MiSTer mostrada acima (o padrão de fábrica é 1) e tente novamente."),
     ("MiSTer could not be found on this local network. Make sure it is powered on, connected to the same router, and SSH is enabled, then try again.", "Couldn’t find the MiSTer on this network, mate. Make sure it’s switched on, on the same router, and SSH is enabled, then give it another burl.", "No se pudo encontrar MiSTer en esta red local. Asegúrate de que esté encendido, conectado al mismo router y que SSH esté habilitado; luego inténtalo de nuevo.", "Le MiSTer est introuvable sur ce réseau local. Vérifiez qu’il est allumé, connecté au même routeur et que SSH est activé, puis réessayez.", "MiSTer wurde in diesem lokalen Netzwerk nicht gefunden. Stelle sicher, dass er eingeschaltet, mit demselben Router verbunden und SSH aktiviert ist, und versuche es erneut.", "O MiSTer não foi encontrado nesta rede local. Verifique se ele está ligado, conectado ao mesmo roteador e com o SSH ativado; depois tente novamente."),
@@ -21709,6 +22277,13 @@ _MISTER_LOCALIZATION_ROWS = (
     ("MiSTer temporary storage would not accept the live-tracking launcher. Restart MiSTer and try again.", "MiSTer’s temporary storage wouldn’t take the live-tracking launcher, mate. Restart the MiSTer and have another go.", "El almacenamiento temporal de MiSTer no aceptó el iniciador de seguimiento en vivo. Reinicia MiSTer e inténtalo de nuevo.", "Le stockage temporaire du MiSTer n’a pas accepté le lanceur de suivi en direct. Redémarrez le MiSTer et réessayez.", "Der temporäre MiSTer-Speicher hat das Live-Verfolgungsprogramm nicht angenommen. Starte MiSTer neu und versuche es erneut.", "O armazenamento temporário do MiSTer não aceitou o iniciador de rastreamento ao vivo. Reinicie o MiSTer e tente novamente."),
     ("1. Connect MiSTer to your router with Ethernet or Wi-Fi and power it on.\n2. Keep this computer on the same network.\n3. Enter MiSTer or its IP address below. The factory SSH login is root with password 1.\n4. Select Install Virtual Save State Slots. The tracker will install or repair live tracking, create its SNES ROM folder, install virtual slots 5–11, and select MiSTer as the platform.", "1. Hook MiSTer to your router by Ethernet or Wi-Fi and fire it up, mate.\n2. Keep this computer on the same network.\n3. Enter MiSTer or its IP below. The factory SSH login is root with password 1.\n4. Pick Install Virtual Save State Slots. The tracker will sort live tracking, make the SNES ROM folder, install virtual slots 5–11, and pick MiSTer. Crikey, easy as.", "1. Conecta MiSTer al router por Ethernet o Wi-Fi y enciéndelo.\n2. Mantén este equipo en la misma red.\n3. Escribe MiSTer o su IP. El acceso SSH de fábrica es root con contraseña 1.\n4. Selecciona Instalar ranuras de estados virtuales. El tracker instalará o reparará el seguimiento en vivo, creará la carpeta de ROM de SNES, instalará las ranuras virtuales 5–11 y seleccionará MiSTer.", "1. Connectez le MiSTer au routeur par Ethernet ou Wi-Fi et allumez-le.\n2. Gardez cet ordinateur sur le même réseau.\n3. Saisissez MiSTer ou son adresse IP. L’accès SSH d’usine est root avec le mot de passe 1.\n4. Choisissez Installer les emplacements d’état virtuels. Le tracker installera ou réparera le suivi en direct, créera le dossier ROM SNES, installera les emplacements virtuels 5 à 11 et sélectionnera MiSTer.", "1. Verbinde MiSTer per Ethernet oder WLAN mit dem Router und schalte ihn ein.\n2. Dieser Computer muss im selben Netzwerk sein.\n3. Gib MiSTer oder seine IP ein. Die SSH-Werksanmeldung lautet root mit Passwort 1.\n4. Wähle Virtuelle Speicherplätze installieren. Der Tracker installiert oder repariert die Live-Verfolgung, erstellt den SNES-ROM-Ordner, installiert die virtuellen Plätze 5–11 und wählt MiSTer aus.", "1. Conecte o MiSTer ao roteador por Ethernet ou Wi-Fi e ligue-o.\n2. Mantenha este computador na mesma rede.\n3. Digite MiSTer ou o IP. O login SSH de fábrica é root com senha 1.\n4. Selecione Instalar slots de estados virtuais. O tracker instalará ou reparará o rastreamento ao vivo, criará a pasta de ROMs do SNES, instalará os slots virtuais 5–11 e selecionará o MiSTer."),
     ("MiSTer SSH is connected. Install Virtual Save State Slots, then load the SNES core once to start live tracking.", "MiSTer SSH is connected, mate. Install Virtual Save State Slots, then load the SNES core once to kick off live tracking.", "SSH de MiSTer está conectado. Instala las ranuras de estados virtuales y luego carga una vez el núcleo SNES para iniciar el seguimiento en vivo.", "SSH MiSTer est connecté. Installez les emplacements d’état virtuels, puis chargez une fois le cœur SNES pour démarrer le suivi en direct.", "MiSTer-SSH ist verbunden. Installiere die virtuellen Speicherplätze und lade danach einmal den SNES-Core, um die Live-Verfolgung zu starten.", "O SSH do MiSTer está conectado. Instale os slots de estados virtuais e carregue o núcleo SNES uma vez para iniciar o rastreamento ao vivo."),
+    ("Send to MiSTer SD Card", "Send to the MiSTer SD card, mate", "Enviar a la tarjeta SD de MiSTer", "Envoyer vers la carte SD du MiSTer", "An die MiSTer-SD-Karte senden", "Enviar ao cartão SD do MiSTer"),
+    ("Also upload each completed ROM to the MiSTer SD card:", "Also send each finished ROM to the MiSTer SD card, mate:", "También subir cada ROM completada a la tarjeta SD de MiSTer:", "Envoyer également chaque ROM terminée vers la carte SD du MiSTer :", "Jedes fertige ROM zusätzlich auf die MiSTer-SD-Karte hochladen:", "Também enviar cada ROM concluída ao cartão SD do MiSTer:"),
+    ("Uploading existing ROM to MiSTer: {title}", "Sending the existing ROM to MiSTer, mate: {title}", "Subiendo ROM existente a MiSTer: {title}", "Envoi de la ROM existante vers MiSTer : {title}", "Vorhandenes ROM wird auf MiSTer hochgeladen: {title}", "Enviando ROM existente ao MiSTer: {title}"),
+    ("Uploading to MiSTer: {title}", "Sending to MiSTer, mate: {title}", "Subiendo a MiSTer: {title}", "Envoi vers MiSTer : {title}", "Upload auf MiSTer: {title}", "Enviando ao MiSTer: {title}"),
+    ("Uploaded existing ROM to MiSTer: {title}", "Sent the existing ROM to MiSTer, mate: {title}", "ROM existente subida a MiSTer: {title}", "ROM existante envoyée vers MiSTer : {title}", "Vorhandenes ROM auf MiSTer hochgeladen: {title}", "ROM existente enviada ao MiSTer: {title}"),
+    ("MiSTer upload failed: {title}", "MiSTer upload came a cropper, mate: {title}", "Falló la subida a MiSTer: {title}", "Échec de l’envoi vers MiSTer : {title}", "MiSTer-Upload fehlgeschlagen: {title}", "Falha no envio ao MiSTer: {title}"),
+    ("MiSTer uploaded: {uploaded}; already on MiSTer: {existing}; MiSTer upload failed: {failed}.", "Sent to MiSTer: {uploaded}; already there: {existing}; MiSTer uploads failed: {failed}, mate.", "Subidas a MiSTer: {uploaded}; ya en MiSTer: {existing}; subidas fallidas: {failed}.", "Envoyées vers MiSTer : {uploaded} ; déjà présentes : {existing} ; échecs : {failed}.", "Auf MiSTer hochgeladen: {uploaded}; bereits vorhanden: {existing}; fehlgeschlagen: {failed}.", "Enviadas ao MiSTer: {uploaded}; já no MiSTer: {existing}; falhas: {failed}."),
 )
 for (
     _english_text,
@@ -21830,38 +22405,6 @@ _MISTER_EXPERIMENT_LOCALIZATION_ROWS = (
         "MiSTer Main a été mis à jour ou modifié depuis l’installation des états 5 à 11. Ce tracker ne l’écrasera pas et ne reviendra pas à une version antérieure. Restaurez le fichier MiSTer d’origine ou installez une version du tracker conçue pour la nouvelle version de MiSTer Main.",
         "MiSTer Main wurde seit der Installation der Speicherstände 5–11 aktualisiert oder geändert. Dieser Tracker wird die Datei weder überschreiben noch herabstufen. Stelle die ursprüngliche MiSTer-Datei wieder her oder installiere einen Tracker-Build für die neue MiSTer-Main-Version.",
         "O MiSTer Main foi atualizado ou alterado desde a instalação dos estados 5–11. Este tracker não o substituirá nem fará downgrade. Restaure o arquivo MiSTer original ou instale uma versão do tracker criada para a nova versão do MiSTer Main.",
-    ),
-    (
-        "Virtual Save States Disabled",
-        "Virtual Save States Disabled",
-        "Estados de guardado virtuales desactivados",
-        "Sauvegardes virtuelles désactivées",
-        "Virtuelle Speicherstände deaktiviert",
-        "Estados de salvamento virtuais desativados",
-    ),
-    (
-        "Virtual save states 5–11 are temporarily disabled because the experimental MiSTer Main can corrupt HDMI output when a game starts. Find & Set Up MiSTer now installs only stable launching and live tracking. If the experimental version is already installed, select Restore Previous MiSTer Version.",
-        "Virtual save states 5–11 are temporarily disabled because the experimental MiSTer Main can corrupt HDMI output when a game starts. Find & Set Up MiSTer now installs only stable launching and live tracking. If the experimental version is already installed, select Restore Previous MiSTer Version, mate.",
-        "Los estados de guardado virtuales 5–11 están desactivados temporalmente porque el MiSTer Main experimental puede dañar la salida HDMI al iniciar un juego. Buscar y configurar MiSTer ahora instala únicamente el inicio estable y el seguimiento en vivo. Si la versión experimental ya está instalada, selecciona Restaurar la versión anterior de MiSTer.",
-        "Les sauvegardes virtuelles 5 à 11 sont temporairement désactivées, car le MiSTer Main expérimental peut altérer la sortie HDMI au démarrage d’un jeu. Rechercher et configurer le MiSTer n’installe désormais que le lancement stable et le suivi en direct. Si la version expérimentale est déjà installée, sélectionnez Restaurer la version précédente de MiSTer.",
-        "Die virtuellen Speicherstände 5–11 sind vorübergehend deaktiviert, weil die experimentelle MiSTer-Main-Version beim Start eines Spiels die HDMI-Ausgabe beschädigen kann. MiSTer suchen und einrichten installiert jetzt nur noch den stabilen Spielstart und die Live-Verfolgung. Wenn die experimentelle Version bereits installiert ist, wähle Vorherige MiSTer-Version wiederherstellen.",
-        "Os estados de salvamento virtuais 5–11 estão temporariamente desativados porque o MiSTer Main experimental pode corromper a saída HDMI ao iniciar um jogo. Encontrar e configurar o MiSTer agora instala somente a inicialização estável e o rastreamento ao vivo. Se a versão experimental já estiver instalada, selecione Restaurar a versão anterior do MiSTer.",
-    ),
-    (
-        "Virtual save states 5–11 are temporarily disabled because the experimental MiSTer Main can corrupt HDMI output when a game starts. Stable game launching and live tracking remain available. If you previously installed the experimental version, select Restore Previous MiSTer Version.",
-        "Virtual save states 5–11 are temporarily disabled because the experimental MiSTer Main can corrupt HDMI output when a game starts. Stable game launching and live tracking remain available. If you previously installed the experimental version, select Restore Previous MiSTer Version, mate.",
-        "Los estados de guardado virtuales 5–11 están desactivados temporalmente porque el MiSTer Main experimental puede dañar la salida HDMI al iniciar un juego. El inicio estable de juegos y el seguimiento en vivo siguen disponibles. Si instalaste anteriormente la versión experimental, selecciona Restaurar la versión anterior de MiSTer.",
-        "Les sauvegardes virtuelles 5 à 11 sont temporairement désactivées, car le MiSTer Main expérimental peut altérer la sortie HDMI au démarrage d’un jeu. Le lancement stable des jeux et le suivi en direct restent disponibles. Si vous aviez installé la version expérimentale, sélectionnez Restaurer la version précédente de MiSTer.",
-        "Die virtuellen Speicherstände 5–11 sind vorübergehend deaktiviert, weil die experimentelle MiSTer-Main-Version beim Start eines Spiels die HDMI-Ausgabe beschädigen kann. Der stabile Spielstart und die Live-Verfolgung bleiben verfügbar. Wenn du die experimentelle Version zuvor installiert hast, wähle Vorherige MiSTer-Version wiederherstellen.",
-        "Os estados de salvamento virtuais 5–11 estão temporariamente desativados porque o MiSTer Main experimental pode corromper a saída HDMI ao iniciar um jogo. A inicialização estável de jogos e o rastreamento ao vivo continuam disponíveis. Se você instalou anteriormente a versão experimental, selecione Restaurar a versão anterior do MiSTer.",
-    ),
-    (
-        "The tracker-installed experimental MiSTer Main is active and can corrupt HDMI output when a game starts. Open MiSTer Setup, select Restore Previous MiSTer Version, wait for MiSTer to restart, and then launch the game again.",
-        "The tracker-installed experimental MiSTer Main is active and can corrupt HDMI output when a game starts. Open MiSTer Setup, select Restore Previous MiSTer Version, wait for MiSTer to restart, and then launch the game again, mate.",
-        "El MiSTer Main experimental instalado por el tracker está activo y puede dañar la salida HDMI al iniciar un juego. Abre la configuración de MiSTer, selecciona Restaurar la versión anterior de MiSTer, espera a que MiSTer se reinicie y vuelve a iniciar el juego.",
-        "Le MiSTer Main expérimental installé par le tracker est actif et peut altérer la sortie HDMI au démarrage d’un jeu. Ouvrez la configuration du MiSTer, sélectionnez Restaurer la version précédente de MiSTer, attendez le redémarrage du MiSTer, puis relancez le jeu.",
-        "Die vom Tracker installierte experimentelle MiSTer-Main-Version ist aktiv und kann beim Start eines Spiels die HDMI-Ausgabe beschädigen. Öffne die MiSTer-Einrichtung, wähle Vorherige MiSTer-Version wiederherstellen, warte auf den Neustart von MiSTer und starte das Spiel dann erneut.",
-        "O MiSTer Main experimental instalado pelo tracker está ativo e pode corromper a saída HDMI ao iniciar um jogo. Abra a configuração do MiSTer, selecione Restaurar a versão anterior do MiSTer, aguarde o MiSTer reiniciar e inicie o jogo novamente.",
     ),
 )
 for (
@@ -22561,6 +23104,9 @@ UI_TRANSLATIONS["au"].update(_AUSTRALIAN_UI_OVERRIDES)
 
 _RUNTIME_LOCALIZATION_ROWS = (
     ("Copied", "Copied, mate", "Copiado", "Copié", "Kopiert", "Copiado"),
+    ("Tracker Automation", "Tracker Automation, mate", "Automatización del tracker", "Automatisation du tracker", "Tracker-Automatisierung", "Automação do tracker"),
+    ("Statistic reconciliation:", "Statistic reconciliation, mate:", "Conciliación de estadísticas:", "Réconciliation des statistiques :", "Statistikabgleich:", "Reconciliação de estatísticas:"),
+    ("hours", "hours", "horas", "heures", "Stunden", "horas"),
     (
         "Pick exactly what appears",
         "Choose exactly what shows up, mate",
@@ -23015,6 +23561,69 @@ _RUNTIME_LOCALIZATION_ROWS = (
     ("Choose whether the app should reuse your authenticated SMW Central browser session.", "Choose whether the app should reuse your signed-in SMW Central browser session, mate.", "Elige si la aplicación debe reutilizar tu sesión autenticada de SMW Central en el navegador.", "Choisissez si l’application doit réutiliser votre session SMW Central authentifiée dans le navigateur.", "Auswählen, ob die App die authentifizierte SMW-Central-Browsersitzung wiederverwenden soll.", "Escolha se o aplicativo deve reutilizar sua sessão autenticada do SMW Central no navegador."),
     ("Confirm Save As", "Confirm Save As", "Confirmar Guardar como", "Confirmer Enregistrer sous", "Speichern unter bestätigen", "Confirmar Salvar como"),
     ("{filename} already exists.\nDo you want to replace it?", "{filename} already exists.\nReplace it, mate?", "{filename} ya existe.\n¿Quieres reemplazarlo?", "{filename} existe déjà.\nVoulez-vous le remplacer ?", "{filename} ist bereits vorhanden.\nMöchten Sie die Datei ersetzen?", "{filename} já existe.\nDeseja substituí-lo?"),
+    ("SMW Hacks", "SMW Hacks", "Hacks de SMW", "Hacks SMW", "SMW-Hacks", "Hacks de SMW"),
+    ("Non-SMW ROMs", "Non-SMW ROMs", "ROM que no son de SMW", "ROM non-SMW", "Nicht-SMW-ROMs", "ROMs que não são de SMW"),
+    ("NON-SMW ROMS", "NON-SMW ROMS", "ROMS QUE NO SON DE SMW", "ROM NON-SMW", "NICHT-SMW-ROMS", "ROMS QUE NÃO SÃO DE SMW"),
+    ("LOCAL SNES ROMS", "LOCAL SNES ROMS", "ROMS LOCALES DE SNES", "ROM SNES LOCALES", "LOKALE SNES-ROMS", "ROMS LOCAIS DE SNES"),
+    ("Import non-SMW .sfc or .smc files. Generic tracking uses timers and manual deaths without reading SMW memory.", "Import non-SMW .sfc or .smc files. Generic tracking uses timers and manual deaths without reading SMW memory, mate.", "Importa archivos .sfc o .smc que no sean de SMW. El seguimiento genérico usa temporizadores y muertes manuales sin leer la memoria de SMW.", "Importez des fichiers .sfc ou .smc non-SMW. Le suivi générique utilise des chronomètres et des morts manuelles sans lire la mémoire de SMW.", "Importiere Nicht-SMW-Dateien im Format .sfc oder .smc. Die allgemeine Erfassung verwendet Timer und manuelle Tode, ohne SMW-Speicher zu lesen.", "Importe arquivos .sfc ou .smc que não sejam de SMW. O rastreamento genérico usa cronômetros e mortes manuais sem ler a memória do SMW."),
+    ("Imported ROMs", "Imported ROMs", "ROM importadas", "ROM importées", "Importierte ROMs", "ROMs importadas"),
+    ("Selected ROM", "Selected ROM", "ROM seleccionada", "ROM sélectionnée", "Ausgewähltes ROM", "ROM selecionada"),
+    ("Timer-only tracking", "Timer-only tracking", "Seguimiento solo con temporizador", "Suivi par chronomètre uniquement", "Nur Timer-Erfassung", "Rastreamento somente por cronômetro"),
+    ("Game / ROM name", "Game / ROM name", "Nombre del juego / ROM", "Nom du jeu / de la ROM", "Spiel-/ROM-Name", "Nome do jogo / ROM"),
+    ("ROM file", "ROM file", "Archivo ROM", "Fichier ROM", "ROM-Datei", "Arquivo ROM"),
+    ("Added", "Added", "Añadida", "Ajoutée", "Hinzugefügt", "Adicionada"),
+    ("New", "New", "Nuevo", "Nouveau", "Neu", "Novo"),
+    ("NEW MODERATED", "NEW MODERATED", "NUEVO MODERADO", "NOUVEAU MODÉRÉ", "NEU MODERIERT", "NOVO MODERADO"),
+    ("NEW WAITING", "NEW WAITING", "NUEVO EN ESPERA", "NOUVEAU EN ATTENTE", "NEU WARTEND", "NOVO EM ESPERA"),
+    ("New since refresh", "New since refresh", "Nuevo desde la actualización", "Nouveau depuis l’actualisation", "Neu seit Aktualisierung", "Novo desde a atualização"),
+    ("Display name", "Display name", "Nombre para mostrar", "Nom d’affichage", "Anzeigename", "Nome de exibição"),
+    ("File size", "File size", "Tamaño del archivo", "Taille du fichier", "Dateigröße", "Tamanho do arquivo"),
+    ("Stored in", "Stored in", "Guardada en", "Stockée dans", "Gespeichert in", "Armazenada em"),
+    ("Import non-SMW SNES ROMs", "Import non-SMW SNES ROMs", "Importar ROM de SNES que no sean de SMW", "Importer des ROM SNES non-SMW", "Nicht-SMW-SNES-ROMs importieren", "Importar ROMs de SNES que não sejam de SMW"),
+    ("Some ROMs were not imported", "Some ROMs were not imported", "Algunas ROM no se importaron", "Certaines ROM n’ont pas été importées", "Einige ROMs wurden nicht importiert", "Algumas ROMs não foram importadas"),
+    ("Enter a display name for this ROM.", "Enter a display name for this ROM, mate.", "Introduce un nombre para mostrar para esta ROM.", "Saisissez un nom d’affichage pour cette ROM.", "Gib einen Anzeigenamen für dieses ROM ein.", "Digite um nome de exibição para esta ROM."),
+    ("Remove ROM", "Remove ROM", "Eliminar ROM", "Supprimer la ROM", "ROM entfernen", "Remover ROM"),
+    ("Remove this ROM from the app library?", "Remove this ROM from the app library?", "¿Eliminar esta ROM de la biblioteca de la aplicación?", "Supprimer cette ROM de la bibliothèque de l’application ?", "Dieses ROM aus der App-Bibliothek entfernen?", "Remover esta ROM da biblioteca do aplicativo?"),
+    ("Save Name", "Save Name", "Guardar nombre", "Enregistrer le nom", "Namen speichern", "Salvar nome"),
+    ("Open ROM Folder", "Open ROM Folder", "Abrir carpeta de ROM", "Ouvrir le dossier ROM", "ROM-Ordner öffnen", "Abrir pasta de ROMs"),
+    ("Import ROMs", "Import ROMs", "Importar ROM", "Importer des ROM", "ROMs importieren", "Importar ROMs"),
+    ("Start New Level", "Start New Level", "Iniciar nuevo nivel", "Démarrer un nouveau niveau", "Neues Level starten", "Iniciar novo nível"),
+    ("+ Add Death", "+ Add Death", "+ Añadir muerte", "+ Ajouter une mort", "+ Tod hinzufügen", "+ Adicionar morte"),
+    ("The tracker is reconnecting. Try adding the death again in a moment.", "The tracker is reconnecting. Try adding the death again in a moment, mate.", "El tracker se está reconectando. Intenta añadir la muerte de nuevo en un momento.", "Le tracker se reconnecte. Réessayez d’ajouter la mort dans un instant.", "Der Tracker verbindet sich neu. Versuche gleich noch einmal, den Tod hinzuzufügen.", "O tracker está reconectando. Tente adicionar a morte novamente em instantes."),
+    ("The tracker is reconnecting. Try starting the level again in a moment.", "The tracker is reconnecting. Try starting the level again in a moment, mate.", "El tracker se está reconectando. Intenta iniciar el nivel de nuevo en un momento.", "Le tracker se reconnecte. Réessayez de démarrer le niveau dans un instant.", "Der Tracker verbindet sich neu. Versuche gleich noch einmal, das Level zu starten.", "O tracker está reconectando. Tente iniciar o nível novamente em instantes."),
+    ("{count} ROMs", "{count} ROMs", "{count} ROM", "{count} ROM", "{count} ROMs", "{count} ROMs"),
+    ("{count} imported ROMs", "{count} imported ROMs", "{count} ROM importadas", "{count} ROM importées", "{count} importierte ROMs", "{count} ROMs importadas"),
+    ("SNES ROMs", "SNES ROMs", "ROM de SNES", "ROM SNES", "SNES-ROMs", "ROMs de SNES"),
+    ("SNES ROMS", "SNES ROMS", "ROM DE SNES", "ROM SNES", "SNES-ROMS", "ROMS DE SNES"),
+    ("Import from Download & Patch Missing Hacks, then browse, filter, launch, and track RetroAchievements here.", "Import from Download & Patch Missing Hacks, then browse, filter, launch, and track RetroAchievements here, mate.", "Importa desde Descargar y parchear hacks faltantes; luego explora, filtra, inicia y consulta RetroAchievements aquí.", "Importez depuis Télécharger et patcher les hacks manquants, puis parcourez, filtrez, lancez et suivez RetroAchievements ici.", "Importiere über Fehlende Hacks herunterladen und patchen; danach kannst du hier suchen, filtern, starten und RetroAchievements verfolgen.", "Importe em Baixar e aplicar patches ausentes; depois navegue, filtre, inicie e acompanhe o RetroAchievements aqui."),
+    ("Search SNES ROMs", "Search SNES ROMs", "Buscar ROM de SNES", "Rechercher des ROM SNES", "SNES-ROMs suchen", "Pesquisar ROMs de SNES"),
+    ("File type", "File type", "Tipo de archivo", "Type de fichier", "Dateityp", "Tipo de arquivo"),
+    ("Starts with", "Starts with", "Empieza por", "Commence par", "Beginnt mit", "Começa com"),
+    ("Name (A-Z)", "Name (A-Z)", "Nombre (A-Z)", "Nom (A-Z)", "Name (A-Z)", "Nome (A-Z)"),
+    ("Name (Z-A)", "Name (Z-A)", "Nombre (Z-A)", "Nom (Z-A)", "Name (Z-A)", "Nome (Z-A)"),
+    ("Date Added (Newest)", "Date Added (Newest)", "Fecha de adición (más reciente)", "Date d’ajout (plus récente)", "Hinzugefügt (neueste)", "Data de adição (mais recente)"),
+    ("Date Added (Oldest)", "Date Added (Oldest)", "Fecha de adición (más antigua)", "Date d’ajout (plus ancienne)", "Hinzugefügt (älteste)", "Data de adição (mais antiga)"),
+    ("Select all visible ROMs", "Select all visible ROMs", "Seleccionar todas las ROM visibles", "Sélectionner toutes les ROM visibles", "Alle sichtbaren ROMs auswählen", "Selecionar todas as ROMs visíveis"),
+    ("{count} selected", "{count} selected", "{count} seleccionadas", "{count} sélectionnées", "{count} ausgewählt", "{count} selecionadas"),
+    ("Format", "Format", "Formato", "Format", "Format", "Formato"),
+    ("Date Added", "Date Added", "Fecha de adición", "Date d’ajout", "Hinzugefügt", "Data de adição"),
+    ("{visible} of {total} ROMs", "{visible} of {total} ROMs", "{visible} de {total} ROM", "{visible} ROM sur {total}", "{visible} von {total} ROMs", "{visible} de {total} ROMs"),
+    ("Delete Selected", "Delete Selected", "Eliminar seleccionadas", "Supprimer la sélection", "Auswahl löschen", "Excluir selecionadas"),
+    ("Select one or more ROMs to delete.", "Select one or more ROMs to delete, mate.", "Selecciona una o más ROM para eliminarlas.", "Sélectionnez une ou plusieurs ROM à supprimer.", "Wähle mindestens ein ROM zum Löschen aus.", "Selecione uma ou mais ROMs para excluir."),
+    ("Delete selected ROMs", "Delete selected ROMs", "Eliminar ROM seleccionadas", "Supprimer les ROM sélectionnées", "Ausgewählte ROMs löschen", "Excluir ROMs selecionadas"),
+    ("Remove {count} selected ROMs from the app library?", "Remove {count} selected ROMs from the app library, mate?", "¿Eliminar {count} ROM seleccionadas de la biblioteca de la aplicación?", "Supprimer {count} ROM sélectionnées de la bibliothèque de l’application ?", "{count} ausgewählte ROMs aus der App-Bibliothek entfernen?", "Remover {count} ROMs selecionadas da biblioteca do aplicativo?"),
+    ("Import SNES ROMs", "Import SNES ROMs", "Importar ROM de SNES", "Importer des ROM SNES", "SNES-ROMs importieren", "Importar ROMs de SNES"),
+    ("Import ROM Folder", "Import ROM Folder", "Importar carpeta de ROM", "Importer un dossier de ROM", "ROM-Ordner importieren", "Importar pasta de ROMs"),
+    ("No SNES ROMs Found", "No SNES ROMs Found", "No se encontraron ROM de SNES", "Aucune ROM SNES trouvée", "Keine SNES-ROMs gefunden", "Nenhuma ROM de SNES encontrada"),
+    ("The selected folder does not contain any .sfc or .smc files.", "That folder has no .sfc or .smc files, mate.", "La carpeta seleccionada no contiene archivos .sfc ni .smc.", "Le dossier sélectionné ne contient aucun fichier .sfc ou .smc.", "Der ausgewählte Ordner enthält keine .sfc- oder .smc-Dateien.", "A pasta selecionada não contém arquivos .sfc ou .smc."),
+    ("SNES ROM files", "SNES ROM files", "Archivos ROM de SNES", "Fichiers ROM SNES", "SNES-ROM-Dateien", "Arquivos ROM de SNES"),
+    ("A SNES ROM import is already running.", "A SNES ROM import is already running, mate.", "Ya hay una importación de ROM de SNES en curso.", "Une importation de ROM SNES est déjà en cours.", "Ein SNES-ROM-Import läuft bereits.", "Uma importação de ROMs de SNES já está em andamento."),
+    ("Select the All_Hacks folder on the mounted FXPAK Pro SD card, or turn off automatic SD copying.", "Select the All_Hacks folder on the mounted FXPAK Pro SD card, or turn off automatic SD copying, mate.", "Selecciona la carpeta All_Hacks de la tarjeta SD del FXPAK Pro montada o desactiva la copia automática a SD.", "Sélectionnez le dossier All_Hacks de la carte SD FXPAK Pro montée ou désactivez la copie automatique sur SD.", "Wähle den All_Hacks-Ordner auf der eingebundenen FXPAK-Pro-SD-Karte oder deaktiviere das automatische Kopieren auf SD.", "Selecione a pasta All_Hacks no cartão SD montado do FXPAK Pro ou desative a cópia automática para SD."),
+    ("Importing {count} SNES ROM(s)…", "Importing {count} SNES ROM(s), mate…", "Importando {count} ROM de SNES…", "Importation de {count} ROM SNES…", "{count} SNES-ROM(s) werden importiert…", "Importando {count} ROM(s) de SNES…"),
+    ("MiSTer SD connection failed:", "MiSTer SD connection failed, mate:", "Falló la conexión con la SD de MiSTer:", "Échec de la connexion à la carte SD MiSTer :", "MiSTer-SD-Verbindung fehlgeschlagen:", "Falha na conexão com o SD do MiSTer:"),
+    ("Importing SNES ROM {current} of {total}: {title}", "Importing SNES ROM {current} of {total}: {title}", "Importando ROM de SNES {current} de {total}: {title}", "Importation de la ROM SNES {current} sur {total} : {title}", "SNES-ROM {current} von {total} wird importiert: {title}", "Importando ROM de SNES {current} de {total}: {title}"),
+    ("Imported SNES ROM {current} of {total}: {title}", "Imported SNES ROM {current} of {total}: {title}", "ROM de SNES importada {current} de {total}: {title}", "ROM SNES importée {current} sur {total} : {title}", "SNES-ROM {current} von {total} importiert: {title}", "ROM de SNES importada {current} de {total}: {title}"),
+    ("Imported {imported} SNES ROM(s); {duplicates} already in Game Library.", "Imported {imported} SNES ROM(s); {duplicates} already in Game Library, mate.", "Se importaron {imported} ROM de SNES; {duplicates} ya estaban en la biblioteca de juegos.", "{imported} ROM SNES importées ; {duplicates} étaient déjà dans la bibliothèque de jeux.", "{imported} SNES-ROM(s) importiert; {duplicates} waren bereits in der Spielebibliothek.", "{imported} ROM(s) de SNES importadas; {duplicates} já estavam na Biblioteca de Jogos."),
 )
 for (
     _english_text,
@@ -24243,6 +24852,111 @@ for _language_code, _streamerbot_copy in (
     UI_TRANSLATIONS[_language_code].update(_streamerbot_copy)
 
 
+_STREAMERBOT_CONTROL_TRANSLATION_ROWS = (
+    (
+        "Connect directly to Streamer.bot, run actions from tracker events, and let approved Streamer.bot actions control the tracker.",
+        "Connect directly to Streamer.bot, run actions from tracker events, and let approved Streamer.bot actions control the tracker, mate.",
+        "Conéctate directamente a Streamer.bot, ejecuta acciones desde eventos del tracker y permite que acciones aprobadas de Streamer.bot controlen el tracker.",
+        "Connectez-vous directement à Streamer.bot, exécutez des actions depuis les événements du tracker et autorisez des actions Streamer.bot approuvées à contrôler le tracker.",
+        "Verbinde dich direkt mit Streamer.bot, führe Aktionen bei Tracker-Ereignissen aus und erlaube genehmigten Streamer.bot-Aktionen, den Tracker zu steuern.",
+        "Conecte-se diretamente ao Streamer.bot, execute ações a partir dos eventos do tracker e permita que ações aprovadas do Streamer.bot controlem o tracker.",
+    ),
+    (
+        "Allow Streamer.bot to control the tracker",
+        "Let Streamer.bot control the tracker, mate",
+        "Permitir que Streamer.bot controle el tracker",
+        "Autoriser Streamer.bot à contrôler le tracker",
+        "Streamer.bot darf den Tracker steuern",
+        "Permitir que o Streamer.bot controle o tracker",
+    ),
+    (
+        "Tracker Controls",
+        "Tracker Controls",
+        "Controles del tracker",
+        "Commandes du tracker",
+        "Tracker-Steuerung",
+        "Controles do tracker",
+    ),
+    (
+        "Choose which Streamer.bot actions may control the tracker. Only mapped actions are accepted.",
+        "Choose which Streamer.bot actions can control the tracker, mate. Only mapped actions get through.",
+        "Elige qué acciones de Streamer.bot pueden controlar el tracker. Solo se aceptan las acciones asignadas.",
+        "Choisissez les actions Streamer.bot autorisées à contrôler le tracker. Seules les actions associées sont acceptées.",
+        "Lege fest, welche Streamer.bot-Aktionen den Tracker steuern dürfen. Nur zugeordnete Aktionen werden akzeptiert.",
+        "Escolha quais ações do Streamer.bot podem controlar o tracker. Somente ações mapeadas são aceitas.",
+    ),
+    (
+        "Search and Play Hack",
+        "Search and Play Hack",
+        "Buscar y jugar hack",
+        "Rechercher et lancer un hack",
+        "Hack suchen und spielen",
+        "Pesquisar e jogar hack",
+    ),
+    (
+        "Play Random Hack",
+        "Play Random Hack",
+        "Jugar hack aleatorio",
+        "Jouer à un hack aléatoire",
+        "Zufälligen Hack spielen",
+        "Jogar hack aleatório",
+    ),
+    (
+        "Start / Stop Game Timer",
+        "Start / Stop Game Timer",
+        "Iniciar / detener cronómetro del juego",
+        "Démarrer / arrêter le chronomètre de jeu",
+        "Spiel-Timer starten / stoppen",
+        "Iniciar / parar cronômetro do jogo",
+    ),
+    (
+        "Open Complete Hack",
+        "Open Complete Hack",
+        "Abrir Completar hack",
+        "Ouvrir Terminer le hack",
+        "Hack abschließen öffnen",
+        "Abrir Concluir hack",
+    ),
+    (
+        "Open Game Library",
+        "Open Game Library",
+        "Abrir biblioteca de juegos",
+        "Ouvrir la bibliothèque de jeux",
+        "Spielebibliothek öffnen",
+        "Abrir biblioteca de jogos",
+    ),
+    (
+        "Search & Play reads query, hackTitle, title, or a chat command's rawInput. Random Hack also accepts the widget's rating, difficulty, type, released, and hallOfFame filters.",
+        "Search & Play reads query, hackTitle, title, or a chat command's rawInput. Random Hack also takes the widget filters, mate.",
+        "Buscar y jugar lee query, hackTitle, title o rawInput de un comando de chat. Hack aleatorio también acepta los filtros rating, difficulty, type, released y hallOfFame del widget.",
+        "Rechercher et lancer lit query, hackTitle, title ou rawInput d’une commande de chat. Hack aléatoire accepte aussi les filtres rating, difficulty, type, released et hallOfFame du widget.",
+        "Suchen und spielen liest query, hackTitle, title oder rawInput eines Chat-Befehls. Zufälliger Hack akzeptiert außerdem die Widget-Filter rating, difficulty, type, released und hallOfFame.",
+        "Pesquisar e jogar lê query, hackTitle, title ou rawInput de um comando de chat. Hack aleatório também aceita os filtros rating, difficulty, type, released e hallOfFame do widget.",
+    ),
+    (
+        "Streamer.bot controls are connected.",
+        "Streamer.bot controls are connected, mate.",
+        "Los controles de Streamer.bot están conectados.",
+        "Les commandes Streamer.bot sont connectées.",
+        "Die Streamer.bot-Steuerung ist verbunden.",
+        "Os controles do Streamer.bot estão conectados.",
+    ),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _STREAMERBOT_CONTROL_TRANSLATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
 STREAMERBOT_EVENT_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("game_started", "Game launched"),
     ("death_added", "Death added"),
@@ -24255,6 +24969,117 @@ STREAMERBOT_EVENT_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("connection_changed", "Tracker connected or disconnected"),
 )
 STREAMERBOT_EVENT_LABELS = dict(STREAMERBOT_EVENT_DEFINITIONS)
+
+STREAMERBOT_CONTROL_DEFINITIONS: tuple[tuple[str, str], ...] = (
+    ("search_and_play_hack", "Search and Play Hack"),
+    ("play_random_hack", "Play Random Hack"),
+    ("toggle_game_timer", "Start / Stop Game Timer"),
+    ("finish_game_timer", "Finish Game Timer"),
+    ("complete_hack", "Open Complete Hack"),
+    ("open_game_library", "Open Game Library"),
+)
+STREAMERBOT_CONTROL_LABELS = dict(STREAMERBOT_CONTROL_DEFINITIONS)
+
+
+def recommended_streamerbot_action_mappings(
+    actions: Iterable[dict[str, Any]],
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+    """Match clearly named existing Streamer.bot actions to tracker features."""
+    action_lookup: dict[str, dict[str, str]] = {}
+    for raw_action in actions:
+        if not isinstance(raw_action, dict):
+            continue
+        name = str(raw_action.get("name", "")).strip()
+        action_id = str(raw_action.get("id", "")).strip()
+        if not name and not action_id:
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", " ", name.casefold()).strip()
+        action_lookup.setdefault(
+            normalized,
+            {"id": action_id, "name": name},
+        )
+
+    def find(label: str) -> dict[str, str]:
+        normalized_label = re.sub(
+            r"[^a-z0-9]+", " ", label.casefold()
+        ).strip()
+        candidates = (
+            normalized_label,
+            "smw tracker " + normalized_label,
+            "smw stream tracker " + normalized_label,
+            "tracker " + normalized_label,
+        )
+        for candidate in candidates:
+            if candidate in action_lookup:
+                return dict(action_lookup[candidate])
+        return {}
+
+    events = {
+        key: action
+        for key, label in STREAMERBOT_EVENT_DEFINITIONS
+        if (action := find(label))
+    }
+    controls = {
+        key: action
+        for key, label in STREAMERBOT_CONTROL_DEFINITIONS
+        if (action := find(label))
+    }
+    return events, controls
+
+
+def streamerbot_control_from_action_event(
+    document: object,
+    mappings: object,
+) -> tuple[str, dict[str, Any]] | None:
+    """Return an approved tracker command from a Raw.Action event."""
+
+    if not isinstance(document, dict) or not isinstance(mappings, dict):
+        return None
+    event = document.get("event", {})
+    if not isinstance(event, dict):
+        return None
+    if (
+        str(event.get("source", "")).casefold() != "raw"
+        or str(event.get("type", "")).casefold() != "action"
+    ):
+        return None
+    data = document.get("data", {})
+    if not isinstance(data, dict):
+        return None
+    action = data.get("action", {})
+    if not isinstance(action, dict):
+        action = {}
+    action_id = str(
+        action.get("id") or data.get("actionId") or data.get("id") or ""
+    ).strip()
+    action_name = str(
+        action.get("name") or data.get("name") or ""
+    ).strip()
+    arguments = data.get("arguments", data.get("args", {}))
+    if not isinstance(arguments, dict):
+        arguments = {}
+
+    # DoAction also produces Raw.Action. Ignore events this tracker emitted so
+    # an outbound mapping can never loop back into an inbound control.
+    if (
+        str(arguments.get("appName", "")).strip() == APP_NAME
+        and str(arguments.get("eventName", "")).strip()
+        in STREAMERBOT_EVENT_LABELS
+    ):
+        return None
+
+    for control_name, _label in STREAMERBOT_CONTROL_DEFINITIONS:
+        configured = mappings.get(control_name, {})
+        if not isinstance(configured, dict):
+            continue
+        configured_id = str(configured.get("id", "")).strip()
+        configured_name = str(configured.get("name", "")).strip()
+        matched = bool(configured_id and configured_id == action_id)
+        if not matched and configured_name and action_name:
+            matched = configured_name.casefold() == action_name.casefold()
+        if matched:
+            return control_name, dict(arguments)
+    return None
 
 
 def streamerbot_websocket_url(
@@ -24415,6 +25240,14 @@ class StreamerBotConnection:
             )
         )
         return actions
+
+    def subscribe_action_events(self) -> dict[str, Any]:
+        return self.request("Subscribe", events={"raw": ["Action"]})
+
+    def receive_document(self) -> dict[str, Any]:
+        if self.socket is None:
+            raise ConnectionError("Streamer.bot is not connected.")
+        return self._document(self.socket.recv())
 
     def do_action(
         self,
@@ -24588,6 +25421,126 @@ class StreamerBotDispatcher:
         self._close_connection()
 
 
+class StreamerBotControlListener:
+    """Listen for explicitly mapped Streamer.bot actions on a private socket."""
+
+    def __init__(
+        self,
+        settings: dict[str, Any],
+        control_callback: Callable[[str, dict[str, Any]], None],
+        status_callback: Callable[[bool, str], None] | None = None,
+    ) -> None:
+        self._settings_lock = threading.Lock()
+        self._settings = dict(settings)
+        self._control_callback = control_callback
+        self._status_callback = status_callback
+        self._stop_event = threading.Event()
+        self._connection: StreamerBotConnection | None = None
+        self._connection_signature: tuple[Any, ...] | None = None
+        self._last_status: tuple[bool, str] | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="StreamerBotControlListener",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def configure(self, settings: dict[str, Any]) -> None:
+        with self._settings_lock:
+            self._settings = dict(settings)
+        self._close_connection()
+
+    def _settings_snapshot(self) -> dict[str, Any]:
+        with self._settings_lock:
+            return dict(self._settings)
+
+    @staticmethod
+    def _signature(settings: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            str(settings.get("host", "127.0.0.1")),
+            int(settings.get("port", 8080) or 8080),
+            str(settings.get("endpoint", "/")),
+            str(settings.get("password", "")),
+        )
+
+    def _status(self, connected: bool, message: str) -> None:
+        status = (bool(connected), str(message))
+        if status == self._last_status:
+            return
+        self._last_status = status
+        if callable(self._status_callback):
+            try:
+                self._status_callback(*status)
+            except Exception:
+                pass
+
+    def _connect(self, settings: dict[str, Any]) -> StreamerBotConnection:
+        signature = self._signature(settings)
+        if self._connection is not None and self._connection_signature == signature:
+            return self._connection
+        self._close_connection()
+        connection = StreamerBotConnection(
+            host=settings.get("host", "127.0.0.1"),
+            port=settings.get("port", 8080),
+            endpoint=settings.get("endpoint", "/"),
+            password=settings.get("password", ""),
+            timeout=1.0,
+        )
+        connection.connect()
+        connection.subscribe_action_events()
+        self._connection = connection
+        self._connection_signature = signature
+        self._status(True, "Streamer.bot controls are connected.")
+        return connection
+
+    def _close_connection(self) -> None:
+        connection = self._connection
+        self._connection = None
+        self._connection_signature = None
+        if connection is not None:
+            connection.close()
+
+    def _run(self) -> None:
+        retry_delay = 0.4
+        while not self._stop_event.is_set():
+            settings = self._settings_snapshot()
+            mappings = settings.get("control_actions", {})
+            active = (
+                bool(settings.get("enabled", False))
+                and bool(settings.get("controls_enabled", False))
+                and isinstance(mappings, dict)
+                and bool(mappings)
+            )
+            if not active:
+                self._close_connection()
+                self._stop_event.wait(0.4)
+                continue
+            try:
+                connection = self._connect(settings)
+                document = connection.receive_document()
+                command = streamerbot_control_from_action_event(
+                    document,
+                    mappings,
+                )
+                if command is not None:
+                    self._control_callback(*command)
+                retry_delay = 0.4
+            except websocket.WebSocketTimeoutException:
+                continue
+            except Exception as error:
+                self._close_connection()
+                self._status(False, f"Streamer.bot controls: {error}")
+                self._stop_event.wait(retry_delay)
+                retry_delay = min(4.0, retry_delay * 1.6)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._close_connection()
+
+
+MISTER_DEFAULT_ROM_ROOT = "/media/fat/games/SNES/SMW Stream Tracker"
+
+
 DEFAULT_CONFIG = {
     "app_language": "en",
     "sni_path": "",
@@ -24612,6 +25565,8 @@ DEFAULT_CONFIG = {
     "streamerbot_endpoint": "/",
     "streamerbot_password": "",
     "streamerbot_event_actions": {},
+    "streamerbot_controls_enabled": False,
+    "streamerbot_control_actions": {},
     # Keep tracker-owned dialogs inside the main window so a single OBS
     # Window Capture source can include them.  Native OS and third-party
     # windows (browsers, installers, file pickers) intentionally stay native.
@@ -24672,14 +25627,17 @@ DEFAULT_CONFIG = {
     "mister_ssh_port": 22,
     "mister_ssh_user": "root",
     "mister_ssh_fingerprint": "",
-    "mister_rom_root": "/media/fat/games/SNES/SMW Stream Tracker",
+    "mister_rom_root": MISTER_DEFAULT_ROM_ROOT,
     "mister_menu_root": "/media/fat/_SMW Stream Tracker",
+    "mister_profiles": [],
+    "active_mister_profile": "",
     "rom_builder_base_rom_path": "",
     "rom_builder_library_folder": "",
     "rom_builder_copy_to_sd": False,
     "rom_builder_sd_folder": "",
     "rom_builder_upload_via_usb": False,
     "rom_builder_usb_folder": "/All_Hacks",
+    "rom_builder_upload_to_mister": False,
     "google_sheets_enabled": False,
     "google_sheets_web_app_url": "",
     "google_sheets_source_url": "",
@@ -24695,6 +25653,14 @@ DEFAULT_CONFIG = {
     "first_launch_mister_setup_requested": False,
     "automatic_backup_retention": 10,
     "last_automatic_backup_date": "",
+    "smwc_automatic_refresh_enabled": True,
+    "smwc_automatic_refresh_hours": 24,
+    "last_smwcentral_automatic_refresh": "",
+    "crash_recovery_enabled": True,
+    "automatic_completion_detection": True,
+    "completion_detection_always_ask": True,
+    "statistics_reconciliation_mode": "Balanced",
+    "post_stream_summary_enabled": True,
 }
 
 PLATFORM_OPTIONS = (
@@ -24768,6 +25734,243 @@ def normalize_mister_host(value: object) -> str:
         return str(parsed.hostname or "MiSTer").strip() or "MiSTer"
     except ValueError:
         return text.strip("/[]") or "MiSTer"
+
+
+def normalize_mister_rom_root(value: object) -> str:
+    """Return a safe SNES folder located on the MiSTer SD card."""
+    raw_value = str(value or "").strip().replace("\\", "/")
+    if not raw_value:
+        raw_value = MISTER_DEFAULT_ROM_ROOT
+    if any(part == ".." for part in PurePosixPath(raw_value).parts):
+        raise ValueError(
+            "The MiSTer ROM folder cannot contain parent-folder references."
+        )
+    normalized = PurePosixPath(raw_value)
+    allowed_root = PurePosixPath("/media/fat/games/SNES")
+    if not normalized.is_absolute():
+        raise ValueError(
+            "The MiSTer ROM folder must be an absolute SD-card path."
+        )
+    try:
+        normalized.relative_to(allowed_root)
+    except ValueError as error:
+        raise ValueError(
+            "The MiSTer ROM folder must be inside /media/fat/games/SNES."
+        ) from error
+    return str(normalized)
+
+
+def normalized_mister_profiles(
+    config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str]:
+    """Return safe named MiSTer profiles and the selected profile name.
+
+    Passwords are deliberately excluded. Each profile stores only connection
+    and SD-card routing details; the SSH password remains session-only.
+    Existing single-MiSTer configurations are migrated in memory into a
+    profile named ``MiSTer`` so updates do not lose a working setup.
+    """
+    raw_profiles = config.get("mister_profiles", [])
+    if not isinstance(raw_profiles, list):
+        raw_profiles = []
+    profiles: list[dict[str, Any]] = []
+    used_names: set[str] = set()
+    for raw_profile in raw_profiles:
+        if not isinstance(raw_profile, dict):
+            continue
+        name = str(raw_profile.get("name", "")).strip()
+        if not name or name.casefold() in used_names:
+            continue
+        try:
+            port = int(raw_profile.get("port", 22) or 22)
+        except (TypeError, ValueError):
+            port = 22
+        if not 1 <= port <= 65535:
+            port = 22
+        try:
+            rom_root = normalize_mister_rom_root(
+                raw_profile.get("rom_root", MISTER_DEFAULT_ROM_ROOT)
+            )
+        except ValueError:
+            rom_root = MISTER_DEFAULT_ROM_ROOT
+        menu_root = str(
+            raw_profile.get("menu_root", "/media/fat/_SMW Stream Tracker")
+            or "/media/fat/_SMW Stream Tracker"
+        ).strip()
+        if not menu_root.startswith("/media/fat/"):
+            menu_root = "/media/fat/_SMW Stream Tracker"
+        profiles.append(
+            {
+                "name": name,
+                "host": normalize_mister_host(raw_profile.get("host", "MiSTer")),
+                "user": str(raw_profile.get("user", "root")).strip() or "root",
+                "port": port,
+                "fingerprint": str(
+                    raw_profile.get("fingerprint", "")
+                ).strip(),
+                "rom_root": rom_root,
+                "menu_root": menu_root,
+            }
+        )
+        used_names.add(name.casefold())
+
+    if not profiles:
+        try:
+            legacy_port = int(config.get("mister_ssh_port", 22) or 22)
+        except (TypeError, ValueError):
+            legacy_port = 22
+        if not 1 <= legacy_port <= 65535:
+            legacy_port = 22
+        try:
+            legacy_rom_root = normalize_mister_rom_root(
+                config.get("mister_rom_root", MISTER_DEFAULT_ROM_ROOT)
+            )
+        except ValueError:
+            legacy_rom_root = MISTER_DEFAULT_ROM_ROOT
+        profiles.append(
+            {
+                "name": "MiSTer",
+                "host": normalize_mister_host(config.get("mister_host", "MiSTer")),
+                "user": str(config.get("mister_ssh_user", "root")).strip()
+                or "root",
+                "port": legacy_port,
+                "fingerprint": str(
+                    config.get("mister_ssh_fingerprint", "")
+                ).strip(),
+                "rom_root": legacy_rom_root,
+                "menu_root": str(
+                    config.get(
+                        "mister_menu_root",
+                        "/media/fat/_SMW Stream Tracker",
+                    )
+                    or "/media/fat/_SMW Stream Tracker"
+                ).strip(),
+            }
+        )
+
+    requested_active = str(config.get("active_mister_profile", "")).strip()
+    active = next(
+        (
+            profile["name"]
+            for profile in profiles
+            if profile["name"].casefold() == requested_active.casefold()
+        ),
+        profiles[0]["name"],
+    )
+    return profiles, active
+
+
+def upsert_mister_profile(
+    profiles: list[dict[str, Any]],
+    *,
+    name: str,
+    host: object,
+    user: object,
+    port: object,
+    fingerprint: object = "",
+    rom_root: object = MISTER_DEFAULT_ROM_ROOT,
+    menu_root: object = "/media/fat/_SMW Stream Tracker",
+) -> list[dict[str, Any]]:
+    """Insert or replace one named MiSTer profile without storing secrets."""
+    profile_name = str(name or "").strip()
+    if not profile_name:
+        raise ValueError("Enter a name for this MiSTer profile.")
+    try:
+        normalized_port = int(port or 22)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "The MiSTer SSH port must be a number between 1 and 65535."
+        ) from error
+    if not 1 <= normalized_port <= 65535:
+        raise ValueError(
+            "The MiSTer SSH port must be a number between 1 and 65535."
+        )
+    normalized_profile = {
+        "name": profile_name,
+        "host": normalize_mister_host(host),
+        "user": str(user or "root").strip() or "root",
+        "port": normalized_port,
+        "fingerprint": str(fingerprint or "").strip(),
+        "rom_root": normalize_mister_rom_root(rom_root),
+        "menu_root": str(menu_root or "/media/fat/_SMW Stream Tracker").strip(),
+    }
+    updated: list[dict[str, Any]] = []
+    replaced = False
+    for profile in profiles:
+        if str(profile.get("name", "")).casefold() == profile_name.casefold():
+            updated.append(normalized_profile)
+            replaced = True
+        else:
+            updated.append(dict(profile))
+    if not replaced:
+        updated.append(normalized_profile)
+    return updated
+
+
+def apply_mister_profile_to_config(
+    config: dict[str, Any],
+    profile: dict[str, Any],
+) -> bool:
+    """Select one saved MiSTer profile and apply all of its routing fields."""
+    before = (
+        str(config.get("active_mister_profile", "")),
+        normalize_mister_host(config.get("mister_host", "MiSTer")),
+    )
+    name = str(profile.get("name", "MiSTer")).strip() or "MiSTer"
+    host = normalize_mister_host(profile.get("host", "MiSTer"))
+    try:
+        port = int(profile.get("port", 22) or 22)
+    except (TypeError, ValueError):
+        port = 22
+    config.update(
+        {
+            "active_mister_profile": name,
+            "mister_host": host,
+            "mister_ssh_user": (
+                str(profile.get("user", "root")).strip() or "root"
+            ),
+            "mister_ssh_port": port,
+            "mister_ssh_fingerprint": str(
+                profile.get("fingerprint", "")
+            ).strip(),
+            "mister_rom_root": str(
+                profile.get("rom_root", MISTER_DEFAULT_ROM_ROOT)
+                or MISTER_DEFAULT_ROM_ROOT
+            ).strip(),
+            "mister_menu_root": str(
+                profile.get(
+                    "menu_root",
+                    "/media/fat/_SMW Stream Tracker",
+                )
+                or "/media/fat/_SMW Stream Tracker"
+            ).strip(),
+        }
+    )
+    config["platform_websocket_url"] = mister_websocket_url(config)
+    return before != (name, host)
+
+
+def online_mister_profile(
+    config: dict[str, Any],
+    port_probe: Callable[[str, int], bool],
+) -> dict[str, Any] | None:
+    """Return the first reachable saved MiSTer, preferring the active one."""
+    profiles, active_name = normalized_mister_profiles(config)
+    ordered = sorted(
+        profiles,
+        key=lambda profile: (
+            str(profile.get("name", "")).casefold()
+            != active_name.casefold()
+        ),
+    )
+    for profile in ordered:
+        host = normalize_mister_host(profile.get("host", "MiSTer"))
+        try:
+            if port_probe(host, 23074):
+                return dict(profile)
+        except (OSError, TypeError, ValueError):
+            continue
+    return None
 
 
 def local_private_ipv4_addresses() -> list[str]:
@@ -24975,6 +26178,22 @@ LIVE_STATE_CONFIRMATION_SAMPLES = {
 }
 LIVE_STATE_INITIAL_CONFIRMATION_SAMPLES = 2
 
+
+def live_state_confirmation_samples(
+    config: dict[str, Any],
+) -> tuple[dict[str, int], int]:
+    """Return debounce strength for the selected reconciliation mode."""
+    mode = str(
+        config.get("statistics_reconciliation_mode", "Balanced")
+    ).strip().casefold()
+    adjustment = 1 if mode == "conservative" else (-1 if mode == "responsive" else 0)
+    samples = {
+        field: max(1, required + adjustment)
+        for field, required in LIVE_STATE_CONFIRMATION_SAMPLES.items()
+    }
+    initial = max(1, LIVE_STATE_INITIAL_CONFIRMATION_SAMPLES + adjustment)
+    return samples, initial
+
 # Standard SMW $7E0071 actions that deliberately move Mario through a pipe,
 # door, or scripted entrance.  These can leave mode $14 and even return to the
 # same $010B room, so room identity alone cannot distinguish them from an
@@ -25045,11 +26264,81 @@ def hack_gauntlet_level_override(translevel: int) -> int:
     return (hack_gauntlet_level_number(translevel) + 0x24) & 0xFF
 
 CHECK_INTERVAL_SECONDS = 0.10
+TRACKING_SAMPLE_INTERVAL_MIN = 0.08
+TRACKING_SAMPLE_INTERVAL_MAX = 0.35
 DEATH_RECOVERY_STABLE_SAMPLES = 3
 HOT_POTATO_ROTATION_MIN_RECOVERY_SECONDS = 2.5
 HOT_POTATO_ROTATION_STABLE_SAMPLES = 5
 RECONNECT_DELAY_SECONDS = 5
 QUSB_STARTUP_WAIT_SECONDS = 4
+
+
+def adaptive_tracking_sample_interval(
+    current_interval: object,
+    sample_duration: object,
+) -> float:
+    """Smoothly tune polling to the observed bridge and computer speed."""
+    try:
+        current = float(current_interval)
+    except (TypeError, ValueError):
+        current = CHECK_INTERVAL_SECONDS
+    try:
+        duration = max(0.0, float(sample_duration))
+    except (TypeError, ValueError):
+        duration = 0.0
+    current = min(
+        TRACKING_SAMPLE_INTERVAL_MAX,
+        max(TRACKING_SAMPLE_INTERVAL_MIN, current),
+    )
+    target = min(
+        TRACKING_SAMPLE_INTERVAL_MAX,
+        max(CHECK_INTERVAL_SECONDS, duration * 1.7),
+    )
+    # Back off quickly when a bridge/PC is struggling, then recover more
+    # gradually so a single fast packet does not immediately raise CPU load.
+    smoothing = 0.40 if target > current else 0.12
+    return min(
+        TRACKING_SAMPLE_INTERVAL_MAX,
+        max(
+            TRACKING_SAMPLE_INTERVAL_MIN,
+            current + (target - current) * smoothing,
+        ),
+    )
+
+
+def death_sample_is_suspicious(
+    state: dict[str, int],
+    *,
+    previous_mode: int | None,
+    slot_lives_baseline_pending: bool,
+    intentional_transition_pending: bool,
+) -> bool:
+    """Identify samples where a lives change is not trustworthy as a death."""
+    mode = int(state.get("mode", -1))
+    player_state = int(state.get("player_state", 0))
+    explicit_transition = bool(
+        state.get("intentional_transition", 0)
+        or state.get("pipe_timer", 0)
+        or state.get("pipe_action", 0)
+        or player_state in INTENTIONAL_LEVEL_TRANSITION_PLAYER_STATES
+        or intentional_transition_pending
+    )
+    if explicit_transition:
+        return True
+    if slot_lives_baseline_pending and player_state != 0x09:
+        return True
+    if int(state.get("level_end_timer", 0)) != 0:
+        return True
+    if mode in TITLE_SCREEN_MODES or mode in POST_FILE_SELECT_LOADING_MODES:
+        return True
+    # A real SMW death animation remains authoritative across ordinary death
+    # modes. A lives-only change on the exact frame that the mode changes is
+    # ambiguous and is rejected until normal gameplay provides a clean sample.
+    return bool(
+        previous_mode is not None
+        and mode != previous_mode
+        and player_state != 0x09
+    )
 
 
 def normalize_title(value: object) -> str:
@@ -26260,6 +27549,8 @@ class TrackerWorker:
 
         self.game_started = False
         self.game_finished = False
+        self.automatic_completion_event_sent = False
+        self.completion_detection_previous_exits: int | None = None
         self.game_elapsed = 0.0
         self.overworld_entered_at: float | None = None
 
@@ -26323,6 +27614,10 @@ class TrackerWorker:
         self.initial_live_state_candidate: dict[str, int] | None = None
         self.initial_live_state_candidate_samples = 0
         self.last_stabilized_live_state: dict[str, int] | None = None
+        self.reconciliation_correction_count = 0
+        self.reconciliation_last_correction: dict[str, Any] = {}
+        self.reconciliation_last_signature = ""
+        self.reconciliation_last_logged_at = 0.0
         # True from the Mario A/B/C confirmation input until SMW leaves the
         # file-select mode.  The fade can remain in mode $0A for several
         # samples, so this keeps both elapsed clocks moving immediately rather
@@ -26401,6 +27696,9 @@ class TrackerWorker:
         self.current_hack_title = ""
         self.current_hack_url = ""
         self.current_hack_record: dict[str, Any] = {}
+        # Generic ROM sessions never interpret unrelated WRAM as SMW state.
+        self.generic_game_active = False
+        self.generic_level_sequence = 0
         self.hack_catalog: list[dict[str, Any]] = []
         self.fxpak_settings: dict[str, str] = {}
         self.fxpak_path_map: dict[str, str] = {}
@@ -26423,10 +27721,24 @@ class TrackerWorker:
         self.last_connection_error = ""
         self.last_connection_error_logged_at = 0.0
         self.last_successful_connection_sample_at = 0.0
+        self.tracking_sample_interval = CHECK_INTERVAL_SECONDS
+        self.last_mister_connection_scan_at = float("-inf")
+        self.session_started_at = datetime.now().astimezone().isoformat(
+            timespec="seconds"
+        )
         self.connection_gate_lock = threading.Lock()
         self.connection_pause_event = threading.Event()
         self.connection_released_event = threading.Event()
         self.connection_released_event.set()
+
+    def tracking_sample_delay(self, cycle_started_at: float) -> float:
+        """Return a responsive delay scaled to this computer/connection."""
+        sample_duration = max(0.0, time.monotonic() - cycle_started_at)
+        self.tracking_sample_interval = adaptive_tracking_sample_interval(
+            self.tracking_sample_interval,
+            sample_duration,
+        )
+        return max(0.0, self.tracking_sample_interval - sample_duration)
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -26442,6 +27754,132 @@ class TrackerWorker:
     def stop(self) -> None:
         self.cancel_streamerbot_level_session("tracker stopped")
         self.stop_event.set()
+
+    def record_reconciliation_correction(
+        self,
+        field: str,
+        observed: object,
+        retained: object,
+        reason: str,
+    ) -> None:
+        """Record a rejected live-memory sample without delaying polling."""
+        now = time.monotonic()
+        signature = f"{field}:{observed}:{retained}:{reason}"
+        if (
+            signature == self.reconciliation_last_signature
+            and now - self.reconciliation_last_logged_at < 2.0
+        ):
+            return
+        self.reconciliation_last_signature = signature
+        self.reconciliation_last_logged_at = now
+        correction = {
+            "timestamp": datetime.now().astimezone().isoformat(
+                timespec="milliseconds"
+            ),
+            "platform": normalize_platform_name(
+                self.config.get("selected_platform", "FXPAK Pro")
+            ),
+            "field": str(field),
+            "observed": observed,
+            "retained": retained,
+            "reason": str(reason),
+            "rom": str(self.previous_rom_path or ""),
+        }
+        self.reconciliation_correction_count += 1
+        self.reconciliation_last_correction = correction
+        try:
+            STATISTICS_RECONCILIATION_LOG_FILE.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            with STATISTICS_RECONCILIATION_LOG_FILE.open(
+                "a",
+                encoding="utf-8",
+            ) as handle:
+                handle.write(json.dumps(correction, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+        self.send_event(
+            "reconciliation",
+            correction=correction,
+            corrections=self.reconciliation_correction_count,
+        )
+
+    def write_session_recovery_checkpoint(
+        self,
+        *,
+        clean_shutdown: bool = False,
+    ) -> None:
+        """Persist the last confirmed session state for crash recovery."""
+        if not bool(self.config.get("crash_recovery_enabled", True)):
+            return
+        payload = {
+            "schema": 1,
+            "clean_shutdown": bool(clean_shutdown),
+            "started_at": self.session_started_at,
+            "updated_at": datetime.now().astimezone().isoformat(
+                timespec="seconds"
+            ),
+            "platform": normalize_platform_name(
+                self.config.get("selected_platform", "FXPAK Pro")
+            ),
+            "rom_path": str(self.previous_rom_path or ""),
+            "title": str(self.current_hack_title or ""),
+            "author": str(
+                self.current_hack_record.get("author", "")
+                if isinstance(self.current_hack_record, dict)
+                else ""
+            ),
+            "game_seconds": max(0.0, float(self.game_elapsed)),
+            "level_seconds": max(0.0, float(self.level_elapsed)),
+            "total_deaths": max(0, int(self.death_count)),
+            "level_deaths": max(0, int(self.level_death_count)),
+            "completed_exits": max(
+                0,
+                int(self.displayed_exit_count or self.authoritative_exit_count or 0),
+            ),
+            "total_exits": self.current_total,
+            "save_slot": self.active_save_slot,
+            "generic_game": bool(self.generic_game_active),
+            "reconciled_samples": int(self.reconciliation_correction_count),
+        }
+        try:
+            write_json_atomic(SESSION_RECOVERY_FILE, payload)
+        except OSError as error:
+            self.log(f"Could not update crash-recovery checkpoint: {error}")
+
+    def session_summary_payload(self) -> dict[str, Any]:
+        """Return a platform-neutral summary of this app session."""
+        return {
+            "app": APP_NAME,
+            "version": APP_VERSION,
+            "started_at": self.session_started_at,
+            "ended_at": datetime.now().astimezone().isoformat(
+                timespec="seconds"
+            ),
+            "platform": normalize_platform_name(
+                self.config.get("selected_platform", "FXPAK Pro")
+            ),
+            "game": str(self.current_hack_title or clean_rom_filename(
+                self.previous_rom_path or ""
+            )),
+            "creator": str(
+                self.current_hack_record.get("author", "")
+                if isinstance(self.current_hack_record, dict)
+                else ""
+            ),
+            "game_time": format_timer(self.game_elapsed, False),
+            "level_time": format_timer(self.level_elapsed, False),
+            "level_deaths": max(0, int(self.level_death_count)),
+            "total_deaths": max(0, int(self.death_count)),
+            "completed_exits": max(
+                0,
+                int(self.displayed_exit_count or self.authoritative_exit_count or 0),
+            ),
+            "total_exits": self.current_total,
+            "generic_game": bool(self.generic_game_active),
+            "statistics_corrected": int(self.reconciliation_correction_count),
+        }
 
     def request_console_refresh(self) -> None:
         """Reset a controllable FXPAK session, then stop for reconnection."""
@@ -26469,6 +27907,12 @@ class TrackerWorker:
 
     def reset_total_death_counter(self) -> None:
         self.command_queue.put("reset_total_deaths")
+
+    def add_manual_death(self) -> None:
+        self.command_queue.put("add_manual_death")
+
+    def start_new_generic_level(self) -> None:
+        self.command_queue.put("new_generic_level")
 
     def toggle_game_timer(self) -> None:
         self.command_queue.put("toggle_game")
@@ -27312,6 +28756,8 @@ class TrackerWorker:
         self.cancel_streamerbot_level_session("ROM changed")
         self.game_started = False
         self.game_finished = False
+        self.automatic_completion_event_sent = False
+        self.completion_detection_previous_exits = None
         self.game_elapsed = 0.0
         self.overworld_entered_at = None
 
@@ -27375,6 +28821,8 @@ class TrackerWorker:
         self.level_death_count = 0
         self.game_manual_paused = False
         self.level_manual_paused = False
+        self.generic_game_active = False
+        self.generic_level_sequence = 0
 
         with self.progress_sync_lock:
             self.pending_progress_sync = None
@@ -27418,6 +28866,66 @@ class TrackerWorker:
                 daemon=True,
             )
             self.progress_sync_thread.start()
+
+    def check_for_automatic_completion(
+        self,
+        completed: object,
+        total: object,
+        *,
+        completion_state: bool = True,
+    ) -> bool:
+        """Suggest or finish a run when exits and completion state agree."""
+        if not bool(
+            self.config.get("automatic_completion_detection", True)
+        ):
+            return False
+        try:
+            completed_exits = max(0, int(completed))
+            total_exits = max(0, int(float(str(total))))
+        except (TypeError, ValueError):
+            return False
+        if total_exits <= 0 or completed_exits < total_exits:
+            self.completion_detection_previous_exits = completed_exits
+            return False
+        if not completion_state:
+            return False
+        previous_exits = self.completion_detection_previous_exits
+        self.completion_detection_previous_exits = completed_exits
+        # Establish a baseline when an already-complete save is first loaded.
+        # Completion is automatic only when this session crosses the known
+        # denominator, never simply because a finished save was detected.
+        if previous_exits is None or previous_exits >= total_exits:
+            return False
+        if self.automatic_completion_event_sent:
+            return False
+        self.automatic_completion_event_sent = True
+        always_ask = bool(
+            self.config.get("completion_detection_always_ask", True)
+        )
+        if not always_ask and self.game_started and not self.game_finished:
+            self.game_finished = True
+            self.game_manual_paused = True
+            self.send_livesplit_command("game", "pause")
+            self.save_current_game_time()
+            self.update_timer_files()
+        self.send_event(
+            "completion_detected",
+            title=self.current_hack_title,
+            completed=completed_exits,
+            total=total_exits,
+            game_time=format_timer(self.game_elapsed, False),
+            total_deaths=max(0, int(self.death_count)),
+            requires_confirmation=always_ask,
+        )
+        self.log(
+            (
+                "Completion confirmation suggested at "
+                if always_ask
+                else "Completion detected automatically at "
+            )
+            + f"{completed_exits}/{total_exits} exits."
+        )
+        return True
 
     def _progress_sync_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -27788,6 +29296,72 @@ class TrackerWorker:
                     "timer_action",
                     success=True,
                     action="reset_level_deaths",
+                    message=message,
+                )
+
+            elif command == "add_manual_death":
+                if not self.generic_game_active or not self.current_time_key:
+                    message = (
+                        "Manual deaths are available while a non-SMW ROM "
+                        "is active."
+                    )
+                    self.send_event(
+                        "timer_action",
+                        success=False,
+                        action="add_manual_death",
+                        message=message,
+                    )
+                    continue
+                self.level_death_count += 1
+                self.death_count += 1
+                self.update_death_file()
+                self.send_event(
+                    "death_recorded",
+                    level_deaths=max(0, int(self.level_death_count)),
+                    total_deaths=max(0, int(self.death_count)),
+                    reason="manual non-SMW death",
+                    source="manual",
+                )
+                self.save_current_death_count()
+                self.save_current_level_progress()
+                message = "One death was added to the non-SMW run."
+                self.log(message)
+                self.send_event(
+                    "timer_action",
+                    success=True,
+                    action="add_manual_death",
+                    message=message,
+                )
+
+            elif command == "new_generic_level":
+                if not self.generic_game_active or not self.current_time_key:
+                    message = "Launch a non-SMW ROM before starting a level."
+                    self.send_event(
+                        "timer_action",
+                        success=False,
+                        action="new_generic_level",
+                        message=message,
+                    )
+                    continue
+                self.save_current_level_progress()
+                self.generic_level_sequence += 1
+                self.level_id = self.generic_level_sequence
+                self.level_elapsed = 0.0
+                self.level_death_count = 0
+                self.level_finished = False
+                self.level_manual_paused = False
+                self.level_waiting_for_start = False
+                self.level_livesplit_running = True
+                self.send_livesplit_command("level", "reset")
+                self.send_livesplit_command("level", "starttimer")
+                self.update_death_file()
+                self.update_timer_files()
+                message = "A new non-SMW level timer was started."
+                self.log(message)
+                self.send_event(
+                    "timer_action",
+                    success=True,
+                    action="new_generic_level",
                     message=message,
                 )
 
@@ -30818,13 +32392,20 @@ finally {
             return
 
         detected_title = clean_rom_filename(rom_path)
-        hack, match_result = self.find_hack(
-            detected_title,
-            self.database,
-        )
-        if hack is None:
-            launched_hack = self.pending_catalog_hack_for_rom(rom_path)
-            if launched_hack is not None:
+        launched_hack = self.pending_catalog_hack_for_rom(rom_path)
+        if launched_hack is None:
+            launched_hack = find_non_smw_rom_record(rom_path)
+        if launched_hack is not None and bool(
+            launched_hack.get("_non_smw_rom")
+        ):
+            hack = launched_hack
+            match_result = "verified non-SMW library ROM"
+        else:
+            hack, match_result = self.find_hack(
+                detected_title,
+                self.database,
+            )
+            if hack is None and launched_hack is not None:
                 hack = launched_hack
                 match_result = "verified app launch mapping"
 
@@ -30833,6 +32414,10 @@ finally {
             if self.displayed_exit_count is not None
             else 0
         )
+
+        if hack is not None and bool(hack.get("_non_smw_rom")):
+            self.activate_generic_game(rom_path, hack)
+            return
 
         if hack is not None:
             self.current_total = hack["total_exits"]
@@ -30912,6 +32497,230 @@ finally {
                 f"{match_result}."
             )
 
+    def activate_generic_game(
+        self,
+        rom_path: str,
+        game: dict[str, Any],
+    ) -> None:
+        """Start timer-only tracking without reading SMW-specific memory."""
+        title = str(game.get("title") or clean_rom_filename(rom_path)).strip()
+        self.generic_game_active = True
+        self.generic_level_sequence = 0
+        self.current_matched = False
+        self.current_total = ""
+        self.current_hack_title = title
+        self.current_hack_url = ""
+        self.current_hack_record = dict(game)
+        self.current_hack_record["_non_smw_rom"] = True
+        self.current_hack_record["author"] = ""
+        self.current_hack_record["total_exits"] = 0
+        if not self.current_rom_key:
+            self.current_rom_key = self.make_rom_save_key(rom_path)
+        self.current_time_key = f"{self.current_rom_key}::generic"
+        self.active_save_slot = None
+        self.game_elapsed = max(
+            0.0,
+            float(self.load_saved_times().get(self.current_time_key, 0.0)),
+        )
+        self.death_count = max(
+            0,
+            int(self.load_saved_deaths().get(self.current_time_key, 0)),
+        )
+        self.level_id = 0
+        self.level_elapsed, self.level_death_count = (
+            self.get_saved_level_progress(self.level_id)
+        )
+        self.game_started = True
+        self.game_finished = False
+        self.game_manual_paused = False
+        self.game_livesplit_overworld_paused = False
+        self.level_finished = False
+        self.level_manual_paused = False
+        self.level_waiting_for_start = False
+        self.level_livesplit_running = True
+        self.timers_paused = False
+        self.update_title_files(title, "")
+        self.write_text_file("author.txt", "")
+        self.write_text_file("exits.txt", "")
+        self.update_death_file()
+        self.load_game_time_into_livesplit()
+        self.load_level_time_into_livesplit()
+        self.update_timer_files()
+        try:
+            retroachievements_game_id = max(
+                0,
+                int(game.get("_retroachievements_game_id", 0) or 0),
+            )
+        except (TypeError, ValueError):
+            retroachievements_game_id = 0
+        self.send_event(
+            "game",
+            title=title,
+            author="",
+            completed=0,
+            total="",
+            page_url="",
+            catalog_key=str(game.get("id", "")),
+            smwc_id="",
+            difficulty="",
+            hack_type="Non-SMW ROM",
+            rating=None,
+            tags="",
+            description="",
+            screenshots=[],
+            added_date=str(game.get("added_at", "")),
+            generic_game=True,
+            local_rom_path=str(game.get("local_rom_path", rom_path)),
+            retroachievements_game_id=retroachievements_game_id,
+        )
+        self.log(
+            f'Started timer-only tracking for non-SMW ROM "{title}". '
+            "SMW exits and memory-based deaths are disabled."
+        )
+
+    def update_generic_game_timers(self, delta: float) -> None:
+        """Advance generic timers without reading game-specific WRAM."""
+        elapsed = max(0.0, float(delta))
+        if (
+            self.game_started
+            and not self.game_finished
+            and not self.timers_paused
+            and not self.game_manual_paused
+        ):
+            self.game_elapsed += elapsed
+        if (
+            self.level_id is not None
+            and not self.level_finished
+            and not self.timers_paused
+            and not self.level_manual_paused
+            and self.level_livesplit_running
+        ):
+            self.level_elapsed += elapsed
+
+    @staticmethod
+    def _tracking_port_is_open(
+        host: str,
+        port: int = 23074,
+        timeout: float = 0.12,
+    ) -> bool:
+        try:
+            with socket.create_connection((host, int(port)), timeout=timeout):
+                return True
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def _announce_selected_mister_profile(
+        self,
+        profile: dict[str, Any],
+        *,
+        reason: str,
+    ) -> None:
+        self.send_event(
+            "mister_profile_selected",
+            profile=dict(profile),
+            profiles=[
+                dict(saved_profile)
+                for saved_profile in self.config.get("mister_profiles", [])
+                if isinstance(saved_profile, dict)
+            ],
+            reason=reason,
+        )
+        self.log(
+            f'Using MiSTer profile "{profile.get("name", "MiSTer")}" '
+            f'at {normalize_mister_host(profile.get("host", "MiSTer"))} '
+            f"({reason})."
+        )
+
+    def auto_select_mister_connection(self) -> None:
+        """Use the online saved MiSTer or discover its current LAN address."""
+        if str(self.config.get("selected_platform", "")).strip() != "MiSTer":
+            return
+
+        selected = online_mister_profile(
+            self.config,
+            lambda host, port: self._tracking_port_is_open(host, port),
+        )
+        if selected is not None:
+            changed = apply_mister_profile_to_config(self.config, selected)
+            if changed:
+                self._announce_selected_mister_profile(
+                    selected,
+                    reason="saved console detected online",
+                )
+            return
+
+        now = time.monotonic()
+        if now - self.last_mister_connection_scan_at < 30.0:
+            return
+        self.last_mister_connection_scan_at = now
+        candidates = mister_local_scan_candidates(
+            local_private_ipv4_addresses(),
+            maximum_subnets=3,
+        )
+        if not candidates:
+            return
+
+        reachable: list[str] = []
+        with ThreadPoolExecutor(max_workers=min(48, len(candidates))) as executor:
+            futures = {
+                executor.submit(
+                    self._tracking_port_is_open,
+                    candidate,
+                    23074,
+                    0.10,
+                ): candidate
+                for candidate in candidates
+            }
+            for future in as_completed(futures):
+                try:
+                    if future.result():
+                        reachable.append(futures[future])
+                except Exception:
+                    continue
+
+        # Never guess between multiple consoles. Saved profile addresses are
+        # tested above; an address migration is safe only when one SNID host
+        # is visible across the active Ethernet/Wi-Fi interfaces.
+        if len(reachable) != 1:
+            return
+
+        discovered_host = reachable[0]
+        profiles, active_name = normalized_mister_profiles(self.config)
+        active_profile = next(
+            (
+                profile
+                for profile in profiles
+                if str(profile.get("name", "")).casefold()
+                == active_name.casefold()
+            ),
+            profiles[0],
+        )
+        updated_profiles = upsert_mister_profile(
+            profiles,
+            name=str(active_profile.get("name", "MiSTer")),
+            host=discovered_host,
+            user=active_profile.get("user", "root"),
+            port=active_profile.get("port", 22),
+            fingerprint=active_profile.get("fingerprint", ""),
+            rom_root=active_profile.get("rom_root", MISTER_DEFAULT_ROM_ROOT),
+            menu_root=active_profile.get(
+                "menu_root",
+                "/media/fat/_SMW Stream Tracker",
+            ),
+        )
+        self.config["mister_profiles"] = updated_profiles
+        selected = next(
+            profile
+            for profile in updated_profiles
+            if str(profile.get("name", "")).casefold()
+            == active_name.casefold()
+        )
+        apply_mister_profile_to_config(self.config, selected)
+        self._announce_selected_mister_profile(
+            selected,
+            reason="working Ethernet/Wi-Fi address detected",
+        )
+
     def send_request(
         self,
         ws: websocket.WebSocket,
@@ -30938,6 +32747,7 @@ finally {
         )
 
     def start_qusb2snes_if_needed(self) -> None:
+        self.auto_select_mister_connection()
         try:
             test_ws = self.try_connect_websocket()
             test_ws.close()
@@ -31710,9 +33520,12 @@ finally {
         updates so every consumer sees the same confirmed values.
         """
         raw = {key: int(value) for key, value in state.items()}
+        confirmation_samples, initial_confirmation_samples = (
+            live_state_confirmation_samples(self.config)
+        )
         sensitive_snapshot = {
             field: raw[field]
-            for field in LIVE_STATE_CONFIRMATION_SAMPLES
+            for field in confirmation_samples
         }
 
         if not self.confirmed_live_state_fields:
@@ -31724,7 +33537,7 @@ finally {
 
             if (
                 self.initial_live_state_candidate_samples
-                < LIVE_STATE_INITIAL_CONFIRMATION_SAMPLES
+                < initial_confirmation_samples
             ):
                 return None
 
@@ -31738,7 +33551,7 @@ finally {
         filtered = dict(raw)
         previous_state = self.last_stabilized_live_state or {}
 
-        for field, required_samples in LIVE_STATE_CONFIRMATION_SAMPLES.items():
+        for field, required_samples in confirmation_samples.items():
             value = raw[field]
             confirmed = self.confirmed_live_state_fields[field]
 
@@ -31752,6 +33565,12 @@ finally {
                 and self.active_save_slot in {0, 1, 2}
                 and value != self.active_save_slot
             ):
+                self.record_reconciliation_correction(
+                    field,
+                    value,
+                    self.active_save_slot,
+                    "running save slot cannot change outside file select",
+                )
                 self.confirmed_live_state_fields[field] = int(
                     self.active_save_slot
                 )
@@ -31769,12 +33588,25 @@ finally {
                 and self.active_save_slot in {0, 1, 2}
                 and (value < confirmed or value > confirmed + 1)
             ):
+                self.record_reconciliation_correction(
+                    field,
+                    value,
+                    confirmed,
+                    "running exit progress must remain monotonic",
+                )
                 self.pending_live_state_fields.pop(field, None)
                 filtered[field] = confirmed
                 continue
 
             if value == confirmed:
-                self.pending_live_state_fields.pop(field, None)
+                rejected = self.pending_live_state_fields.pop(field, None)
+                if rejected is not None and rejected[0] != confirmed:
+                    self.record_reconciliation_correction(
+                        field,
+                        rejected[0],
+                        confirmed,
+                        "transient value reverted before confirmation",
+                    )
                 filtered[field] = confirmed
                 continue
 
@@ -31814,6 +33646,8 @@ finally {
         player_state: int,
         mode: int,
         player_lives: int | None = None,
+        *,
+        suspicious_transition: bool = False,
     ) -> bool:
         previous_player_state = self.previous_player_state
         previous_player_lives = self.previous_player_lives
@@ -31883,6 +33717,22 @@ finally {
             immediate_lives_decreased
             or level_baseline_lives_decreased
         )
+
+        if suspicious_transition and (entered_death_state or lives_decreased):
+            # Consume the questionable sample as the new baseline. Otherwise
+            # a door, pipe, loading screen, or restored save can be rejected
+            # here and then counted one polling cycle later as a stale drop.
+            if player_lives is not None:
+                self.previous_player_lives = player_lives
+                self.last_level_player_lives = player_lives
+            self.death_alive_samples = 0
+            self.record_reconciliation_correction(
+                "death",
+                "animation" if entered_death_state else "lives decrease",
+                "unchanged",
+                "door, pipe, loading, level transition, or save restore",
+            )
+            return False
         death_context = (
             mode in {0x0F, 0x10, 0x11, 0x12, 0x13, LEVEL_MODE}
             or player_state == 0x09
@@ -32803,6 +34653,14 @@ finally {
             state["player_state"],
             mode,
             state.get("player_lives"),
+            suspicious_transition=death_sample_is_suspicious(
+                state,
+                previous_mode=self.previous_mode,
+                slot_lives_baseline_pending=self.slot_lives_baseline_pending,
+                intentional_transition_pending=(
+                    self.intentional_level_transition_pending
+                ),
+            ),
         )
         self.update_hot_potato_rotation_readiness(state, now)
 
@@ -33224,6 +35082,7 @@ finally {
                 not self.stop_event.is_set()
                 and not self.connection_pause_event.is_set()
             ):
+                cycle_started_at = time.monotonic()
                 self.process_commands(ws)
                 if self.stop_event.is_set():
                     break
@@ -33292,7 +35151,11 @@ finally {
                 delta = min(now - last_tick, 1.0)
                 last_tick = now
 
-                if rom_path:
+                if rom_path and self.generic_game_active:
+                    self.last_successful_connection_sample_at = now
+                    self.update_generic_game_timers(delta)
+
+                elif rom_path:
                     raw_state = self.read_game_state(ws)
                     self.last_successful_connection_sample_at = now
                     state = self.stabilize_live_state(raw_state)
@@ -33300,7 +35163,9 @@ finally {
                         # Do not let the first unconfirmed bridge frame reach
                         # any live counter. A stable game supplies the matching
                         # confirmation on the next normal polling cycle.
-                        self.stop_event.wait(CHECK_INTERVAL_SECONDS)
+                        self.stop_event.wait(
+                            self.tracking_sample_delay(cycle_started_at)
+                        )
                         continue
                     self.update_timers_from_state(
                         state,
@@ -33319,6 +35184,7 @@ finally {
                         if self.displayed_exit_count is not None
                         else state["exits"]
                     )
+                    confirmed_exits = int(state["exits"])
 
                     self.update_exit_file(
                         completed_exits,
@@ -33329,8 +35195,15 @@ finally {
                         completed=completed_exits,
                         total=displayed_total,
                     )
+                    self.check_for_automatic_completion(
+                        confirmed_exits,
+                        displayed_total,
+                        completion_state=bool(
+                            self.level_finished
+                            or state.get("mode") in ENDING_MODES
+                        ),
+                    )
 
-                    confirmed_exits = int(state["exits"])
                     if self.last_progress_exit_count is None:
                         self.last_progress_exit_count = confirmed_exits
                     elif (
@@ -33354,9 +35227,11 @@ finally {
 
                 if now - last_timer_write >= 1.0:
                     self.update_timer_files()
+                    self.write_session_recovery_checkpoint()
 
                     if (
                         rom_path
+                        and not self.generic_game_active
                         and "state" in locals()
                         and state.get("mode") in TITLE_SCREEN_MODES
                     ):
@@ -33385,13 +35260,14 @@ finally {
                     self.last_time_save = now
 
                 self.stop_event.wait(
-                    CHECK_INTERVAL_SECONDS
+                    self.tracking_sample_delay(cycle_started_at)
                 )
 
         finally:
             self.save_current_level_progress()
             self.save_current_game_time()
             self.save_current_death_count()
+            self.write_session_recovery_checkpoint()
 
             try:
                 ws.close()
@@ -33401,6 +35277,7 @@ finally {
 
     def _main_loop(self) -> None:
         self.write_no_game_files()
+        self.write_session_recovery_checkpoint()
 
         try:
             self.database = self.load_hack_database()
@@ -33533,6 +35410,11 @@ class TrackerApp:
                 pass
 
         self.config = load_config()
+        self.pending_crash_recovery = self._load_unclean_session_recovery()
+        self.last_statistics_reconciliation: dict[str, Any] = {}
+        self.statistics_reconciliation_count = 0
+        self.automatic_catalog_refresh_thread: threading.Thread | None = None
+        self.automatic_catalog_refresh_cancel_event = threading.Event()
         self._retroachievements_progress_tokens: dict[str, int] = {}
         self._retroachievements_obs_after_id: str | None = None
         self._retroachievements_overview_summary = (
@@ -33563,6 +35445,7 @@ class TrackerApp:
         )
         self.event_queue: queue.Queue = queue.Queue()
         self.streamerbot_dispatcher: StreamerBotDispatcher | None = None
+        self.streamerbot_control_listener: StreamerBotControlListener | None = None
         self.streamerbot_status_var = tk.StringVar(
             value=self._translate_ui_text("Streamer.bot is disabled.")
         )
@@ -33668,7 +35551,41 @@ class TrackerApp:
             )
         except (TypeError, ValueError):
             self.catalog_new_waiting_count = 0
+        try:
+            self.catalog_last_refresh_new_moderated_count = max(
+                0,
+                int(
+                    catalog_metadata.get(
+                        "Catalog New Since Last Refresh",
+                        "0",
+                    )
+                    or 0
+                ),
+            )
+        except (TypeError, ValueError):
+            self.catalog_last_refresh_new_moderated_count = 0
+        self.catalog_new_moderated_keys = catalog_new_keys_from_metadata(
+            catalog_metadata.get("Catalog New Keys Since Last Refresh", "")
+        )
+        self.catalog_new_waiting_keys = catalog_new_keys_from_metadata(
+            catalog_metadata.get("Waiting New Keys Since Last Refresh", "")
+        )
+        self.catalog_new_moderated_refresh_date = str(
+            catalog_metadata.get(
+                "Catalog New Refresh Date",
+                catalog_metadata.get("Catalog Last Refresh", ""),
+            )
+            or ""
+        )
+        self.catalog_new_waiting_refresh_date = str(
+            catalog_metadata.get(
+                "Waiting New Refresh Date",
+                catalog_metadata.get("Waiting Last Refresh", ""),
+            )
+            or ""
+        )
         self.catalog_new_moderated_count: int | None = None
+        self.catalog_available_waiting_count: int | None = None
         self.catalog_freshness_state = "checking"
         self.catalog_last_refresh_var = self._localized_string_var(
             value=self._catalog_last_refresh_status_text()
@@ -33747,6 +35664,8 @@ class TrackerApp:
         )
         self.current_hack_url = ""
         self.current_hack_record: dict[str, Any] = {}
+        self.non_smw_mode_active = False
+        self.non_smw_rom_library = load_non_smw_rom_library()
         saved_last_hack = self.config.get(
             "last_launched_hack",
             {},
@@ -33819,6 +35738,7 @@ class TrackerApp:
         self.game_library_dialog: tk.Toplevel | None = None
         self.game_library_widgets: dict[str, Any] = {}
         self.game_library_games_by_iid: dict[str, dict[str, Any]] = {}
+        self.game_library_download_button: OutlinedButton | None = None
         self.game_library_launching = False
         self.downloader_dialog: tk.Toplevel | None = None
         self.downloader_widgets: dict[str, Any] = {}
@@ -33843,6 +35763,8 @@ class TrackerApp:
         self.catalog_refresh_status_var: tk.StringVar | None = None
         self.catalog_refresh_thread: threading.Thread | None = None
         self.catalog_refresh_cancel_event = threading.Event()
+        self.catalog_page_refresh_button: OutlinedButton | None = None
+        self.catalog_page_waiting_refresh_button: OutlinedButton | None = None
         self.catalog_freshness_thread: threading.Thread | None = None
         self.catalog_freshness_cancel_event = threading.Event()
         self.catalog_freshness_generation = 0
@@ -34123,6 +36045,7 @@ class TrackerApp:
             if bool(self.config.get("save_tracker_data_automatically", True)):
                 self.root.after(900, self._queue_automatic_tracker_excel_backup)
             self.root.after(1100, self._offer_first_launch_welcome)
+            self.root.after(1350, self._offer_crash_session_recovery)
             # Always perform one quiet release check so the Help-tab badge can
             # advertise an available update without interrupting the user.
             self.root.after(
@@ -34136,6 +36059,10 @@ class TrackerApp:
             self.root.after(
                 1800,
                 self._check_catalog_freshness_async,
+            )
+            self.root.after(
+                3200,
+                self._schedule_automatic_catalog_refresh,
             )
             self.root.after_idle(
                 self._maximize_main_window,
@@ -36578,9 +38505,17 @@ class TrackerApp:
             origin_y=self._ui_px(10),
             full_color=True,
         )
-        if section == "settings" and str(
-            getattr(self, "update_available_version", "")
-        ).strip():
+        moderated_new, waiting_new = self._catalog_notification_flags()
+        show_notification = (
+            section == "settings"
+            and bool(
+                str(getattr(self, "update_available_version", "")).strip()
+            )
+        ) or (
+            section == "library"
+            and (moderated_new or waiting_new)
+        )
+        if show_notification:
             canvas.create_oval(
                 self._ui_px(34),
                 self._ui_px(5),
@@ -39360,20 +41295,22 @@ class TrackerApp:
         )
         metadata = tk.Frame(copy, bg=STREAM_DESK["window"], bd=0)
         metadata.pack(anchor="w", pady=(self._ui_px(3), 0))
-        tk.Label(
+        dashboard_author_label = tk.Label(
             metadata,
             textvariable=self.author_var,
             font=("Segoe UI", 9),
             fg=STREAM_DESK["muted"],
             bg=STREAM_DESK["window"],
-        ).pack(side="left")
-        tk.Label(
+        )
+        dashboard_author_label.pack(side="left")
+        dashboard_metadata_separator_one = tk.Label(
             metadata,
             text="  ·  ",
             font=("Segoe UI", 9),
             fg=STREAM_DESK["muted_dim"],
             bg=STREAM_DESK["window"],
-        ).pack(side="left")
+        )
+        dashboard_metadata_separator_one.pack(side="left")
         self.stream_dashboard_difficulty_pill = self._make_difficulty_pill(
             metadata,
             self.difficulty_var,
@@ -39382,20 +41319,28 @@ class TrackerApp:
             minimum_width=66,
         )
         self.stream_dashboard_difficulty_pill.pack(side="left")
-        tk.Label(
+        dashboard_metadata_separator_two = tk.Label(
             metadata,
             text="  ·  ",
             font=("Segoe UI", 9),
             fg=STREAM_DESK["muted_dim"],
             bg=STREAM_DESK["window"],
-        ).pack(side="left")
-        tk.Label(
+        )
+        dashboard_metadata_separator_two.pack(side="left")
+        self.stream_dashboard_hack_type_label = tk.Label(
             metadata,
             textvariable=self.hack_type_var,
             font=("Segoe UI", 9),
             fg=STREAM_DESK["muted"],
             bg=STREAM_DESK["window"],
-        ).pack(side="left")
+        )
+        self.stream_dashboard_hack_type_label.pack(side="left")
+        self.stream_dashboard_smw_metadata_widgets = (
+            dashboard_author_label,
+            dashboard_metadata_separator_one,
+            self.stream_dashboard_difficulty_pill,
+            dashboard_metadata_separator_two,
+        )
 
         live_pill = tk.Frame(
             header,
@@ -39449,27 +41394,30 @@ class TrackerApp:
             bd=0,
         )
         timeline_metrics.pack(side="right")
-        tk.Label(
+        self.stream_dashboard_timeline_exits_label = tk.Label(
             timeline_metrics,
             textvariable=self.exits_var,
             font=("Segoe UI", 9),
             fg=STREAM_DESK["muted"],
             bg=STREAM_DESK["surface_deep"],
-        ).pack(side="left")
-        tk.Label(
+        )
+        self.stream_dashboard_timeline_exits_label.pack(side="left")
+        self.stream_dashboard_timeline_separator = tk.Label(
             timeline_metrics,
             text="  ·  ",
             font=("Segoe UI", 9),
             fg=STREAM_DESK["muted_dim"],
             bg=STREAM_DESK["surface_deep"],
-        ).pack(side="left")
-        tk.Label(
+        )
+        self.stream_dashboard_timeline_separator.pack(side="left")
+        self.stream_dashboard_timeline_timer_label = tk.Label(
             timeline_metrics,
             textvariable=self.game_timer_var,
             font=("Segoe UI", 9),
             fg=STREAM_DESK["muted"],
             bg=STREAM_DESK["surface_deep"],
-        ).pack(side="left")
+        )
+        self.stream_dashboard_timeline_timer_label.pack(side="left")
         self.stream_dashboard_timeline_canvas = tk.Canvas(
             timeline,
             height=dashboard_y_px(112),
@@ -39516,6 +41464,7 @@ class TrackerApp:
         )
         stats = tk.Frame(run_body, bg=STREAM_DESK["surface"], bd=0)
         stats.pack(fill="x")
+        self.stream_dashboard_stats_frame = stats
         for column in range(5):
             stats.columnconfigure(column, weight=1, uniform="run_stats")
         self.stream_dashboard_current_exit_var = tk.StringVar(
@@ -39559,6 +41508,7 @@ class TrackerApp:
                 anchor="center",
             ),
         ]
+        self.stream_dashboard_run_stat_cards = run_stat_cards
 
         progress_host = tk.Frame(
             run_body,
@@ -39586,6 +41536,8 @@ class TrackerApp:
             bd=0,
         )
         progress_row.pack(fill="x")
+        self.stream_dashboard_progress_host = progress_host
+        self.stream_dashboard_progress_row = progress_row
         tk.Label(
             progress_row,
             text="Run progress",
@@ -39607,6 +41559,7 @@ class TrackerApp:
 
         actions = tk.Frame(run_body, bg=STREAM_DESK["surface"], bd=0)
         actions.pack(fill="x", pady=(self._ui_px(3), 0))
+        self.stream_dashboard_actions_host = actions
         for action_column in range(3):
             actions.columnconfigure(
                 action_column,
@@ -39652,6 +41605,36 @@ class TrackerApp:
         self.stream_dashboard_challenge_complete_button = (
             run_action_buttons[2]
         )
+        self.stream_dashboard_normal_action_buttons = run_action_buttons
+        self.stream_dashboard_generic_action_buttons = [
+            self._make_action_button(
+                actions,
+                text="+ Add Death",
+                command=self.add_non_smw_death,
+                bg=STREAM_DESK["green"],
+                active_bg=STREAM_DESK["green_dark"],
+                width=18,
+                pad_y=7,
+            ),
+            self._make_action_button(
+                actions,
+                text="Start New Level",
+                command=self.start_new_non_smw_level,
+                bg=STREAM_DESK["surface_alt"],
+                active_bg=STREAM_DESK["selected"],
+                width=18,
+                pad_y=7,
+            ),
+            self._make_action_button(
+                actions,
+                text="Finish Game Timer",
+                command=self.finish_game_timer,
+                bg=STREAM_DESK["surface_alt"],
+                active_bg=STREAM_DESK["selected"],
+                width=18,
+                pad_y=7,
+            ),
+        ]
         for index, button in enumerate(run_action_buttons):
             button.grid(
                 row=0,
@@ -39934,7 +41917,19 @@ class TrackerApp:
                     self._ui_px(105),
                     queue_width - self._ui_px(190),
                 )
+                visible_stat_cards = (
+                    [card for index, card in enumerate(run_stat_cards) if index != 2]
+                    if self.non_smw_mode_active
+                    else list(run_stat_cards)
+                )
+                stat_columns = min(stat_columns, len(visible_stat_cards))
+                visible_run_action_buttons = (
+                    self.stream_dashboard_generic_action_buttons
+                    if self.non_smw_mode_active
+                    else run_action_buttons
+                )
                 signature = (
+                    self.non_smw_mode_active,
                     split_game_lists,
                     stat_columns,
                     run_action_columns,
@@ -39988,7 +41983,9 @@ class TrackerApp:
                         weight=(1 if column < stat_columns else 0),
                         uniform="run_stats" if column < stat_columns else "",
                     )
-                for index, stat_card in enumerate(run_stat_cards):
+                for stat_card in run_stat_cards:
+                    stat_card.grid_remove()
+                for index, stat_card in enumerate(visible_stat_cards):
                     row_index = index // stat_columns
                     column_index = index % stat_columns
                     stat_card.grid_configure(
@@ -40015,7 +42012,12 @@ class TrackerApp:
                             else ""
                         ),
                     )
-                for index, button in enumerate(run_action_buttons):
+                for button in (
+                    *run_action_buttons,
+                    *self.stream_dashboard_generic_action_buttons,
+                ):
+                    button.grid_remove()
+                for index, button in enumerate(visible_run_action_buttons):
                     row_index = index // run_action_columns
                     column_index = index % run_action_columns
                     button.grid_configure(
@@ -40095,6 +42097,7 @@ class TrackerApp:
             add="+",
         )
         body.after_idle(resize_dashboard_panels)
+        self._refresh_non_smw_dashboard_mode()
 
         status_row = tk.Frame(
             parent,
@@ -40124,6 +42127,161 @@ class TrackerApp:
             bg=STREAM_DESK["rail"],
         ).pack(side="right")
         self._refresh_session_timeline()
+
+    def _refresh_non_smw_dashboard_mode(self) -> None:
+        """Swap SMW-only dashboard fields for generic ROM controls."""
+        metadata_widgets = getattr(
+            self,
+            "stream_dashboard_smw_metadata_widgets",
+            (),
+        )
+        hack_type_label = getattr(
+            self,
+            "stream_dashboard_hack_type_label",
+            None,
+        )
+        try:
+            if hack_type_label is not None:
+                hack_type_label.pack_forget()
+            for widget in metadata_widgets:
+                widget.pack_forget()
+            if not self.non_smw_mode_active:
+                for widget in metadata_widgets:
+                    widget.pack(side="left")
+            if hack_type_label is not None:
+                hack_type_label.pack(side="left")
+
+            exit_label = getattr(
+                self,
+                "stream_dashboard_timeline_exits_label",
+                None,
+            )
+            separator = getattr(
+                self,
+                "stream_dashboard_timeline_separator",
+                None,
+            )
+            timer_label = getattr(
+                self,
+                "stream_dashboard_timeline_timer_label",
+                None,
+            )
+            for widget in (exit_label, separator, timer_label):
+                if widget is not None:
+                    widget.pack_forget()
+            if not self.non_smw_mode_active:
+                if exit_label is not None:
+                    exit_label.pack(side="left")
+                if separator is not None:
+                    separator.pack(side="left")
+            if timer_label is not None:
+                timer_label.pack(side="left")
+
+            progress_host = getattr(
+                self,
+                "stream_dashboard_progress_host",
+                None,
+            )
+            progress_row = getattr(
+                self,
+                "stream_dashboard_progress_row",
+                None,
+            )
+            if progress_host is not None and progress_row is not None:
+                if self.non_smw_mode_active:
+                    progress_host.pack_forget()
+                    progress_row.pack_forget()
+                else:
+                    actions_host = getattr(
+                        self,
+                        "stream_dashboard_actions_host",
+                        None,
+                    )
+                    progress_host.pack(
+                        fill="x",
+                        pady=(self._ui_px(14), 0),
+                        before=actions_host,
+                    )
+                    progress_row.pack(fill="x", before=actions_host)
+
+            stats_frame = getattr(
+                self,
+                "stream_dashboard_stats_frame",
+                None,
+            )
+            stat_cards = list(
+                getattr(self, "stream_dashboard_run_stat_cards", ())
+            )
+            if stats_frame is not None and len(stat_cards) >= 5:
+                for stat_card in stat_cards:
+                    stat_card.grid_forget()
+                for column in range(5):
+                    stats_frame.columnconfigure(column, weight=0)
+                visible_indices = (
+                    (0, 1, 3, 4)
+                    if self.non_smw_mode_active
+                    else (0, 1, 2, 3, 4)
+                )
+                for display_column, card_index in enumerate(visible_indices):
+                    stats_frame.columnconfigure(
+                        display_column,
+                        weight=1,
+                        uniform="run_stats",
+                    )
+                    stat_cards[card_index].grid(
+                        row=0,
+                        column=display_column,
+                        sticky="nsew",
+                        padx=(
+                            0
+                            if display_column == 0
+                            else self._ui_px(5),
+                            0,
+                        ),
+                    )
+
+            mode_controls = getattr(
+                self,
+                "stream_dashboard_mode_controls_host",
+                None,
+            )
+            mode_rules = getattr(
+                self,
+                "stream_dashboard_mode_rules_label",
+                None,
+            )
+            if self.non_smw_mode_active:
+                self.stream_dashboard_mode_var.set("NON-SMW MODE")
+                if mode_controls is not None:
+                    mode_controls.pack_forget()
+                if mode_rules is not None:
+                    mode_rules.pack_forget()
+            else:
+                self.stream_dashboard_mode_var.set(
+                    self._session_mode_heading_text()
+                )
+                if mode_controls is not None:
+                    mode_controls.pack(
+                        side="left",
+                        padx=(self._ui_px(12), 0),
+                    )
+                if mode_rules is not None:
+                    mode_rules.pack(
+                        side="left",
+                        fill="x",
+                        expand=True,
+                        padx=(self._ui_px(12), 0),
+                    )
+
+            resize_callback = getattr(
+                self,
+                "stream_dashboard_resize_callback",
+                None,
+            )
+            if callable(resize_callback):
+                resize_callback()
+        except (AttributeError, tk.TclError):
+            pass
 
     def _build_menu_bar(self) -> None:
         colors = self._menu_colors()
@@ -41681,6 +43839,25 @@ class TrackerApp:
                 "mister_ssh_port": port,
             }
         )
+        profiles, active_profile = normalized_mister_profiles(self.config)
+        profiles = upsert_mister_profile(
+            profiles,
+            name=active_profile,
+            host=normalized_host,
+            user=normalized_user,
+            port=port,
+            fingerprint=self.config.get("mister_ssh_fingerprint", ""),
+            rom_root=self.config.get(
+                "mister_rom_root",
+                MISTER_DEFAULT_ROM_ROOT,
+            ),
+            menu_root=self.config.get(
+                "mister_menu_root",
+                "/media/fat/_SMW Stream Tracker",
+            ),
+        )
+        self.config["mister_profiles"] = profiles
+        self.config["active_mister_profile"] = active_profile
         self.config["platform_websocket_url"] = mister_websocket_url(self.config)
         if select_platform:
             self.config["selected_platform"] = "MiSTer"
@@ -41969,6 +44146,14 @@ class TrackerApp:
     @staticmethod
     def _mister_sftp_makedirs(sftp, remote_path: str) -> None:
         path = PurePosixPath(remote_path)
+        normalized_path = str(path)
+        prepared_paths = getattr(
+            sftp,
+            "_smwtracker_prepared_directories",
+            None,
+        )
+        if isinstance(prepared_paths, set) and normalized_path in prepared_paths:
+            return
         current = PurePosixPath("/")
         for part in path.parts:
             if part in {"", "/"}:
@@ -41978,6 +44163,18 @@ class TrackerApp:
                 sftp.stat(str(current))
             except OSError:
                 sftp.mkdir(str(current))
+        if not isinstance(prepared_paths, set):
+            prepared_paths = set()
+            try:
+                setattr(
+                    sftp,
+                    "_smwtracker_prepared_directories",
+                    prepared_paths,
+                )
+            except (AttributeError, TypeError):
+                prepared_paths = None
+        if isinstance(prepared_paths, set):
+            prepared_paths.add(normalized_path)
 
     @staticmethod
     def _mister_sftp_write(sftp, remote_path: str, payload: bytes) -> None:
@@ -42003,6 +44200,113 @@ class TrackerApp:
                 f"The MiSTer file at {remote_path} could not be read completely."
             )
         return payload
+
+    @staticmethod
+    def _mister_remote_file_sha256(client, remote_path: str) -> str:
+        """Hash a MiSTer file locally so it is not downloaded for verification."""
+        _stdin, stdout, stderr = client.exec_command(
+            "sha256sum " + shlex.quote(remote_path),
+            timeout=120,
+        )
+        exit_status = stdout.channel.recv_exit_status()
+        output = stdout.read().decode("utf-8", errors="replace").strip()
+        error_output = stderr.read().decode(
+            "utf-8",
+            errors="replace",
+        ).strip()
+        if exit_status != 0:
+            detail = error_output or output or f"exit code {exit_status}"
+            raise RuntimeError(
+                "MiSTer could not checksum the uploaded ROM. " + detail
+            )
+        match = re.match(r"^([0-9a-fA-F]{64})(?:\s|$)", output)
+        if match is None:
+            raise RuntimeError(
+                "MiSTer returned an invalid checksum for the uploaded ROM."
+            )
+        return match.group(1).casefold()
+
+    def _upload_rom_to_mister_sd(
+        self,
+        client,
+        sftp,
+        local_rom: Path,
+        remote_root: str,
+        game: dict[str, Any],
+    ) -> tuple[str, str]:
+        """Upload and verify one ROM without launching or resetting MiSTer."""
+        local_path = Path(local_rom)
+        if not local_path.is_file():
+            raise FileNotFoundError(
+                f"The local ROM was not found: {local_path}"
+            )
+        local_size = int(local_path.stat().st_size)
+        if local_size < 1:
+            raise RuntimeError("The completed ROM is empty and was not uploaded.")
+
+        safe_root = normalize_mister_rom_root(remote_root)
+        remote_filename = mister_safe_rom_filename(game, local_path.suffix)
+        remote_path = str(PurePosixPath(safe_root) / remote_filename)
+        staged_path = remote_path + ".smwtracker-upload"
+        local_sha256 = file_sha256(local_path)
+        self._mister_sftp_makedirs(sftp, safe_root)
+
+        def verified_remote_sha256(path: str) -> str:
+            try:
+                return self._mister_remote_file_sha256(client, path)
+            except Exception:
+                # Older/custom MiSTer environments may not expose sha256sum.
+                # Retain the original download-and-hash path as a safe fallback.
+                remote_payload = self._mister_sftp_read(
+                    sftp,
+                    path,
+                    maximum_bytes=local_size,
+                )
+                return hashlib.sha256(remote_payload).hexdigest()
+
+        try:
+            if int(sftp.stat(remote_path).st_size) == local_size:
+                if verified_remote_sha256(remote_path) == local_sha256:
+                    return remote_path, "already_on_mister"
+        except (OSError, RuntimeError):
+            pass
+
+        try:
+            try:
+                sftp.remove(staged_path)
+            except OSError:
+                pass
+            try:
+                sftp.put(str(local_path), staged_path, confirm=False)
+            except TypeError:
+                # Test doubles and older SFTP implementations may not accept
+                # Paramiko's confirm keyword.
+                sftp.put(str(local_path), staged_path)
+            if verified_remote_sha256(staged_path) != local_sha256:
+                raise RuntimeError(
+                    "The MiSTer SD-card upload failed checksum verification."
+                )
+            try:
+                sftp.posix_rename(staged_path, remote_path)
+            except (AttributeError, OSError):
+                self._mister_run_checked(
+                    client,
+                    "mv -f "
+                    + shlex.quote(staged_path)
+                    + " "
+                    + shlex.quote(remote_path),
+                    "MiSTer could not finish the SD-card upload.",
+                )
+            if int(sftp.stat(remote_path).st_size) != local_size:
+                raise RuntimeError(
+                    "The MiSTer SD-card upload has an unexpected final size."
+                )
+            return remote_path, "uploaded"
+        finally:
+            try:
+                sftp.remove(staged_path)
+            except OSError:
+                pass
 
     @staticmethod
     def _mister_run_checked(client, command: str, failure_message: str) -> None:
@@ -42038,6 +44342,14 @@ class TrackerApp:
             "mister_experimental",
             "MiSTer-SMW-Virtual-States",
         )
+        if not experimental_path.is_file() and not getattr(sys, "frozen", False):
+            experimental_path = bundled_resource_path(
+                "experiments",
+                "mister_instant_states",
+                "Main_MiSTer_20260707",
+                "bin_experimental",
+                "MiSTer-SMW-Virtual-States",
+            )
         if not experimental_path.is_file():
             raise RuntimeError(
                 "The MiSTer save-state file is missing from this tracker build."
@@ -42825,15 +45137,30 @@ class TrackerApp:
         dialog.resizable(True, True)
         dialog.configure(bg=palette["window"])
 
+        mister_profiles, active_mister_profile = normalized_mister_profiles(
+            self.config
+        )
+        active_profile_record = next(
+            (
+                profile
+                for profile in mister_profiles
+                if profile["name"] == active_mister_profile
+            ),
+            mister_profiles[0],
+        )
+        self.config["mister_profiles"] = mister_profiles
+        self.config["active_mister_profile"] = active_mister_profile
         host_var = tk.StringVar(
-            value=str(self.config.get("mister_host", "MiSTer"))
+            value=str(active_profile_record.get("host", "MiSTer"))
         )
         user_var = tk.StringVar(
-            value=str(self.config.get("mister_ssh_user", "root"))
+            value=str(active_profile_record.get("user", "root"))
         )
         port_var = tk.StringVar(
-            value=str(self.config.get("mister_ssh_port", 22))
+            value=str(active_profile_record.get("port", 22))
         )
+        profile_var = tk.StringVar(value=active_mister_profile)
+        mister_profiles_state = {"profiles": mister_profiles}
         password_var = tk.StringVar(value=self.mister_session_password or "1")
         status_var = self._localized_string_var(
             value="Ready for MiSTer setup.",
@@ -42887,7 +45214,210 @@ class TrackerApp:
         content.pack(fill="both", expand=True)
         content.columnconfigure(0, weight=3, uniform="mister_setup_columns")
         content.columnconfigure(1, weight=2, uniform="mister_setup_columns")
-        content.rowconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        profile_bar = tk.Frame(
+            content,
+            bg=palette["panel_alt"],
+            padx=self._ui_px(12),
+            pady=self._ui_px(9),
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        profile_bar.grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(0, self._ui_px(9)),
+        )
+        profile_bar.columnconfigure(1, weight=1)
+        tk.Label(
+            profile_bar,
+            text=self._translate_ui_text("MiSTer Profile"),
+            font=("Segoe UI", 10, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+        ).grid(row=0, column=0, sticky="w", padx=(0, self._ui_px(10)))
+        profile_box = ttk.Combobox(
+            profile_bar,
+            textvariable=profile_var,
+            values=tuple(profile["name"] for profile in mister_profiles),
+            state="readonly",
+            font=("Segoe UI", 10),
+            width=28,
+        )
+        profile_box.grid(row=0, column=1, sticky="ew")
+
+        def select_mister_profile(profile_name: str, *, persist: bool = True) -> None:
+            selected = next(
+                (
+                    profile
+                    for profile in mister_profiles_state["profiles"]
+                    if profile["name"] == profile_name
+                ),
+                None,
+            )
+            if selected is None:
+                return
+            profile_var.set(selected["name"])
+            host_var.set(str(selected.get("host", "MiSTer")))
+            user_var.set(str(selected.get("user", "root")))
+            port_var.set(str(selected.get("port", 22)))
+            self.config.update(
+                {
+                    "active_mister_profile": selected["name"],
+                    "mister_host": normalize_mister_host(selected.get("host")),
+                    "mister_ssh_user": str(selected.get("user", "root")),
+                    "mister_ssh_port": int(selected.get("port", 22)),
+                    "mister_ssh_fingerprint": str(
+                        selected.get("fingerprint", "")
+                    ),
+                    "mister_rom_root": str(
+                        selected.get("rom_root", MISTER_DEFAULT_ROM_ROOT)
+                    ),
+                    "mister_menu_root": str(
+                        selected.get(
+                            "menu_root",
+                            "/media/fat/_SMW Stream Tracker",
+                        )
+                    ),
+                }
+            )
+            self.config["platform_websocket_url"] = mister_websocket_url(
+                self.config
+            )
+            if persist:
+                save_config(self.config)
+                if self.worker is not None:
+                    self.worker.config.update(self.config)
+                status_var.set(
+                    self._format_ui_text(
+                        "MiSTer profile selected: {name}",
+                        name=selected["name"],
+                    )
+                )
+
+        def add_mister_profile() -> None:
+            profile_name = self._ask_stream_desk_string(
+                "Add MiSTer Profile",
+                "Enter a name for this MiSTer console:",
+                parent=dialog,
+            )
+            if profile_name is None:
+                return
+            profile_name = profile_name.strip()
+            if not profile_name:
+                return
+            if any(
+                profile["name"].casefold() == profile_name.casefold()
+                for profile in mister_profiles_state["profiles"]
+            ):
+                self._show_localized_error(
+                    "MiSTer Profile",
+                    "A MiSTer profile already uses that name.",
+                    parent=dialog,
+                )
+                return
+            try:
+                updated = upsert_mister_profile(
+                    mister_profiles_state["profiles"],
+                    name=profile_name,
+                    host=host_var.get(),
+                    user=user_var.get(),
+                    port=port_var.get(),
+                    rom_root=self.config.get(
+                        "mister_rom_root",
+                        MISTER_DEFAULT_ROM_ROOT,
+                    ),
+                    menu_root=self.config.get(
+                        "mister_menu_root",
+                        "/media/fat/_SMW Stream Tracker",
+                    ),
+                )
+            except ValueError as error:
+                self._show_localized_error(
+                    "MiSTer Profile",
+                    str(error),
+                    parent=dialog,
+                )
+                return
+            mister_profiles_state["profiles"] = updated
+            self.config["mister_profiles"] = updated
+            self.config["active_mister_profile"] = profile_name
+            profile_box.configure(
+                values=tuple(profile["name"] for profile in updated)
+            )
+            select_mister_profile(profile_name)
+
+        def remove_mister_profile() -> None:
+            profiles = mister_profiles_state["profiles"]
+            if len(profiles) <= 1:
+                self._show_localized_info(
+                    "MiSTer Profile",
+                    "At least one MiSTer profile must remain.",
+                    parent=dialog,
+                )
+                return
+            selected_name = profile_var.get()
+            if not self._ask_localized_yes_no(
+                "Remove MiSTer Profile?",
+                self._format_ui_text(
+                    'Remove the MiSTer profile "{name}"? No files on the '
+                    "console will be changed.",
+                    name=selected_name,
+                ),
+                parent=dialog,
+            ):
+                return
+            updated = [
+                profile
+                for profile in profiles
+                if profile["name"] != selected_name
+            ]
+            mister_profiles_state["profiles"] = updated
+            self.config["mister_profiles"] = updated
+            profile_box.configure(
+                values=tuple(profile["name"] for profile in updated)
+            )
+            select_mister_profile(updated[0]["name"])
+
+        profile_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: select_mister_profile(profile_var.get()),
+        )
+        profile_actions = tk.Frame(
+            profile_bar,
+            bg=palette["panel_alt"],
+            bd=0,
+        )
+        profile_actions.grid(
+            row=0,
+            column=2,
+            sticky="e",
+            padx=(self._ui_px(10), 0),
+        )
+        self._make_action_button(
+            profile_actions,
+            self._translate_ui_text("Add Profile"),
+            add_mister_profile,
+            STREAM_DESK["surface_alt"],
+            STREAM_DESK["selected"],
+            width=12,
+            pad_y=6,
+            font_size=9,
+        ).pack(side="left")
+        self._make_action_button(
+            profile_actions,
+            self._translate_ui_text("Remove"),
+            remove_mister_profile,
+            STREAM_DESK["surface_alt"],
+            STREAM_DESK["selected"],
+            width=10,
+            pad_y=6,
+            font_size=9,
+        ).pack(side="left", padx=(self._ui_px(6), 0))
 
         automatic_body = self._stream_desk_card(
             content,
@@ -42899,7 +45429,7 @@ class TrackerApp:
         )
         automatic_card = automatic_body.stream_card
         automatic_card.grid(
-            row=0,
+            row=1,
             column=0,
             sticky="nsew",
             padx=(0, self._ui_px(9)),
@@ -42908,12 +45438,14 @@ class TrackerApp:
             automatic_body,
             text=self._translate_ui_text(
                 "1. Connect MiSTer to your router with Ethernet or Wi-Fi and "
-                "power it on.\n2. Keep this computer on the same network.\n"
+                "power it on.\n2. Keep this computer on the same network. "
+                "The default SSH password is 1.\n"
                 "3. Select Find & Set Up MiSTer. The tracker will find its "
-                "address, install live tracking, create its game folders, "
-                "enable automatic login for this app, select MiSTer, and "
-                "test everything.\n4. The fields and smaller buttons below "
-                "are only needed for manual setup."
+                "address, install live tracking and Virtual Save State Slots "
+                "5–11, create its game folders, enable automatic login for "
+                "this app, select MiSTer, and test everything.\n4. The fields "
+                "and smaller buttons to the right are only needed for manual "
+                "setup."
             ),
             font=("Segoe UI", 10),
             fg=palette["text"],
@@ -42989,7 +45521,7 @@ class TrackerApp:
             body_pad=14,
         )
         manual_card = manual_body.stream_card
-        manual_card.grid(row=0, column=1, sticky="nsew")
+        manual_card.grid(row=1, column=1, sticky="nsew")
 
         fields = (
             ("MiSTer host or IP:", host_var, False),
@@ -43051,66 +45583,10 @@ class TrackerApp:
         )
         buttons = tk.Frame(manual_body, bg=palette["panel"], bd=0)
         buttons.pack(fill="x", side="bottom")
-        buttons.columnconfigure(0, weight=5, uniform="mister_manual_actions")
-        buttons.columnconfigure(1, weight=6, uniform="mister_manual_actions")
-
-        virtual_states_body = self._stream_desk_card(
-            content,
-            self._translate_ui_text("MiSTer Save States 5–11"),
-            trailing_text="F5–F11",
-            title_font_size=15,
-            header_pad_y=9,
-            body_pad=12,
-        )
-        virtual_states_frame = virtual_states_body.stream_card
-        virtual_states_frame.grid(
-            row=1,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(self._ui_px(9), 0),
-        )
-        virtual_states_copy = tk.Frame(
-            virtual_states_body,
-            bg=palette["panel"],
-            bd=0,
-        )
-        virtual_states_copy.pack(side="left", fill="both", expand=True)
-        virtual_states_description = tk.Label(
-            virtual_states_copy,
-            text=self._translate_ui_text(
-                "Virtual save states 5–11 are temporarily disabled because "
-                "the experimental MiSTer Main can corrupt HDMI output when a "
-                "game starts. Find & Set Up MiSTer now installs only stable "
-                "launching and live tracking. If the experimental version is "
-                "already installed, select Restore Previous MiSTer Version."
-            ),
-            font=("Segoe UI", 9),
-            fg=palette["text"],
-            bg=palette["panel"],
-            anchor="w",
-            justify="left",
-        )
-        virtual_states_description.pack(fill="x")
-        virtual_states_copy.bind(
-            "<Configure>",
-            lambda event: virtual_states_description.configure(
-                wraplength=max(
-                    self._ui_px(360),
-                    int(event.width) - self._ui_px(12),
-                )
-            ),
-            add="+",
-        )
-        virtual_states_buttons = tk.Frame(
-            virtual_states_body,
-            bg=palette["panel"],
-            bd=0,
-        )
-        virtual_states_buttons.pack(
-            side="right",
-            padx=(self._ui_px(16), 0),
-        )
+        # Keep the long restore action on its own full-width row. Placing it
+        # beside Test Connection forced their combined minimum widths beyond
+        # this card and Windows clipped the final word at common scaling sizes.
+        buttons.columnconfigure(0, weight=1)
 
         busy_buttons: list[tk.Widget] = []
 
@@ -43182,18 +45658,6 @@ class TrackerApp:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def show_virtual_states_unavailable() -> None:
-            self._show_localized_info(
-                "Virtual Save States Disabled",
-                "Virtual save states 5–11 are temporarily disabled because "
-                "the experimental MiSTer Main can corrupt HDMI output when a "
-                "game starts. Stable game launching and live tracking remain "
-                "available. If you previously installed the experimental "
-                "version, select Restore Previous MiSTer Version.",
-                parent=dialog,
-                kind="warning",
-            )
-
         def automatic_setup() -> None:
             try:
                 user = str(user_var.get()).strip() or "root"
@@ -43251,6 +45715,14 @@ class TrackerApp:
                     self._verified_mister_peer(key_client)
                     key_client.close()
                     key_client = None
+                    self._install_mister_virtual_states(
+                        host,
+                        user,
+                        port,
+                        password,
+                        status_var,
+                    )
+
                     def complete() -> None:
                         host_var.set(host)
                         self.config["mister_ssh_fingerprint"] = fingerprint
@@ -43262,10 +45734,10 @@ class TrackerApp:
                         )
                         finish_task(
                             "MiSTer is fully set up. The tracker found it, "
-                            "installed stable game launching and live "
-                            "tracking, created the game folders, enabled "
-                            "automatic login for this app, selected MiSTer, "
-                            "and verified the connection."
+                            "installed live tracking and save states 5–11, "
+                            "created the game folders, enabled automatic "
+                            "login for this app, selected MiSTer, and verified "
+                            "the connection. MiSTer is restarting."
                         )
                         self._guided_optional_software_completed("mister")
                         if self._guided_setup_stage != "connection":
@@ -43371,7 +45843,6 @@ class TrackerApp:
             row=0,
             column=0,
             sticky="ew",
-            padx=(0, self._ui_px(5)),
         )
         restore_original_button = self._make_action_button(
             buttons,
@@ -43379,15 +45850,15 @@ class TrackerApp:
             restore_original_mister,
             STREAM_DESK["surface_alt"],
             STREAM_DESK["selected"],
-            width=22,
+            width=34,
             pad_y=11,
-            font_size=8,
+            font_size=10,
         )
         restore_original_button.grid(
-            row=0,
-            column=1,
+            row=1,
+            column=0,
             sticky="ew",
-            padx=(self._ui_px(5), 0),
+            pady=(self._ui_px(8), 0),
         )
         save_button = self._make_action_button(
             footer,
@@ -43409,21 +45880,10 @@ class TrackerApp:
             pad_y=8,
         )
         close_button.pack(side="right", padx=(0, self._ui_px(8)))
-        install_button = self._make_action_button(
-            virtual_states_buttons,
-            self._translate_ui_text("Virtual Save States Disabled"),
-            show_virtual_states_unavailable,
-            STREAM_DESK["surface_alt"],
-            STREAM_DESK["selected"],
-            width=25,
-            pad_y=8,
-        )
-        install_button.pack(side="left")
         busy_buttons.extend(
             (
                 automatic_button,
                 test_button,
-                install_button,
                 save_button,
                 restore_original_button,
             )
@@ -45702,6 +48162,8 @@ class TrackerApp:
         self._downloader_prepared_preview_cache = None
         self._catalog_playable_filter_cache = None
         self._catalog_direct_file_cache = {}
+        self._reload_catalog_new_since_refresh_state()
+        self._refresh_catalog_notification_badges()
         self._refresh_database_status()
         self._check_catalog_freshness_async(force=True)
 
@@ -45718,7 +48180,13 @@ class TrackerApp:
             self.game_library_dialog is not None
             and self.game_library_dialog.winfo_exists()
         ):
-            self._populate_game_library()
+            refresh_library = self.game_library_widgets.get(
+                "refresh_catalog_rows"
+            )
+            if callable(refresh_library):
+                refresh_library()
+            else:
+                self._populate_game_library()
         if (
             self.tracker_list_dialog is not None
             and self.tracker_list_dialog.winfo_exists()
@@ -46101,6 +48569,8 @@ class TrackerApp:
         self.hack_catalog = (
             self.stats_db.load_catalog()
         )
+        self._reload_catalog_new_since_refresh_state()
+        self._refresh_catalog_notification_badges()
         self._refresh_database_status()
         self._check_catalog_freshness_async(force=True)
 
@@ -46117,7 +48587,13 @@ class TrackerApp:
             self.game_library_dialog is not None
             and self.game_library_dialog.winfo_exists()
         ):
-            self._populate_game_library()
+            refresh_library = self.game_library_widgets.get(
+                "refresh_catalog_rows"
+            )
+            if callable(refresh_library):
+                refresh_library()
+            else:
+                self._populate_game_library()
 
         if (
             self.tracker_list_dialog is not None
@@ -48186,8 +50662,43 @@ class TrackerApp:
         local_auto_save = tk.BooleanVar(
             value=bool(self.config.get("save_tracker_data_automatically", True))
         )
+        local_reconciliation_mode = tk.StringVar(
+            value=str(
+                self.config.get("statistics_reconciliation_mode", "Balanced")
+                or "Balanced"
+            )
+        )
+        local_completion_detection = tk.BooleanVar(
+            value=bool(
+                self.config.get("automatic_completion_detection", True)
+            )
+        )
+        local_completion_always_ask = tk.BooleanVar(
+            value=bool(
+                self.config.get("completion_detection_always_ask", True)
+            )
+        )
+        local_crash_recovery = tk.BooleanVar(
+            value=bool(self.config.get("crash_recovery_enabled", True))
+        )
+        local_catalog_auto_refresh = tk.BooleanVar(
+            value=bool(
+                self.config.get("smwc_automatic_refresh_enabled", True)
+            )
+        )
+        local_catalog_auto_refresh_hours = tk.StringVar(
+            value=str(self.config.get("smwc_automatic_refresh_hours", 24) or 24)
+        )
+        local_post_stream_summary = tk.BooleanVar(
+            value=bool(self.config.get("post_stream_summary_enabled", True))
+        )
         local_streamerbot_enabled = tk.BooleanVar(
             value=bool(self.config.get("streamerbot_enabled", False))
+        )
+        local_streamerbot_controls_enabled = tk.BooleanVar(
+            value=bool(
+                self.config.get("streamerbot_controls_enabled", False)
+            )
         )
         local_streamerbot_host = tk.StringVar(
             value=str(
@@ -48252,6 +50763,50 @@ class TrackerApp:
                 tk.StringVar(value=configured_display)
             )
         streamerbot_action_boxes: list[ttk.Combobox] = []
+        configured_streamerbot_controls = self.config.get(
+            "streamerbot_control_actions",
+            {},
+        )
+        if not isinstance(configured_streamerbot_controls, dict):
+            configured_streamerbot_controls = {}
+        local_streamerbot_control_action_vars: dict[str, tk.StringVar] = {}
+        for streamerbot_control_name, _streamerbot_control_label in (
+            STREAMERBOT_CONTROL_DEFINITIONS
+        ):
+            configured_action = configured_streamerbot_controls.get(
+                streamerbot_control_name,
+                {},
+            )
+            if not isinstance(configured_action, dict):
+                configured_action = {}
+            configured_action_name = str(
+                configured_action.get("name", "")
+            ).strip()
+            configured_action_id = str(
+                configured_action.get("id", "")
+            ).strip()
+            configured_display = "Disabled"
+            if configured_action_name or configured_action_id:
+                configured_display = configured_action_name or configured_action_id
+                existing_action = streamerbot_action_choices.get(
+                    configured_display,
+                    {},
+                )
+                if (
+                    isinstance(existing_action, dict)
+                    and existing_action
+                    and str(existing_action.get("id", ""))
+                    != configured_action_id
+                ):
+                    configured_display += f" [{configured_action_id[:8]}]"
+                streamerbot_action_choices[configured_display] = {
+                    "id": configured_action_id,
+                    "name": configured_action_name,
+                }
+            local_streamerbot_control_action_vars[streamerbot_control_name] = (
+                tk.StringVar(value=configured_display)
+            )
+        streamerbot_control_action_boxes: list[ttk.Combobox] = []
 
         def open_from_settings(action) -> None:
             """Run a settings tool without losing the user's place.
@@ -48728,6 +51283,7 @@ class TrackerApp:
         settings_sections_built.add("File Locations")
 
         def build_streamerbot_settings_page() -> None:
+            tr = self._translate_ui_text
             streamerbot_body = self._create_centered_page_panel(
                 settings_panels["Streamer.bot"],
                 outer_bg=STREAM_DESK["window"],
@@ -48776,9 +51332,9 @@ class TrackerApp:
             tk.Label(
                 streamerbot_body,
                 text=tr(
-                    "Connect directly to Streamer.bot and run your own actions "
-                    "when the tracker confirms a game, death, exit, timer, or "
-                    "RetroAchievements event."
+                    "Connect directly to Streamer.bot, run actions from tracker "
+                    "events, and let approved Streamer.bot actions control the "
+                    "tracker."
                 ),
                 font=("Segoe UI", 11),
                 fg=STREAM_DESK["muted"],
@@ -48817,7 +51373,7 @@ class TrackerApp:
                 connection_card,
                 text="Enable Streamer.bot integration",
                 variable=local_streamerbot_enabled,
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 10, "bold"),
                 fg=STREAM_DESK["text_strong"],
                 bg=STREAM_DESK["surface_alt"],
                 activebackground=STREAM_DESK["surface_alt"],
@@ -48952,8 +51508,22 @@ class TrackerApp:
                 pady=(self._ui_px(8), 0),
             )
 
-            mappings_card = tk.Frame(
+            mapping_columns = tk.Frame(
                 streamerbot_body,
+                bg=STREAM_DESK["surface"],
+                bd=0,
+            )
+            mapping_columns.grid(
+                row=3,
+                column=0,
+                sticky="nsew",
+                pady=(self._ui_px(12), 0),
+            )
+            mapping_columns.columnconfigure(0, weight=1, uniform="mappings")
+            mapping_columns.columnconfigure(1, weight=1, uniform="mappings")
+
+            mappings_card = tk.Frame(
+                mapping_columns,
                 bg=STREAM_DESK["surface_alt"],
                 padx=self._ui_px(18),
                 pady=self._ui_px(15),
@@ -48962,10 +51532,10 @@ class TrackerApp:
                 bd=0,
             )
             mappings_card.grid(
-                row=3,
+                row=0,
                 column=0,
-                sticky="ew",
-                pady=(self._ui_px(12), 0),
+                sticky="nsew",
+                padx=(0, self._ui_px(6)),
             )
             mappings_card.columnconfigure(1, weight=1)
             tk.Label(
@@ -48987,13 +51557,13 @@ class TrackerApp:
                 bg=STREAM_DESK["surface_alt"],
                 anchor="w",
                 justify="left",
-                wraplength=self._ui_px(950),
+                wraplength=self._ui_px(520),
             ).grid(
                 row=1,
                 column=0,
                 columnspan=2,
                 sticky="ew",
-                pady=(self._ui_px(3), self._ui_px(8)),
+                pady=(self._ui_px(2), self._ui_px(5)),
             )
             for mapping_index, (
                 event_name,
@@ -49019,7 +51589,7 @@ class TrackerApp:
                     values=tuple(streamerbot_action_choices),
                     state="readonly",
                     font=("Segoe UI", 10),
-                    width=46,
+                    width=28,
                 )
                 action_box.grid(
                     row=mapping_index,
@@ -49028,6 +51598,116 @@ class TrackerApp:
                     pady=self._ui_px(4),
                 )
                 streamerbot_action_boxes.append(action_box)
+
+            controls_card = tk.Frame(
+                mapping_columns,
+                bg=STREAM_DESK["surface_alt"],
+                padx=self._ui_px(18),
+                pady=self._ui_px(15),
+                highlightbackground=STREAM_DESK["border"],
+                highlightthickness=1,
+                bd=0,
+            )
+            controls_card.grid(
+                row=0,
+                column=1,
+                sticky="nsew",
+                padx=(self._ui_px(6), 0),
+            )
+            controls_card.columnconfigure(1, weight=1)
+            tk.Label(
+                controls_card,
+                text=tr("Tracker Controls"),
+                font=("Segoe UI", 14, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            MarioCheckbutton(
+                controls_card,
+                text=tr("Allow Streamer.bot to control the tracker"),
+                variable=local_streamerbot_controls_enabled,
+                font=("Segoe UI", 10, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                activebackground=STREAM_DESK["surface_alt"],
+                activeforeground=STREAM_DESK["text_strong"],
+                selectcolor=STREAM_DESK["surface_alt"],
+            ).grid(row=0, column=1, sticky="e")
+            tk.Label(
+                controls_card,
+                text=tr(
+                    "Choose which Streamer.bot actions may control the tracker. "
+                    "Only mapped actions are accepted."
+                ),
+                font=("Segoe UI", 10),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(520),
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(self._ui_px(3), self._ui_px(8)),
+            )
+            for mapping_index, (
+                control_name,
+                control_label,
+            ) in enumerate(STREAMERBOT_CONTROL_DEFINITIONS, start=2):
+                tk.Label(
+                    controls_card,
+                    text=tr(control_label),
+                    font=("Segoe UI", 10, "bold"),
+                    fg=STREAM_DESK["text_strong"],
+                    bg=STREAM_DESK["surface_alt"],
+                    anchor="w",
+                ).grid(
+                    row=mapping_index,
+                    column=0,
+                    sticky="w",
+                    padx=(0, self._ui_px(12)),
+                    pady=self._ui_px(4),
+                )
+                action_box = ttk.Combobox(
+                    controls_card,
+                    textvariable=(
+                        local_streamerbot_control_action_vars[control_name]
+                    ),
+                    values=tuple(streamerbot_action_choices),
+                    state="readonly",
+                    font=("Segoe UI", 10),
+                    width=28,
+                )
+                action_box.grid(
+                    row=mapping_index,
+                    column=1,
+                    sticky="ew",
+                    pady=self._ui_px(4),
+                )
+                streamerbot_control_action_boxes.append(action_box)
+            tk.Label(
+                controls_card,
+                text=tr(
+                    "Search & Play reads query, hackTitle, title, or a chat "
+                    "command's rawInput. Random Hack also accepts the widget's rating, "
+                    "difficulty, type, released, and hallOfFame filters."
+                ),
+                font=("Segoe UI", 9),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(520),
+            ).grid(
+                row=2 + len(STREAMERBOT_CONTROL_DEFINITIONS),
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(self._ui_px(8), 0),
+            )
 
             tk.Label(
                 streamerbot_body,
@@ -49052,6 +51732,8 @@ class TrackerApp:
             def apply_loaded_streamerbot_actions(
                 info: dict[str, Any],
                 actions: list[dict[str, Any]],
+                *,
+                apply_recommended: bool = False,
             ) -> None:
                 try:
                     if not dialog.winfo_exists():
@@ -49079,20 +51761,27 @@ class TrackerApp:
                         "name": action_name,
                     }
 
+                all_action_variables = {
+                    **local_streamerbot_action_vars,
+                    **local_streamerbot_control_action_vars,
+                }
                 previous_actions = {
-                    event_name: streamerbot_action_choices.get(
+                    mapping_name: streamerbot_action_choices.get(
                         variable.get(),
                         {},
                     )
-                    for event_name, variable in local_streamerbot_action_vars.items()
+                    for mapping_name, variable in all_action_variables.items()
                 }
                 streamerbot_action_choices.clear()
                 streamerbot_action_choices.update(new_choices)
                 choices_tuple = tuple(new_choices)
-                for action_box in streamerbot_action_boxes:
+                for action_box in (
+                    streamerbot_action_boxes
+                    + streamerbot_control_action_boxes
+                ):
                     action_box.configure(values=choices_tuple)
-                for event_name, variable in local_streamerbot_action_vars.items():
-                    previous_action = previous_actions.get(event_name, {})
+                for mapping_name, variable in all_action_variables.items():
+                    previous_action = previous_actions.get(mapping_name, {})
                     selected_label = "Disabled"
                     for display_name, action in new_choices.items():
                         if display_name == "Disabled":
@@ -49110,11 +51799,59 @@ class TrackerApp:
                             selected_label = display_name
                             break
                     variable.set(selected_label)
+                matched_count = 0
+                if apply_recommended:
+                    recommended_events, recommended_controls = (
+                        recommended_streamerbot_action_mappings(actions)
+                    )
+
+                    def choice_for_action(action: dict[str, str]) -> str:
+                        for display_name, candidate in new_choices.items():
+                            if display_name == "Disabled":
+                                continue
+                            if str(action.get("id", "")) and str(
+                                action.get("id", "")
+                            ) == str(candidate.get("id", "")):
+                                return display_name
+                            if str(action.get("name", "")) and str(
+                                action.get("name", "")
+                            ).casefold() == str(
+                                candidate.get("name", "")
+                            ).casefold():
+                                return display_name
+                        return "Disabled"
+
+                    for mapping_name, action in recommended_events.items():
+                        local_streamerbot_action_vars[mapping_name].set(
+                            choice_for_action(action)
+                        )
+                        matched_count += 1
+                    for mapping_name, action in recommended_controls.items():
+                        local_streamerbot_control_action_vars[mapping_name].set(
+                            choice_for_action(action)
+                        )
+                        matched_count += 1
+                    if recommended_events or recommended_controls:
+                        local_streamerbot_enabled.set(True)
+                    if recommended_controls:
+                        local_streamerbot_controls_enabled.set(True)
                 version = str(info.get("version", "")).strip()
                 self.streamerbot_status_var.set(
                     "Connected to Streamer.bot"
                     + (f" {version}" if version else "")
                     + f" — {len(actions)} enabled actions loaded."
+                    + (
+                        f" {matched_count} recommended mapping(s) applied; "
+                        "select Save Settings to activate them."
+                        if apply_recommended and matched_count
+                        else (
+                            " No clearly named recommended actions were found. "
+                            "Name actions after the tracker event/control labels, "
+                            "then try again."
+                            if apply_recommended
+                            else ""
+                        )
+                    )
                 )
 
             def report_streamerbot_test_error(error: Exception) -> None:
@@ -49126,7 +51863,10 @@ class TrackerApp:
                 except tk.TclError:
                     pass
 
-            def test_and_load_streamerbot_actions() -> None:
+            def test_and_load_streamerbot_actions(
+                *,
+                apply_recommended: bool = False,
+            ) -> None:
                 host_value = local_streamerbot_host.get()
                 port_value = local_streamerbot_port.get()
                 endpoint_value = local_streamerbot_endpoint.get()
@@ -49172,6 +51912,7 @@ class TrackerApp:
                                 lambda: apply_loaded_streamerbot_actions(
                                     info,
                                     actions,
+                                    apply_recommended=apply_recommended,
                                 ),
                             )
                         except tk.TclError:
@@ -49199,6 +51940,25 @@ class TrackerApp:
             self.settings_action_buttons[
                 ("Streamer.bot", "Test & Load Actions")
             ] = test_button
+            recommended_button = self._make_action_button(
+                test_button_holder,
+                text="Apply Recommended Mappings",
+                command=lambda: test_and_load_streamerbot_actions(
+                    apply_recommended=True
+                ),
+                bg=STREAM_DESK["surface_deep"],
+                active_bg=STREAM_DESK["selected"],
+                width=27,
+                pad_y=7,
+                font_size=10,
+            )
+            recommended_button.pack(
+                side="right",
+                padx=(0, self._ui_px(8)),
+            )
+            self.settings_action_buttons[
+                ("Streamer.bot", "Apply Recommended Mappings")
+            ] = recommended_button
 
         settings_section_builders[
             "Streamer.bot"
@@ -49236,6 +51996,27 @@ class TrackerApp:
                         "Open Automatic Tracker Excel Backup Folder",
                         lambda: self._open_local_folder(
                             PERSISTENT_TRACKER_BACKUP_DIR
+                        ),
+                    ),
+                ),
+            ),
+            (
+                "Automation & Recovery",
+                (
+                    (
+                        "Run Library Maintenance",
+                        self._run_library_maintenance,
+                    ),
+                    (
+                        "Create Post-Stream Summary Now",
+                        lambda: self._write_post_stream_summary(
+                            show_confirmation=True
+                        ),
+                    ),
+                    (
+                        "Open Session Summaries Folder",
+                        lambda: self._open_local_folder(
+                            POST_STREAM_SUMMARY_DIR
                         ),
                     ),
                 ),
@@ -49492,8 +52273,8 @@ class TrackerApp:
         platform_setup_section = tk.Frame(
             platform_form,
             bg=STREAM_DESK["surface_deep"],
-            padx=self._ui_px(20),
-            pady=self._ui_px(18),
+            padx=self._ui_px(14),
+            pady=self._ui_px(11),
             bd=0,
             highlightbackground=STREAM_DESK["border_strong"],
             highlightthickness=1,
@@ -49502,14 +52283,14 @@ class TrackerApp:
             row=2,
             column=0,
             columnspan=2,
-            sticky="nsew",
-            pady=(0, self._ui_px(10)),
+            sticky="ew",
+            pady=(0, self._ui_px(6)),
         )
         platform_setup_section.columnconfigure(0, weight=1)
         platform_setup_title = tk.Label(
             platform_setup_section,
             textvariable=platform_setup_heading_var,
-            font=("Segoe UI", 15, "bold"),
+            font=("Segoe UI", 14, "bold"),
             fg=STREAM_DESK["text_strong"],
             bg=STREAM_DESK["surface_deep"],
             anchor="w",
@@ -49523,8 +52304,8 @@ class TrackerApp:
         platform_setup_stack.grid(
             row=1,
             column=0,
-            sticky="nsew",
-            pady=(self._ui_px(8), 0),
+            sticky="ew",
+            pady=(self._ui_px(5), 0),
         )
         platform_setup_stack.columnconfigure(0, weight=1)
         platform_setup_pages: dict[str, tk.Frame] = {}
@@ -49540,7 +52321,7 @@ class TrackerApp:
             tk.Label(
                 page,
                 text=label,
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 10, "bold"),
                 fg=STREAM_DESK["muted"],
                 bg=STREAM_DESK["surface_deep"],
                 anchor="w",
@@ -49554,13 +52335,13 @@ class TrackerApp:
                 row=row + 1,
                 column=0,
                 sticky="ew",
-                pady=(self._ui_px(3), self._ui_px(8)),
+                pady=(self._ui_px(2), self._ui_px(5)),
             )
             field_row.columnconfigure(0, weight=1)
             tk.Entry(
                 field_row,
                 textvariable=variable,
-                font=("Segoe UI", 11),
+                font=("Segoe UI", 10),
                 fg=STREAM_DESK["text_strong"],
                 bg=STREAM_DESK["window"],
                 insertbackground=STREAM_DESK["text_strong"],
@@ -49572,7 +52353,7 @@ class TrackerApp:
                 row=0,
                 column=0,
                 sticky="ew",
-                ipady=self._ui_px(5),
+                ipady=self._ui_px(4),
             )
             self._make_action_button(
                 field_row,
@@ -49581,7 +52362,7 @@ class TrackerApp:
                 bg=STREAM_DESK["surface_alt"],
                 active_bg=STREAM_DESK["selected"],
                 width=9,
-                pad_y=5,
+                pad_y=4,
             ).grid(
                 row=0,
                 column=1,
@@ -49597,7 +52378,7 @@ class TrackerApp:
             tk.Label(
                 page,
                 text="Preferred Service",
-                font=("Segoe UI", 11, "bold"),
+                font=("Segoe UI", 10, "bold"),
                 fg=STREAM_DESK["muted"],
                 bg=STREAM_DESK["surface_deep"],
                 anchor="w",
@@ -49615,8 +52396,8 @@ class TrackerApp:
                 row=row + 1,
                 column=0,
                 sticky="ew",
-                pady=(self._ui_px(3), self._ui_px(8)),
-                ipady=self._ui_px(4),
+                pady=(self._ui_px(2), self._ui_px(5)),
+                ipady=self._ui_px(3),
             )
             platform_service_boxes[platform_name] = service_box
             return row + 2
@@ -49709,21 +52490,57 @@ class TrackerApp:
                     platform_name,
                 )
             elif platform_name == "RetroArch":
-                setup_row = add_platform_setup_path(
+                retroarch_fields = tk.Frame(
                     setup_page,
-                    setup_row,
+                    bg=STREAM_DESK["surface_deep"],
+                    bd=0,
+                )
+                retroarch_fields.grid(row=setup_row, column=0, sticky="ew")
+                retroarch_fields.columnconfigure(
+                    0,
+                    weight=1,
+                    uniform="retroarch_fields",
+                )
+                retroarch_fields.columnconfigure(
+                    1,
+                    weight=1,
+                    uniform="retroarch_fields",
+                )
+                retroarch_left = tk.Frame(
+                    retroarch_fields,
+                    bg=STREAM_DESK["surface_deep"],
+                    bd=0,
+                )
+                retroarch_left.grid(
+                    row=0,
+                    column=0,
+                    sticky="nsew",
+                    padx=(0, self._ui_px(6)),
+                )
+                retroarch_left.columnconfigure(0, weight=1)
+                retroarch_right = tk.Frame(
+                    retroarch_fields,
+                    bg=STREAM_DESK["surface_deep"],
+                    bd=0,
+                )
+                retroarch_right.grid(
+                    row=0,
+                    column=1,
+                    sticky="nsew",
+                    padx=(self._ui_px(6), 0),
+                )
+                retroarch_right.columnconfigure(0, weight=1)
+
+                retroarch_left_row = add_platform_setup_path(
+                    retroarch_left,
+                    0,
                     "SNI Application",
                     local_sni,
                     choose_sni,
                 )
-                setup_row = add_platform_service_choice(
-                    setup_page,
-                    setup_row,
-                    platform_name,
-                )
-                setup_row = add_platform_setup_path(
-                    setup_page,
-                    setup_row,
+                add_platform_setup_path(
+                    retroarch_left,
+                    retroarch_left_row,
                     "RetroArch Application",
                     local_retroarch,
                     lambda: choose_emulator(
@@ -49731,17 +52548,23 @@ class TrackerApp:
                         local_retroarch,
                     ),
                 )
-                setup_row = add_platform_setup_path(
-                    setup_page,
-                    setup_row,
+                retroarch_right_row = add_platform_service_choice(
+                    retroarch_right,
+                    0,
+                    platform_name,
+                )
+                add_platform_setup_path(
+                    retroarch_right,
+                    retroarch_right_row,
                     "RetroArch Core",
                     local_retroarch_core,
                     choose_retroarch_core,
                 )
+                setup_row += 1
             note_label = tk.Label(
                 setup_page,
                 text=platform_setup_notes[platform_name],
-                font=("Segoe UI", 10),
+                font=("Segoe UI", 9),
                 fg=STREAM_DESK["muted"],
                 bg=STREAM_DESK["surface_deep"],
                 anchor="w",
@@ -49752,7 +52575,7 @@ class TrackerApp:
                 row=setup_row,
                 column=0,
                 sticky="ew",
-                pady=(0, self._ui_px(8)),
+                pady=(0, self._ui_px(5)),
             )
             setup_row += 1
             action_frame = tk.Frame(
@@ -49762,12 +52585,7 @@ class TrackerApp:
             )
             action_frame.grid(row=setup_row, column=0, sticky="ew")
             selected_actions = platform_setup_actions[platform_name]
-            action_columns = min(
-                3
-                if self.root.winfo_width() >= self._ui_px(1180)
-                else 2,
-                len(selected_actions),
-            )
+            action_columns = min(3, len(selected_actions))
             for action_column in range(action_columns):
                 action_frame.columnconfigure(
                     action_column,
@@ -49788,8 +52606,8 @@ class TrackerApp:
                     bg=STREAM_DESK["surface_alt"],
                     active_bg=STREAM_DESK["selected"],
                     width=22,
-                    pad_y=7,
-                    font_size=11,
+                    pad_y=5,
+                    font_size=10,
                 )
                 action_column = action_index % action_columns
                 action_button.grid(
@@ -49815,7 +52633,7 @@ class TrackerApp:
             bg=STREAM_DESK["surface"],
             bd=0,
         )
-        options_frame.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        options_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
         options_frame.columnconfigure(0, weight=1)
         options_frame.columnconfigure(1, weight=1)
         option_definitions = (
@@ -49846,7 +52664,7 @@ class TrackerApp:
                 variable=option_variable,
                 onvalue=True,
                 offvalue=False,
-                font=("Segoe UI", 13),
+                font=("Segoe UI", 10),
                 fg=STREAM_DESK["text_strong"],
                 bg=STREAM_DESK["surface"],
                 activeforeground=STREAM_DESK["text_strong"],
@@ -49856,7 +52674,7 @@ class TrackerApp:
                 justify="left",
                 cursor="hand2",
                 padx=self._ui_px(4),
-                pady=self._ui_px(8),
+                pady=self._ui_px(4),
             )
             option_widget.grid(
                 row=option_index // 2,
@@ -49866,6 +52684,130 @@ class TrackerApp:
                 pady=self._ui_px(3),
             )
             platform_option_widgets.append(option_widget)
+
+        automation_card = tk.Frame(
+            platform_form,
+            bg=STREAM_DESK["surface_deep"],
+            padx=self._ui_px(14),
+            pady=self._ui_px(12),
+            highlightbackground=STREAM_DESK["border_strong"],
+            highlightthickness=1,
+            bd=0,
+        )
+        automation_card.grid(
+            row=4,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(self._ui_px(9), 0),
+        )
+        automation_card.columnconfigure(0, weight=1)
+        automation_card.columnconfigure(1, weight=1)
+        tk.Label(
+            automation_card,
+            text="Tracker Automation",
+            font=("Segoe UI", 12, "bold"),
+            fg=STREAM_DESK["text_strong"],
+            bg=STREAM_DESK["surface_deep"],
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        automation_options = (
+            (
+                "Suggest completed hacks automatically",
+                local_completion_detection,
+            ),
+            (
+                "Always Ask to Confirm Final Exit",
+                local_completion_always_ask,
+            ),
+            (
+                "Preserve crash-recovery checkpoints",
+                local_crash_recovery,
+            ),
+            (
+                "Refresh SMW Central automatically",
+                local_catalog_auto_refresh,
+            ),
+            (
+                "Create post-stream summaries",
+                local_post_stream_summary,
+            ),
+        )
+        for option_index, (option_text, option_variable) in enumerate(
+            automation_options
+        ):
+            MarioCheckbutton(
+                automation_card,
+                text=option_text,
+                variable=option_variable,
+                font=("Segoe UI", 10),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_deep"],
+                activeforeground=STREAM_DESK["text_strong"],
+                activebackground=STREAM_DESK["surface_deep"],
+                selectcolor=STREAM_DESK["surface_deep"],
+                anchor="w",
+                cursor="hand2",
+            ).grid(
+                row=1 + option_index // 2,
+                column=option_index % 2,
+                sticky="w",
+                padx=(0, self._ui_px(18)),
+                pady=self._ui_px(1),
+            )
+
+        reconciliation_row = tk.Frame(
+            automation_card,
+            bg=STREAM_DESK["surface_deep"],
+            bd=0,
+        )
+        reconciliation_row.grid(
+            row=4,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(self._ui_px(8), 0),
+        )
+        tk.Label(
+            reconciliation_row,
+            text="Statistic reconciliation:",
+            font=("Segoe UI", 10, "bold"),
+            fg=STREAM_DESK["text_strong"],
+            bg=STREAM_DESK["surface_deep"],
+        ).pack(side="left")
+        ttk.Combobox(
+            reconciliation_row,
+            textvariable=local_reconciliation_mode,
+            values=("Responsive", "Balanced", "Conservative"),
+            state="readonly",
+            width=15,
+            font=("Segoe UI", 10),
+        ).pack(side="left", padx=(self._ui_px(8), self._ui_px(18)))
+        tk.Label(
+            reconciliation_row,
+            text="Refresh every",
+            font=("Segoe UI", 10, "bold"),
+            fg=STREAM_DESK["text_strong"],
+            bg=STREAM_DESK["surface_deep"],
+        ).pack(side="left")
+        refresh_hours_entry = self._make_compact_entry(
+            reconciliation_row,
+            local_catalog_auto_refresh_hours,
+            width=5,
+        )
+        refresh_hours_entry.pack(
+            side="left",
+            padx=(self._ui_px(8), self._ui_px(5)),
+            ipady=self._ui_px(3),
+        )
+        tk.Label(
+            reconciliation_row,
+            text="hours",
+            font=("Segoe UI", 10),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["surface_deep"],
+        ).pack(side="left")
 
         def refresh_platform_preview(_event=None) -> None:
             platform_name = local_platform.get().strip() or "FXPAK Pro"
@@ -49916,7 +52858,15 @@ class TrackerApp:
                         for code in service_codes
                     )
                 )
-            platform_setup_pages[platform_name].tkraise()
+            # Only the selected platform contributes to the setup card's
+            # requested height. Keeping every hidden page gridded made the
+            # compact MiSTer page as tall as RetroArch's multi-field page.
+            for setup_name, setup_page in platform_setup_pages.items():
+                if setup_name == platform_name:
+                    setup_page.grid()
+                    setup_page.tkraise()
+                else:
+                    setup_page.grid_remove()
             try:
                 settings_content_canvas.after_idle(sync_settings_content_width)
                 if self._guided_setup_stage == "connection":
@@ -50146,6 +53096,12 @@ class TrackerApp:
                 streamerbot_port = int(
                     local_streamerbot_port.get().strip()
                 )
+                catalog_refresh_hours = int(
+                    local_catalog_auto_refresh_hours.get().strip()
+                )
+                reconciliation_mode = (
+                    local_reconciliation_mode.get().strip().title()
+                )
                 streamerbot_host = (
                     local_streamerbot_host.get().strip() or "127.0.0.1"
                 )
@@ -50166,6 +53122,14 @@ class TrackerApp:
                     raise ValueError
                 if game_port == level_port:
                     raise ValueError
+                if not 1 <= catalog_refresh_hours <= 168:
+                    raise ValueError
+                if reconciliation_mode not in {
+                    "Responsive",
+                    "Balanced",
+                    "Conservative",
+                }:
+                    raise ValueError
 
             except ValueError:
                 messagebox.showerror(
@@ -50175,6 +53139,7 @@ class TrackerApp:
                         "LiveSplit ports must be different numbers "
                         "between 1 and 65535. The Streamer.bot port "
                         "must also be between 1 and 65535."
+                        " Automatic refresh must be between 1 and 168 hours."
                     ),
                     parent=dialog,
                 )
@@ -50257,6 +53222,21 @@ class TrackerApp:
                         "id": action_id,
                         "name": action_name,
                     }
+            streamerbot_control_actions: dict[str, dict[str, str]] = {}
+            for control_name, _control_label in STREAMERBOT_CONTROL_DEFINITIONS:
+                selected_action = streamerbot_action_choices.get(
+                    local_streamerbot_control_action_vars[control_name].get(),
+                    {},
+                )
+                if not isinstance(selected_action, dict):
+                    continue
+                action_id = str(selected_action.get("id", "")).strip()
+                action_name = str(selected_action.get("name", "")).strip()
+                if action_id or action_name:
+                    streamerbot_control_actions[control_name] = {
+                        "id": action_id,
+                        "name": action_name,
+                    }
             self.config.update(
                 {
                     "selected_platform": new_platform,
@@ -50309,6 +53289,23 @@ class TrackerApp:
                     "save_tracker_data_automatically": bool(
                         local_auto_save.get()
                     ),
+                    "statistics_reconciliation_mode": reconciliation_mode,
+                    "automatic_completion_detection": bool(
+                        local_completion_detection.get()
+                    ),
+                    "completion_detection_always_ask": bool(
+                        local_completion_always_ask.get()
+                    ),
+                    "crash_recovery_enabled": bool(
+                        local_crash_recovery.get()
+                    ),
+                    "smwc_automatic_refresh_enabled": bool(
+                        local_catalog_auto_refresh.get()
+                    ),
+                    "smwc_automatic_refresh_hours": catalog_refresh_hours,
+                    "post_stream_summary_enabled": bool(
+                        local_post_stream_summary.get()
+                    ),
                     "streamerbot_enabled": bool(
                         local_streamerbot_enabled.get()
                     ),
@@ -50319,6 +53316,12 @@ class TrackerApp:
                         local_streamerbot_password.get()
                     ),
                     "streamerbot_event_actions": streamerbot_event_actions,
+                    "streamerbot_controls_enabled": bool(
+                        local_streamerbot_controls_enabled.get()
+                    ),
+                    "streamerbot_control_actions": (
+                        streamerbot_control_actions
+                    ),
                 }
             )
             self.config["platform_interface_path"] = (
@@ -50338,6 +53341,10 @@ class TrackerApp:
             if not self.save_settings():
                 return
             self._configure_streamerbot_dispatcher()
+            if bool(self.config.get("smwc_automatic_refresh_enabled", True)):
+                self.root.after(250, self._schedule_automatic_catalog_refresh)
+            else:
+                self.automatic_catalog_refresh_cancel_event.set()
 
             appearance_changed = selected_appearance != old_appearance
             language_changed = selected_language != old_language
@@ -50912,7 +53919,7 @@ class TrackerApp:
                         columnspan=2,
                         rowspan=1,
                         sticky="ew",
-                        pady=(self._ui_px(9), 0),
+            pady=(self._ui_px(5), 0),
                     )
                 else:
                     location_value.grid_configure(
@@ -55595,6 +58602,169 @@ class TrackerApp:
 
         return self._translate_ui_text("Last refreshed:") + " " + refreshed
 
+    def _reload_catalog_new_since_refresh_state(
+        self,
+        metadata: dict[str, str] | None = None,
+    ) -> None:
+        if metadata is None:
+            try:
+                metadata = self.stats_db.metadata()
+            except Exception:
+                metadata = {}
+        try:
+            self.catalog_last_refresh_new_moderated_count = max(
+                0,
+                int(
+                    metadata.get(
+                        "Catalog New Since Last Refresh",
+                        "0",
+                    )
+                    or 0
+                ),
+            )
+        except (TypeError, ValueError):
+            self.catalog_last_refresh_new_moderated_count = 0
+        try:
+            self.catalog_new_waiting_count = max(
+                0,
+                int(
+                    metadata.get(
+                        "Waiting New Since Last Refresh",
+                        "0",
+                    )
+                    or 0
+                ),
+            )
+        except (TypeError, ValueError):
+            self.catalog_new_waiting_count = 0
+        self.catalog_new_moderated_keys = catalog_new_keys_from_metadata(
+            metadata.get("Catalog New Keys Since Last Refresh", "")
+        )
+        self.catalog_new_waiting_keys = catalog_new_keys_from_metadata(
+            metadata.get("Waiting New Keys Since Last Refresh", "")
+        )
+        self.catalog_new_moderated_refresh_date = str(
+            metadata.get(
+                "Catalog New Refresh Date",
+                metadata.get("Catalog Last Refresh", ""),
+            )
+            or ""
+        )
+        self.catalog_new_waiting_refresh_date = str(
+            metadata.get(
+                "Waiting New Refresh Date",
+                metadata.get("Waiting Last Refresh", ""),
+            )
+            or ""
+        )
+
+    def _catalog_new_since_refresh_status_text(self) -> str:
+        moderated_count = max(
+            0,
+            int(
+                getattr(
+                    self,
+                    "catalog_last_refresh_new_moderated_count",
+                    0,
+                )
+                or 0
+            ),
+        )
+        waiting_count = max(
+            0,
+            int(getattr(self, "catalog_new_waiting_count", 0) or 0),
+        )
+        moderated_date = format_display_date(
+            getattr(self, "catalog_new_moderated_refresh_date", ""),
+            empty=self._translate_ui_text("Never"),
+        )
+        waiting_date = format_display_date(
+            getattr(self, "catalog_new_waiting_refresh_date", ""),
+            empty=self._translate_ui_text("Never"),
+        )
+        return (
+            f"{moderated_count:,} new moderated · {moderated_date}"
+            f"     {waiting_count:,} new waiting · {waiting_date}"
+        )
+
+    def _catalog_notification_flags(self) -> tuple[bool, bool]:
+        available_moderated = getattr(
+            self,
+            "catalog_new_moderated_count",
+            None,
+        )
+        moderated = bool(
+            int(
+                getattr(
+                    self,
+                    "catalog_last_refresh_new_moderated_count",
+                    0,
+                )
+                or 0
+            )
+            or (
+                available_moderated is not None
+                and int(available_moderated or 0) > 0
+            )
+        )
+        available_waiting = getattr(
+            self,
+            "catalog_available_waiting_count",
+            None,
+        )
+        waiting = bool(
+            int(getattr(self, "catalog_new_waiting_count", 0) or 0)
+            or (
+                available_waiting is not None
+                and int(available_waiting or 0) > 0
+            )
+        )
+        return moderated, waiting
+
+    def _refresh_catalog_notification_badges(self) -> None:
+        moderated, waiting = self._catalog_notification_flags()
+        has_new = moderated or waiting
+
+        navigation_buttons = getattr(self, "navigation_rail_buttons", {})
+        navigation_library = navigation_buttons.get("library")
+        try:
+            if navigation_library is not None and navigation_library.winfo_exists():
+                self._render_navigation_rail_button(
+                    navigation_library,
+                    "library",
+                    getattr(self, "navigation_rail_active_section", None)
+                    == "library",
+                )
+        except (AttributeError, tk.TclError):
+            pass
+
+        buttons = (
+            (getattr(self, "game_library_download_button", None), has_new),
+            (getattr(self, "catalog_page_refresh_button", None), moderated),
+            (
+                getattr(self, "catalog_page_waiting_refresh_button", None),
+                waiting,
+            ),
+            (
+                getattr(self, "downloader_widgets", {}).get(
+                    "moderated_refresh_button"
+                ),
+                moderated,
+            ),
+            (
+                getattr(self, "downloader_widgets", {}).get(
+                    "waiting_refresh_button"
+                ),
+                waiting,
+            ),
+        )
+        for button, visible in buttons:
+            try:
+                if button is not None and button.winfo_exists():
+                    button.set_notification_badge(visible)
+            except (AttributeError, tk.TclError):
+                pass
+
     def _catalog_freshness_status_text(self) -> str:
         state = str(
             getattr(self, "catalog_freshness_state", "checking")
@@ -55602,9 +58772,19 @@ class TrackerApp:
         if state == "checking":
             return self._translate_ui_text("Checking for new hacks...")
 
+        waiting_available = getattr(
+            self,
+            "catalog_available_waiting_count",
+            None,
+        )
         waiting_count = max(
             0,
-            int(getattr(self, "catalog_new_waiting_count", 0) or 0),
+            int(
+                waiting_available
+                if waiting_available is not None
+                else getattr(self, "catalog_new_waiting_count", 0)
+                or 0
+            ),
         )
         moderated_count = getattr(
             self,
@@ -55660,22 +58840,22 @@ class TrackerApp:
         generation: int,
         cancel_event: threading.Event,
     ) -> None:
-        waiting_available = 0
+        waiting_available: int | None = None
         try:
             metadata = self.stats_db.metadata()
             try:
-                waiting_available = max(
-                    0,
-                    int(
-                        metadata.get(
-                            "Waiting New Since Last Refresh",
-                            "0",
-                        )
-                        or 0
-                    ),
+                waiting_result = fetch_smwcentral_catalog(
+                    cancel_event,
+                    waiting=True,
                 )
-            except (TypeError, ValueError):
-                waiting_available = 0
+                waiting_available = catalog_available_waiting_hack_count(
+                    self.stats_db.load_catalog(),
+                    list(waiting_result.get("games", [])),
+                )
+            except Exception:
+                # Moderated freshness can still be checked when the live
+                # waiting queue is temporarily unavailable.
+                waiting_available = None
 
             payload = github_catalog_get_json(
                 GITHUB_CATALOG_VERSION_URL,
@@ -55715,6 +58895,157 @@ class TrackerApp:
                         "error": str(error),
                     }
                 )
+
+    def _automatic_catalog_refresh_due(self) -> bool:
+        if not bool(self.config.get("smwc_automatic_refresh_enabled", True)):
+            return False
+        try:
+            hours = max(
+                1,
+                min(
+                    168,
+                    int(self.config.get("smwc_automatic_refresh_hours", 24)),
+                ),
+            )
+        except (TypeError, ValueError):
+            hours = 24
+        raw_last = str(
+            self.config.get("last_smwcentral_automatic_refresh", "") or ""
+        ).strip()
+        if not raw_last:
+            return True
+        try:
+            last = datetime.fromisoformat(raw_last.replace("Z", "+00:00"))
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            return datetime.now().astimezone() - last >= timedelta(hours=hours)
+        except ValueError:
+            return True
+
+    def _schedule_automatic_catalog_refresh(self) -> None:
+        """Quietly refresh moderated and waiting catalogs when they are due."""
+        if getattr(self, "shutdown_in_progress", False):
+            return
+        thread = getattr(self, "automatic_catalog_refresh_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+        manual_thread = getattr(self, "catalog_refresh_thread", None)
+        if manual_thread is not None and manual_thread.is_alive():
+            self.root.after(15 * 60 * 1000, self._schedule_automatic_catalog_refresh)
+            return
+        if not self._automatic_catalog_refresh_due():
+            self.root.after(30 * 60 * 1000, self._schedule_automatic_catalog_refresh)
+            return
+        self.automatic_catalog_refresh_cancel_event = threading.Event()
+        self.automatic_catalog_refresh_thread = threading.Thread(
+            target=self._automatic_catalog_refresh_worker,
+            daemon=True,
+        )
+        self.automatic_catalog_refresh_thread.start()
+
+    def _automatic_catalog_refresh_worker(self) -> None:
+        moderated_summary: dict[str, Any] | None = None
+        waiting_summary: dict[str, Any] | None = None
+        errors: list[str] = []
+        cancel_event = self.automatic_catalog_refresh_cancel_event
+        try:
+            try:
+                moderated_summary = refresh_catalog_from_smwcentral_site(
+                    self.stats_db,
+                    cancel_event,
+                )
+            except Exception as live_error:
+                if cancel_event.is_set():
+                    raise
+                try:
+                    moderated_summary = refresh_catalog_from_github_repository(
+                        self.stats_db,
+                        cancel_event,
+                    )
+                except Exception as mirror_error:
+                    errors.append(
+                        "Moderated catalog: "
+                        f"{live_error}; mirror: {mirror_error}"
+                    )
+            if not cancel_event.is_set():
+                try:
+                    waiting_summary = refresh_waiting_from_smwcentral_site(
+                        self.stats_db,
+                        cancel_event,
+                    )
+                except Exception as waiting_error:
+                    errors.append("Waiting catalog: " + str(waiting_error))
+        except Exception as error:
+            if not cancel_event.is_set():
+                errors.append(str(error))
+        try:
+            self.root.after(
+                0,
+                lambda: self._finish_automatic_catalog_refresh(
+                    moderated_summary,
+                    waiting_summary,
+                    errors,
+                ),
+            )
+        except tk.TclError:
+            pass
+
+    def _finish_automatic_catalog_refresh(
+        self,
+        moderated_summary: dict[str, Any] | None,
+        waiting_summary: dict[str, Any] | None,
+        errors: list[str],
+    ) -> None:
+        self.automatic_catalog_refresh_thread = None
+        if moderated_summary is not None or waiting_summary is not None:
+            self.config["last_smwcentral_automatic_refresh"] = (
+                datetime.now().astimezone().isoformat(timespec="seconds")
+            )
+            try:
+                save_config(self.config)
+            except OSError:
+                pass
+            self.hack_catalog = self.stats_db.load_catalog()
+            self._downloader_catalog_metadata_cache = None
+            self._downloader_prepared_preview_cache = None
+            self._catalog_playable_filter_cache = None
+            self._reload_catalog_new_since_refresh_state()
+            self._refresh_catalog_notification_badges()
+            self._refresh_database_status()
+            if self.worker is not None:
+                self.worker.reload_spreadsheet(
+                    self.spreadsheet_path_var.get().strip()
+                )
+            if self.game_library_dialog is not None:
+                try:
+                    if self.game_library_dialog.winfo_exists():
+                        refresh_library = self.game_library_widgets.get(
+                            "refresh_catalog_rows"
+                        )
+                        if callable(refresh_library):
+                            refresh_library()
+                except tk.TclError:
+                    pass
+            new_moderated = int(
+                (moderated_summary or {}).get("new", 0) or 0
+            )
+            new_waiting = int((waiting_summary or {}).get("new", 0) or 0)
+            if new_moderated or new_waiting:
+                self.status_var.set(
+                    "Automatic SMW Central refresh added "
+                    f"{new_moderated:,} moderated and "
+                    f"{new_waiting:,} waiting hacks."
+                )
+        if errors:
+            append_error_log(
+                "Automatic SMW Central refresh",
+                "\n".join(errors),
+            )
+        if not getattr(self, "shutdown_in_progress", False):
+            self.root.after(
+                30 * 60 * 1000,
+                self._schedule_automatic_catalog_refresh,
+            )
 
     def _refresh_database_status(self) -> None:
         if hasattr(self, "spreadsheet_var"):
@@ -62552,12 +65883,16 @@ class TrackerApp:
         *,
         record_resolver: Callable[[str], dict[str, Any] | None],
         trophy_photo=None,
+        title_column: str = "#0",
+        center_title: bool = False,
         double_click: Callable[[], None] | None = None,
         context_click: Callable[[tk.Event], Any] | None = None,
     ) -> None:
         """Color only special game titles without tinting other columns."""
         tree._smw_game_title_record_resolver = record_resolver
         tree._smw_game_title_trophy = trophy_photo
+        tree._smw_game_title_column = title_column
+        tree._smw_game_title_center = bool(center_title)
         tree._smw_game_title_double_click = double_click
         tree._smw_game_title_context_click = context_click
         tree._smw_game_title_overlay = None
@@ -62591,10 +65926,13 @@ class TrackerApp:
         try:
             if not tree.winfo_exists():
                 return
+            title_column = str(
+                getattr(tree, "_smw_game_title_column", "#0") or "#0"
+            )
             visible = [
-                (str(iid), tree.bbox(iid, "#0"))
+                (str(iid), tree.bbox(iid, title_column))
                 for iid in tree.get_children("")
-                if tree.bbox(iid, "#0")
+                if tree.bbox(iid, title_column)
             ]
         except tk.TclError:
             return
@@ -62730,19 +66068,37 @@ class TrackerApp:
             overlay.create_rectangle(
                 0,
                 row_y,
-                column_width,
-                row_y + row_height,
+                max(0, column_width - 1),
+                max(row_y, row_y + row_height - 1),
                 fill=surface,
                 outline=self._table_grid_line_color(),
                 width=1,
             )
+            title_text = str(record.get("title") or "Unknown")
+            title_font = (
+                "Segoe UI",
+                9,
+                "bold" if (waiting or hall_of_fame) else "normal",
+            )
             title_x = self._ui_px(11)
+            title_anchor = "w"
             try:
                 supported = int(
                     record.get("_retroachievements_game_id", 0) or 0
                 ) > 0
             except (TypeError, ValueError):
                 supported = False
+            if bool(getattr(tree, "_smw_game_title_center", False)):
+                title_width = tkfont.Font(
+                    master=overlay,
+                    font=title_font,
+                ).measure(title_text)
+                trophy_width = self._ui_px(24) if supported and trophy is not None else 0
+                group_width = title_width + trophy_width
+                title_x = max(
+                    self._ui_px(6),
+                    (column_width - group_width) / 2,
+                )
             if supported and trophy is not None:
                 overlay.create_image(
                     title_x,
@@ -62751,17 +66107,16 @@ class TrackerApp:
                     anchor="w",
                 )
                 title_x += self._ui_px(24)
+            elif bool(getattr(tree, "_smw_game_title_center", False)):
+                title_x = column_width / 2
+                title_anchor = "center"
             overlay.create_text(
                 title_x,
                 row_y + (row_height / 2),
-                text=str(record.get("title") or "Unknown"),
+                text=title_text,
                 fill=text_color,
-                font=(
-                    "Segoe UI",
-                    9,
-                    "bold" if (waiting or hall_of_fame) else "normal",
-                ),
-                anchor="w",
+                font=title_font,
+                anchor=title_anchor,
             )
         try:
             overlay.tk.call("raise", overlay._w)
@@ -69528,6 +72883,329 @@ class TrackerApp:
             )
         return "break"
 
+    def _import_snes_roms_from_downloader(
+        self,
+        *,
+        select_folder: bool = False,
+    ) -> None:
+        """Import retail/non-SMW SNES ROMs and reuse the active SD options."""
+        active_thread = getattr(self, "_snes_rom_import_thread", None)
+        if active_thread is not None and active_thread.is_alive():
+            messagebox.showinfo(
+                self._translate_ui_text("Import SNES ROMs"),
+                self._translate_ui_text("A SNES ROM import is already running."),
+                parent=self.downloader_dialog or self.root,
+            )
+            return
+
+        if select_folder:
+            selected_folder = filedialog.askdirectory(
+                parent=self.downloader_dialog or self.root,
+                title=self._translate_ui_text("Import ROM Folder"),
+                mustexist=True,
+            )
+            if not selected_folder:
+                return
+            filenames = find_snes_rom_files(Path(selected_folder))
+            if not filenames:
+                messagebox.showinfo(
+                    self._translate_ui_text("No SNES ROMs Found"),
+                    self._translate_ui_text(
+                        "The selected folder does not contain any .sfc or .smc files."
+                    ),
+                    parent=self.downloader_dialog or self.root,
+                )
+                return
+        else:
+            filenames = filedialog.askopenfilenames(
+                parent=self.downloader_dialog or self.root,
+                title=self._translate_ui_text("Import SNES ROMs"),
+                filetypes=(
+                    (self._translate_ui_text("SNES ROM files"), "*.sfc *.smc"),
+                    (self._translate_ui_text("All files"), "*.*"),
+                ),
+            )
+        if not filenames:
+            return
+
+        platform_name = self.platform_var.get().strip() or "FXPAK Pro"
+        copy_to_sd = bool(
+            platform_name == "FXPAK Pro"
+            and self.downloader_widgets.get("copy_to_sd_var") is not None
+            and self.downloader_widgets["copy_to_sd_var"].get()
+        )
+        upload_to_mister = bool(
+            platform_name == "MiSTer"
+            and self.downloader_widgets.get("upload_to_mister_var") is not None
+            and self.downloader_widgets["upload_to_mister_var"].get()
+        )
+        sd_root: Path | None = None
+        if copy_to_sd:
+            folder_variable = self.downloader_widgets.get("sd_folder_var")
+            folder_text = (
+                str(folder_variable.get()).strip()
+                if folder_variable is not None
+                else ""
+            )
+            sd_root = Path(folder_text) if folder_text else None
+            if sd_root is None or not sd_root.is_dir():
+                messagebox.showerror(
+                    self._translate_ui_text("Import SNES ROMs"),
+                    self._translate_ui_text(
+                        "Select the All_Hacks folder on the mounted FXPAK Pro "
+                        "SD card, or turn off automatic SD copying."
+                    ),
+                    parent=self.downloader_dialog or self.root,
+                )
+                return
+
+        mister_root = ""
+        if upload_to_mister:
+            try:
+                mister_root = normalize_mister_rom_root(
+                    self.config.get(
+                        "mister_rom_root",
+                        MISTER_DEFAULT_ROM_ROOT,
+                    )
+                )
+            except ValueError as error:
+                messagebox.showerror(
+                    self._translate_ui_text("Import SNES ROMs"),
+                    str(error),
+                    parent=self.downloader_dialog or self.root,
+                )
+                return
+            if (
+                not self.mister_session_credentials_confirmed
+                and not self._prompt_mister_password(
+                    parent=self.downloader_dialog or self.root,
+                )
+            ):
+                return
+
+        import_button = self.downloader_widgets.get("import_snes_roms_button")
+        folder_import_button = self.downloader_widgets.get(
+            "import_snes_rom_folder_button"
+        )
+        import_buttons = tuple(
+            button
+            for button in (import_button, folder_import_button)
+            if button is not None
+        )
+        for button in import_buttons:
+            button.configure(state="disabled")
+        status_var = self.downloader_widgets.get("status_var")
+        if status_var is not None:
+            status_var.set(
+                self._format_ui_text(
+                    "Importing {count} SNES ROM(s)…",
+                    count=f"{len(filenames):,}",
+                )
+            )
+
+        selected_paths = tuple(Path(filename) for filename in filenames)
+
+        def worker() -> None:
+            imported = 0
+            duplicates = 0
+            last_id = ""
+            errors: list[str] = []
+            sd_counts = {"copied": 0, "already_on_sd": 0, "failed": 0}
+            mister_counts = {
+                "uploaded": 0,
+                "already_on_mister": 0,
+                "failed": 0,
+            }
+            mister_client = None
+            mister_sftp = None
+            if mister_root:
+                try:
+                    host = normalize_mister_host(
+                        self.config.get("mister_host", "MiSTer")
+                    )
+                    user = str(
+                        self.config.get("mister_ssh_user", "root")
+                    ).strip() or "root"
+                    try:
+                        port = int(self.config.get("mister_ssh_port", 22))
+                    except (TypeError, ValueError):
+                        port = 22
+                    mister_client = self._open_mister_ssh_client(
+                        host,
+                        user,
+                        port,
+                        self.mister_session_password,
+                        timeout=15,
+                    )
+                    self._verified_mister_peer(mister_client)
+                    mister_sftp = mister_client.open_sftp()
+                    self._mister_sftp_makedirs(mister_sftp, mister_root)
+                except Exception as error:
+                    errors.append(
+                        self._translate_ui_text("MiSTer SD connection failed:")
+                        + " "
+                        + str(error)
+                    )
+                    if mister_sftp is not None:
+                        try:
+                            mister_sftp.close()
+                        except Exception:
+                            pass
+                        mister_sftp = None
+                    if mister_client is not None:
+                        mister_client.close()
+                        mister_client = None
+
+            try:
+                for index, source_path in enumerate(selected_paths, start=1):
+                    self._post_downloader_progress(
+                        index - 1,
+                        len(selected_paths),
+                        self._format_ui_text(
+                            "Importing SNES ROM {current} of {total}: {title}",
+                            current=f"{index:,}",
+                            total=f"{len(selected_paths):,}",
+                            title=clean_snes_rom_display_name(source_path.name),
+                        ),
+                    )
+                    try:
+                        record, created = import_non_smw_rom(
+                            source_path,
+                            self.non_smw_rom_library,
+                        )
+                        last_id = str(record.get("id", ""))
+                        if created:
+                            imported += 1
+                        else:
+                            duplicates += 1
+                        local_path = Path(str(record.get("local_rom_path", "")))
+                    except (OSError, ValueError) as error:
+                        errors.append(f"{source_path.name}: {error}")
+                        continue
+
+                    if sd_root is not None:
+                        try:
+                            _destination, copy_status = rom_builder_copy_rom_to_sd(
+                                local_path,
+                                sd_root,
+                                record,
+                            )
+                            sd_counts[copy_status] = sd_counts.get(copy_status, 0) + 1
+                        except Exception as error:
+                            sd_counts["failed"] += 1
+                            errors.append(f"{source_path.name} (SD): {error}")
+
+                    if mister_root:
+                        if mister_client is None or mister_sftp is None:
+                            mister_counts["failed"] += 1
+                        else:
+                            try:
+                                _remote_path, upload_status = (
+                                    self._upload_rom_to_mister_sd(
+                                        mister_client,
+                                        mister_sftp,
+                                        local_path,
+                                        mister_root,
+                                        record,
+                                    )
+                                )
+                                mister_counts[upload_status] = (
+                                    mister_counts.get(upload_status, 0) + 1
+                                )
+                            except Exception as error:
+                                mister_counts["failed"] += 1
+                                errors.append(
+                                    f"{source_path.name} (MiSTer SD): {error}"
+                                )
+                    self._post_downloader_progress(
+                        index,
+                        len(selected_paths),
+                        self._format_ui_text(
+                            "Imported SNES ROM {current} of {total}: {title}",
+                            current=f"{index:,}",
+                            total=f"{len(selected_paths):,}",
+                            title=str(record.get("title", "")),
+                        ),
+                    )
+                save_non_smw_rom_library(self.non_smw_rom_library)
+            finally:
+                if mister_sftp is not None:
+                    try:
+                        mister_sftp.close()
+                    except Exception:
+                        pass
+                if mister_client is not None:
+                    mister_client.close()
+
+            def finish() -> None:
+                for button in import_buttons:
+                    button.configure(state="normal")
+                widgets = getattr(self, "game_library_widgets", {})
+                non_smw_widgets = (
+                    widgets.get("non_smw_widgets", {})
+                    if isinstance(widgets, dict)
+                    else {}
+                )
+                refresh = non_smw_widgets.get("refresh")
+                if callable(refresh):
+                    refresh(last_id)
+
+                def finish_ra_scan() -> None:
+                    save_non_smw_rom_library(self.non_smw_rom_library)
+                    if callable(refresh):
+                        refresh(last_id)
+
+                self._start_game_library_retroachievements_scan(
+                    self.non_smw_rom_library,
+                    finish_ra_scan,
+                )
+                summary = self._format_ui_text(
+                    "Imported {imported} SNES ROM(s); {duplicates} already in "
+                    "Game Library.",
+                    imported=f"{imported:,}",
+                    duplicates=f"{duplicates:,}",
+                )
+                if sd_root is not None:
+                    summary += " " + self._format_ui_text(
+                        "SD copied: {copied}; already on SD: {existing}; "
+                        "SD copy failed: {failed}.",
+                        copied=f"{sd_counts.get('copied', 0):,}",
+                        existing=f"{sd_counts.get('already_on_sd', 0):,}",
+                        failed=f"{sd_counts.get('failed', 0):,}",
+                    )
+                if mister_root:
+                    summary += " " + self._format_ui_text(
+                        "MiSTer uploaded: {uploaded}; already on MiSTer: "
+                        "{existing}; MiSTer upload failed: {failed}.",
+                        uploaded=f"{mister_counts.get('uploaded', 0):,}",
+                        existing=f"{mister_counts.get('already_on_mister', 0):,}",
+                        failed=f"{mister_counts.get('failed', 0):,}",
+                    )
+                if status_var is not None:
+                    status_var.set(summary)
+                self.status_var.set(summary)
+                if errors:
+                    messagebox.showwarning(
+                        self._translate_ui_text("Some ROMs were not imported"),
+                        summary + "\n\n" + "\n".join(errors[:10]),
+                        parent=self.downloader_dialog or self.root,
+                    )
+                else:
+                    messagebox.showinfo(
+                        self._translate_ui_text("Import SNES ROMs"),
+                        summary,
+                        parent=self.downloader_dialog or self.root,
+                    )
+
+            self.root.after(0, finish)
+
+        self._snes_rom_import_thread = threading.Thread(
+            target=worker,
+            name="SNESRomLibraryImport",
+            daemon=True,
+        )
+        self._snes_rom_import_thread.start()
+
     def open_hack_downloader(
         self,
         *,
@@ -69761,6 +73439,14 @@ class TrackerApp:
                 )
             )
         )
+        upload_to_mister_var = tk.BooleanVar(
+            value=bool(
+                self.config.get(
+                    "rom_builder_upload_to_mister",
+                    False,
+                )
+            )
+        )
         type_var = tk.StringVar(
             value="Any"
         )
@@ -69829,6 +73515,7 @@ class TrackerApp:
             "sd_folder_var": sd_folder_var,
             "upload_via_usb_var": upload_via_usb_var,
             "usb_folder_var": usb_folder_var,
+            "upload_to_mister_var": upload_to_mister_var,
             "type_var": type_var,
             "difficulty_var": difficulty_var,
             "minimum_rating_var": minimum_rating_var,
@@ -69892,6 +73579,7 @@ class TrackerApp:
                 sd_folder_var,
                 upload_via_usb_var,
                 usb_folder_var,
+                upload_to_mister_var,
             ):
                 settings_variable.trace_add(
                     "write",
@@ -70057,10 +73745,22 @@ class TrackerApp:
                     columnspan=2,
                 )
                 self.downloader_widgets["fxpak_sd_option"] = fxpak_sd_option
+                upload_to_mister_var.set(False)
+            elif selected_platform == "MiSTer":
+                mister_sd_option = add_header_option(
+                    self._translate_ui_text("Send to MiSTer SD Card"),
+                    upload_to_mister_var,
+                    2,
+                    0,
+                    columnspan=2,
+                )
+                self.downloader_widgets["mister_sd_option"] = mister_sd_option
+                copy_to_sd_var.set(False)
             else:
                 # Never retain or expose the FXPAK destination on RetroArch or
-                # MiSTer.  The option is created only for the FXPAK Pro page.
+                # MiSTer. The matching option is created only for its platform.
                 copy_to_sd_var.set(False)
+                upload_to_mister_var.set(False)
             primary_download_button = self._make_action_button(
                 header_actions,
                 text=self._setup_guide_text(
@@ -70076,6 +73776,42 @@ class TrackerApp:
             primary_download_button.pack(side="right")
             self.downloader_widgets["primary_download_button"] = (
                 primary_download_button
+            )
+            import_snes_roms_button = self._make_action_button(
+                header_actions,
+                text=self._translate_ui_text("Import SNES ROMs"),
+                command=self._import_snes_roms_from_downloader,
+                bg=STREAM_DESK["blue"],
+                active_bg="#2879C6",
+                width=17,
+                pad_y=10,
+                font_size=11,
+            )
+            import_snes_roms_button.pack(
+                side="right",
+                padx=(0, self._ui_px(9)),
+            )
+            self.downloader_widgets["import_snes_roms_button"] = (
+                import_snes_roms_button
+            )
+            import_snes_rom_folder_button = self._make_action_button(
+                header_actions,
+                text=self._translate_ui_text("Import ROM Folder"),
+                command=lambda: self._import_snes_roms_from_downloader(
+                    select_folder=True
+                ),
+                bg=STREAM_DESK["purple"],
+                active_bg="#6037AA",
+                width=18,
+                pad_y=10,
+                font_size=11,
+            )
+            import_snes_rom_folder_button.pack(
+                side="right",
+                padx=(0, self._ui_px(9)),
+            )
+            self.downloader_widgets["import_snes_rom_folder_button"] = (
+                import_snes_rom_folder_button
             )
 
         legal_panel = tk.Frame(
@@ -71395,7 +75131,10 @@ class TrackerApp:
                 pad_y=5,
             )
             self.catalog_page_refresh_button.pack(side="left")
-            self._make_action_button(
+            self.downloader_widgets["moderated_refresh_button"] = (
+                self.catalog_page_refresh_button
+            )
+            self.catalog_page_waiting_refresh_button = self._make_action_button(
                 catalog_maintenance_panel,
                 text="Refresh Waiting Hacks from SMW Central",
                 command=lambda: self.refresh_smwcentral_catalog(waiting=True),
@@ -71403,7 +75142,14 @@ class TrackerApp:
                 active_bg=STREAM_DESK["selected"],
                 width=33,
                 pad_y=5,
-            ).pack(side="left", padx=(self._ui_px(8), 0))
+            )
+            self.catalog_page_waiting_refresh_button.pack(
+                side="left",
+                padx=(self._ui_px(8), 0),
+            )
+            self.downloader_widgets["waiting_refresh_button"] = (
+                self.catalog_page_waiting_refresh_button
+            )
             self._make_action_button(
                 catalog_maintenance_panel,
                 text="Add Unmoderated Hack",
@@ -71459,7 +75205,10 @@ class TrackerApp:
                 side="left",
                 padx=(8, 0),
             )
-            self._make_action_button(
+            self.downloader_widgets["moderated_refresh_button"] = (
+                self.catalog_page_refresh_button
+            )
+            self.catalog_page_waiting_refresh_button = self._make_action_button(
                 button_panel,
                 text="Refresh Waiting Hacks from SMW Central",
                 command=lambda: self.refresh_smwcentral_catalog(waiting=True),
@@ -71467,7 +75216,14 @@ class TrackerApp:
                 active_bg="#B92824",
                 width=33,
                 pad_y=5,
-            ).pack(side="left", padx=(8, 0))
+            )
+            self.catalog_page_waiting_refresh_button.pack(
+                side="left",
+                padx=(8, 0),
+            )
+            self.downloader_widgets["waiting_refresh_button"] = (
+                self.catalog_page_waiting_refresh_button
+            )
             self._make_action_button(
                 button_panel,
                 text="Reset Catalog",
@@ -71518,6 +75274,7 @@ class TrackerApp:
             "WM_DELETE_WINDOW",
             self._close_hack_downloader,
         )
+        self._refresh_catalog_notification_badges()
         # This page is assembled directly from the current library palette.
         # A recursive appearance pass here restyled hundreds of controls
         # synchronously and kept the freshly opened page from painting.
@@ -71753,6 +75510,11 @@ class TrackerApp:
                 "rom_builder_usb_folder",
                 "usb_folder_var",
                 "usb_path",
+            ),
+            (
+                "rom_builder_upload_to_mister",
+                "upload_to_mister_var",
+                "boolean",
             ),
         )
         for config_key, variable_key, value_kind in settings_map:
@@ -74849,6 +78611,33 @@ class TrackerApp:
                 "upload_via_usb_var"
             ].get()
         )
+        mister_selected = (
+            self.platform_var.get().strip() or "FXPAK Pro"
+        ) == "MiSTer"
+        upload_to_mister = bool(
+            mister_selected
+            and self.downloader_widgets[
+                "upload_to_mister_var"
+            ].get()
+        )
+        try:
+            mister_root = (
+                normalize_mister_rom_root(
+                    self.config.get(
+                        "mister_rom_root",
+                        MISTER_DEFAULT_ROM_ROOT,
+                    )
+                )
+                if upload_to_mister
+                else ""
+            )
+        except ValueError as error:
+            messagebox.showerror(
+                self._translate_ui_text("Hack Downloader"),
+                str(error),
+                parent=self.downloader_dialog or self.root,
+            )
+            return
         usb_folder_text = (
             self.downloader_widgets[
                 "usb_folder_var"
@@ -74996,6 +78785,15 @@ class TrackerApp:
                         pass
                 self._resume_tracker_bridge_after_fxpak_files(paused_worker)
 
+        if (
+            upload_to_mister
+            and not self.mister_session_credentials_confirmed
+            and not self._prompt_mister_password(
+                parent=self.downloader_dialog or self.root,
+            )
+        ):
+            return
+
         if games_override is None:
             self._refresh_downloader_preview()
             games = [
@@ -75069,6 +78867,13 @@ class TrackerApp:
                 )
                 + f"\n{usb_root}"
             )
+        if upload_to_mister:
+            confirmation_parts.append(
+                self._translate_ui_text(
+                    "Also upload each completed ROM to the MiSTer SD card:"
+                )
+                + f"\n{mister_root}"
+            )
         if any(
             bool(game.get("download_fxpak_alias_repair", False))
             for game in games
@@ -75114,6 +78919,9 @@ class TrackerApp:
         self.config[
             "rom_builder_usb_folder"
         ] = usb_root or usb_folder_text
+        self.config[
+            "rom_builder_upload_to_mister"
+        ] = upload_to_mister
 
         try:
             save_config(self.config)
@@ -75157,6 +78965,7 @@ class TrackerApp:
                 usb_root,
                 websocket_url,
                 preferred_device,
+                mister_root,
             ),
             daemon=True,
         )
@@ -75225,6 +79034,7 @@ class TrackerApp:
         usb_root: str,
         websocket_url: str,
         preferred_device: str,
+        mister_root: str = "",
     ) -> None:
         results: list[dict[str, str]] = []
         built_paths: dict[str, str] = {}
@@ -75234,8 +79044,45 @@ class TrackerApp:
         usb_device = ""
         tracker_bridge_pause_attempted = False
         paused_worker: TrackerWorker | None = None
+        mister_client = None
+        mister_sftp = None
+        mister_connection_error = ""
 
         try:
+            if mister_root:
+                host = normalize_mister_host(
+                    self.config.get("mister_host", "MiSTer")
+                )
+                user = str(
+                    self.config.get("mister_ssh_user", "root")
+                ).strip() or "root"
+                try:
+                    port = int(self.config.get("mister_ssh_port", 22))
+                except (TypeError, ValueError):
+                    port = 22
+                try:
+                    mister_client = self._open_mister_ssh_client(
+                        host,
+                        user,
+                        port,
+                        self.mister_session_password,
+                        timeout=15,
+                    )
+                    self._verified_mister_peer(mister_client)
+                    mister_sftp = mister_client.open_sftp()
+                    self._mister_sftp_makedirs(mister_sftp, mister_root)
+                except Exception as error:
+                    mister_connection_error = str(error)
+                    if mister_sftp is not None:
+                        try:
+                            mister_sftp.close()
+                        except Exception:
+                            pass
+                        mister_sftp = None
+                    if mister_client is not None:
+                        mister_client.close()
+                        mister_client = None
+
             base_rom = base_rom_path.read_bytes()
             cache_root = (
                 library_root
@@ -75338,6 +79185,9 @@ class TrackerApp:
                     sd_output_path = ""
                     sd_copy_error = ""
                     fxpak_path = ""
+                    mister_upload_status = ""
+                    mister_upload_path = ""
+                    mister_upload_error = ""
                     if sd_root is not None and local_exists:
                         try:
                             copied_path, sd_copy_status = (
@@ -75413,6 +79263,44 @@ class TrackerApp:
                                 except Exception:
                                     pass
                                 usb_ws = None
+                    if mister_root:
+                        if not local_exists:
+                            mister_upload_status = "failed"
+                            mister_upload_error = (
+                                "No local ROM is available for the MiSTer upload."
+                            )
+                        else:
+                            try:
+                                self._post_downloader_progress(
+                                    current - 1,
+                                    total,
+                                    (
+                                        f"[{current:,}/{total:,}] "
+                                        + self._translate_ui_text(
+                                            "Uploading existing ROM to MiSTer: "
+                                            "{title}"
+                                        ).format(title=title)
+                                    ),
+                                )
+                                if mister_connection_error:
+                                    raise RuntimeError(mister_connection_error)
+                                if mister_client is None or mister_sftp is None:
+                                    raise RuntimeError(
+                                        "The MiSTer SD-card connection is not ready."
+                                    )
+                                (
+                                    mister_upload_path,
+                                    mister_upload_status,
+                                ) = self._upload_rom_to_mister_sd(
+                                    mister_client,
+                                    mister_sftp,
+                                    Path(local_existing_path),
+                                    mister_root,
+                                    game,
+                                )
+                            except Exception as error:
+                                mister_upload_status = "failed"
+                                mister_upload_error = str(error)
                     results.append(
                         {
                             "status": "already_exists",
@@ -75426,47 +79314,48 @@ class TrackerApp:
                             "usb_upload_status": usb_upload_status,
                             "usb_upload_error": usb_upload_error,
                             "usb_device": usb_device,
+                            "mister_upload_status": mister_upload_status,
+                            "mister_upload_path": mister_upload_path,
+                            "mister_upload_error": mister_upload_error,
                             "message": existing_status,
                         }
                     )
+                    if mister_upload_status in {
+                        "uploaded",
+                        "already_on_mister",
+                    }:
+                        progress_message = self._translate_ui_text(
+                            "Uploaded existing ROM to MiSTer: {title}"
+                        ).format(title=title)
+                    elif mister_upload_status == "failed":
+                        progress_message = self._translate_ui_text(
+                            "MiSTer upload failed: {title}"
+                        ).format(title=title)
+                    elif usb_upload_status in {
+                        "uploaded",
+                        "already_on_usb",
+                    }:
+                        progress_message = self._translate_ui_text(
+                            "Uploaded existing ROM: {title}"
+                        ).format(title=title)
+                    elif usb_upload_status == "failed":
+                        progress_message = self._translate_ui_text(
+                            "FXPAK upload failed: {title}"
+                        ).format(title=title)
+                    elif sd_copy_status in {"copied", "already_on_sd"}:
+                        progress_message = self._translate_ui_text(
+                            "Copied existing ROM to SD: {title}"
+                        ).format(title=title)
+                    elif sd_copy_status == "failed":
+                        progress_message = self._translate_ui_text(
+                            "SD copy failed: {title}"
+                        ).format(title=title)
+                    else:
+                        progress_message = f"Skipped existing: {title}"
                     self._post_downloader_progress(
                         current,
                         total,
-                        (
-                            f"[{current:,}/{total:,}] "
-                            +
-                            (
-                                self._translate_ui_text(
-                                    "Uploaded existing ROM: {title}"
-                                ).format(title=title)
-                                if usb_upload_status in {
-                                    "uploaded",
-                                    "already_on_usb",
-                                }
-                                else (
-                                    self._translate_ui_text(
-                                        "FXPAK upload failed: {title}"
-                                    ).format(title=title)
-                                    if usb_upload_status == "failed"
-                                    else (
-                                        self._translate_ui_text(
-                                            "Copied existing ROM to SD: {title}"
-                                        ).format(title=title)
-                                        if sd_copy_status in {
-                                            "copied",
-                                            "already_on_sd",
-                                        }
-                                        else (
-                                            self._translate_ui_text(
-                                                "SD copy failed: {title}"
-                                            ).format(title=title)
-                                            if sd_copy_status == "failed"
-                                            else f"Skipped existing: {title}"
-                                        )
-                                    )
-                                )
-                            )
-                        ),
+                        f"[{current:,}/{total:,}] {progress_message}",
                     )
                     continue
 
@@ -75620,6 +79509,9 @@ class TrackerApp:
                             sd_copy_error = ""
                             usb_upload_status = ""
                             usb_upload_error = ""
+                            mister_upload_status = ""
+                            mister_upload_path = ""
+                            mister_upload_error = ""
                             if sd_root is not None:
                                 try:
                                     (
@@ -75715,6 +79607,44 @@ class TrackerApp:
                                             pass
                                         usb_ws = None
 
+                            if mister_root:
+                                try:
+                                    self._post_downloader_progress(
+                                        current - 1,
+                                        total,
+                                        (
+                                            f"[{current:,}/{total:,}] "
+                                            + self._translate_ui_text(
+                                                "Uploading to MiSTer: {title}"
+                                            ).format(title=title)
+                                        ),
+                                    )
+                                    if mister_connection_error:
+                                        raise RuntimeError(
+                                            mister_connection_error
+                                        )
+                                    if (
+                                        mister_client is None
+                                        or mister_sftp is None
+                                    ):
+                                        raise RuntimeError(
+                                            "The MiSTer SD-card connection "
+                                            "is not ready."
+                                        )
+                                    (
+                                        mister_upload_path,
+                                        mister_upload_status,
+                                    ) = self._upload_rom_to_mister_sd(
+                                        mister_client,
+                                        mister_sftp,
+                                        output_path,
+                                        mister_root,
+                                        game,
+                                    )
+                                except Exception as error:
+                                    mister_upload_status = "failed"
+                                    mister_upload_error = str(error)
+
                             results.append(
                                 {
                                     "status": "ok",
@@ -75737,6 +79667,11 @@ class TrackerApp:
                                     "usb_upload_status": usb_upload_status,
                                     "usb_upload_error": usb_upload_error,
                                     "usb_device": usb_device,
+                                    "mister_upload_status": (
+                                        mister_upload_status
+                                    ),
+                                    "mister_upload_path": mister_upload_path,
+                                    "mister_upload_error": mister_upload_error,
                                     "message": (
                                         "Patched successfully using "
                                         + patch_path.name
@@ -75832,6 +79767,13 @@ class TrackerApp:
                 usb_ws.close()
             except Exception:
                 pass
+        if mister_sftp is not None:
+            try:
+                mister_sftp.close()
+            except Exception:
+                pass
+        if mister_client is not None:
+            mister_client.close()
         self._resume_tracker_bridge_after_fxpak_files(paused_worker)
 
         self.root.after(
@@ -75844,6 +79786,7 @@ class TrackerApp:
                 library_root,
                 sd_root,
                 usb_root,
+                mister_root,
             ),
         )
 
@@ -75856,6 +79799,7 @@ class TrackerApp:
         library_root: Path,
         sd_root: Path | None,
         usb_root: str,
+        mister_root: str = "",
     ) -> None:
         if not self.downloader_widgets:
             return
@@ -76001,13 +79945,34 @@ class TrackerApp:
                 failed=f"{usb_counts.get('failed', 0):,}",
             )
 
+        mister_counts: dict[str, int] = {}
+        for result in results:
+            mister_status = str(
+                result.get("mister_upload_status", "")
+            ).strip()
+            if mister_status:
+                mister_counts[mister_status] = (
+                    mister_counts.get(mister_status, 0) + 1
+                )
+
+        mister_summary = ""
+        if mister_root:
+            mister_summary = " " + self._translate_ui_text(
+                "MiSTer uploaded: {uploaded}; already on MiSTer: {existing}; "
+                "MiSTer upload failed: {failed}."
+            ).format(
+                uploaded=f"{mister_counts.get('uploaded', 0):,}",
+                existing=f"{mister_counts.get('already_on_mister', 0):,}",
+                failed=f"{mister_counts.get('failed', 0):,}",
+            )
+
         if fatal_error:
             message = self._translate_ui_text(
                 "The download job stopped because of an error: {error}"
             ).format(
                 error=fatal_error,
             )
-            message += sd_summary + usb_summary
+            message += sd_summary + usb_summary + mister_summary
             messagebox.showerror(
                 self._translate_ui_text("Hack Downloader"),
                 message,
@@ -76018,7 +79983,7 @@ class TrackerApp:
                 "Download job cancelled. Completed files were kept, "
                 "and the report/index were updated."
             )
-            message += sd_summary + usb_summary
+            message += sd_summary + usb_summary + mister_summary
         else:
             message = self._translate_ui_text(
                 "Missing-only download completed. Newly built: {built}; "
@@ -76030,7 +79995,7 @@ class TrackerApp:
                 failed=f"{counts.get('failed', 0):,}",
                 no_link=f"{counts.get('skipped', 0):,}",
             )
-            message += sd_summary + usb_summary
+            message += sd_summary + usb_summary + mister_summary
             completion_message = (
                 message
                 + "\n\n"
@@ -76041,6 +80006,7 @@ class TrackerApp:
             if (
                 sd_counts.get("failed", 0)
                 or usb_counts.get("failed", 0)
+                or mister_counts.get("failed", 0)
             ):
                 completion_message += "\n\n" + self._translate_ui_text(
                     "All successfully patched local ROMs were kept. "
@@ -85665,6 +89631,9 @@ class TrackerApp:
         )
         fetched_at = float(cached.get("fetched_at", 0.0) or 0.0)
         raw_hashes = cached.get("hashes")
+        achievement_sets_only = bool(
+            cached.get("achievement_sets_only", False)
+        )
 
         def validated_cached_hashes() -> dict[str, int]:
             if not isinstance(raw_hashes, dict):
@@ -85676,23 +89645,44 @@ class TrackerApp:
             except (UnicodeError, ValueError, TypeError, json.JSONDecodeError):
                 return {}
 
-        cached_hashes = validated_cached_hashes()
+        cached_hashes = (
+            validated_cached_hashes() if achievement_sets_only else {}
+        )
         if (
             cached_hashes
             and time.time() - fetched_at
             < RETROACHIEVEMENTS_HASH_CACHE_MAX_AGE_SECONDS
         ):
+            self._retroachievements_snes_hash_fetched_at = fetched_at
             return cached_hashes
+        _username, web_api_key, _hardcore = (
+            self._retroachievements_credentials()
+        )
+        if not web_api_key:
+            if cached_hashes:
+                self._retroachievements_snes_hash_fetched_at = fetched_at
+                return cached_hashes
+            raise ValueError(
+                "A RetroAchievements Web API key is required to scan games."
+            )
         try:
-            hashes = fetch_retroachievements_snes_hash_library()
+            hashes = fetch_retroachievements_snes_achievement_hash_library(
+                web_api_key
+            )
         except (OSError, HTTPError, URLError, UnicodeError, ValueError):
             if cached_hashes:
                 return cached_hashes
             raise
+        refreshed_at = time.time()
         self._write_retroachievements_json_cache(
             RETROACHIEVEMENTS_SNES_HASH_CACHE_FILE,
-            {"fetched_at": time.time(), "hashes": hashes},
+            {
+                "fetched_at": refreshed_at,
+                "achievement_sets_only": True,
+                "hashes": hashes,
+            },
         )
+        self._retroachievements_snes_hash_fetched_at = refreshed_at
         return hashes
 
     def _start_game_library_retroachievements_scan(
@@ -85758,6 +89748,35 @@ class TrackerApp:
             )
             raw_entries = scan_cache.get("entries")
             entries = raw_entries if isinstance(raw_entries, dict) else {}
+            hash_revision = retroachievements_hash_library_revision(
+                hash_library
+            )
+            supported_game_ids = frozenset(hash_library.values())
+            cached_scan_revision = str(
+                scan_cache.get("hash_revision", "")
+            ).strip()
+            try:
+                scan_cache_modified_at = (
+                    RETROACHIEVEMENTS_ROM_SCAN_CACHE_FILE.stat().st_mtime
+                )
+            except OSError:
+                scan_cache_modified_at = 0.0
+            try:
+                hash_fetched_at = float(
+                    getattr(
+                        self,
+                        "_retroachievements_snes_hash_fetched_at",
+                        0.0,
+                    )
+                    or 0.0
+                )
+            except (TypeError, ValueError):
+                hash_fetched_at = 0.0
+            legacy_cache_current = bool(
+                hash_revision
+                and not cached_scan_revision
+                and scan_cache_modified_at >= hash_fetched_at > 0.0
+            )
             results: list[tuple[dict[str, Any], int]] = []
 
             def local_rom_path(
@@ -85799,29 +89818,21 @@ class TrackerApp:
                 path = local_rom_path(game, mapping_key)
                 if path is not None:
                     try:
-                        stat_result = path.stat()
                         cache_key = os.path.normcase(
                             os.path.abspath(str(path.resolve(strict=False)))
                         )
                         cached_entry = entries.get(cache_key)
-                        if (
-                            isinstance(cached_entry, dict)
-                            and int(cached_entry.get("size", -1))
-                            == int(stat_result.st_size)
-                            and int(cached_entry.get("mtime_ns", -1))
-                            == int(stat_result.st_mtime_ns)
-                        ):
-                            game_id = int(cached_entry.get("game_id", 0) or 0)
-                        else:
-                            for digest in retroachievements_snes_hash_candidates(path):
-                                game_id = int(hash_library.get(digest, 0) or 0)
-                                if game_id:
-                                    break
-                            entries[cache_key] = {
-                                "size": int(stat_result.st_size),
-                                "mtime_ns": int(stat_result.st_mtime_ns),
-                                "game_id": game_id,
-                            }
+                        game_id, refreshed_entry = (
+                            resolve_retroachievements_snes_rom(
+                                path,
+                                hash_library,
+                                cached_entry,
+                                hash_revision=hash_revision,
+                                legacy_cache_current=legacy_cache_current,
+                                supported_game_ids=supported_game_ids,
+                            )
+                        )
+                        entries[cache_key] = refreshed_entry
                     except (OSError, TypeError, ValueError):
                         game_id = 0
                 results.append((game, game_id))
@@ -85830,7 +89841,10 @@ class TrackerApp:
                 entries = dict(list(entries.items())[-12000:])
             self._write_retroachievements_json_cache(
                 RETROACHIEVEMENTS_ROM_SCAN_CACHE_FILE,
-                {"entries": entries},
+                {
+                    "entries": entries,
+                    "hash_revision": hash_revision,
+                },
             )
 
             def apply_results() -> None:
@@ -85882,7 +89896,7 @@ class TrackerApp:
             self.hack_catalog = self.stats_db.load_catalog()
         except Exception as error:
             append_error_log("Game Library catalog reload", str(error))
-
+        self._reload_catalog_new_since_refresh_state()
         def games_ready_for_platform(
             selected_platform: str,
             *,
@@ -85899,6 +89913,22 @@ class TrackerApp:
                 )
             ]
             if available:
+                # New catalog additions must be visible in Game Library even
+                # before their ROMs have been downloaded. The dated NEW
+                # marker and filter then lead directly to those additions.
+                visible_keys = {
+                    str(game.get("catalog_key") or "")
+                    for game in available
+                }
+                new_keys = set(
+                    getattr(self, "catalog_new_moderated_keys", set())
+                ) | set(getattr(self, "catalog_new_waiting_keys", set()))
+                available.extend(
+                    game
+                    for game in self.hack_catalog
+                    if str(game.get("catalog_key") or "") in new_keys
+                    and str(game.get("catalog_key") or "") not in visible_keys
+                )
                 return available
             return [
                 game
@@ -85962,13 +89992,64 @@ class TrackerApp:
             anchor="w",
         ).pack(anchor="w", pady=(self._ui_px(3), 0))
 
+        library_tab_style = ttk.Style(dialog)
+        library_tab_style.configure(
+            "StreamDesk.TNotebook",
+            background=STREAM_DESK["window"],
+            borderwidth=0,
+            tabmargins=(self._ui_px(22), self._ui_px(8), 0, 0),
+        )
+        library_tab_style.configure(
+            "StreamDesk.TNotebook.Tab",
+            background=STREAM_DESK["surface_alt"],
+            foreground=STREAM_DESK["muted"],
+            padding=(self._ui_px(22), self._ui_px(11)),
+            font=("Segoe UI", 10, "bold"),
+        )
+        library_tab_style.map(
+            "StreamDesk.TNotebook.Tab",
+            background=[("selected", STREAM_DESK["selected"])],
+            foreground=[("selected", STREAM_DESK["text_strong"])],
+            padding=[
+                ("selected", (self._ui_px(28), self._ui_px(14))),
+                ("!selected", (self._ui_px(22), self._ui_px(11))),
+            ],
+            font=[
+                ("selected", ("Segoe UI", 11, "bold")),
+                ("!selected", ("Segoe UI", 10, "bold")),
+            ],
+        )
+        library_tabs = ttk.Notebook(
+            dialog,
+            style="StreamDesk.TNotebook",
+        )
+        smw_library_tab = tk.Frame(
+            library_tabs,
+            bg=STREAM_DESK["window"],
+            bd=0,
+        )
+        non_smw_library_tab = tk.Frame(
+            library_tabs,
+            bg=STREAM_DESK["window"],
+            bd=0,
+        )
+        library_tabs.add(smw_library_tab, text=tr("SMW Hacks"))
+        library_tabs.add(non_smw_library_tab, text=tr("SNES ROMs"))
+        library_tabs.pack(fill="both", expand=True)
+
         selected_game: dict[str, Any] = {}
+        selected_non_smw_game: dict[str, Any] = {}
         filtered_games: list[dict[str, Any]] = []
         tree_item_games: dict[str, dict[str, Any]] = {}
 
         def launch_selected() -> None:
-            if selected_game:
-                self._launch_catalog_game(dict(selected_game))
+            active_game = (
+                selected_non_smw_game
+                if library_tabs.select() == str(non_smw_library_tab)
+                else selected_game
+            )
+            if active_game:
+                self._launch_catalog_game(dict(active_game))
 
         header_actions = tk.Frame(header, bg=STREAM_DESK["window"], bd=0)
         header_actions.pack(side="right", padx=(self._ui_px(12), 0))
@@ -85982,7 +90063,7 @@ class TrackerApp:
             font_size=9,
             pad_y=6,
         ).pack(side="left", padx=(0, self._ui_px(8)))
-        self._make_action_button(
+        self.game_library_download_button = self._make_action_button(
             header_actions,
             tr("Download & Patch Missing Hacks"),
             self.open_hack_downloader,
@@ -85991,7 +90072,11 @@ class TrackerApp:
             width=28,
             font_size=9,
             pad_y=6,
-        ).pack(side="left", padx=(0, self._ui_px(8)))
+        )
+        self.game_library_download_button.pack(
+            side="left",
+            padx=(0, self._ui_px(8)),
+        )
         self._make_action_button(
             header_actions,
             tr("Launch selected"),
@@ -86004,7 +90089,7 @@ class TrackerApp:
         ).pack(side="left")
 
         body = tk.Frame(
-            dialog,
+            smw_library_tab,
             bg=STREAM_DESK["window"],
             padx=self._ui_px(22),
             pady=self._ui_px(16),
@@ -86046,6 +90131,10 @@ class TrackerApp:
             value=boolean_values[0],
         )
         retroachievements_var = tk.StringVar(
+            master=dialog,
+            value=boolean_values[0],
+        )
+        new_since_filter_var = tk.StringVar(
             master=dialog,
             value=boolean_values[0],
         )
@@ -86123,6 +90212,11 @@ class TrackerApp:
             (
                 "RetroAchievements",
                 retroachievements_var,
+                boolean_values,
+            ),
+            (
+                "New since refresh",
+                new_since_filter_var,
                 boolean_values,
             ),
         )
@@ -86209,6 +90303,41 @@ class TrackerApp:
 
         trophy_photo = self._retroachievements_trophy_photo(dialog)
         dialog._retroachievements_trophy_photo = trophy_photo
+        moderated_new, waiting_new = self._catalog_notification_flags()
+        new_since_var = tk.StringVar(
+            master=dialog,
+            value=self._catalog_new_since_refresh_status_text(),
+        )
+        new_since_strip = tk.Frame(
+            list_body,
+            bg=STREAM_DESK["surface_alt"],
+            highlightbackground=STREAM_DESK["border"],
+            highlightthickness=1,
+            padx=self._ui_px(9),
+            pady=self._ui_px(7),
+            bd=0,
+        )
+        new_since_strip.pack(fill="x", pady=(0, self._ui_px(8)))
+        new_since_dot = tk.Label(
+            new_since_strip,
+            text="●",
+            font=("Segoe UI Symbol", 9),
+            fg=(
+                STREAM_DESK["red"]
+                if moderated_new or waiting_new
+                else STREAM_DESK["muted_dim"]
+            ),
+            bg=STREAM_DESK["surface_alt"],
+        )
+        new_since_dot.pack(side="left", padx=(0, self._ui_px(6)))
+        tk.Label(
+            new_since_strip,
+            textvariable=new_since_var,
+            font=("Segoe UI", 8, "bold"),
+            fg=STREAM_DESK["text"],
+            bg=STREAM_DESK["surface_alt"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
         legend = tk.Frame(list_body, bg=STREAM_DESK["surface"], bd=0)
         legend.pack(fill="x", pady=(0, self._ui_px(8)))
         trophy_legend = tk.Label(
@@ -86276,17 +90405,21 @@ class TrackerApp:
         )
         ready_tree = ttk.Treeview(
             list_shell,
-            columns=("creator", "difficulty"),
+            columns=("creator", "difficulty", "new_status", "added"),
             show="tree headings",
             selectmode="browse",
             style="StreamDeskLibrary.Treeview",
         )
-        ready_tree.heading("#0", text=tr("ROM Hack Title"), anchor="w")
-        ready_tree.heading("creator", text=tr("Created By"), anchor="w")
+        ready_tree.heading("#0", text=tr("ROM Hack Title"), anchor="center")
+        ready_tree.heading("creator", text=tr("Created By"), anchor="center")
         ready_tree.heading("difficulty", text=tr("Difficulty"), anchor="center")
-        ready_tree.column("#0", width=self._ui_px(330), minwidth=self._ui_px(170), stretch=True, anchor="w")
-        ready_tree.column("creator", width=self._ui_px(170), minwidth=self._ui_px(100), stretch=True, anchor="w")
-        ready_tree.column("difficulty", width=self._ui_px(115), minwidth=self._ui_px(90), stretch=False, anchor="center")
+        ready_tree.heading("new_status", text=tr("New"), anchor="center")
+        ready_tree.heading("added", text=tr("Added"), anchor="center")
+        ready_tree.column("#0", width=self._ui_px(270), minwidth=self._ui_px(150), stretch=True, anchor="center")
+        ready_tree.column("creator", width=self._ui_px(145), minwidth=self._ui_px(95), stretch=True, anchor="center")
+        ready_tree.column("difficulty", width=self._ui_px(105), minwidth=self._ui_px(85), stretch=False, anchor="center")
+        ready_tree.column("new_status", width=self._ui_px(118), minwidth=self._ui_px(100), stretch=False, anchor="center")
+        ready_tree.column("added", width=self._ui_px(105), minwidth=self._ui_px(95), stretch=False, anchor="center")
         ready_scrollbar = YellowCanvasScrollbar(
             list_shell,
             orient=tk.VERTICAL,
@@ -86310,6 +90443,7 @@ class TrackerApp:
             ready_tree,
             record_resolver=lambda iid: tree_item_games.get(iid),
             trophy_photo=trophy_photo,
+            center_title=True,
             double_click=launch_selected,
             context_click=self._show_game_library_row_context_menu,
         )
@@ -87683,6 +91817,10 @@ class TrackerApp:
             released_filter = released_var.get()
             hall_of_fame_filter = hall_of_fame_var.get()
             retroachievements_filter = retroachievements_var.get()
+            new_since_filter = new_since_filter_var.get()
+            new_catalog_keys = set(
+                getattr(self, "catalog_new_moderated_keys", set())
+            ) | set(getattr(self, "catalog_new_waiting_keys", set()))
             candidates = [
                 game
                 for game in ready_games
@@ -87708,11 +91846,26 @@ class TrackerApp:
                     game,
                     retroachievements_filter,
                 )
+                and self._game_matches_boolean_filter(
+                    {
+                        "new_since_refresh": str(
+                            game.get("catalog_key") or ""
+                        )
+                        in new_catalog_keys
+                    },
+                    "new_since_refresh",
+                    new_since_filter,
+                )
             ]
             reverse = sort_var.get() == "Released (Newest)"
             if sort_var.get().startswith("Released"):
                 candidates.sort(
-                    key=lambda item: str(item.get("date") or item.get("released") or ""),
+                    key=lambda item: str(
+                        item.get("added_date")
+                        or item.get("date")
+                        or item.get("released")
+                        or ""
+                    ),
                     reverse=reverse,
                 )
             else:
@@ -87726,10 +91879,23 @@ class TrackerApp:
             )
             selected_identity = game_identity(selected_game)
             selected_item = ""
+            moderated_keys = set(
+                getattr(self, "catalog_new_moderated_keys", set())
+            )
+            waiting_keys = set(
+                getattr(self, "catalog_new_waiting_keys", set())
+            )
             for index, game in enumerate(candidates):
                 title = str(game.get("title") or "Unknown")
                 author = str(game.get("authors") or game.get("author") or "Unknown")
                 difficulty = str(game.get("difficulty") or "Unknown")
+                catalog_key = str(game.get("catalog_key") or "")
+                if catalog_key in waiting_keys:
+                    new_status = tr("NEW WAITING")
+                elif catalog_key in moderated_keys:
+                    new_status = tr("NEW MODERATED")
+                else:
+                    new_status = "—"
                 item_id = ready_tree.insert(
                     "",
                     "end",
@@ -87740,7 +91906,12 @@ class TrackerApp:
                         and has_retroachievements(game)
                         else ""
                     ),
-                    values=(author, difficulty),
+                    values=(
+                        author,
+                        difficulty,
+                        new_status,
+                        format_display_date(game.get("added_date", "")),
+                    ),
                 )
                 tree_item_games[item_id] = game
                 if selected_identity and game_identity(game) == selected_identity:
@@ -87757,6 +91928,21 @@ class TrackerApp:
                     select_game(selected, sync_tree=False)
             self._schedule_shared_difficulty_tree_pills(ready_tree)
             self._schedule_game_title_tree_overlay(ready_tree)
+
+        def refresh_catalog_rows() -> None:
+            self._reload_catalog_new_since_refresh_state()
+            ready_games[:] = games_ready_for_platform(platform_name)
+            new_since_var.set(self._catalog_new_since_refresh_status_text())
+            new_moderated, new_waiting = self._catalog_notification_flags()
+            new_since_dot.configure(
+                fg=(
+                    STREAM_DESK["red"]
+                    if new_moderated or new_waiting
+                    else STREAM_DESK["muted_dim"]
+                )
+            )
+            refresh_rows()
+            self._refresh_catalog_notification_badges()
 
         library_scan_state = {"token": None}
 
@@ -87780,6 +91966,23 @@ class TrackerApp:
                         probe_direct_paths=True,
                     )
                 ]
+                if available:
+                    visible_keys = {
+                        str(game.get("catalog_key") or "")
+                        for game in available
+                    }
+                    new_keys = set(
+                        getattr(self, "catalog_new_moderated_keys", set())
+                    ) | set(
+                        getattr(self, "catalog_new_waiting_keys", set())
+                    )
+                    available.extend(
+                        game
+                        for game in catalog_snapshot
+                        if str(game.get("catalog_key") or "") in new_keys
+                        and str(game.get("catalog_key") or "")
+                        not in visible_keys
+                    )
                 complete_snapshot = available or [
                     game
                     for game in catalog_snapshot
@@ -87855,6 +92058,7 @@ class TrackerApp:
         released_var.trace_add("write", refresh_rows)
         hall_of_fame_var.trace_add("write", refresh_rows)
         retroachievements_var.trace_add("write", refresh_rows)
+        new_since_filter_var.trace_add("write", refresh_rows)
         self.game_library_widgets = {
             "search_var": search_var,
             "difficulty_var": difficulty_var,
@@ -87862,6 +92066,7 @@ class TrackerApp:
             "released_var": released_var,
             "hall_of_fame_var": hall_of_fame_var,
             "retroachievements_var": retroachievements_var,
+            "new_since_filter_var": new_since_filter_var,
             "platform_var": platform_var,
             "platform_combo": platform_combo,
             "filter_bar": filter_bar,
@@ -87881,7 +92086,11 @@ class TrackerApp:
             "ready_scrollbar": ready_scrollbar,
             "detail_canvas": detail_canvas,
             "detail_scrollbar": detail_scrollbar,
+            "download_button": self.game_library_download_button,
+            "new_since_var": new_since_var,
+            "refresh_catalog_rows": refresh_catalog_rows,
         }
+        self._refresh_catalog_notification_badges()
 
         library_layout_state = {"stacked": None}
 
@@ -87941,7 +92150,1293 @@ class TrackerApp:
             refresh_rows,
         )
         refresh_ready_games_from_disk(platform_name)
+
+        non_smw_widgets = self._build_non_smw_game_library_tab(
+            non_smw_library_tab,
+            selected_non_smw_game,
+            platform_var,
+            select_library_platform,
+            launch_selected,
+        )
+
+        def select_library_tab(_event=None) -> None:
+            showing_non_smw = (
+                library_tabs.select() == str(non_smw_library_tab)
+            )
+            if showing_non_smw:
+                platform_eyebrow_var.set(
+                    f"{platform_var.get().upper()} · {tr('SNES ROMS')}"
+                )
+                count_var.set(
+                    self._format_ui_text(
+                        "{count} imported ROMs",
+                        count=f"{len(self.non_smw_rom_library):,}",
+                    )
+                )
+            else:
+                platform_eyebrow_var.set(
+                    f"{platform_var.get().upper()} · {tr('LOCAL ROMS')}"
+                )
+                count_var.set(
+                    self._format_ui_text(
+                        "{count} ready-to-play hacks",
+                        count=f"{len(filtered_games):,}",
+                    )
+                )
+
+        library_tabs.bind(
+            "<<NotebookTabChanged>>",
+            select_library_tab,
+            add="+",
+        )
+        self.game_library_widgets["library_tabs"] = library_tabs
+        self.game_library_widgets["smw_library_tab"] = smw_library_tab
+        self.game_library_widgets["non_smw_library_tab"] = non_smw_library_tab
+        self.game_library_widgets["non_smw_widgets"] = non_smw_widgets
         dialog.protocol("WM_DELETE_WINDOW", self._close_game_library)
+
+    def _build_non_smw_game_library_tab(
+        self,
+        parent: tk.Widget,
+        selected_game: dict[str, Any],
+        platform_var: tk.StringVar,
+        select_platform: Callable[..., None],
+        launch_selected: Callable[[], None],
+    ) -> dict[str, Any]:
+        """Build the managed non-SMW ROM collection inside Game Library."""
+        tr = self._translate_ui_text
+        body = tk.Frame(
+            parent,
+            bg=STREAM_DESK["window"],
+            padx=self._ui_px(22),
+            pady=self._ui_px(16),
+            bd=0,
+        )
+        body.pack(fill="both", expand=True)
+
+        toolbar = tk.Frame(body, bg=STREAM_DESK["window"], bd=0)
+        toolbar.pack(fill="x", pady=(0, self._ui_px(12)))
+        copy = tk.Frame(toolbar, bg=STREAM_DESK["window"], bd=0)
+        copy.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            copy,
+            text=tr("SNES ROMS"),
+            font=("Segoe UI", 8, "bold"),
+            fg=STREAM_DESK["yellow"],
+            bg=STREAM_DESK["window"],
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            copy,
+            text=tr(
+                "Import from Download & Patch Missing Hacks, then browse, "
+                "filter, launch, and track RetroAchievements here."
+            ),
+            font=("Segoe UI", 9),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["window"],
+            anchor="w",
+            justify="left",
+        ).pack(anchor="w", pady=(self._ui_px(3), 0))
+
+        platform_host = tk.Frame(toolbar, bg=STREAM_DESK["window"], bd=0)
+        platform_host.pack(side="right", padx=(self._ui_px(10), 0))
+        tk.Label(
+            platform_host,
+            text=tr("Platform"),
+            font=("Segoe UI", 8),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["window"],
+        ).pack(anchor="w", pady=(0, self._ui_px(4)))
+        platform_combo = ttk.Combobox(
+            platform_host,
+            textvariable=platform_var,
+            values=PLATFORM_OPTIONS,
+            state="readonly",
+            justify="center",
+            width=16,
+            style="MyTracker.TCombobox",
+        )
+        platform_combo.pack(fill="x")
+        platform_combo.bind(
+            "<<ComboboxSelected>>",
+            select_platform,
+            add="+",
+        )
+
+        search_var = tk.StringVar(master=parent, value="")
+        retroachievements_var = tk.StringVar(
+            master=parent,
+            value=self._boolean_filter_options()[0],
+        )
+        file_type_var = tk.StringVar(master=parent, value=tr("Any"))
+        letter_var = tk.StringVar(master=parent, value="All")
+        sort_var = tk.StringVar(master=parent, value=tr("Name (A-Z)"))
+        filter_bar = tk.Frame(
+            body,
+            bg=STREAM_DESK["surface"],
+            highlightbackground=STREAM_DESK["border"],
+            highlightthickness=1,
+            padx=self._ui_px(10),
+            pady=self._ui_px(8),
+            bd=0,
+        )
+        filter_bar.pack(fill="x", pady=(0, self._ui_px(12)))
+        for column, weight in enumerate((4, 2, 2, 1, 2)):
+            filter_bar.columnconfigure(column, weight=weight)
+
+        def add_filter_label(column: int, text: str) -> None:
+            tk.Label(
+                filter_bar,
+                text=tr(text),
+                font=("Segoe UI", 7, "bold"),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface"],
+                anchor="w",
+            ).grid(
+                row=0,
+                column=column,
+                sticky="ew",
+                padx=(0 if column == 0 else self._ui_px(7), 0),
+                pady=(0, self._ui_px(3)),
+            )
+
+        for column, label_text in enumerate(
+            (
+                "Search SNES ROMs",
+                "RetroAchievements",
+                "File type",
+                "Starts with",
+                "Sort",
+            )
+        ):
+            add_filter_label(column, label_text)
+
+        search_entry = tk.Entry(
+            filter_bar,
+            textvariable=search_var,
+            font=("Segoe UI", 9),
+            fg=STREAM_DESK["text"],
+            bg=STREAM_DESK["surface_deep"],
+            insertbackground=STREAM_DESK["text"],
+            relief="flat",
+            highlightbackground=STREAM_DESK["border_strong"],
+            highlightthickness=1,
+        )
+        search_entry.grid(row=1, column=0, sticky="ew", ipady=self._ui_px(5))
+
+        filter_specs = (
+            (
+                retroachievements_var,
+                self._boolean_filter_options(),
+                1,
+                14,
+            ),
+            (file_type_var, (tr("Any"), "SFC", "SMC"), 2, 10),
+            (letter_var, self._letter_filter_values(), 3, 7),
+            (
+                sort_var,
+                (
+                    tr("Name (A-Z)"),
+                    tr("Name (Z-A)"),
+                    tr("Date Added (Newest)"),
+                    tr("Date Added (Oldest)"),
+                ),
+                4,
+                20,
+            ),
+        )
+        for variable, values, column, width in filter_specs:
+            combo = ttk.Combobox(
+                filter_bar,
+                textvariable=variable,
+                values=values,
+                state="readonly",
+                justify="center",
+                width=width,
+                style="MyTracker.TCombobox",
+            )
+            combo.grid(
+                row=1,
+                column=column,
+                sticky="ew",
+                padx=(self._ui_px(7), 0),
+            )
+
+        panels = tk.Frame(body, bg=STREAM_DESK["window"], bd=0)
+        panels.pack(fill="both", expand=True)
+        panels.columnconfigure(0, weight=3, uniform="non_smw_library")
+        panels.columnconfigure(1, weight=2, uniform="non_smw_library")
+        panels.rowconfigure(0, weight=1)
+
+        count_var = tk.StringVar(master=parent, value="")
+        list_body = self._stream_desk_card(
+            panels,
+            tr("Imported ROMs"),
+            trailing_variable=count_var,
+        )
+        list_body.stream_card.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, self._ui_px(7)),
+        )
+        detail_body = self._stream_desk_card(
+            panels,
+            tr("Selected ROM"),
+            trailing_text=tr("Timer-only tracking"),
+        )
+        detail_body.stream_card.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+            padx=(self._ui_px(7), 0),
+        )
+
+        checked_record_ids: set[str] = set()
+        select_all_var = tk.BooleanVar(master=parent, value=False)
+        selection_count_var = tk.StringVar(master=parent, value=tr("0 selected"))
+        selection_bar = tk.Frame(list_body, bg=STREAM_DESK["surface"], bd=0)
+        selection_bar.pack(fill="x", pady=(0, self._ui_px(7)))
+        select_all_checkbox = MarioCheckbutton(
+            selection_bar,
+            text=tr("Select all visible ROMs"),
+            variable=select_all_var,
+            onvalue=True,
+            offvalue=False,
+            font=("Segoe UI", 8, "bold"),
+            fg=STREAM_DESK["text"],
+            bg=STREAM_DESK["surface"],
+            activeforeground=STREAM_DESK["text"],
+            activebackground=STREAM_DESK["surface"],
+            selectcolor=STREAM_DESK["surface_deep"],
+            anchor="w",
+        )
+        select_all_checkbox.pack(side="left")
+        tk.Label(
+            selection_bar,
+            textvariable=selection_count_var,
+            font=("Segoe UI", 8, "bold"),
+            fg=STREAM_DESK["yellow"],
+            bg=STREAM_DESK["surface"],
+        ).pack(side="right")
+
+        tree_shell = tk.Frame(list_body, bg=STREAM_DESK["surface"], bd=0)
+        tree_shell.pack(fill="both", expand=True)
+        rom_tree = ttk.Treeview(
+            tree_shell,
+            columns=("name", "format", "ra", "added"),
+            show="tree headings",
+            selectmode="browse",
+            style="StreamDeskLibrary.Treeview",
+        )
+        rom_tree.heading("#0", text="", anchor="center")
+        rom_tree.heading("name", text=tr("Game / ROM name"), anchor="center")
+        rom_tree.heading("format", text=tr("Format"), anchor="center")
+        rom_tree.heading("ra", text=tr("RetroAchievements"), anchor="center")
+        rom_tree.heading("added", text=tr("Date Added"), anchor="center")
+        rom_tree.column(
+            "#0",
+            width=self._ui_px(52),
+            minwidth=self._ui_px(45),
+            stretch=False,
+            anchor="center",
+        )
+        rom_tree.column(
+            "name",
+            width=self._ui_px(310),
+            minwidth=180,
+            anchor="center",
+        )
+        rom_tree.column(
+            "format",
+            width=self._ui_px(68),
+            minwidth=55,
+            stretch=False,
+            anchor="center",
+        )
+        rom_tree.column(
+            "ra",
+            width=self._ui_px(128),
+            minwidth=95,
+            anchor="center",
+        )
+        rom_tree.column(
+            "added",
+            width=self._ui_px(115),
+            minwidth=90,
+            anchor="center",
+        )
+        checkbox_size = max(
+            MarioCheckbutton.BASE_INDICATOR_SIZE,
+            self._ui_px(MarioCheckbutton.BASE_INDICATOR_SIZE),
+        )
+        selection_checkbox_images = {
+            "unchecked": MarioCheckbutton._build_indicator(
+                rom_tree,
+                checkbox_size,
+                fill=STREAM_DESK["surface_deep"],
+                outline=MarioCheckbutton.UNCHECKED_OUTLINE,
+                checked=False,
+            ),
+            "checked": MarioCheckbutton._build_indicator(
+                rom_tree,
+                checkbox_size,
+                fill=MarioCheckbutton.CHECKED_FILL,
+                outline=MarioCheckbutton.CHECKED_OUTLINE,
+                checked=True,
+            ),
+        }
+        parent._non_smw_selection_checkbox_images = selection_checkbox_images
+        trophy_photo = self._retroachievements_trophy_photo(parent)
+        parent._non_smw_retroachievements_trophy_photo = trophy_photo
+        scrollbar = YellowCanvasScrollbar(
+            tree_shell,
+            orient=tk.VERTICAL,
+            command=rom_tree.yview,
+            bg=STREAM_DESK["yellow"],
+            activebackground="#FFE56B",
+            troughcolor=STREAM_DESK["surface_deep"],
+            width=self._ui_px(14),
+        )
+        rom_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y", padx=(self._ui_px(5), 0))
+        rom_tree.pack(side="left", fill="both", expand=True)
+        self._install_treeview_cell_grid(rom_tree)
+
+        title_var = tk.StringVar(master=parent, value="")
+        file_var = tk.StringVar(master=parent, value="—")
+        size_var = tk.StringVar(master=parent, value="—")
+        tk.Label(
+            detail_body,
+            text=tr("Display name"),
+            font=("Segoe UI", 8, "bold"),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["surface"],
+            anchor="w",
+        ).pack(fill="x")
+        title_entry = tk.Entry(
+            detail_body,
+            textvariable=title_var,
+            font=("Segoe UI", 11, "bold"),
+            fg=STREAM_DESK["text_strong"],
+            bg=STREAM_DESK["surface_deep"],
+            insertbackground=STREAM_DESK["text"],
+            relief="flat",
+            highlightbackground=STREAM_DESK["border_strong"],
+            highlightthickness=1,
+        )
+        title_entry.pack(fill="x", ipady=self._ui_px(7), pady=(self._ui_px(5), self._ui_px(12)))
+
+        for label_text, variable in (
+            ("ROM file", file_var),
+            ("File size", size_var),
+        ):
+            row = tk.Frame(detail_body, bg=STREAM_DESK["surface"], bd=0)
+            row.pack(fill="x", pady=(0, self._ui_px(10)))
+            tk.Label(
+                row,
+                text=tr(label_text),
+                font=("Segoe UI", 8),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface"],
+            ).pack(anchor="w")
+            tk.Label(
+                row,
+                textvariable=variable,
+                font=("Segoe UI", 9),
+                fg=STREAM_DESK["text"],
+                bg=STREAM_DESK["surface"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(380),
+            ).pack(fill="x", pady=(self._ui_px(2), 0))
+
+        achievement_count_var = tk.StringVar(master=parent, value="0 / 0")
+        achievement_status_var = tk.StringVar(
+            master=parent,
+            value=tr("Select a game to see its achievement progress."),
+        )
+        achievement_expand_var = tk.StringVar(master=parent, value="▶")
+        achievement_ratio = {"value": 0.0}
+        achievement_expanded = {"value": False}
+        achievement_summary = {"value": empty_retroachievements_summary()}
+        achievement_panel = tk.Frame(
+            detail_body,
+            bg=STREAM_DESK["surface_alt"],
+            highlightbackground=STREAM_DESK["yellow"],
+            highlightthickness=1,
+            padx=self._ui_px(9),
+            pady=self._ui_px(8),
+            bd=0,
+        )
+        achievement_panel.pack(
+            fill="x",
+            pady=(self._ui_px(5), self._ui_px(8)),
+        )
+        achievement_heading = tk.Frame(
+            achievement_panel,
+            bg=STREAM_DESK["surface_alt"],
+            cursor="hand2",
+            bd=0,
+        )
+        achievement_heading.pack(fill="x")
+        achievement_title_label = tk.Label(
+            achievement_heading,
+            text=tr("RetroAchievements").upper(),
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["yellow"],
+            bg=STREAM_DESK["surface_alt"],
+            cursor="hand2",
+        )
+        achievement_title_label.pack(side="left")
+        achievement_expand_label = tk.Label(
+            achievement_heading,
+            textvariable=achievement_expand_var,
+            font=("Segoe UI Symbol", 10, "bold"),
+            fg=STREAM_DESK["yellow"],
+            bg=STREAM_DESK["surface_alt"],
+            cursor="hand2",
+        )
+        achievement_expand_label.pack(side="right", padx=(self._ui_px(7), 0))
+        achievement_count_label = tk.Label(
+            achievement_heading,
+            textvariable=achievement_count_var,
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["text_strong"],
+            bg=STREAM_DESK["surface_alt"],
+            cursor="hand2",
+        )
+        achievement_count_label.pack(side="right")
+        achievement_progress = tk.Canvas(
+            achievement_panel,
+            height=self._ui_px(7),
+            bg=STREAM_DESK["surface_alt"],
+            bd=0,
+            highlightthickness=0,
+        )
+        achievement_progress.pack(
+            fill="x",
+            pady=(self._ui_px(7), self._ui_px(7)),
+        )
+        achievement_badge_strip = tk.Frame(
+            achievement_panel,
+            bg=STREAM_DESK["surface_alt"],
+            bd=0,
+        )
+        achievement_badge_strip.pack(fill="x")
+        tk.Label(
+            achievement_panel,
+            textvariable=achievement_status_var,
+            font=("Segoe UI", 8),
+            fg=STREAM_DESK["muted"],
+            bg=STREAM_DESK["surface_alt"],
+            anchor="w",
+            justify="left",
+            wraplength=self._ui_px(390),
+        ).pack(fill="x", pady=(self._ui_px(7), 0))
+
+        achievement_list_shell = tk.Frame(
+            achievement_panel,
+            bg=STREAM_DESK["surface_deep"],
+            highlightbackground=STREAM_DESK["border"],
+            highlightthickness=1,
+            height=self._ui_px(255),
+            bd=0,
+        )
+        achievement_list_shell.pack_propagate(False)
+        achievement_list_canvas = tk.Canvas(
+            achievement_list_shell,
+            bg=STREAM_DESK["surface_deep"],
+            bd=0,
+            highlightthickness=0,
+            yscrollincrement=max(12, self._ui_px(24)),
+        )
+        achievement_list_scrollbar = YellowCanvasScrollbar(
+            achievement_list_shell,
+            orient=tk.VERTICAL,
+            command=achievement_list_canvas.yview,
+            bg=STREAM_DESK["yellow"],
+            activebackground="#FFE56B",
+            troughcolor=STREAM_DESK["surface_deep"],
+            width=self._ui_px(11),
+        )
+        achievement_list_canvas.configure(
+            yscrollcommand=achievement_list_scrollbar.set
+        )
+        achievement_list_scrollbar.pack(side="right", fill="y")
+        achievement_list_canvas.pack(side="left", fill="both", expand=True)
+        achievement_list_content = tk.Frame(
+            achievement_list_canvas,
+            bg=STREAM_DESK["surface_deep"],
+            bd=0,
+        )
+        achievement_list_window = achievement_list_canvas.create_window(
+            (0, 0),
+            window=achievement_list_content,
+            anchor="nw",
+        )
+        achievement_list_content.columnconfigure(0, weight=1)
+        achievement_description_labels: list[tk.Label] = []
+        parent._non_smw_ra_badge_photos = []
+        parent._non_smw_ra_summary_badge_photos = []
+
+        def fit_achievement_list(_event=None) -> None:
+            try:
+                width = max(1, achievement_list_canvas.winfo_width())
+                achievement_list_canvas.itemconfigure(
+                    achievement_list_window,
+                    width=width,
+                )
+                for description_label in achievement_description_labels:
+                    description_label.configure(
+                        wraplength=max(
+                            self._ui_px(170),
+                            width - self._ui_px(92),
+                        )
+                    )
+                achievement_list_canvas.configure(
+                    scrollregion=achievement_list_canvas.bbox("all")
+                )
+            except (AttributeError, tk.TclError, TypeError, ValueError):
+                pass
+
+        achievement_list_content.bind(
+            "<Configure>",
+            fit_achievement_list,
+            add="+",
+        )
+        achievement_list_canvas.bind(
+            "<Configure>",
+            fit_achievement_list,
+            add="+",
+        )
+
+        def scroll_achievement_list(event) -> str:
+            units = self._fast_scroll_units(event, rows_per_notch=2)
+            if units:
+                try:
+                    achievement_list_canvas.yview_scroll(units, "units")
+                except tk.TclError:
+                    pass
+            return "break"
+
+        def bind_achievement_wheel_tree(widget: tk.Widget) -> None:
+            if not bool(getattr(widget, "_smw_achievement_wheel_bound", False)):
+                for wheel_event in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                    widget.bind(wheel_event, scroll_achievement_list, add="+")
+                widget._smw_achievement_wheel_bound = True
+            for child in widget.winfo_children():
+                bind_achievement_wheel_tree(child)
+
+        bind_achievement_wheel_tree(achievement_list_canvas)
+        bind_achievement_wheel_tree(achievement_list_scrollbar)
+        bind_achievement_wheel_tree(achievement_list_content)
+
+        def draw_achievement_progress(_event=None) -> None:
+            try:
+                width = max(1, achievement_progress.winfo_width())
+                height = max(1, achievement_progress.winfo_height())
+                achievement_progress.delete("all")
+                achievement_progress.create_rectangle(
+                    0,
+                    0,
+                    width,
+                    height,
+                    fill=STREAM_DESK["border"],
+                    outline="",
+                )
+                ratio = max(
+                    0.0,
+                    min(1.0, float(achievement_ratio["value"])),
+                )
+                if ratio:
+                    achievement_progress.create_rectangle(
+                        0,
+                        0,
+                        max(3, int(width * ratio)),
+                        height,
+                        fill=STREAM_DESK["yellow"],
+                        outline="",
+                    )
+            except (tk.TclError, TypeError, ValueError):
+                pass
+
+        achievement_progress.bind(
+            "<Configure>",
+            draw_achievement_progress,
+            add="+",
+        )
+
+        def render_achievement_list() -> None:
+            for child in achievement_list_content.winfo_children():
+                child.destroy()
+            achievement_description_labels.clear()
+            parent._non_smw_ra_badge_photos = []
+            items = [
+                item
+                for item in achievement_summary["value"].get("items", [])
+                if isinstance(item, dict)
+            ]
+            items.sort(
+                key=lambda item: (
+                    int(item.get("display_order", 0) or 0),
+                    int(item.get("id", 0) or 0),
+                )
+            )
+            if not items:
+                tk.Label(
+                    achievement_list_content,
+                    text=str(
+                        achievement_summary["value"].get("message")
+                        or tr("No RetroAchievements data is available.")
+                    ),
+                    font=("Segoe UI", 8),
+                    fg=STREAM_DESK["muted"],
+                    bg=STREAM_DESK["surface_deep"],
+                    anchor="nw",
+                    justify="left",
+                    wraplength=self._ui_px(330),
+                    padx=self._ui_px(9),
+                    pady=self._ui_px(10),
+                ).grid(row=0, column=0, sticky="ew")
+            for row_index, item in enumerate(items):
+                unlocked = bool(item.get("unlocked", False))
+                row = tk.Frame(
+                    achievement_list_content,
+                    bg=STREAM_DESK["surface"],
+                    highlightbackground=(
+                        STREAM_DESK["green"]
+                        if unlocked
+                        else STREAM_DESK["border"]
+                    ),
+                    highlightthickness=1,
+                    padx=self._ui_px(7),
+                    pady=self._ui_px(7),
+                    bd=0,
+                )
+                row.grid(
+                    row=row_index,
+                    column=0,
+                    sticky="ew",
+                    padx=self._ui_px(5),
+                    pady=(self._ui_px(5), 0),
+                )
+                row.columnconfigure(1, weight=1)
+                photo = self._retroachievements_badge_photo(
+                    parent,
+                    item.get("badge_name", ""),
+                    size=44,
+                    unlocked=unlocked,
+                )
+                if photo is not None:
+                    parent._non_smw_ra_badge_photos.append(photo)
+                tk.Label(
+                    row,
+                    image=photo,
+                    text="RA" if photo is None else "",
+                    font=("Segoe UI", 8, "bold"),
+                    fg=(
+                        STREAM_DESK["yellow"]
+                        if unlocked
+                        else STREAM_DESK["muted_dim"]
+                    ),
+                    bg=STREAM_DESK["surface"],
+                ).grid(row=0, column=0, rowspan=3, sticky="n", padx=(0, 8))
+                tk.Label(
+                    row,
+                    text=str(item.get("title") or tr("Achievement")),
+                    font=("Segoe UI", 8, "bold"),
+                    fg=STREAM_DESK["text_strong"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="w",
+                ).grid(row=0, column=1, sticky="ew")
+                description_label = tk.Label(
+                    row,
+                    text=str(
+                        item.get("description")
+                        or tr("No achievement description was provided.")
+                    ),
+                    font=("Segoe UI", 8),
+                    fg=STREAM_DESK["text"],
+                    bg=STREAM_DESK["surface"],
+                    anchor="nw",
+                    justify="left",
+                )
+                description_label.grid(
+                    row=1,
+                    column=1,
+                    sticky="ew",
+                    pady=(self._ui_px(2), 0),
+                )
+                achievement_description_labels.append(description_label)
+                tk.Label(
+                    row,
+                    text=(tr("UNLOCKED") if unlocked else tr("LOCKED")),
+                    font=("Segoe UI", 7, "bold"),
+                    fg=(
+                        STREAM_DESK["green"]
+                        if unlocked
+                        else STREAM_DESK["yellow"]
+                    ),
+                    bg=STREAM_DESK["surface"],
+                    anchor="w",
+                ).grid(row=2, column=1, sticky="ew", pady=(self._ui_px(3), 0))
+            achievement_list_canvas.yview_moveto(0.0)
+            bind_achievement_wheel_tree(achievement_list_content)
+            parent.after_idle(fit_achievement_list)
+
+        def toggle_achievements(_event=None) -> str:
+            expanded = not achievement_expanded["value"]
+            achievement_expanded["value"] = expanded
+            achievement_expand_var.set("▼" if expanded else "▶")
+            if expanded:
+                achievement_list_shell.pack(
+                    fill="both",
+                    expand=True,
+                    pady=(self._ui_px(8), 0),
+                )
+                render_achievement_list()
+            else:
+                achievement_list_shell.pack_forget()
+            return "break"
+
+        for heading_widget in (
+            achievement_heading,
+            achievement_title_label,
+            achievement_count_label,
+            achievement_expand_label,
+        ):
+            heading_widget.bind("<Button-1>", toggle_achievements, add="+")
+
+        item_records: dict[str, dict[str, Any]] = {}
+        self._install_game_title_tree_overlay(
+            rom_tree,
+            record_resolver=lambda item_id: item_records.get(item_id),
+            trophy_photo=trophy_photo,
+            title_column="name",
+            center_title=True,
+        )
+
+        def update_achievements(record: dict[str, Any] | None) -> None:
+            record_id = str((record or {}).get("id", ""))
+            try:
+                game_id = int(
+                    (record or {}).get("_retroachievements_game_id", 0) or 0
+                )
+            except (TypeError, ValueError):
+                game_id = 0
+
+            def render_summary(summary: dict[str, Any]) -> None:
+                if str(selected_game.get("id", "")) != record_id:
+                    return
+                achievement_summary["value"] = dict(summary)
+                total = max(0, int(summary.get("total", 0) or 0))
+                unlocked = max(0, int(summary.get("unlocked", 0) or 0))
+                achievement_count_var.set(f"{unlocked} / {total}")
+                achievement_ratio["value"] = unlocked / max(1, total)
+                for child in achievement_badge_strip.winfo_children():
+                    child.destroy()
+                parent._non_smw_ra_summary_badge_photos = []
+                status_parts: list[str] = []
+                recent = [
+                    item
+                    for item in summary.get("recent", [])
+                    if isinstance(item, dict)
+                ]
+                items = [
+                    item
+                    for item in summary.get("items", [])
+                    if isinstance(item, dict)
+                ]
+                visible: list[dict[str, Any]] = []
+                seen_ids: set[int] = set()
+                for item in recent + items:
+                    try:
+                        item_id = int(item.get("id", 0) or 0)
+                    except (TypeError, ValueError):
+                        item_id = 0
+                    if item_id and item_id in seen_ids:
+                        continue
+                    if item_id:
+                        seen_ids.add(item_id)
+                    visible.append(item)
+                    if len(visible) >= 6:
+                        break
+                if not visible:
+                    tk.Label(
+                        achievement_badge_strip,
+                        text=str(
+                            summary.get("message")
+                            or tr("No RetroAchievements data is available.")
+                        ),
+                        font=("Segoe UI", 8),
+                        fg=STREAM_DESK["muted"],
+                        bg=STREAM_DESK["surface_alt"],
+                        anchor="w",
+                        justify="left",
+                        wraplength=self._ui_px(390),
+                    ).pack(fill="x", pady=self._ui_px(5))
+                for badge_index, item in enumerate(visible):
+                    achievement_badge_strip.columnconfigure(
+                        badge_index,
+                        weight=1,
+                        uniform="non_smw_ra_game_badges",
+                    )
+                    unlocked_item = bool(item.get("unlocked", False))
+                    badge_host = tk.Frame(
+                        achievement_badge_strip,
+                        bg=STREAM_DESK["surface_deep"],
+                        highlightbackground=(
+                            STREAM_DESK["yellow"]
+                            if unlocked_item
+                            else STREAM_DESK["border"]
+                        ),
+                        highlightthickness=1,
+                        padx=self._ui_px(3),
+                        pady=self._ui_px(4),
+                        bd=0,
+                    )
+                    badge_host.grid(
+                        row=0,
+                        column=badge_index,
+                        sticky="nsew",
+                        padx=(
+                            0 if badge_index == 0 else self._ui_px(3),
+                            0,
+                        ),
+                    )
+                    photo = self._retroachievements_badge_photo(
+                        parent,
+                        item.get("badge_name", ""),
+                        size=36,
+                        unlocked=unlocked_item,
+                    )
+                    if photo is not None:
+                        parent._non_smw_ra_summary_badge_photos.append(photo)
+                    tk.Label(
+                        badge_host,
+                        image=photo,
+                        text="RA" if photo is None else "",
+                        font=("Segoe UI", 8, "bold"),
+                        fg=(
+                            STREAM_DESK["yellow"]
+                            if unlocked_item
+                            else STREAM_DESK["muted_dim"]
+                        ),
+                        bg=STREAM_DESK["surface_deep"],
+                    ).pack()
+                    tk.Label(
+                        badge_host,
+                        text=str(item.get("title") or tr("Achievement")),
+                        font=("Segoe UI", 7, "bold"),
+                        fg=(
+                            STREAM_DESK["text_strong"]
+                            if unlocked_item
+                            else STREAM_DESK["muted_dim"]
+                        ),
+                        bg=STREAM_DESK["surface_deep"],
+                        justify="center",
+                        wraplength=self._ui_px(62),
+                    ).pack(fill="x")
+                if recent:
+                    status_parts.append(
+                        tr("Recent:")
+                        + " "
+                        + str(recent[0].get("title") or tr("Achievement"))
+                    )
+                next_item = summary.get("next")
+                if isinstance(next_item, dict):
+                    status_parts.append(
+                        tr("Next locked:")
+                        + " "
+                        + str(next_item.get("title") or tr("Achievement"))
+                    )
+                elif total and unlocked >= total:
+                    status_parts.append(tr("All achievements unlocked!"))
+                achievement_status_var.set(
+                    "  ·  ".join(status_parts)
+                    or str(summary.get("message", ""))
+                )
+                draw_achievement_progress()
+                if achievement_expanded["value"]:
+                    render_achievement_list()
+
+            if not record_id:
+                render_summary(
+                    empty_retroachievements_summary(
+                        "no_game",
+                        tr("Select a game to see its achievement progress."),
+                    )
+                )
+                return
+            if game_id <= 0:
+                render_summary(
+                    empty_retroachievements_summary(
+                        "unsupported",
+                        tr("This game is not recognized by RetroAchievements."),
+                    )
+                )
+                return
+            render_summary(self._cached_retroachievements_progress(game_id))
+            self._start_retroachievements_progress_refresh(
+                game_id=game_id,
+                on_complete=render_summary,
+            )
+
+        def select_record(record: dict[str, Any] | None) -> None:
+            selected_game.clear()
+            if not record:
+                title_var.set("")
+                file_var.set("—")
+                size_var.set("—")
+                update_achievements(None)
+                return
+            selected_game.update(record)
+            title_var.set(str(record.get("title", "")))
+            local_path = str(record.get("local_rom_path", ""))
+            file_var.set(str(record.get("filename") or Path(local_path).name))
+            file_size = max(0, int(record.get("file_size", 0) or 0))
+            size_var.set(
+                f"{file_size / (1024 * 1024):.2f} MB"
+                if file_size
+                else "—"
+            )
+            update_achievements(record)
+
+        def refresh_rows(select_id: str = "") -> None:
+            item_records.clear()
+            for item in rom_tree.get_children(""):
+                rom_tree.delete(item)
+            search_text = search_var.get().strip().casefold()
+            selected_file_type = file_type_var.get().strip().casefold()
+            selected_letter = letter_var.get().strip()
+            records: list[dict[str, Any]] = []
+            for record in self.non_smw_rom_library:
+                title = str(record.get("title", ""))
+                filename = str(record.get("filename", ""))
+                if search_text and search_text not in (
+                    title + " " + filename
+                ).casefold():
+                    continue
+                if not self._game_matches_retroachievements_filter(
+                    record,
+                    retroachievements_var.get(),
+                ):
+                    continue
+                suffix = Path(filename).suffix.casefold().lstrip(".")
+                if (
+                    not self._filter_value_is_any(selected_file_type)
+                    and suffix != selected_file_type
+                ):
+                    continue
+                if (
+                    selected_letter not in {"", "All"}
+                    and self._alphabet_segment(title) != selected_letter
+                ):
+                    continue
+                records.append(record)
+
+            sort_text = sort_var.get()
+            if sort_text == tr("Name (Z-A)"):
+                records.sort(
+                    key=lambda item: str(item.get("title", "")).casefold(),
+                    reverse=True,
+                )
+            elif sort_text == tr("Date Added (Newest)"):
+                records.sort(
+                    key=lambda item: str(item.get("added_at", "")),
+                    reverse=True,
+                )
+            elif sort_text == tr("Date Added (Oldest)"):
+                records.sort(key=lambda item: str(item.get("added_at", "")))
+            else:
+                records.sort(
+                    key=lambda item: str(item.get("title", "")).casefold()
+                )
+            count_var.set(
+                self._format_ui_text(
+                    "{visible} of {total} ROMs",
+                    visible=f"{len(records):,}",
+                    total=f"{len(self.non_smw_rom_library):,}",
+                )
+            )
+            selected_item = ""
+            for record in records:
+                record_id = str(record.get("id", ""))
+                added_text = format_display_date(
+                    record.get("added_at", ""),
+                    empty="—",
+                )
+                filename = str(record.get("filename", ""))
+                try:
+                    has_ra = int(
+                        record.get("_retroachievements_game_id", 0) or 0
+                    ) > 0
+                except (TypeError, ValueError):
+                    has_ra = False
+                item_id = rom_tree.insert(
+                    "",
+                    "end",
+                    text="",
+                    image=selection_checkbox_images[
+                        "checked"
+                        if record_id in checked_record_ids
+                        else "unchecked"
+                    ],
+                    values=(
+                        str(record.get("title", "Untitled ROM")),
+                        Path(filename).suffix.lstrip(".").upper() or "—",
+                        (
+                            "🏆"
+                            if has_ra and trophy_photo is None
+                            else (tr("Yes") if has_ra else "—")
+                        ),
+                        added_text,
+                    ),
+                )
+                item_records[item_id] = record
+                if record_id == select_id:
+                    selected_item = item_id
+            visible_record_ids = {
+                str(record.get("id", "")) for record in item_records.values()
+            }
+            select_all_var.set(
+                bool(visible_record_ids)
+                and visible_record_ids.issubset(checked_record_ids)
+            )
+            selection_count_var.set(
+                self._format_ui_text(
+                    "{count} selected",
+                    count=f"{len(checked_record_ids):,}",
+                )
+            )
+            if not selected_item and item_records:
+                selected_item = next(iter(item_records))
+            if selected_item:
+                rom_tree.selection_set(selected_item)
+                rom_tree.focus(selected_item)
+                select_record(item_records[selected_item])
+            else:
+                select_record(None)
+            self._schedule_game_title_tree_overlay(rom_tree)
+
+        def on_tree_selection(_event=None) -> None:
+            selection = rom_tree.selection()
+            select_record(item_records.get(selection[0]) if selection else None)
+
+        def on_tree_click(event) -> str | None:
+            if rom_tree.identify_column(event.x) != "#0":
+                return None
+            item_id = rom_tree.identify_row(event.y)
+            record = item_records.get(item_id)
+            if record is None:
+                return "break"
+            record_id = str(record.get("id", ""))
+            if record_id in checked_record_ids:
+                checked_record_ids.discard(record_id)
+                image = selection_checkbox_images["unchecked"]
+            else:
+                checked_record_ids.add(record_id)
+                image = selection_checkbox_images["checked"]
+            rom_tree.item(item_id, image=image)
+            visible_ids = {
+                str(item.get("id", "")) for item in item_records.values()
+            }
+            select_all_var.set(
+                bool(visible_ids) and visible_ids.issubset(checked_record_ids)
+            )
+            selection_count_var.set(
+                self._format_ui_text(
+                    "{count} selected",
+                    count=f"{len(checked_record_ids):,}",
+                )
+            )
+            return "break"
+
+        def toggle_select_all() -> None:
+            visible_ids = {
+                str(record.get("id", ""))
+                for record in item_records.values()
+            }
+            if select_all_var.get():
+                checked_record_ids.update(visible_ids)
+            else:
+                checked_record_ids.difference_update(visible_ids)
+            for item_id, record in item_records.items():
+                rom_tree.item(
+                    item_id,
+                    image=selection_checkbox_images[
+                        "checked"
+                        if str(record.get("id", "")) in checked_record_ids
+                        else "unchecked"
+                    ],
+                )
+            selection_count_var.set(
+                self._format_ui_text(
+                    "{count} selected",
+                    count=f"{len(checked_record_ids):,}",
+                )
+            )
+
+        select_all_checkbox.configure(command=toggle_select_all)
+
+        def save_display_name() -> None:
+            if not selected_game:
+                return
+            new_title = title_var.get().strip()
+            if not new_title:
+                messagebox.showerror(
+                    APP_NAME,
+                    tr("Enter a display name for this ROM."),
+                    parent=self.game_library_dialog or self.root,
+                )
+                return
+            record_id = str(selected_game.get("id", ""))
+            for record in self.non_smw_rom_library:
+                if str(record.get("id", "")) == record_id:
+                    record["title"] = new_title
+                    selected_game.update(record)
+                    break
+            save_non_smw_rom_library(self.non_smw_rom_library)
+            refresh_rows(record_id)
+
+        def remove_selected() -> None:
+            selected_ids = set(checked_record_ids)
+            if not selected_ids:
+                messagebox.showinfo(
+                    tr("Delete Selected"),
+                    tr("Select one or more ROMs to delete."),
+                    parent=self.game_library_dialog or self.root,
+                )
+                return
+            if not messagebox.askyesno(
+                tr("Delete selected ROMs"),
+                self._format_ui_text(
+                    "Remove {count} selected ROMs from the app library?",
+                    count=f"{len(selected_ids):,}",
+                ),
+                parent=self.game_library_dialog or self.root,
+            ):
+                return
+            removed_records = [
+                record
+                for record in self.non_smw_rom_library
+                if str(record.get("id", "")) in selected_ids
+            ]
+            self.non_smw_rom_library[:] = [
+                record
+                for record in self.non_smw_rom_library
+                if str(record.get("id", "")) not in selected_ids
+            ]
+            for removed_record in removed_records:
+                local_path = Path(
+                    str(removed_record.get("local_rom_path", ""))
+                )
+                try:
+                    library_root = NON_SMW_ROM_LIBRARY_DIR.resolve()
+                    resolved_path = local_path.resolve()
+                    if (
+                        library_root in resolved_path.parents
+                        and resolved_path.is_file()
+                    ):
+                        resolved_path.unlink()
+                except OSError:
+                    pass
+            checked_record_ids.difference_update(selected_ids)
+            save_non_smw_rom_library(self.non_smw_rom_library)
+            refresh_rows()
+
+        def open_rom_folder() -> None:
+            try:
+                NON_SMW_ROM_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+                open_local_path(NON_SMW_ROM_LIBRARY_DIR)
+            except OSError as error:
+                messagebox.showerror(
+                    APP_NAME,
+                    str(error),
+                    parent=self.game_library_dialog or self.root,
+                )
+
+        actions = tk.Frame(detail_body, bg=STREAM_DESK["surface"], bd=0)
+        actions.pack(fill="x", side="bottom", pady=(self._ui_px(12), 0))
+        for column in range(2):
+            actions.columnconfigure(column, weight=1, uniform="non_smw_actions")
+        action_specs = (
+            ("Save Name", save_display_name, STREAM_DESK["surface_alt"]),
+            ("Open ROM Folder", open_rom_folder, STREAM_DESK["surface_alt"]),
+            ("Delete Selected", remove_selected, STREAM_DESK["red"]),
+            ("Launch Selected", launch_selected, STREAM_DESK["green"]),
+        )
+        for index, (label, command, color) in enumerate(action_specs):
+            self._make_action_button(
+                actions,
+                text=tr(label),
+                command=command,
+                bg=color,
+                active_bg=(
+                    STREAM_DESK["green_dark"]
+                    if color == STREAM_DESK["green"]
+                    else STREAM_DESK["selected"]
+                ),
+                width=16,
+                font_size=9,
+                pad_y=6,
+            ).grid(
+                row=index // 2,
+                column=index % 2,
+                sticky="ew",
+                padx=(0 if index % 2 == 0 else self._ui_px(7), 0),
+                pady=(0 if index < 2 else self._ui_px(7), 0),
+            )
+
+        rom_tree.bind("<<TreeviewSelect>>", on_tree_selection, add="+")
+        rom_tree.bind("<Button-1>", on_tree_click, add="+")
+
+        def launch_from_double_click(event) -> str | None:
+            if rom_tree.identify_column(event.x) == "#0":
+                return "break"
+            launch_selected()
+            return "break"
+
+        rom_tree.bind("<Double-1>", launch_from_double_click, add="+")
+        for filter_variable in (
+            search_var,
+            retroachievements_var,
+            file_type_var,
+            letter_var,
+            sort_var,
+        ):
+            filter_variable.trace_add(
+                "write",
+                lambda *_args: refresh_rows(
+                    str(selected_game.get("id", ""))
+                ),
+            )
+        refresh_rows()
+
+        def refresh_after_ra_scan() -> None:
+            selected_id = str(selected_game.get("id", ""))
+            save_non_smw_rom_library(self.non_smw_rom_library)
+            refresh_rows(selected_id)
+
+        self._start_game_library_retroachievements_scan(
+            self.non_smw_rom_library,
+            refresh_after_ra_scan,
+        )
+        return {
+            "tree": rom_tree,
+            "selected_game": selected_game,
+            "refresh": refresh_rows,
+            "count_var": count_var,
+            "platform_combo": platform_combo,
+            "search_var": search_var,
+            "retroachievements_var": retroachievements_var,
+            "file_type_var": file_type_var,
+            "letter_var": letter_var,
+            "sort_var": sort_var,
+            "checked_record_ids": checked_record_ids,
+        }
 
     def _open_game_library_for_game(
         self,
@@ -87991,6 +93486,21 @@ class TrackerApp:
         dialog.focus_force()
 
     def _open_current_game_in_library(self, event=None) -> None:
+        if self.non_smw_mode_active:
+            self.open_game_library()
+            widgets = getattr(self, "game_library_widgets", {})
+            tabs = widgets.get("library_tabs")
+            non_smw_tab = widgets.get("non_smw_library_tab")
+            non_smw_widgets = widgets.get("non_smw_widgets", {})
+            try:
+                if tabs is not None and non_smw_tab is not None:
+                    tabs.select(non_smw_tab)
+                refresh = non_smw_widgets.get("refresh")
+                if callable(refresh):
+                    refresh(str(self.current_hack_record.get("id", "")))
+            except (AttributeError, tk.TclError):
+                pass
+            return
         self._open_game_library_for_game(self.current_hack_record)
 
     def open_game_library(self, event=None) -> None:
@@ -88008,18 +93518,11 @@ class TrackerApp:
             self.hack_catalog = self.stats_db.load_catalog()
         except Exception as error:
             append_error_log("Game Library catalog reload", str(error))
-
         if not self.hack_catalog:
-            messagebox.showinfo(
-                platform_name + " Game Library",
-                (
-                    "Your SMW Central catalog has not been downloaded yet. "
-                    "Open SMW Central Catalog and select Refresh Moderated "
-                    "Hacks from SMW Central first."
-                ),
-                parent=self.root,
+            self.status_var.set(
+                "Your SMW Central catalog has not been downloaded yet. "
+                "The Non-SMW ROMs tab is still available."
             )
-            return
 
         palette = self._library_palette()
         dialog = self._open_in_app_page(
@@ -90316,7 +95819,8 @@ class TrackerApp:
                 message,
                 parent=self.game_library_dialog or self.root,
             )
-            self._finish_hot_potato_launch(game, error)
+            if not bool(game.get("_non_smw_rom")):
+                self._finish_hot_potato_launch(game, error)
             return
 
         result = result or {}
@@ -90330,7 +95834,18 @@ class TrackerApp:
                 message + "  Method: " + method
             )
         self.status_var.set(message)
-        self._remember_last_launched_hack(game)
+        generic_game = bool(game.get("_non_smw_rom"))
+        if generic_game:
+            record_id = str(game.get("id", ""))
+            for stored_record in self.non_smw_rom_library:
+                if str(stored_record.get("id", "")) == record_id:
+                    stored_record["last_played"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
+                    break
+            save_non_smw_rom_library(self.non_smw_rom_library)
+        else:
+            self._remember_last_launched_hack(game)
 
         # Force the worker to treat every successful app launch as a fresh
         # ROM session. Some platforms switch games without an observable
@@ -90340,7 +95855,9 @@ class TrackerApp:
             self.worker.notify_catalog_launch(game, rom_path)
 
         selected_platform = self.platform_var.get().strip() or "FXPAK Pro"
-        if rom_path and selected_platform == "FXPAK Pro":
+        if generic_game:
+            pass
+        elif rom_path and selected_platform == "FXPAK Pro":
             game["rom_path"] = rom_path
             self._save_fxpak_mapping(game, rom_path)
             self._populate_game_library()
@@ -90368,7 +95885,8 @@ class TrackerApp:
             if self.worker:
                 self.worker.config["platform_last_roms"] = dict(last_roms)
 
-        self._finish_hot_potato_launch(game, None)
+        if not generic_game:
+            self._finish_hot_potato_launch(game, None)
 
     def _catalog_mapping_key(
         self,
@@ -91222,22 +96740,18 @@ class TrackerApp:
             port = int(self.config.get("mister_ssh_port", 22))
         except (TypeError, ValueError):
             port = 22
-        remote_root = str(
+        remote_root = normalize_mister_rom_root(
             self.config.get(
                 "mister_rom_root",
-                "/media/fat/games/SNES/SMW Stream Tracker",
+                MISTER_DEFAULT_ROM_ROOT,
             )
-        ).rstrip("/")
+        )
         menu_root = str(
             self.config.get(
                 "mister_menu_root",
                 "/media/fat/_SMW Stream Tracker",
             )
         ).rstrip("/")
-        if not remote_root.startswith("/media/fat/games/SNES/"):
-            raise ValueError(
-                "The MiSTer ROM folder must be inside /media/fat/games/SNES."
-            )
         if not menu_root.startswith("/media/fat/"):
             raise ValueError(
                 "The MiSTer launch-menu folder must be inside /media/fat."
@@ -91261,22 +96775,6 @@ class TrackerApp:
         try:
             sftp = client.open_sftp()
             try:
-                current_main = self._mister_sftp_read(
-                    sftp,
-                    "/media/fat/MiSTer",
-                    maximum_bytes=MISTER_VIRTUAL_STATES_MAX_BYTES,
-                )
-                current_main_sha256 = hashlib.sha256(current_main).hexdigest()
-                if current_main_sha256 == MISTER_VIRTUAL_STATES_BINARY_SHA256:
-                    raise RuntimeError(
-                        self._translate_ui_text(
-                            "The tracker-installed experimental MiSTer Main "
-                            "is active and can corrupt HDMI output when a game "
-                            "starts. Open MiSTer Setup, select Restore Previous "
-                            "MiSTer Version, wait for MiSTer to restart, and "
-                            "then launch the game again."
-                        )
-                    )
                 if use_retroachievements_core:
                     try:
                         ra_core_ready = (
@@ -91302,15 +96800,15 @@ class TrackerApp:
                     # support. Repair the per-core uartmode setting before
                     # loading RA_SNES so snid starts for this launch.
                     self._configure_mister_snes_live_tracking(sftp)
-                self._mister_sftp_makedirs(sftp, remote_root)
                 self._mister_sftp_makedirs(sftp, menu_root)
-                try:
-                    remote_size = int(sftp.stat(remote_rom).st_size)
-                except OSError:
-                    remote_size = -1
-                if remote_size != local_rom.stat().st_size:
-                    sftp.put(str(local_rom), remote_rom)
-                    uploaded = True
+                remote_rom, upload_status = self._upload_rom_to_mister_sd(
+                    client,
+                    sftp,
+                    local_rom,
+                    remote_root,
+                    game,
+                )
+                uploaded = upload_status == "uploaded"
                 self._mister_sftp_write(
                     sftp,
                     remote_mgl,
@@ -91983,6 +97481,9 @@ class TrackerApp:
                 )
             ),
         }
+
+        if bool(game.get("_non_smw_rom")):
+            return self._run_direct_fxpak_launcher(game, settings)
 
         # RA2Snes must run beside QUsb2Snes to submit FXPAK Pro unlocks.
         # Start both automatically after the user completes the one-click
@@ -93666,31 +99167,21 @@ class TrackerApp:
         )
 
         try:
-            try:
-                rom_path, method = self._resolve_fxpak_rom_path(
-                    ws,
-                    game,
-                    settings.get("SDRoot", "/All_Hacks"),
-                )
-            except FileNotFoundError:
-                if not rom_builder_fxpak_title_requires_alias(game):
-                    raise
-
-                # The catalog keeps the real title (and its emoji), but the
-                # FXPAK receives a readable filename. If an older installation
-                # never uploaded that alias, repair it automatically at launch.
+            if bool(game.get("_non_smw_rom")):
                 local_rom, local_method = self._resolve_local_rom_path(
                     game,
                     "FXPAK Pro",
                 )
-                relative_path = rom_builder_fxpak_relative_rom_path(
-                    game
-                ).as_posix()
+                safe_name = re.sub(
+                    r"[^A-Za-z0-9._ -]+",
+                    "_",
+                    local_rom.name,
+                ).strip(" .") or ("Imported ROM" + local_rom.suffix)
                 sd_root = self._normalize_fxpak_sd_path(
                     settings.get("SDRoot", "/All_Hacks")
                 )
                 rom_path = self._normalize_fxpak_sd_path(
-                    sd_root.rstrip("/") + "/" + relative_path
+                    sd_root.rstrip("/") + "/Non-SMW/" + safe_name
                 )
                 upload_status = self._upload_catalog_rom_to_fxpak_usb(
                     ws,
@@ -93699,9 +99190,46 @@ class TrackerApp:
                     game,
                 )
                 method = (
-                    "readable FXPAK alias "
+                    "managed non-SMW ROM "
                     f"({upload_status}; {local_method})"
                 )
+            else:
+                try:
+                    rom_path, method = self._resolve_fxpak_rom_path(
+                        ws,
+                        game,
+                        settings.get("SDRoot", "/All_Hacks"),
+                    )
+                except FileNotFoundError:
+                    if not rom_builder_fxpak_title_requires_alias(game):
+                        raise
+
+                    # The catalog keeps the real title (and its emoji), but the
+                    # FXPAK receives a readable filename. If an older installation
+                    # never uploaded that alias, repair it automatically at launch.
+                    local_rom, local_method = self._resolve_local_rom_path(
+                        game,
+                        "FXPAK Pro",
+                    )
+                    relative_path = rom_builder_fxpak_relative_rom_path(
+                        game
+                    ).as_posix()
+                    sd_root = self._normalize_fxpak_sd_path(
+                        settings.get("SDRoot", "/All_Hacks")
+                    )
+                    rom_path = self._normalize_fxpak_sd_path(
+                        sd_root.rstrip("/") + "/" + relative_path
+                    )
+                    upload_status = self._upload_catalog_rom_to_fxpak_usb(
+                        ws,
+                        local_rom,
+                        rom_path,
+                        game,
+                    )
+                    method = (
+                        "readable FXPAK alias "
+                        f"({upload_status}; {local_method})"
+                    )
             self._fxpak_request(
                 ws,
                 "Boot",
@@ -93894,7 +99422,7 @@ class TrackerApp:
         *,
         page_action: Callable[[str], None] | None = None,
     ) -> None:
-        """Show locally stored SMW Central details in the app's blue popup."""
+        """Show locally stored SMW Central details in the modern app shell."""
         existing = getattr(self, "hack_details_dialog", None)
         try:
             if existing is not None and existing.winfo_exists():
@@ -93905,9 +99433,10 @@ class TrackerApp:
         palette = self._library_palette()
         dialog = self._create_tracker_dialog(self.root)
         self.hack_details_dialog = dialog
+        dialog._uses_stream_desk_palette = True
         dialog.title(self._translate_ui_text("Hack Details"))
-        self._size_dialog_for_ui(dialog, 1080, 790, 860, 650)
-        dialog.minsize(self._ui_px(760), self._ui_px(560))
+        self._size_dialog_for_ui(dialog, 1120, 820, 880, 660)
+        dialog.minsize(self._ui_px(800), self._ui_px(600))
         dialog.resizable(True, True)
         dialog.transient(self.root)
         dialog.configure(bg=palette["window"])
@@ -93931,56 +99460,59 @@ class TrackerApp:
         )
         dialog._hack_details_catalog_key = metadata_key
 
-        title_bar = tk.Frame(
+        self._create_stream_desk_page_header(
             dialog,
-            bg=THEME["blue"],
-            padx=self._ui_px(18),
-            pady=self._ui_px(12),
+            kicker="SMW CENTRAL",
+            title="Hack Details",
         )
-        title_bar.pack(fill="x")
-        self._add_dialog_window_controls(
-            title_bar,
-            dialog,
-            THEME["blue"],
-        )
-        OutlinedLabel(
-            title_bar,
-            text=self._translate_ui_text("Hack Details").upper(),
-            font=("Segoe UI", 15, "bold"),
-            fg="white",
-            bg=THEME["blue"],
-            anchor="center",
-            justify="center",
-        ).pack(fill="x")
 
-        summary = tk.Frame(
+        summary_shell = tk.Frame(
             dialog,
-            bg=palette["panel"],
-            padx=self._ui_px(20),
+            bg=palette["window"],
+            bd=0,
+        )
+        summary_shell.pack(
+            fill="x",
+            padx=self._ui_px(18),
             pady=self._ui_px(14),
+        )
+        summary = tk.Frame(
+            summary_shell,
+            bg=palette["panel"],
             highlightbackground=palette["border"],
             highlightthickness=1,
+            bd=0,
         )
-        summary.pack(
-            fill="x",
-            padx=self._ui_px(12),
-            pady=(0, self._ui_px(10)),
-        )
-        OutlinedLabel(
+        summary.pack(fill="x")
+        tk.Frame(
             summary,
+            bg=STREAM_DESK["green"],
+            width=self._ui_px(4),
+            bd=0,
+        ).pack(side="left", fill="y")
+        summary_content = tk.Frame(
+            summary,
+            bg=palette["panel"],
+            padx=self._ui_px(18),
+            pady=self._ui_px(14),
+            bd=0,
+        )
+        summary_content.pack(side="left", fill="both", expand=True)
+        tk.Label(
+            summary_content,
             text=(
                 str(game.get("title") or "").strip()
                 or self._translate_ui_text("Untitled")
             ),
-            font=("Segoe UI", 17, "bold"),
-            fg=THEME["blue"],
+            font=("Segoe UI", 18, "bold"),
+            fg=palette["text_strong"],
             bg=palette["panel"],
-            anchor="center",
-            justify="center",
+            anchor="w",
+            justify="left",
             wraplength=self._ui_px(980),
         ).pack(fill="x")
         tk.Label(
-            summary,
+            summary_content,
             text=(
                 self._translate_ui_text("By:")
                 + " "
@@ -93992,10 +99524,11 @@ class TrackerApp:
             font=("Segoe UI", 10),
             fg=palette["muted"],
             bg=palette["panel"],
-        ).pack(pady=(self._ui_px(3), self._ui_px(8)))
+            anchor="w",
+        ).pack(fill="x", pady=(self._ui_px(3), self._ui_px(10)))
 
-        badges = tk.Frame(summary, bg=palette["panel"])
-        badges.pack(anchor="center")
+        badges = tk.Frame(summary_content, bg=palette["panel"])
+        badges.pack(anchor="w")
         rating = game.get("rating", game.get("smwc_rating"))
         rating_text = (
             f"{float(rating):.2f}".rstrip("0").rstrip(".") + "/5"
@@ -94017,8 +99550,8 @@ class TrackerApp:
                 self._translate_ui_text("SMWCentral Rating:")
                 + " "
                 + rating_text,
-                "#E4DFEC",
-                "#5F497A",
+                palette["panel_alt"],
+                STREAM_DESK["yellow"],
             ),
             (
                 self._translate_ui_text("Type:")
@@ -94027,8 +99560,8 @@ class TrackerApp:
                     str(game.get("hack_type") or "").strip()
                     or self._translate_ui_text("Unknown")
                 ),
-                "#DCEEFF",
-                THEME["navy"],
+                palette["panel_alt"],
+                STREAM_DESK["blue"],
             ),
         )
         for badge_text, badge_bg, badge_fg in badge_specs:
@@ -94039,33 +99572,37 @@ class TrackerApp:
                 fg=badge_fg,
                 bg=badge_bg,
                 padx=self._ui_px(8),
-                pady=self._ui_px(3),
+                pady=self._ui_px(4),
+                highlightbackground=palette["border"],
+                highlightthickness=1,
             ).pack(side="left", padx=self._ui_px(3))
 
         tags_text = catalog_tags_text(game.get("tags", ""))
         if tags_text:
             tk.Label(
-                summary,
+                summary_content,
                 text=self._translate_ui_text("Tags:") + " " + tags_text,
                 font=("Segoe UI", 9),
-                fg=palette["text"],
+                fg=palette["muted"],
                 bg=palette["panel"],
-                justify="center",
+                anchor="w",
+                justify="left",
                 wraplength=self._ui_px(970),
-            ).pack(fill="x", pady=(self._ui_px(9), 0))
+            ).pack(fill="x", pady=(self._ui_px(11), 0))
 
         metadata_status_label = None
         if metadata_missing:
             metadata_status_label = tk.Label(
-                summary,
+                summary_content,
                 text=self._translate_ui_text(
                     "Loading the description, tags, and screenshots "
                     "from SMW Central…"
                 ),
                 font=("Segoe UI", 9, "bold"),
-                fg=THEME["blue"],
+                fg=STREAM_DESK["blue"],
                 bg=palette["panel"],
-                justify="center",
+                anchor="w",
+                justify="left",
                 wraplength=self._ui_px(950),
             )
             metadata_status_label.pack(
@@ -94076,19 +99613,20 @@ class TrackerApp:
 
         scroll_shell = tk.Frame(
             dialog,
-            bg=palette["panel"],
-            highlightbackground=palette["border"],
-            highlightthickness=1,
+            bg=palette["window"],
+            bd=0,
         )
         scroll_shell.pack(
             fill="both",
             expand=True,
-            padx=self._ui_px(12),
+            padx=self._ui_px(18),
             pady=(0, self._ui_px(10)),
         )
+        scroll_shell.columnconfigure(0, weight=1)
+        scroll_shell.rowconfigure(0, weight=1)
         canvas = tk.Canvas(
             scroll_shell,
-            bg=palette["panel"],
+            bg=palette["window"],
             bd=0,
             highlightthickness=0,
             yscrollincrement=max(12, self._ui_px(24)),
@@ -94097,27 +99635,30 @@ class TrackerApp:
             scroll_shell,
             orient=tk.VERTICAL,
             command=canvas.yview,
-            bg=THEME["yellow"],
-            activebackground="#FFE56B",
-            troughcolor="#17243A",
-            width=16,
+            bg=STREAM_DESK["green"],
+            activebackground=STREAM_DESK["green_dark"],
+            troughcolor=STREAM_DESK["surface_deep"],
+            width=10,
         )
         canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(
+            row=0,
+            column=1,
+            sticky="ns",
+            padx=(self._ui_px(8), 0),
+        )
 
         content = tk.Frame(
             canvas,
-            bg=palette["panel"],
-            padx=self._ui_px(20),
-            pady=self._ui_px(16),
+            bg=palette["window"],
+            bd=0,
         )
         content_window = canvas.create_window(
             (0, 0),
             window=content,
             anchor="nw",
         )
-        content.columnconfigure(0, weight=1)
         content.bind(
             "<Configure>",
             lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
@@ -94171,17 +99712,20 @@ class TrackerApp:
             for child in children:
                 bind_hack_details_wheel(child)
 
-        OutlinedLabel(
+        description_body = self._stream_desk_card(
             content,
-            text=self._translate_ui_text("Description").upper(),
-            font=("Segoe UI", 12, "bold"),
-            fg=THEME["blue"],
-            bg=palette["panel"],
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew")
+            self._translate_ui_text("Description"),
+            title_font_size=13,
+            header_pad_y=11,
+            body_pad=14,
+        )
+        description_body.stream_card.pack(
+            fill="x",
+            pady=(0, self._ui_px(12)),
+        )
         description = str(game.get("description", "")).strip()
-        tk.Label(
-            content,
+        description_label = tk.Label(
+            description_body,
             text=(
                 description
                 or self._translate_ui_text(
@@ -94198,28 +99742,29 @@ class TrackerApp:
             pady=self._ui_px(12),
             highlightbackground=palette["border"],
             highlightthickness=1,
-        ).grid(
-            row=1,
-            column=0,
-            sticky="ew",
-            pady=(self._ui_px(7), self._ui_px(16)),
+        )
+        description_label.pack(fill="x")
+        description_body.bind(
+            "<Configure>",
+            lambda event: description_label.configure(
+                wraplength=max(
+                    self._ui_px(360),
+                    int(event.width) - self._ui_px(28),
+                )
+            ),
+            add="+",
         )
 
-        OutlinedLabel(
+        screenshots_body = self._stream_desk_card(
             content,
-            text=self._translate_ui_text("Screenshots").upper(),
-            font=("Segoe UI", 12, "bold"),
-            fg=THEME["blue"],
-            bg=palette["panel"],
-            anchor="w",
-        ).grid(row=2, column=0, sticky="ew")
-        gallery = tk.Frame(content, bg=palette["panel"])
-        gallery.grid(
-            row=3,
-            column=0,
-            sticky="ew",
-            pady=(self._ui_px(7), 0),
+            self._translate_ui_text("Screenshots"),
+            title_font_size=13,
+            header_pad_y=11,
+            body_pad=14,
         )
+        screenshots_body.stream_card.pack(fill="x")
+        gallery = tk.Frame(screenshots_body, bg=palette["panel"])
+        gallery.pack(fill="x")
         gallery.columnconfigure(0, weight=1)
         gallery.columnconfigure(1, weight=1)
         screenshot_urls = catalog_screenshot_urls(
@@ -94247,8 +99792,8 @@ class TrackerApp:
         footer = tk.Frame(dialog, bg=palette["window"])
         footer.pack(
             fill="x",
-            padx=self._ui_px(12),
-            pady=(0, self._ui_px(12)),
+            padx=self._ui_px(18),
+            pady=(0, self._ui_px(14)),
         )
         page_url = str(game.get("page_url", "")).strip()
         if page_url:
@@ -94257,19 +99802,19 @@ class TrackerApp:
                 footer,
                 text=self._translate_ui_text("Open SMWCentral"),
                 command=lambda: open_page(page_url),
-                bg=THEME["blue"],
-                active_bg=THEME["navy"],
+                bg=STREAM_DESK["blue"],
+                active_bg=STREAM_DESK["blue_dark"],
                 width=20,
-                pad_y=6,
+                pad_y=7,
             ).pack(side="left")
         self._make_action_button(
             footer,
             text=self._translate_ui_text("Close"),
             command=dialog.destroy,
-            bg=THEME["green"],
-            active_bg=THEME["green_dark"],
+            bg=STREAM_DESK["surface_alt"],
+            active_bg=STREAM_DESK["selected"],
             width=12,
-            pad_y=6,
+            pad_y=7,
         ).pack(side="right")
 
         dialog._hack_detail_photos = []
@@ -94291,7 +99836,7 @@ class TrackerApp:
                             "Click any screenshot to enlarge it."
                         ),
                         font=("Segoe UI", 9, "bold"),
-                        fg=THEME["blue"],
+                        fg=STREAM_DESK["green"],
                         bg=palette["panel"],
                     ).grid(
                         row=0,
@@ -94318,8 +99863,8 @@ class TrackerApp:
                         bg=palette["panel_alt"],
                         highlightbackground=palette["border"],
                         highlightthickness=1,
-                        padx=self._ui_px(7),
-                        pady=self._ui_px(7),
+                        padx=self._ui_px(9),
+                        pady=self._ui_px(9),
                     )
                     card.grid(
                         row=row,
@@ -94377,7 +99922,7 @@ class TrackerApp:
                             "Some screenshots could not be loaded."
                         ),
                         font=("Segoe UI", 9),
-                        fg=THEME["warning"],
+                        fg=STREAM_DESK["orange"],
                         bg=palette["panel"],
                     ).grid(
                         row=row + (1 if column else 0),
@@ -96312,6 +101857,21 @@ class TrackerApp:
                     "id": action_id,
                     "name": action_name,
                 }
+        control_mappings = self.config.get("streamerbot_control_actions", {})
+        if not isinstance(control_mappings, dict):
+            control_mappings = {}
+        normalized_control_mappings: dict[str, dict[str, str]] = {}
+        for control_name, _control_label in STREAMERBOT_CONTROL_DEFINITIONS:
+            action = control_mappings.get(control_name, {})
+            if not isinstance(action, dict):
+                continue
+            action_id = str(action.get("id", "")).strip()
+            action_name = str(action.get("name", "")).strip()
+            if action_id or action_name:
+                normalized_control_mappings[control_name] = {
+                    "id": action_id,
+                    "name": action_name,
+                }
         try:
             port = int(self.config.get("streamerbot_port", 8080) or 8080)
         except (TypeError, ValueError):
@@ -96328,6 +101888,10 @@ class TrackerApp:
             ).strip(),
             "password": str(self.config.get("streamerbot_password", "") or ""),
             "event_actions": normalized_mappings,
+            "controls_enabled": bool(
+                self.config.get("streamerbot_controls_enabled", False)
+            ),
+            "control_actions": normalized_control_mappings,
         }
 
     def _queue_streamerbot_status(self, connected: bool, message: str) -> None:
@@ -96342,6 +101906,22 @@ class TrackerApp:
         except queue.Full:
             pass
 
+    def _queue_streamerbot_control(
+        self,
+        command: str,
+        arguments: dict[str, Any],
+    ) -> None:
+        try:
+            self.event_queue.put_nowait(
+                {
+                    "type": "streamerbot_control",
+                    "command": str(command),
+                    "arguments": dict(arguments),
+                }
+            )
+        except queue.Full:
+            pass
+
     def _configure_streamerbot_dispatcher(self) -> None:
         settings = self._streamerbot_settings_snapshot()
         if self.startup_check or not bool(settings.get("enabled", False)):
@@ -96349,6 +101929,10 @@ class TrackerApp:
             self.streamerbot_dispatcher = None
             if dispatcher is not None:
                 dispatcher.stop()
+            listener = self.streamerbot_control_listener
+            self.streamerbot_control_listener = None
+            if listener is not None:
+                listener.stop()
             try:
                 self.streamerbot_status_var.set(
                     self._translate_ui_text("Streamer.bot is disabled.")
@@ -96363,6 +101947,24 @@ class TrackerApp:
             )
         else:
             self.streamerbot_dispatcher.configure(settings)
+        controls_active = (
+            bool(settings.get("controls_enabled", False))
+            and bool(settings.get("control_actions", {}))
+        )
+        if controls_active:
+            if self.streamerbot_control_listener is None:
+                self.streamerbot_control_listener = StreamerBotControlListener(
+                    settings,
+                    control_callback=self._queue_streamerbot_control,
+                    status_callback=self._queue_streamerbot_status,
+                )
+            else:
+                self.streamerbot_control_listener.configure(settings)
+        else:
+            listener = self.streamerbot_control_listener
+            self.streamerbot_control_listener = None
+            if listener is not None:
+                listener.stop()
         try:
             self.streamerbot_status_var.set(
                 self._translate_ui_text(
@@ -96727,6 +102329,7 @@ class TrackerApp:
                         "message": "That downloaded hack is no longer available.",
                     }
                 )
+
                 return
             launched = self._launch_catalog_game(game)
             title = str(game.get("title", "Unknown"))
@@ -96772,6 +102375,133 @@ class TrackerApp:
                     ),
                 }
             )
+
+    def _set_streamerbot_control_status(self, message: str) -> None:
+        text = str(message)
+        try:
+            self.streamerbot_status_var.set(text)
+        except (AttributeError, tk.TclError):
+            pass
+        try:
+            self.status_var.set(text)
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _handle_streamerbot_control_command(
+        self,
+        command: str,
+        arguments: dict[str, Any],
+    ) -> None:
+        """Run an approved Streamer.bot command on Tk's UI thread."""
+
+        if not (
+            bool(self.config.get("streamerbot_enabled", False))
+            and bool(self.config.get("streamerbot_controls_enabled", False))
+        ):
+            return
+        command = str(command).strip()
+        arguments = dict(arguments) if isinstance(arguments, dict) else {}
+
+        if command == "search_and_play_hack":
+            query = str(
+                arguments.get("query")
+                or arguments.get("hackTitle")
+                or arguments.get("title")
+                or arguments.get("rawInput")
+                or ""
+            ).strip()[:120]
+            if not query:
+                self._set_streamerbot_control_status(
+                    "Streamer.bot Search & Play needs query, hackTitle, title, "
+                    "or a chat command's rawInput."
+                )
+                return
+            results = self._obs_widget_search_results(query, limit=30)
+            if not results:
+                self._set_streamerbot_control_status(
+                    f'No downloaded hacks matched "{query}".'
+                )
+                return
+            selected = next(
+                (
+                    result
+                    for result in results
+                    if str(result.get("title", "")).strip().casefold()
+                    == query.casefold()
+                ),
+                results[0],
+            )
+            game = self._obs_widget_game_by_id(selected.get("id"))
+            if game is None or not self._launch_catalog_game(game):
+                self._set_streamerbot_control_status(
+                    f'Could not launch "{selected.get("title", query)}".'
+                )
+                return
+            self._set_streamerbot_control_status(
+                f'Streamer.bot launched "{selected.get("title", query)}".'
+            )
+            return
+
+        if command == "play_random_hack":
+            nested_filters = arguments.get("filters", {})
+            filters = (
+                dict(nested_filters)
+                if isinstance(nested_filters, dict)
+                else {}
+            )
+            for filter_name in (
+                "rating",
+                "difficulty",
+                "type",
+                "released",
+                "hall_of_fame",
+            ):
+                if filter_name in arguments:
+                    filters[filter_name] = arguments[filter_name]
+            if "hallOfFame" in arguments:
+                filters["hall_of_fame"] = arguments["hallOfFame"]
+            candidates = self._obs_widget_random_candidates(filters)
+            if not candidates:
+                self._set_streamerbot_control_status(
+                    "No downloaded hacks match the Streamer.bot filters."
+                )
+                return
+            game = random.choice(candidates)
+            title = str(game.get("title", "Unknown"))
+            if not self._launch_catalog_game(game):
+                self._set_streamerbot_control_status(
+                    f'Could not launch "{title}".'
+                )
+                return
+            self._set_streamerbot_control_status(
+                f'Streamer.bot random pick: "{title}".'
+            )
+            return
+
+        control_callbacks: dict[str, tuple[Callable[[], Any], str]] = {
+            "toggle_game_timer": (
+                self.toggle_game_timer,
+                "Streamer.bot toggled the game timer.",
+            ),
+            "finish_game_timer": (
+                self.finish_game_timer,
+                "Streamer.bot finished the game timer.",
+            ),
+            "complete_hack": (
+                self.complete_in_spreadsheet,
+                "Streamer.bot opened Complete Hack.",
+            ),
+            "open_game_library": (
+                self.open_game_library,
+                "Streamer.bot opened the Game Library.",
+            ),
+        }
+        callback_entry = control_callbacks.get(command)
+        if callback_entry is None:
+            return
+        callback, status_message = callback_entry
+        callback()
+        self._set_streamerbot_control_status(status_message)
 
     def _set_obs_widget_status(self, text: str) -> None:
         status_var = getattr(self, "obs_widget_status_var", None)
@@ -98237,6 +103967,179 @@ class TrackerApp:
         except (TypeError, ValueError):
             return 10
 
+    @staticmethod
+    def _load_unclean_session_recovery() -> dict[str, Any]:
+        """Load a prior unclean-session marker before this run replaces it."""
+        try:
+            payload = json.loads(
+                SESSION_RECOVERY_FILE.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict) or bool(payload.get("clean_shutdown")):
+            return {}
+        if not str(payload.get("rom_path", "")).strip() and not str(
+            payload.get("title", "")
+        ).strip():
+            return {}
+        return dict(payload)
+
+    def _offer_crash_session_recovery(self) -> None:
+        recovery = dict(getattr(self, "pending_crash_recovery", {}) or {})
+        if not recovery:
+            return
+        welcome = getattr(self, "welcome_setup_dialog", None)
+        try:
+            if welcome is not None and welcome.winfo_exists():
+                self.root.after(900, self._offer_crash_session_recovery)
+                return
+        except tk.TclError:
+            pass
+        self.pending_crash_recovery = {}
+        title = str(recovery.get("title", "")).strip() or clean_rom_filename(
+            str(recovery.get("rom_path", ""))
+        )
+        game_time = format_timer(float(recovery.get("game_seconds", 0) or 0))
+        deaths = max(0, int(recovery.get("total_deaths", 0) or 0))
+        exits = max(0, int(recovery.get("completed_exits", 0) or 0))
+        total = str(recovery.get("total_exits", "Unknown") or "Unknown")
+        self.status_var.set(
+            f'Recovered the last checkpoint for "{title}". '
+            "Its saved statistics will resume when that ROM is detected."
+        )
+        self._show_localized_info(
+            "Session Recovery",
+            (
+                "The previous tracker session did not close normally. Its "
+                "last confirmed checkpoint was preserved.\n\n"
+                f"Game: {title}\n"
+                f"Game time: {game_time}\n"
+                f"Game deaths: {deaths}\n"
+                f"Exits: {exits} / {total}\n\n"
+                "Load the same ROM and save slot to continue from the saved "
+                "statistics. No unconfirmed live-memory sample was restored."
+            ),
+            parent=self.root,
+        )
+
+    def _write_post_stream_summary(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        show_confirmation: bool = False,
+    ) -> Path | None:
+        if not bool(self.config.get("post_stream_summary_enabled", True)):
+            return None
+
+        summary = dict(payload or {})
+        if not summary and self.worker is not None:
+            summary = self.worker.session_summary_payload()
+        game = str(summary.get("game", "")).strip()
+        if not game:
+            return None
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        safe_game = re.sub(r"[^A-Za-z0-9._ -]+", "", game).strip()[:60]
+        stem = f"{stamp} - {safe_game or 'Session'}"
+        destination = POST_STREAM_SUMMARY_DIR / f"{stem}.txt"
+        json_destination = POST_STREAM_SUMMARY_DIR / f"{stem}.json"
+        lines = [
+            f"{APP_NAME} — Post-Stream Summary",
+            "",
+            f"Game: {game}",
+            f"Creator: {summary.get('creator', '') or 'Not applicable'}",
+            f"Platform: {summary.get('platform', '') or 'Unknown'}",
+            f"Started: {summary.get('started_at', '')}",
+            f"Ended: {summary.get('ended_at', '')}",
+            f"Game Timer: {summary.get('game_time', '00:00')}",
+            f"Level Timer: {summary.get('level_time', '00:00')}",
+            f"Level Deaths: {int(summary.get('level_deaths', 0) or 0)}",
+            f"Game Deaths: {int(summary.get('total_deaths', 0) or 0)}",
+        ]
+        if not bool(summary.get("generic_game", False)):
+            lines.append(
+                "Exits: "
+                f"{int(summary.get('completed_exits', 0) or 0)} / "
+                f"{summary.get('total_exits', 'Unknown') or 'Unknown'}"
+            )
+        lines.append(
+            "Live samples reconciled: "
+            f"{int(summary.get('statistics_corrected', 0) or 0)}"
+        )
+        try:
+            POST_STREAM_SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_suffix(".txt.tmp")
+            temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            os.replace(temporary, destination)
+            write_json_atomic(json_destination, summary)
+            if show_confirmation:
+                self._show_localized_info(
+                    "Post-Stream Summary",
+                    "The session summary was saved to:\n\n" + str(destination),
+                    parent=self.root,
+                )
+            return destination
+        except OSError as error:
+            append_error_log("Post-stream summary failed", str(error))
+            if show_confirmation:
+                self._show_localized_error(
+                    "Post-Stream Summary",
+                    str(error),
+                    parent=self.root,
+                )
+            return None
+
+    def _run_library_maintenance(
+        self,
+        *,
+        show_confirmation: bool = True,
+    ) -> dict[str, int]:
+        """Repair safe metadata issues and report missing ROMs without deletion."""
+        maintained, report = maintain_non_smw_rom_library(
+            self.non_smw_rom_library
+        )
+        changed = (
+            report["duplicates_removed"]
+            + report["titles_cleaned"]
+            + report["invalid_removed"]
+        )
+        if changed:
+            self._create_recovery_backup("before_library_maintenance")
+            self.non_smw_rom_library[:] = maintained
+            save_non_smw_rom_library(self.non_smw_rom_library)
+        missing_smw = 0
+        for game in self.hack_catalog:
+            local_path = str(game.get("local_rom_path", "") or "").strip()
+            if local_path and not Path(local_path).is_file():
+                missing_smw += 1
+        report["missing_smw_files"] = missing_smw
+        report["repairs"] = changed
+        self.config["library_maintenance_last_run"] = (
+            datetime.now().astimezone().isoformat(timespec="seconds")
+        )
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        if show_confirmation:
+            self._show_localized_info(
+                "Library Maintenance",
+                (
+                    "Library maintenance is complete.\n\n"
+                    f"SNES ROM records checked: {report['records']:,}\n"
+                    f"Duplicate rows removed: {report['duplicates_removed']:,}\n"
+                    f"ROM names cleaned: {report['titles_cleaned']:,}\n"
+                    f"Invalid rows removed: {report['invalid_removed']:,}\n"
+                    f"Missing SNES ROM files reported: {report['missing_files']:,}\n"
+                    f"Missing SMW hack files reported: {missing_smw:,}\n\n"
+                    "Missing files were only reported. No ROM file was deleted."
+                ),
+                parent=self.root,
+            )
+        return report
+
     def _create_recovery_backup(
         self,
         reason: str = "automatic",
@@ -98279,6 +104182,21 @@ class TrackerApp:
                     archive.write(
                         LEVEL_PROGRESS_SAVE_FILE,
                         "SMWStreamTrackerLevelProgress.json",
+                    )
+                if SESSION_RECOVERY_FILE.is_file():
+                    archive.write(
+                        SESSION_RECOVERY_FILE,
+                        "ActiveSessionRecovery.json",
+                    )
+                if STATISTICS_RECONCILIATION_LOG_FILE.is_file():
+                    archive.write(
+                        STATISTICS_RECONCILIATION_LOG_FILE,
+                        "StatisticsReconciliation.jsonl",
+                    )
+                if NON_SMW_ROM_LIBRARY_FILE.is_file():
+                    archive.write(
+                        NON_SMW_ROM_LIBRARY_FILE,
+                        "NonSMWRomLibrary.json",
                     )
                 archive.writestr("backup_info.json", json.dumps(metadata, indent=2))
             backups = sorted(
@@ -102977,6 +108895,28 @@ class TrackerApp:
             return
         self.worker.reset_total_death_counter()
 
+    def add_non_smw_death(self) -> None:
+        if not self.worker:
+            messagebox.showerror(
+                APP_NAME,
+                "The tracker is reconnecting. Try adding the death again "
+                "in a moment.",
+                parent=self.root,
+            )
+            return
+        self.worker.add_manual_death()
+
+    def start_new_non_smw_level(self) -> None:
+        if not self.worker:
+            messagebox.showerror(
+                APP_NAME,
+                "The tracker is reconnecting. Try starting the level again "
+                "in a moment.",
+                parent=self.root,
+            )
+            return
+        self.worker.start_new_generic_level()
+
     def toggle_game_timer(self) -> None:
         if not self.worker:
             messagebox.showerror(
@@ -103040,6 +108980,47 @@ class TrackerApp:
         self.status_var.set(
             "Finishing the game timer…"
         )
+
+    def _open_completion_after_detected_finish(
+        self,
+        attempts_remaining: int = 12,
+    ) -> None:
+        """Wait for the worker to finish its timer before opening completion."""
+        if self.worker is not None and self.worker.game_finished:
+            self.complete_in_spreadsheet()
+            return
+        if attempts_remaining <= 0:
+            self.status_var.set(
+                "The completion was confirmed, but the tracker is still "
+                "reconnecting. Use Complete Hack when it reconnects."
+            )
+            return
+        self.root.after(
+            100,
+            lambda: self._open_completion_after_detected_finish(
+                attempts_remaining - 1
+            ),
+        )
+
+    def _confirm_detected_completion(
+        self,
+        title: str,
+        completed: int,
+        total: int,
+    ) -> None:
+        confirmed = self._ask_localized_yes_no(
+            "Completion Detected",
+            f'"{title}" reached {completed}/{total} exits and the final '
+            "level completion was confirmed. Mark this hack completed?",
+            parent=self.root,
+        )
+        if not confirmed:
+            self.status_var.set(
+                f'Completion suggestion for "{title}" was left unconfirmed.'
+            )
+            return
+        self.finish_game_timer()
+        self.root.after(100, self._open_completion_after_detected_finish)
 
     def complete_in_spreadsheet(self) -> None:
         self.pending_smwcentral_completion = None
@@ -103672,11 +109653,13 @@ class TrackerApp:
                     ):
                         continue
                     available = event.get("available")
-                    waiting_available = max(
-                        0,
-                        int(event.get("waiting_available", 0) or 0),
+                    waiting_value = event.get("waiting_available")
+                    waiting_available = (
+                        None
+                        if waiting_value is None
+                        else max(0, int(waiting_value or 0))
                     )
-                    self.catalog_new_waiting_count = waiting_available
+                    self.catalog_available_waiting_count = waiting_available
                     self.catalog_freshness_state = "ready"
                     if available is None:
                         self.catalog_new_moderated_count = None
@@ -103690,7 +109673,10 @@ class TrackerApp:
                     )
                     try:
                         has_new_hacks = (
-                            waiting_available > 0
+                            (
+                                waiting_available is not None
+                                and waiting_available > 0
+                            )
                             or (
                                 available is not None
                                 and int(available) > 0
@@ -103705,7 +109691,79 @@ class TrackerApp:
                         )
                     except tk.TclError:
                         pass
+                    self._refresh_catalog_notification_badges()
                     self.catalog_freshness_thread = None
+
+                elif event_type == "reconciliation":
+                    correction = event.get("correction", {})
+                    self.last_statistics_reconciliation = (
+                        dict(correction)
+                        if isinstance(correction, dict)
+                        else {}
+                    )
+                    self.statistics_reconciliation_count = max(
+                        0,
+                        int(event.get("corrections", 0) or 0),
+                    )
+
+                elif event_type == "mister_profile_selected":
+                    profile = event.get("profile", {})
+                    profiles = event.get("profiles", [])
+                    if isinstance(profiles, list) and profiles:
+                        self.config["mister_profiles"] = [
+                            dict(saved_profile)
+                            for saved_profile in profiles
+                            if isinstance(saved_profile, dict)
+                        ]
+                    if isinstance(profile, dict) and profile:
+                        apply_mister_profile_to_config(self.config, profile)
+                        try:
+                            save_config(self.config)
+                        except OSError:
+                            pass
+                        self.status_var.set(
+                            f'Using MiSTer profile "{profile.get("name", "MiSTer")}" '
+                            f'at {profile.get("host", "MiSTer")}.'
+                        )
+
+                elif event_type == "completion_detected":
+                    completed = max(0, int(event.get("completed", 0) or 0))
+                    total = max(0, int(event.get("total", 0) or 0))
+                    title = str(event.get("title", "Current game") or "Current game")
+                    if bool(event.get("requires_confirmation", False)):
+                        self.status_var.set(
+                            f'Completion detected for "{title}" at '
+                            f"{completed}/{total} exits. Waiting for your "
+                            "confirmation."
+                        )
+                        self.root.after(
+                            100,
+                            lambda detected_title=title,
+                            detected_completed=completed,
+                            detected_total=total: (
+                                self._confirm_detected_completion(
+                                    detected_title,
+                                    detected_completed,
+                                    detected_total,
+                                )
+                            ),
+                        )
+                    else:
+                        self.status_var.set(
+                            f'Completion detected for "{title}" at '
+                            f"{completed}/{total} exits. The game timer was "
+                            "finished automatically."
+                        )
+                        active_page = getattr(
+                            self,
+                            "active_in_app_page",
+                            None,
+                        )
+                        active_page_key = str(
+                            getattr(active_page, "page_key", "") or ""
+                        ).casefold()
+                        if active_page_key != "complete_hack":
+                            self.root.after(250, self.complete_in_spreadsheet)
 
                 elif event_type == "spreadsheet":
                     if event.get("loaded"):
@@ -103843,22 +109901,32 @@ class TrackerApp:
                         )
 
                 elif event_type == "game":
-                    event_author = smwc_author_text(
-                        event.get(
-                            "author",
-                            "Unknown",
+                    event_is_generic = bool(event.get("generic_game"))
+                    self.non_smw_mode_active = event_is_generic
+                    event_author = (
+                        ""
+                        if event_is_generic
+                        else smwc_author_text(
+                            event.get(
+                                "author",
+                                "Unknown",
+                            )
                         )
                     )
                     self.game_var.set(
                         str(event.get("title", "No game detected"))
                     )
                     self.author_var.set(
-                        self._translate_ui_text("By:")
+                        ""
+                        if event_is_generic
+                        else self._translate_ui_text("By:")
                         + " "
                         + event_author
                     )
                     self.exits_var.set(
-                        self._translate_ui_text("Exits:")
+                        ""
+                        if event_is_generic
+                        else self._translate_ui_text("Exits:")
                         + " "
                         + str(event.get("completed", 0))
                         + " / "
@@ -103915,7 +109983,25 @@ class TrackerApp:
                         + " "
                         + hack_type_text
                     )
+                    try:
+                        event_retroachievements_game_id = max(
+                            0,
+                            int(
+                                event.get(
+                                    "retroachievements_game_id",
+                                    0,
+                                )
+                                or 0
+                            ),
+                        )
+                    except (TypeError, ValueError):
+                        event_retroachievements_game_id = 0
                     self.current_hack_record = {
+                        "id": (
+                            str(event.get("catalog_key", ""))
+                            if event_is_generic
+                            else ""
+                        ),
                         "catalog_key": str(event.get("catalog_key", "")),
                         "title": str(event.get("title", "")),
                         "author": event_author,
@@ -103931,10 +110017,19 @@ class TrackerApp:
                         "added_date": str(event.get("added_date", "")),
                         "smwc_id": str(event.get("smwc_id", "")),
                         "page_url": self.current_hack_url,
+                        "local_rom_path": str(
+                            event.get("local_rom_path", "")
+                        ),
+                        "_non_smw_rom": event_is_generic,
+                        "_retroachievements_game_id": (
+                            event_retroachievements_game_id
+                        ),
                     }
-                    self._remember_last_launched_hack(
-                        self.current_hack_record
-                    )
+                    if not event_is_generic:
+                        self._remember_last_launched_hack(
+                            self.current_hack_record
+                        )
+                    self._refresh_non_smw_dashboard_mode()
                     game_identity = (
                         str(event.get("catalog_key", "")).strip().casefold()
                         or str(event.get("title", "")).strip().casefold()
@@ -104115,6 +110210,13 @@ class TrackerApp:
                 elif event_type == "streamerbot_status":
                     self.streamerbot_status_var.set(
                         str(event.get("message", "Streamer.bot status updated."))
+                    )
+
+                elif event_type == "streamerbot_control":
+                    arguments = event.get("arguments", {})
+                    self._handle_streamerbot_control_command(
+                        str(event.get("command", "")),
+                        arguments if isinstance(arguments, dict) else {},
                     )
 
                 elif event_type == "timer_action":
@@ -104487,6 +110589,7 @@ class TrackerApp:
         self.shutdown_in_progress = True
         self._dismiss_main_hack_selector_popup()
         self.catalog_freshness_cancel_event.set()
+        self.automatic_catalog_refresh_cancel_event.set()
         self.fxpak_sd_cancel_event.set()
         for sequence, bind_id in tuple(
             self.main_mousewheel_bind_ids.items()
@@ -104497,11 +110600,31 @@ class TrackerApp:
                 pass
         self.main_mousewheel_bind_ids.clear()
 
+        session_summary: dict[str, Any] = {}
         if self.worker:
             self.worker.save_current_level_progress()
             self.worker.save_current_game_time()
             self.worker.save_current_death_count()
+            session_summary = self.worker.session_summary_payload()
+            self.worker.write_session_recovery_checkpoint(clean_shutdown=True)
             self.worker.stop()
+        elif SESSION_RECOVERY_FILE.is_file():
+            try:
+                recovery_payload = json.loads(
+                    SESSION_RECOVERY_FILE.read_text(encoding="utf-8")
+                )
+                if isinstance(recovery_payload, dict):
+                    recovery_payload["clean_shutdown"] = True
+                    recovery_payload["updated_at"] = (
+                        datetime.now().astimezone().isoformat(
+                            timespec="seconds"
+                        )
+                    )
+                    write_json_atomic(SESSION_RECOVERY_FILE, recovery_payload)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
+
+        self._write_post_stream_summary(session_summary)
 
         # Every normal exit gets its own dated recovery archive.  It is kept
         # outside the installed app so a fresh install cannot remove it.
@@ -104520,6 +110643,10 @@ class TrackerApp:
         self.streamerbot_dispatcher = None
         if streamerbot_dispatcher is not None:
             streamerbot_dispatcher.stop()
+        streamerbot_control_listener = self.streamerbot_control_listener
+        self.streamerbot_control_listener = None
+        if streamerbot_control_listener is not None:
+            streamerbot_control_listener.stop()
         self._stop_obs_widget_server()
 
         self.root.destroy()
