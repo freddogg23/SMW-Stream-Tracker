@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '2.1.0',
+    [string]$Version = '2.2.0',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -176,6 +176,14 @@ if (-not $SkipAppBuild) {
     if ($LASTEXITCODE -ne 0) {
         throw 'The selected Python environment cannot load Paramiko. Install the Windows release requirements before packaging MiSTer support.'
     }
+    & $pythonPath -c "from importlib.metadata import version; import pyaudiowpatch; print('PyAudioWPatch ' + version('PyAudioWPatch'))"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The selected Python environment cannot load PyAudioWPatch. Install the Windows release requirements before packaging music identification.'
+    }
+    & $pythonPath -c "from importlib.metadata import version; import numpy; print('NumPy ' + version('numpy'))"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The selected Python environment cannot load NumPy. Install the Windows release requirements before packaging local music matching.'
+    }
     & $pythonPath -m unittest tests.test_mister_support -v
     if ($LASTEXITCODE -ne 0) {
         throw 'MiSTer support validation failed. The release was stopped before packaging.'
@@ -261,6 +269,7 @@ $sourceItems = @(
     'SMWStreamTracker.spec',
     'SMWStreamTrackerLauncher.py',
     'SMWStreamTracker_MARIO_UI_STATS_CHARTS_MARIO_TIGHTER.py',
+    'smwc_music_index.py',
     'app_assets',
     'banner_background_assets',
     'banner_character_assets',
@@ -274,6 +283,7 @@ $sourceItems = @(
     'create_bowser_uncropped_fixed_flame_overlay.py',
     'docs',
     'game_mode_assets',
+    'music_index',
     'obs_widget',
     'fix_toadette_hair_circles.py',
     'installer',

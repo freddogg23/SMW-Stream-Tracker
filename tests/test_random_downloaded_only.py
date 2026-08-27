@@ -228,6 +228,28 @@ class RandomDownloadedOnlyTests(unittest.TestCase):
         self.assertIn('section == "settings"', method_source)
         self.assertIn('getattr(self, "update_available_version", "")', method_source)
         self.assertIn('tags=("update_badge",)', method_source)
+        self.assertIn("draw_smooth_notification_badge", method_source)
+
+    def test_button_notification_badges_share_the_smooth_renderer(self):
+        method_source = inspect.getsource(
+            self.tracker.OutlinedButton._redraw_existing
+        )
+        self.assertIn("draw_smooth_notification_badge", method_source)
+        self.assertNotIn("self.create_oval(\n                badge_x", method_source)
+
+    def test_all_update_badge_surfaces_use_the_smooth_renderer(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            source.count("draw_smooth_notification_badge("),
+            6,
+        )
+        for marker in (
+            "self.help_update_badge,",
+            "update_badge,",
+            "new_since_dot,",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
 
     def test_retroarch_settings_are_added_and_existing_values_replaced(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -94,14 +94,41 @@ except Exception as error:
     ) from error
 
 
+# Music identification is a required Windows feature too. collect_all() only
+# warns when a package is absent, which previously allowed successful EXEs
+# with either an empty audio-source picker or a matcher that could record but
+# could not compare fingerprints. Stop the build instead.
+try:
+    import numpy
+    import pyaudiowpatch
+
+    if not hasattr(numpy, 'ndarray'):
+        raise ImportError('NumPy is incomplete')
+    if not hasattr(pyaudiowpatch, 'PyAudio'):
+        raise ImportError('PyAudioWPatch is incomplete')
+except Exception as error:
+    raise SystemExit(
+        'SMW Stream Tracker cannot be packaged without Windows music '
+        'identification support. Install NumPy and PyAudioWPatch for this '
+        'Python runtime '
+        f'({type(error).__name__}: {error}).'
+    ) from error
+
+
 webview_datas, webview_binaries, webview_hiddenimports = collect_all('webview')
 paramiko_datas, paramiko_binaries, paramiko_hiddenimports = collect_all('paramiko')
+pyaudio_datas, pyaudio_binaries, pyaudio_hiddenimports = collect_all('pyaudiowpatch')
 
 
 a = Analysis(
     ['SMWStreamTrackerLauncher.py'],
     pathex=[],
-    binaries=webview_binaries + paramiko_binaries,
+    binaries=(
+        webview_binaries
+        + paramiko_binaries
+        + pyaudio_binaries
+        + [('tools\\chromaprint\\fpcalc.exe', 'chromaprint')]
+    ),
     datas=[
         ('banner_background_assets', 'banner_background_assets'),
         ('banner_character_assets', 'banner_character_assets'),
@@ -113,6 +140,8 @@ a = Analysis(
         ('app_assets', 'app_assets'),
         ('game_mode_assets', 'game_mode_assets'),
         ('obs_widget', 'obs_widget'),
+        ('tools\\streamerbot_reward_setup.ps1', 'tools'),
+        ('music_index\\bundled', 'music_index\\bundled'),
         (
             'experiments\\mister_instant_states\\Main_MiSTer_20260707'
             '\\bin_experimental\\MiSTer-SMW-Virtual-States',
@@ -149,8 +178,13 @@ a = Analysis(
         ('installer\\THIRD_PARTY_NOTICE.fr.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.de.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.pt-BR.txt', 'installer'),
-    ] + webview_datas + paramiko_datas,
-    hiddenimports=webview_hiddenimports + paramiko_hiddenimports,
+    ] + webview_datas + paramiko_datas + pyaudio_datas,
+    hiddenimports=(
+        webview_hiddenimports
+        + paramiko_hiddenimports
+        + pyaudio_hiddenimports
+        + ['numpy']
+    ),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['release_tools\\pyi_rth_tcl_find_executable.py'],

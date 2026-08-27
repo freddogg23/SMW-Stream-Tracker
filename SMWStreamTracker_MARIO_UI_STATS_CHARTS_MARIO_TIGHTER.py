@@ -2,6 +2,7 @@ import json
 import ctypes
 from ctypes import wintypes
 from copy import copy as copy_cell_style
+from array import array
 import base64
 import binascii
 import csv
@@ -36,17 +37,20 @@ import threading
 import time
 import traceback
 import webbrowser
+import wave
 import unicodedata
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from string import Formatter
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 import tkinter as tk
+
+import smwc_music_index
 
 try:
     import paramiko
@@ -407,6 +411,371 @@ except ImportError as error:
     ImageTk = None
 
 
+def _retain_smooth_canvas_photo(
+    canvas: tk.Canvas,
+    item_id: int,
+    photo,
+) -> int:
+    """Keep one antialiased Canvas image alive for exactly its item life."""
+    retained = getattr(canvas, "_smooth_canvas_item_photos", None)
+    if not isinstance(retained, dict):
+        retained = {}
+        canvas._smooth_canvas_item_photos = retained
+    try:
+        existing_items = set(canvas.find_all())
+    except tk.TclError:
+        existing_items = {item_id}
+    for stale_item_id in tuple(retained):
+        if stale_item_id not in existing_items:
+            retained.pop(stale_item_id, None)
+    retained[int(item_id)] = photo
+    return int(item_id)
+
+
+def draw_smooth_notification_badge(
+    canvas: tk.Canvas,
+    left: int | float,
+    top: int | float,
+    right: int | float,
+    bottom: int | float,
+    *,
+    fill: str,
+    outline: str = "",
+    outline_width: int = 1,
+    tags: tuple[str, ...] = ("update_badge",),
+) -> int:
+    """Draw one antialiased notification dot and retain its Tk image.
+
+    Tk Canvas ovals have visibly stair-stepped edges at the 9–18 pixel sizes
+    used by the navigation rail. Pillow draws the circle four times larger and
+    downsamples it so every update indicator has the same smooth edge.
+    """
+    x1 = float(left)
+    y1 = float(top)
+    x2 = float(right)
+    y2 = float(bottom)
+    width = max(2, int(round(x2 - x1)))
+    height = max(2, int(round(y2 - y1)))
+    if Image is None or ImageDraw is None or ImageTk is None:
+        return int(
+            canvas.create_oval(
+                x1,
+                y1,
+                x2,
+                y2,
+                fill=fill,
+                outline=outline,
+                width=max(0, int(outline_width)),
+                tags=tags,
+            )
+        )
+
+    cache = getattr(canvas, "_smooth_notification_badge_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        canvas._smooth_notification_badge_cache = cache
+    cache_key = (
+        width,
+        height,
+        str(fill),
+        str(outline),
+        max(0, int(outline_width)),
+    )
+    photo = cache.get(cache_key)
+    if photo is None:
+        scale = 4
+        image = Image.new(
+            "RGBA",
+            (width * scale, height * scale),
+            (0, 0, 0, 0),
+        )
+        draw = ImageDraw.Draw(image)
+        border = max(0, int(outline_width)) * scale
+        inset = max(scale // 2, border // 2)
+        draw.ellipse(
+            (
+                inset,
+                inset,
+                (width * scale) - inset - 1,
+                (height * scale) - inset - 1,
+            ),
+            fill=(fill or None),
+            outline=(outline or None),
+            width=border,
+        )
+        image = image.resize(
+            (width, height),
+            Image.Resampling.LANCZOS,
+        )
+        photo = ImageTk.PhotoImage(image, master=canvas)
+        cache[cache_key] = photo
+        while len(cache) > 8:
+            cache.pop(next(iter(cache)))
+    item_id = int(
+        canvas.create_image(
+            (x1 + x2) / 2.0,
+            (y1 + y2) / 2.0,
+            image=photo,
+            anchor="center",
+            tags=tags,
+        )
+    )
+    return _retain_smooth_canvas_photo(canvas, item_id, photo)
+
+
+def draw_smooth_canvas_ellipse(
+    canvas: tk.Canvas,
+    left: int | float,
+    top: int | float,
+    right: int | float,
+    bottom: int | float,
+    *,
+    fill: str = "",
+    outline: str = "",
+    outline_width: int = 1,
+    tags: str | tuple[str, ...] = (),
+) -> int:
+    """Draw a general-purpose antialiased Canvas ellipse.
+
+    This shares the proven notification-dot renderer so switches, status
+    symbols, chart markers, radio indicators, and decorative circles all use
+    identical four-times supersampling throughout the app.
+    """
+    normalized_tags = (tags,) if isinstance(tags, str) else tuple(tags)
+    return draw_smooth_notification_badge(
+        canvas,
+        left,
+        top,
+        right,
+        bottom,
+        fill=fill,
+        outline=outline,
+        outline_width=outline_width,
+        tags=normalized_tags,
+    )
+
+
+def draw_smooth_canvas_rounded_rectangle(
+    canvas: tk.Canvas,
+    left: int | float,
+    top: int | float,
+    right: int | float,
+    bottom: int | float,
+    radius: int | float,
+    *,
+    fill: str = "",
+    outline: str = "",
+    outline_width: int = 1,
+    tags: str | tuple[str, ...] = (),
+) -> int:
+    """Draw a cached, supersampled rounded rectangle on a Tk Canvas."""
+    x1 = float(left)
+    y1 = float(top)
+    x2 = float(right)
+    y2 = float(bottom)
+    width = max(2, int(round(x2 - x1)))
+    height = max(2, int(round(y2 - y1)))
+    local_radius = max(0.0, min(float(radius), width / 2.0, height / 2.0))
+    normalized_tags = (tags,) if isinstance(tags, str) else tuple(tags)
+    if Image is None or ImageDraw is None or ImageTk is None:
+        points = (
+            x1 + local_radius, y1, x2 - local_radius, y1, x2, y1,
+            x2, y1 + local_radius, x2, y2 - local_radius, x2, y2,
+            x2 - local_radius, y2, x1 + local_radius, y2, x1, y2,
+            x1, y2 - local_radius, x1, y1 + local_radius, x1, y1,
+        )
+        return int(
+            canvas.create_polygon(
+                points,
+                smooth=True,
+                splinesteps=24,
+                fill=fill,
+                outline=outline,
+                width=max(0, int(outline_width)),
+                tags=normalized_tags,
+            )
+        )
+
+    cache = getattr(canvas, "_smooth_rounded_rectangle_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        canvas._smooth_rounded_rectangle_cache = cache
+    cache_key = (
+        width,
+        height,
+        round(local_radius, 2),
+        str(fill),
+        str(outline),
+        max(0, int(outline_width)),
+    )
+    photo = cache.get(cache_key)
+    if photo is None:
+        scale = 4
+        image = Image.new(
+            "RGBA",
+            (width * scale, height * scale),
+            (0, 0, 0, 0),
+        )
+        draw = ImageDraw.Draw(image)
+        border = max(0, int(outline_width)) * scale
+        inset = max(scale // 2, border // 2)
+        draw.rounded_rectangle(
+            (
+                inset,
+                inset,
+                (width * scale) - inset - 1,
+                (height * scale) - inset - 1,
+            ),
+            radius=max(0, round(local_radius * scale)),
+            fill=(fill or None),
+            outline=(outline or None),
+            width=border,
+        )
+        image = image.resize((width, height), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(image, master=canvas)
+        cache[cache_key] = photo
+        while len(cache) > 32:
+            cache.pop(next(iter(cache)))
+    item_id = int(
+        canvas.create_image(
+            (x1 + x2) / 2.0,
+            (y1 + y2) / 2.0,
+            image=photo,
+            anchor="center",
+            tags=normalized_tags,
+        )
+    )
+    return _retain_smooth_canvas_photo(canvas, item_id, photo)
+
+
+def draw_antialiased_music_note(
+    target_image,
+    *,
+    origin_x: float,
+    origin_y: float,
+    unit: float,
+    color: str,
+    full_color: bool = False,
+) -> None:
+    """Draw the paired note with one continuous antialiased color blend."""
+    local_width = max(2, int(math.ceil(48.0 * unit)))
+    local_height = max(2, int(math.ceil(48.0 * unit)))
+    note_mask = Image.new("L", (local_width, local_height), 0)
+    draw = ImageDraw.Draw(note_mask)
+
+    def point(x: float, y: float) -> tuple[int, int]:
+        return (
+            round(x * unit),
+            round(y * unit),
+        )
+
+    def rounded_line(
+        coordinates: tuple[tuple[float, float], ...],
+        *,
+        width_units: float,
+    ) -> None:
+        points = [point(x, y) for x, y in coordinates]
+        stroke_width = max(2, round(width_units * unit))
+        draw.line(
+            points,
+            fill=255,
+            width=stroke_width,
+            joint="curve",
+        )
+        cap_radius = stroke_width / 2.0
+        for center_x, center_y in (points[0], points[-1]):
+            draw.ellipse(
+                (
+                    round(center_x - cap_radius),
+                    round(center_y - cap_radius),
+                    round(center_x + cap_radius),
+                    round(center_y + cap_radius),
+                ),
+                fill=255,
+            )
+
+    # The stems are drawn first so the single slanted beam has a clean,
+    # uninterrupted silhouette.  Capsule-shaped heads keep the symbol legible
+    # even at the compact navigation-rail size.
+    rounded_line(
+        ((19, 11.5), (19, 34.5)),
+        width_units=4.2,
+    )
+    rounded_line(
+        ((38, 7.0), (38, 30.0)),
+        width_units=4.2,
+    )
+    draw.polygon(
+        (
+            *point(17, 8.5),
+            *point(40, 3.5),
+            *point(40, 11.2),
+            *point(17, 16.2),
+        ),
+        fill=255,
+    )
+    rounded_line(
+        ((9.5, 36.8), (17.5, 34.6)),
+        width_units=8.4,
+    )
+    rounded_line(
+        ((28.5, 32.5), (36.5, 30.3)),
+        width_units=8.4,
+    )
+
+    def rgb(hex_color: str) -> tuple[int, int, int]:
+        value = str(hex_color or "#000000").lstrip("#")
+        if len(value) == 3:
+            value = "".join(character * 2 for character in value)
+        try:
+            return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))
+        except (TypeError, ValueError):
+            return (0, 0, 0)
+
+    def interpolate(
+        left_color: tuple[int, int, int],
+        right_color: tuple[int, int, int],
+        amount: float,
+    ) -> tuple[int, int, int, int]:
+        position = max(0.0, min(1.0, float(amount)))
+        return (
+            *(round(left + (right - left) * position)
+              for left, right in zip(left_color, right_color)),
+            255,
+        )
+
+    gradient = Image.new("RGBA", (local_width, local_height), (0, 0, 0, 0))
+    gradient_draw = ImageDraw.Draw(gradient)
+    if full_color:
+        cyan = rgb("#24D6E4")
+        blue = rgb("#5687F5")
+        purple = rgb("#A85BE8")
+        for x_position in range(local_width):
+            progress = x_position / max(1, local_width - 1)
+            if progress <= 0.5:
+                resolved_color = interpolate(cyan, blue, progress * 2.0)
+            else:
+                resolved_color = interpolate(
+                    blue,
+                    purple,
+                    (progress - 0.5) * 2.0,
+                )
+            gradient_draw.line(
+                (x_position, 0, x_position, local_height),
+                fill=resolved_color,
+            )
+    else:
+        gradient_draw.rectangle(
+            (0, 0, local_width, local_height),
+            fill=(*rgb(color), 255),
+        )
+    gradient.putalpha(note_mask)
+    target_image.alpha_composite(
+        gradient,
+        (round(origin_x), round(origin_y)),
+    )
+
+
 class MarioCheckbutton(tk.Checkbutton):
     """Large, smooth, theme-aware checkbox used throughout the application."""
 
@@ -522,8 +891,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "2.1.0"
-APP_BUILD_DATE = "2026-08-21"
+APP_VERSION = "2.2.0"
+APP_BUILD_DATE = "2026-08-26"
 
 GAME_MODE_STAGE_IMAGE_FILES = {
     "play_random_hack": "stage_scene_yoshis_island_2.png",
@@ -632,6 +1001,367 @@ IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
+MUSIC_IDENTIFIER_RECORD_SECONDS = 18
+MUSIC_IDENTIFIER_CHUNK_FRAMES = 1024
+# Channel-point requests should not sit silent through most of the capture.
+# A five-second landmark sample is normally enough for an early confident
+# match; later passes retain the longer samples for noisy gameplay audio.
+MUSIC_IDENTIFIER_EARLY_MATCH_SECONDS = (5, 8, 12)
+MUSIC_IDENTIFIER_EARLY_MATCH_CONFIDENCE = 78.0
+MUSIC_IDENTIFIER_LISTEN_PROGRESS_WEIGHT = 0.85
+SMWC_MUSIC_INDEX_CHECK_INTERVAL_MS = 30 * 60 * 1000
+SMWC_MUSIC_INDEX_MANIFEST_URL = (
+    "https://raw.githubusercontent.com/freddogg23/SMW-Stream-Tracker/"
+    "main/release/music_index_manifest.json"
+)
+
+
+class MusicIdentifierCancelled(Exception):
+    """Raised when a user stops an in-progress music sample."""
+
+
+def music_identifier_source_token(device_info: object) -> str:
+    """Return a stable saved identity for a Windows recording source."""
+    if not isinstance(device_info, dict):
+        return ""
+    name = " ".join(str(device_info.get("name", "")).split()).casefold()
+    host_name = " ".join(
+        str(device_info.get("host_api_name", "")).split()
+    ).casefold()
+    loopback = "loopback" if device_info.get("is_loopback") else "input"
+    return "|".join((name, host_name, loopback))
+
+
+def enumerate_windows_music_audio_sources(
+    audio_module=None,
+) -> list[dict[str, Any]]:
+    """List capture-card, microphone, and WASAPI loopback inputs."""
+    if audio_module is None:
+        if not IS_WINDOWS:
+            return []
+        try:
+            import pyaudiowpatch as audio_module
+        except ImportError:
+            return []
+
+    audio = audio_module.PyAudio()
+    sources: list[dict[str, Any]] = []
+    try:
+        device_count = int(audio.get_device_count())
+        for device_index in range(device_count):
+            try:
+                raw_info = dict(audio.get_device_info_by_index(device_index))
+                input_channels = int(raw_info.get("maxInputChannels", 0) or 0)
+            except (KeyError, TypeError, ValueError, OSError):
+                continue
+            if input_channels <= 0:
+                continue
+            host_api_index = int(raw_info.get("hostApi", -1) or -1)
+            host_api_name = ""
+            if host_api_index >= 0:
+                try:
+                    host_api_name = " ".join(
+                        str(
+                            audio.get_host_api_info_by_index(host_api_index).get(
+                                "name",
+                                "",
+                            )
+                        ).split()
+                    )
+                except (KeyError, TypeError, ValueError, OSError):
+                    host_api_name = ""
+            name = " ".join(
+                str(raw_info.get("name", f"Audio source {device_index + 1}")).split()
+            )
+            is_loopback = bool(raw_info.get("isLoopbackDevice", False))
+            source = {
+                "index": device_index,
+                "name": name,
+                "host_api_name": host_api_name,
+                "is_loopback": is_loopback,
+                "max_input_channels": input_channels,
+                "default_sample_rate": int(
+                    float(raw_info.get("defaultSampleRate", 48000) or 48000)
+                ),
+            }
+            source["token"] = music_identifier_source_token(source)
+            source["label"] = (
+                f"{name} — System audio"
+                if is_loopback
+                else f"{name} — Audio input"
+            )
+            sources.append(source)
+    finally:
+        try:
+            audio.terminate()
+        except Exception:
+            pass
+
+    # Windows exposes the same endpoint through MME, DirectSound, and WASAPI.
+    # Prefer the WASAPI copies whenever they exist so the picker stays useful
+    # instead of showing three nearly identical lists.
+    wasapi_sources = [
+        source
+        for source in sources
+        if "wasapi" in str(source.get("host_api_name", "")).casefold()
+    ]
+    if wasapi_sources:
+        sources = wasapi_sources
+
+    # Put desktop/capture playback first because it is the most useful source
+    # for identifying music coming from MiSTer, RetroArch, or a capture card.
+    sources.sort(
+        key=lambda item: (
+            not bool(item.get("is_loopback")),
+            str(item.get("name", "")).casefold(),
+            int(item.get("index", 0)),
+        )
+    )
+    duplicate_counts: dict[str, int] = {}
+    for source in sources:
+        base_label = str(source["label"])
+        duplicate_counts[base_label] = duplicate_counts.get(base_label, 0) + 1
+        duplicate_number = duplicate_counts[base_label]
+        if duplicate_number > 1:
+            source["label"] = f"{base_label} ({duplicate_number})"
+    return sources
+
+
+def record_windows_music_sample(
+    source: dict[str, Any],
+    destination: Path,
+    *,
+    seconds: int = MUSIC_IDENTIFIER_RECORD_SECONDS,
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[float, int], None] | None = None,
+    checkpoint_seconds: Sequence[int] = (),
+    checkpoint_callback: Callable[[Path, int], bool] | None = None,
+    audio_module=None,
+) -> dict[str, Any]:
+    """Record one PCM WAV sample from a selected Windows audio input."""
+    if audio_module is None:
+        try:
+            import pyaudiowpatch as audio_module
+        except ImportError as error:
+            raise RuntimeError(
+                "Windows audio recording support is missing from this build."
+            ) from error
+    if not isinstance(source, dict) or "index" not in source:
+        raise ValueError("Select an audio source before listening.")
+
+    audio = audio_module.PyAudio()
+    stream = None
+    frames: list[bytes] = []
+    peak_amplitude = 0
+    sample_format = audio_module.paInt16
+    sample_width = 2
+    channels = max(1, min(2, int(source.get("max_input_channels", 1) or 1)))
+    sample_rate = max(
+        8000,
+        int(source.get("default_sample_rate", 48000) or 48000),
+    )
+    duration = max(3, min(30, int(seconds)))
+    total_chunks = max(
+        1,
+        math.ceil(sample_rate * duration / MUSIC_IDENTIFIER_CHUNK_FRAMES),
+    )
+    checkpoints = tuple(
+        sorted(
+            {
+                max(3, min(duration - 1, int(value)))
+                for value in checkpoint_seconds
+                if 3 <= int(value) < duration
+            }
+        )
+    )
+    checkpoint_index = 0
+    stopped_early = False
+
+    try:
+        sample_width = int(audio.get_sample_size(sample_format))
+    except Exception:
+        sample_width = 2
+
+    def write_current_sample() -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(destination), "wb") as wav_file:
+            wav_file.setnchannels(channels)
+            wav_file.setsampwidth(sample_width)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(b"".join(frames))
+
+    try:
+        stream = audio.open(
+            format=sample_format,
+            channels=channels,
+            rate=sample_rate,
+            input=True,
+            input_device_index=int(source["index"]),
+            frames_per_buffer=MUSIC_IDENTIFIER_CHUNK_FRAMES,
+        )
+        for chunk_index in range(total_chunks):
+            if cancel_event is not None and cancel_event.is_set():
+                raise MusicIdentifierCancelled()
+            chunk = stream.read(
+                MUSIC_IDENTIFIER_CHUNK_FRAMES,
+                exception_on_overflow=False,
+            )
+            frames.append(chunk)
+            samples = array("h")
+            samples.frombytes(chunk)
+            if sys.byteorder != "little":
+                samples.byteswap()
+            if samples:
+                peak_amplitude = max(
+                    peak_amplitude,
+                    max(abs(sample) for sample in samples),
+                )
+            if progress_callback is not None:
+                progress = (chunk_index + 1) / total_chunks
+                remaining = max(0, math.ceil(duration * (1.0 - progress)))
+                progress_callback(progress, remaining)
+            captured_seconds = (
+                (chunk_index + 1)
+                * MUSIC_IDENTIFIER_CHUNK_FRAMES
+                / sample_rate
+            )
+            if (
+                checkpoint_callback is not None
+                and checkpoint_index < len(checkpoints)
+                and captured_seconds >= checkpoints[checkpoint_index]
+            ):
+                checkpoint = checkpoints[checkpoint_index]
+                checkpoint_index += 1
+                write_current_sample()
+                if checkpoint_callback(destination, checkpoint):
+                    stopped_early = True
+                    break
+    finally:
+        if stream is not None:
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+        try:
+            audio.terminate()
+        except Exception:
+            pass
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise MusicIdentifierCancelled()
+    if peak_amplitude < 48:
+        raise RuntimeError(
+            "No usable audio was heard. Check the selected source and its volume."
+        )
+    write_current_sample()
+    captured_seconds = len(frames) * MUSIC_IDENTIFIER_CHUNK_FRAMES / sample_rate
+    return {
+        "channels": channels,
+        "sample_rate": sample_rate,
+        "peak_amplitude": peak_amplitude,
+        "seconds": min(float(duration), captured_seconds),
+        "stopped_early": stopped_early,
+    }
+
+
+def smwcentral_music_search_url(title: object) -> str:
+    """Build SMW Central's music-library name filter for a recognized song."""
+    query = {
+        "p": "section",
+        "s": "smwmusic",
+        "u": "0",
+    }
+    cleaned_title = " ".join(str(title or "").split())
+    if cleaned_title:
+        query["f[name]"] = cleaned_title
+    return SMW_CENTRAL_WEBSITE_URL + "?" + urlencode(query)
+
+
+def prepare_music_identifier_wav(
+    source_path: Path,
+    destination: Path,
+) -> dict[str, Any]:
+    """Create a clean mono copy with enough level for audio fingerprinting."""
+    with wave.open(str(source_path), "rb") as source_wave:
+        channels = int(source_wave.getnchannels())
+        sample_width = int(source_wave.getsampwidth())
+        sample_rate = int(source_wave.getframerate())
+        compression_type = source_wave.getcomptype()
+        raw_frames = source_wave.readframes(source_wave.getnframes())
+
+    if sample_width != 2 or compression_type != "NONE":
+        raise RuntimeError(
+            "The selected source produced an unsupported audio format."
+        )
+    samples = array("h")
+    samples.frombytes(raw_frames)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples:
+        raise RuntimeError("The recorded audio sample was empty.")
+
+    channel_count = max(1, channels)
+    complete_sample_count = len(samples) - (len(samples) % channel_count)
+    if channel_count == 1:
+        mono_samples = array("h", samples[:complete_sample_count])
+    else:
+        mono_samples = array(
+            "h",
+            (
+                round(
+                    sum(samples[index : index + channel_count])
+                    / channel_count
+                )
+                for index in range(0, complete_sample_count, channel_count)
+            ),
+        )
+    if not mono_samples:
+        raise RuntimeError("The recorded audio sample was empty.")
+
+    # Capture cards and loopback devices can supply a quiet signal with a DC
+    # offset. Removing that offset and applying bounded gain makes the music
+    # useful to the fingerprint service without clipping normal captures.
+    dc_offset = round(sum(mono_samples) / len(mono_samples))
+    centered_samples = array(
+        "h",
+        (
+            max(-32768, min(32767, int(sample) - dc_offset))
+            for sample in mono_samples
+        ),
+    )
+    source_peak = max(abs(sample) for sample in centered_samples)
+    if source_peak < 32:
+        raise RuntimeError(
+            "The selected source was silent or contained no usable music."
+        )
+    gain = min(12.0, max(1.0, 28000.0 / source_peak))
+    normalized_samples = array(
+        "h",
+        (
+            max(-32768, min(32767, round(sample * gain)))
+            for sample in centered_samples
+        ),
+    )
+    if sys.byteorder != "little":
+        normalized_samples.byteswap()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(destination), "wb") as destination_wave:
+        destination_wave.setnchannels(1)
+        destination_wave.setsampwidth(2)
+        destination_wave.setframerate(sample_rate)
+        destination_wave.writeframes(normalized_samples.tobytes())
+    return {
+        "channels": 1,
+        "sample_rate": sample_rate,
+        "source_peak": source_peak,
+        "gain": gain,
+    }
+
+
 FEEDBACK_FORM_URLS = {
     "en": (
         "https://forms.cloud.microsoft/Pages/ResponsePage.aspx?"
@@ -684,6 +1414,11 @@ LEGACY_UPDATE_MANIFEST_URLS = {
     "https://raw.githubusercontent.com/freddogg23/"
     "smwc_tracker/main/release/update_manifest.json",
 }
+STREAMERBOT_LATEST_DOWNLOAD_URL = (
+    "https://streamer.bot/api/releases/streamer.bot/latest/download"
+)
+STREAMERBOT_EXECUTABLE_NAME = "Streamer.bot.exe"
+STREAMERBOT_DOWNLOAD_MAXIMUM_BYTES = 100 * 1024 * 1024
 
 SNI_DOWNLOAD_URL = (
     "https://github.com/alttpo/sni/releases/download/v0.0.103/"
@@ -1262,6 +1997,23 @@ def _run_tk_startup_check() -> int:
             "MiSTer SSH support is missing or incomplete.",
         )
         return 22
+
+    if IS_WINDOWS:
+        try:
+            import numpy as packaged_numpy
+            import pyaudiowpatch as packaged_audio_capture
+
+            if not hasattr(packaged_numpy, "ndarray"):
+                raise ImportError("NumPy is incomplete")
+            if not hasattr(packaged_audio_capture, "PyAudio"):
+                raise ImportError("PyAudioWPatch is incomplete")
+        except Exception as error:
+            append_error_log(
+                "Packaged dependency check failed",
+                "Windows music identification support is missing or incomplete: "
+                + f"{type(error).__name__}: {error}",
+            )
+            return 24
 
     _configure_installed_tcl_tk_runtime()
     probe_root = None
@@ -5162,14 +5914,15 @@ class OutlinedButton(tk.Canvas):
             badge_radius = max(4, min(6, int(height * 0.13)))
             badge_x = width - badge_radius - 3
             badge_y = badge_radius + 3
-            self.create_oval(
+            draw_smooth_notification_badge(
+                self,
                 badge_x - badge_radius,
                 badge_y - badge_radius,
                 badge_x + badge_radius,
                 badge_y + badge_radius,
                 fill=STREAM_DESK["red"],
                 outline=STREAM_DESK["text_strong"],
-                width=1,
+                outline_width=1,
                 tags=("notification_badge",),
             )
 
@@ -6287,6 +7040,7 @@ STREAM_DESK_NAVIGATION_ITEMS = (
     ("modes", "super_famicom_controller", "Game Modes"),
     ("smwcentral", "smw_central", "SMW Central"),
     ("language", "language", "Language"),
+    ("music_identifier", "music_note", "Music Identifier & Radio"),
     ("settings", "settings", "Settings"),
 )
 
@@ -13712,6 +14466,13 @@ def rom_builder_write_reports(
 
 
 APP_DATA_DIR = platform_application_data_directory()
+SMWC_MUSIC_INDEX_DIR = APP_DATA_DIR / "MusicIndex"
+SMWC_MUSIC_INDEX_FILE = SMWC_MUSIC_INDEX_DIR / "SMWCentralMusicIndex.sqlite3"
+SMWC_BUNDLED_MUSIC_INDEX_FILE = bundled_resource_path(
+    "music_index",
+    "bundled",
+    "SMWCentralMusicIndex.sqlite3",
+)
 NON_SMW_ROM_LIBRARY_DIR = APP_DATA_DIR / "Non-SMW ROMs"
 NON_SMW_ROM_LIBRARY_FILE = APP_DATA_DIR / "NonSMWRomLibrary.json"
 NON_SMW_ROM_EXTENSIONS = {".sfc", ".smc"}
@@ -24957,6 +25718,381 @@ for (
     UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
 
 
+_MUSIC_IDENTIFIER_TRANSLATION_ROWS = (
+    (
+        "Music Identifier & Radio",
+        "Music Identifier & Radio",
+        "Identificador de música y radio",
+        "Identification musicale et radio",
+        "Musikerkennung und Radio",
+        "Identificador de música e rádio",
+    ),
+    (
+        "Music Identifier",
+        "Music Identifier",
+        "Identificador de música",
+        "Identification musicale",
+        "Musikerkennung",
+        "Identificador de música",
+    ),
+    (
+        "Listen to SMW Central Radio",
+        "Listen to SMW Central Radio",
+        "Escuchar la radio de SMW Central",
+        "Écouter la radio SMW Central",
+        "SMW-Central-Radio hören",
+        "Ouvir a rádio do SMW Central",
+    ),
+    (
+        "Play SMW Central Radio",
+        "Play SMW Central Radio",
+        "Reproducir la radio de SMW Central",
+        "Lancer la radio SMW Central",
+        "SMW-Central-Radio abspielen",
+        "Reproduzir a rádio do SMW Central",
+    ),
+    (
+        "Play Found Song",
+        "Play Found Song",
+        "Reproducir canción encontrada",
+        "Lire le morceau trouvé",
+        "Gefundenen Titel abspielen",
+        "Reproduzir música encontrada",
+    ),
+    (
+        "Ready to listen",
+        "Ready to listen",
+        "Listo para escuchar",
+        "Prêt à écouter",
+        "Bereit zum Zuhören",
+        "Pronto para ouvir",
+    ),
+    (
+        "Choose an audio source, start the music, then select Identify What's Playing.",
+        "Choose an audio source, start the music, then select Identify What's Playing.",
+        "Elige una fuente de audio, inicia la música y selecciona Identificar lo que suena.",
+        "Choisissez une source audio, lancez la musique, puis sélectionnez Identifier le morceau.",
+        "Wähle eine Audioquelle, starte die Musik und wähle dann Laufenden Titel erkennen.",
+        "Escolha uma fonte de áudio, inicie a música e selecione Identificar o que está tocando.",
+    ),
+    (
+        "NOW PLAYING",
+        "NOW PLAYING",
+        "REPRODUCIENDO AHORA",
+        "LECTURE EN COURS",
+        "AKTUELLER TITEL",
+        "TOCANDO AGORA",
+    ),
+    (
+        "Audio source",
+        "Audio source",
+        "Fuente de audio",
+        "Source audio",
+        "Audioquelle",
+        "Fonte de áudio",
+    ),
+    (
+        "Choose a capture card, microphone, or a System audio source for MiSTer and RetroArch sound.",
+        "Choose a capture card, microphone, or a System audio source for MiSTer and RetroArch sound.",
+        "Elige una capturadora, un micrófono o una fuente de audio del sistema para el sonido de MiSTer y RetroArch.",
+        "Choisissez une carte d’acquisition, un microphone ou une source audio système pour le son de MiSTer et RetroArch.",
+        "Wähle eine Capture-Karte, ein Mikrofon oder eine Systemaudioquelle für den Ton von MiSTer und RetroArch.",
+        "Escolha uma placa de captura, microfone ou fonte de áudio do sistema para o som do MiSTer e RetroArch.",
+    ),
+    (
+        "Refresh Sources",
+        "Refresh Sources",
+        "Actualizar fuentes",
+        "Actualiser les sources",
+        "Quellen aktualisieren",
+        "Atualizar fontes",
+    ),
+    (
+        "Identify What's Playing",
+        "Identify What's Playing",
+        "Identificar lo que suena",
+        "Identifier le morceau",
+        "Laufenden Titel erkennen",
+        "Identificar o que está tocando",
+    ),
+    (
+        "Stop Listening",
+        "Stop Listening",
+        "Dejar de escuchar",
+        "Arrêter l’écoute",
+        "Zuhören beenden",
+        "Parar de ouvir",
+    ),
+    (
+        "IDENTIFIED SONG",
+        "IDENTIFIED SONG",
+        "CANCIÓN IDENTIFICADA",
+        "MORCEAU IDENTIFIÉ",
+        "ERKANNTER TITEL",
+        "MÚSICA IDENTIFICADA",
+    ),
+    (
+        "No song identified yet",
+        "No song identified yet",
+        "Aún no se identificó ninguna canción",
+        "Aucun morceau identifié pour le moment",
+        "Noch kein Titel erkannt",
+        "Nenhuma música identificada ainda",
+    ),
+    (
+        "Search SMW Central Music",
+        "Search SMW Central Music",
+        "Buscar música en SMW Central",
+        "Rechercher dans les musiques de SMW Central",
+        "SMW-Central-Musik durchsuchen",
+        "Pesquisar música no SMW Central",
+    ),
+    (
+        "Open Song Match",
+        "Open Song Match",
+        "Abrir coincidencia",
+        "Ouvrir le résultat",
+        "Treffer öffnen",
+        "Abrir resultado",
+    ),
+    (
+        "Audio sources unavailable",
+        "Audio sources unavailable",
+        "Fuentes de audio no disponibles",
+        "Sources audio indisponibles",
+        "Audioquellen nicht verfügbar",
+        "Fontes de áudio indisponíveis",
+    ),
+    (
+        "No audio sources found",
+        "No audio sources found",
+        "No se encontraron fuentes de audio",
+        "Aucune source audio trouvée",
+        "Keine Audioquellen gefunden",
+        "Nenhuma fonte de áudio encontrada",
+    ),
+    (
+        "Connect or enable a Windows recording source, then select Refresh Sources.",
+        "Connect or enable a Windows recording source, then select Refresh Sources.",
+        "Conecta o activa una fuente de grabación de Windows y selecciona Actualizar fuentes.",
+        "Connectez ou activez une source d’enregistrement Windows, puis sélectionnez Actualiser les sources.",
+        "Schließe eine Windows-Aufnahmequelle an oder aktiviere sie und wähle Quellen aktualisieren.",
+        "Conecte ou habilite uma fonte de gravação do Windows e selecione Atualizar fontes.",
+    ),
+    (
+        "Start the music, then select Identify What's Playing. The temporary sample is sent for recognition and deleted immediately afterward.",
+        "Start the music, then select Identify What's Playing. The temporary sample is sent for recognition and deleted immediately afterward.",
+        "Inicia la música y selecciona Identificar lo que suena. La muestra temporal se envía para reconocerla y se elimina inmediatamente después.",
+        "Lancez la musique, puis sélectionnez Identifier le morceau. L’échantillon temporaire est envoyé pour reconnaissance, puis supprimé immédiatement.",
+        "Starte die Musik und wähle Laufenden Titel erkennen. Die temporäre Aufnahme wird zur Erkennung gesendet und danach sofort gelöscht.",
+        "Inicie a música e selecione Identificar o que está tocando. A amostra temporária é enviada para reconhecimento e excluída logo depois.",
+    ),
+    (
+        "Select an audio source",
+        "Select an audio source",
+        "Selecciona una fuente de audio",
+        "Sélectionnez une source audio",
+        "Audioquelle auswählen",
+        "Selecione uma fonte de áudio",
+    ),
+    (
+        "Choose where the game audio is coming from before listening.",
+        "Choose where the game audio is coming from before listening.",
+        "Elige de dónde proviene el audio del juego antes de escuchar.",
+        "Choisissez la provenance du son du jeu avant de lancer l’écoute.",
+        "Wähle vor dem Zuhören aus, woher der Spielton kommt.",
+        "Escolha de onde vem o áudio do jogo antes de ouvir.",
+    ),
+    (
+        "Listening",
+        "Listening",
+        "Escuchando",
+        "Écoute",
+        "Hört zu",
+        "Ouvindo",
+    ),
+    (
+        "Recording {seconds} seconds from the selected source. Keep the music playing.",
+        "Recording {seconds} seconds from the selected source. Keep the music playing.",
+        "Grabando {seconds} segundos de la fuente seleccionada. Mantén la música sonando.",
+        "Enregistrement de {seconds} secondes depuis la source sélectionnée. Laissez la musique jouer.",
+        "{seconds} Sekunden werden von der gewählten Quelle aufgenommen. Lass die Musik weiterlaufen.",
+        "Gravando {seconds} segundos da fonte selecionada. Mantenha a música tocando.",
+    ),
+    (
+        "Listening for a clear match…",
+        "Listening for a clear match…",
+        "Escuchando para encontrar una coincidencia clara…",
+        "Écoute en cours pour trouver une correspondance claire…",
+        "Suche nach einem eindeutigen Treffer…",
+        "Ouvindo para encontrar uma correspondência clara…",
+    ),
+    (
+        "Stopping…",
+        "Stopping…",
+        "Deteniendo…",
+        "Arrêt…",
+        "Wird beendet…",
+        "Parando…",
+    ),
+    (
+        "Ending the current audio sample.",
+        "Ending the current audio sample.",
+        "Finalizando la muestra de audio actual.",
+        "Arrêt de l’échantillon audio en cours.",
+        "Die aktuelle Audioaufnahme wird beendet.",
+        "Encerrando a amostra de áudio atual.",
+    ),
+    (
+        "Listening to the selected source",
+        "Listening to the selected source",
+        "Escuchando la fuente seleccionada",
+        "Écoute de la source sélectionnée",
+        "Die gewählte Quelle wird abgehört",
+        "Ouvindo a fonte selecionada",
+    ),
+    ("second remaining", "second remaining", "segundo restante", "seconde restante", "Sekunde verbleibend", "segundo restante"),
+    ("seconds remaining", "seconds remaining", "segundos restantes", "secondes restantes", "Sekunden verbleibend", "segundos restantes"),
+    (
+        "Identifying",
+        "Identifying",
+        "Identificando",
+        "Identification",
+        "Wird erkannt",
+        "Identificando",
+    ),
+    (
+        "The sample is recorded. Checking multiple sections so an inconsistent guess is not shown.",
+        "The sample is recorded. Checking multiple sections so an inconsistent guess is not shown.",
+        "La muestra está grabada. Se comprobarán varias secciones para no mostrar una suposición inconsistente.",
+        "L’échantillon est enregistré. Plusieurs passages sont vérifiés pour éviter d’afficher un résultat incohérent.",
+        "Die Aufnahme ist fertig. Mehrere Abschnitte werden geprüft, damit keine widersprüchliche Vermutung angezeigt wird.",
+        "A amostra foi gravada. Vários trechos serão verificados para não mostrar um palpite inconsistente.",
+    ),
+    (
+        "Verifying the match",
+        "Verifying the match",
+        "Verificando la coincidencia",
+        "Vérification du résultat",
+        "Treffer wird überprüft",
+        "Verificando a correspondência",
+    ),
+    (
+        "Checking audio section {current} of {total}. At least two sections must identify the same song.",
+        "Checking audio section {current} of {total}. At least two sections must identify the same song.",
+        "Comprobando la sección de audio {current} de {total}. Al menos dos secciones deben identificar la misma canción.",
+        "Vérification du passage audio {current} sur {total}. Au moins deux passages doivent identifier le même morceau.",
+        "Audioabschnitt {current} von {total} wird geprüft. Mindestens zwei Abschnitte müssen denselben Titel erkennen.",
+        "Verificando o trecho de áudio {current} de {total}. Pelo menos dois trechos devem identificar a mesma música.",
+    ),
+    (
+        "Different parts of the recording produced conflicting matches, so the tracker rejected them instead of showing a likely wrong song.",
+        "Different parts of the recording produced conflicting matches, so the tracker rejected them instead of showing a likely wrong song.",
+        "Distintas partes de la grabación produjeron resultados contradictorios, así que el tracker los rechazó en vez de mostrar una canción probablemente incorrecta.",
+        "Différentes parties de l’enregistrement ont donné des résultats contradictoires. Le tracker les a donc rejetés plutôt que d’afficher un morceau probablement incorrect.",
+        "Verschiedene Teile der Aufnahme ergaben widersprüchliche Treffer. Der Tracker hat sie verworfen, statt einen wahrscheinlich falschen Titel anzuzeigen.",
+        "Partes diferentes da gravação produziram resultados conflitantes, então o tracker os rejeitou em vez de mostrar uma música provavelmente errada.",
+    ),
+    (
+        "Match found",
+        "Match found",
+        "Coincidencia encontrada",
+        "Correspondance trouvée",
+        "Treffer gefunden",
+        "Correspondência encontrada",
+    ),
+    (
+        "Multiple sections agreed on the source song below. For an SMW port, this identifies the composition, not necessarily the exact SMW Central submission.",
+        "Multiple sections agreed on the source song below. For an SMW port, this identifies the composition, not necessarily the exact SMW Central submission.",
+        "Varias secciones coincidieron en la canción original mostrada abajo. Para un port de SMW, esto identifica la composición, no necesariamente el envío exacto de SMW Central.",
+        "Plusieurs passages concordent sur le morceau source ci-dessous. Pour un port SMW, cela identifie la composition, pas nécessairement la soumission SMW Central exacte.",
+        "Mehrere Abschnitte stimmen beim unten gezeigten Ursprungstitel überein. Bei einem SMW-Port wird die Komposition erkannt, nicht unbedingt der genaue SMW-Central-Eintrag.",
+        "Vários trechos concordaram com a música de origem abaixo. Para um port de SMW, isso identifica a composição, não necessariamente o envio exato do SMW Central.",
+    ),
+    ("By", "By", "Por", "Par", "Von", "Por"),
+    (
+        "Artist unavailable",
+        "Artist unavailable",
+        "Artista no disponible",
+        "Artiste indisponible",
+        "Künstler nicht verfügbar",
+        "Artista indisponível",
+    ),
+    ("High confidence", "High confidence", "Confianza alta", "Forte confiance", "Hohe Sicherheit", "Alta confiança"),
+    ("Good match", "Good match", "Buena coincidencia", "Bonne correspondance", "Guter Treffer", "Boa correspondência"),
+    ("Possible match", "Possible match", "Coincidencia posible", "Correspondance possible", "Möglicher Treffer", "Correspondência possível"),
+    (
+        "No match this time",
+        "No match this time",
+        "No hubo coincidencia esta vez",
+        "Aucune correspondance cette fois",
+        "Diesmal kein Treffer",
+        "Nenhuma correspondência desta vez",
+    ),
+    (
+        "Try again during a section with clear music and less sound effects.",
+        "Try again during a section with clear music and fewer sound effects.",
+        "Inténtalo de nuevo durante una sección con música clara y menos efectos de sonido.",
+        "Réessayez pendant un passage où la musique est claire et les effets sonores moins présents.",
+        "Versuche es bei klarer Musik und weniger Soundeffekten erneut.",
+        "Tente novamente em um trecho com música clara e menos efeitos sonoros.",
+    ),
+    (
+        "Song not identified",
+        "Song not identified",
+        "Canción no identificada",
+        "Morceau non identifié",
+        "Titel nicht erkannt",
+        "Música não identificada",
+    ),
+    (
+        "Listening stopped",
+        "Listening stopped",
+        "Escucha detenida",
+        "Écoute arrêtée",
+        "Zuhören beendet",
+        "Escuta interrompida",
+    ),
+    (
+        "No sample was sent for identification.",
+        "No sample was sent for identification.",
+        "No se envió ninguna muestra para identificar.",
+        "Aucun échantillon n’a été envoyé pour identification.",
+        "Es wurde keine Aufnahme zur Erkennung gesendet.",
+        "Nenhuma amostra foi enviada para identificação.",
+    ),
+    (
+        "Could not identify the music",
+        "Could not identify the music",
+        "No se pudo identificar la música",
+        "Impossible d’identifier la musique",
+        "Musik konnte nicht erkannt werden",
+        "Não foi possível identificar a música",
+    ),
+    (
+        "Try another source or sample",
+        "Try another source or sample",
+        "Prueba otra fuente o muestra",
+        "Essayez une autre source ou un autre échantillon",
+        "Andere Quelle oder Aufnahme versuchen",
+        "Tente outra fonte ou amostra",
+    ),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _MUSIC_IDENTIFIER_TRANSLATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
 STREAMERBOT_EVENT_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("game_started", "Game launched"),
     ("death_added", "Death added"),
@@ -24967,6 +26103,7 @@ STREAMERBOT_EVENT_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("game_timer_finished", "Game timer finished"),
     ("hack_completed", "Hack completed"),
     ("connection_changed", "Tracker connected or disconnected"),
+    ("song_identified", "Song Identified for Chat"),
 )
 STREAMERBOT_EVENT_LABELS = dict(STREAMERBOT_EVENT_DEFINITIONS)
 
@@ -24977,8 +26114,327 @@ STREAMERBOT_CONTROL_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("finish_game_timer", "Finish Game Timer"),
     ("complete_hack", "Open Complete Hack"),
     ("open_game_library", "Open Game Library"),
+    ("identify_current_song", "Post Current Level Song to Chat"),
 )
 STREAMERBOT_CONTROL_LABELS = dict(STREAMERBOT_CONTROL_DEFINITIONS)
+
+
+STREAMERBOT_SCENE_ARGUMENT_NAMES: tuple[str, ...] = (
+    "obsScene",
+    "sceneName",
+    "currentScene",
+    "obsCurrentScene",
+    "scene",
+)
+STREAMERBOT_SONG_SCENE_NAME = "SNES Scene"
+STREAMERBOT_DEFAULT_SONG_REWARD_NAME = "What Song Is Playing?"
+STREAMERBOT_DEFAULT_SONG_REWARD_COST = 1
+STREAMERBOT_DEFAULT_SONG_REWARD_COOLDOWN = 30
+STREAMERBOT_SONG_REWARD_ACTION_NAME = (
+    "SMW Stream Tracker - Current Level Song Reward"
+)
+STREAMERBOT_SONG_VISIBILITY_ACTION_NAME = (
+    "SMW Stream Tracker - Song Reward Scene Visibility"
+)
+STREAMERBOT_SONG_REPLY_ACTION_NAME = (
+    "SMW Stream Tracker - Post Current Level Song to Chat"
+)
+STREAMERBOT_TWITCH_REWARDS_GUIDE_URL = (
+    "https://docs.streamer.bot/guide/platforms/twitch/#channel-point-rewards"
+)
+
+
+def normalize_streamerbot_song_reward_settings(
+    reward_name: object,
+    scene_name: object,
+    cost: object,
+    cooldown: object,
+) -> dict[str, Any]:
+    """Validate the values used to create or update the Twitch reward."""
+
+    clean_reward_name = str(reward_name).strip()
+    clean_scene_name = str(scene_name).strip()
+    if not clean_reward_name:
+        raise ValueError("Enter a channel point reward name.")
+    if len(clean_reward_name) > 45:
+        raise ValueError(
+            "Twitch channel point reward names cannot exceed 45 characters."
+        )
+    if not clean_scene_name:
+        raise ValueError("Enter the exact OBS scene where the reward may run.")
+    try:
+        clean_cost = int(str(cost).strip())
+        clean_cooldown = int(str(cooldown).strip())
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "Reward cost and global cooldown must be whole numbers."
+        ) from error
+    if not 1 <= clean_cost <= 1_000_000:
+        raise ValueError(
+            "Reward cost must be between 1 and 1,000,000 channel points."
+        )
+    if not 0 <= clean_cooldown <= 604_800:
+        raise ValueError(
+            "Global cooldown must be between 0 and 604,800 seconds."
+        )
+    return {
+        "reward_name": clean_reward_name,
+        "scene_name": clean_scene_name,
+        "cost": clean_cost,
+        "cooldown": clean_cooldown,
+    }
+
+
+def install_streamerbot_song_reward(
+    reward_name: object,
+    scene_name: object,
+    cost: object,
+    cooldown: object,
+    *,
+    timeout: float = 45.0,
+) -> dict[str, Any]:
+    """Create or update the Streamer.bot-owned Twitch reward on Windows."""
+
+    settings = normalize_streamerbot_song_reward_settings(
+        reward_name,
+        scene_name,
+        cost,
+        cooldown,
+    )
+    if os.name != "nt":
+        raise RuntimeError(
+            "One-click Streamer.bot reward setup is available on Windows only."
+        )
+    setup_script = bundled_resource_path(
+        "tools",
+        "streamerbot_reward_setup.ps1",
+    )
+    if not setup_script.is_file():
+        raise RuntimeError(
+            "The Streamer.bot reward setup helper is missing from this build."
+        )
+    powershell_path = shutil.which("powershell.exe")
+    if not powershell_path:
+        powershell_path = str(
+            Path(os.environ.get("WINDIR", r"C:\Windows"))
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+    command = [
+        powershell_path,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(setup_script),
+        "-RewardName",
+        settings["reward_name"],
+        "-Cost",
+        str(settings["cost"]),
+        "-Cooldown",
+        str(settings["cooldown"]),
+        "-SceneName",
+        settings["scene_name"],
+    ]
+    startup_info = None
+    creation_flags = 0
+    if os.name == "nt":
+        startup_info = subprocess.STARTUPINFO()
+        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup_info.wShowWindow = 0
+        creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(10.0, float(timeout)),
+            startupinfo=startup_info,
+            creationflags=creation_flags,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            "Streamer.bot did not finish the reward setup in time. Keep "
+            "Streamer.bot open and unlocked, then try again."
+        ) from error
+    output_lines = [
+        line.strip()
+        for line in (completed.stdout or "").splitlines()
+        if line.strip()
+    ]
+    result: dict[str, Any] = {}
+    for output_line in reversed(output_lines):
+        try:
+            candidate = json.loads(output_line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            result = candidate
+            break
+    if completed.returncode != 0 or not bool(result.get("ok")):
+        error_message = str(result.get("message", "")).strip()
+        if not error_message:
+            error_message = (completed.stderr or "").strip()
+        raise RuntimeError(
+            error_message
+            or "Streamer.bot could not create or update the Twitch reward."
+        )
+    if not bool(result.get("actionsInstalled")):
+        raise RuntimeError(
+            "Streamer.bot created the reward, but its Actions were not installed."
+        )
+    if not str(result.get("replyActionId", "")).strip():
+        raise RuntimeError(
+            "Streamer.bot created the reward, but its chat reply Action was "
+            "not installed."
+        )
+    return result
+
+
+def streamerbot_song_reward_setup_status(
+    reward_enabled: bool,
+    reward_name: object = STREAMERBOT_DEFAULT_SONG_REWARD_NAME,
+    scene_name: object = STREAMERBOT_SONG_SCENE_NAME,
+    cost: object = STREAMERBOT_DEFAULT_SONG_REWARD_COST,
+    cooldown: object = STREAMERBOT_DEFAULT_SONG_REWARD_COOLDOWN,
+) -> str:
+    """Describe the installed direct current-level song reward."""
+
+    clean_reward_name = (
+        str(reward_name).strip() or STREAMERBOT_DEFAULT_SONG_REWARD_NAME
+    )
+    clean_scene_name = str(scene_name).strip() or STREAMERBOT_SONG_SCENE_NAME
+    try:
+        clean_cost = int(cost)
+    except (TypeError, ValueError):
+        clean_cost = STREAMERBOT_DEFAULT_SONG_REWARD_COST
+    try:
+        clean_cooldown = int(cooldown)
+    except (TypeError, ValueError):
+        clean_cooldown = STREAMERBOT_DEFAULT_SONG_REWARD_COOLDOWN
+    if reward_enabled:
+        return (
+            f'REWARD + ACTIONS INSTALLED · “{clean_reward_name}” · '
+            f'{clean_cost:,} points '
+            f'· {clean_cooldown:,}-second cooldown · “{clean_scene_name}” only. '
+            "Streamer.bot shows the reward only on that scene and the tracker "
+            "posts the current song and SMW Central link to Twitch chat. "
+            "Unrecognized levels are identified automatically from live game audio."
+        )
+    return (
+        "NOT INSTALLED · Select Set Up Current Level Song Reward to create the "
+        "Twitch reward, install its Streamer.bot Actions, save its scene rule, "
+        "and connect the tracker."
+    )
+
+
+def streamerbot_scene_from_arguments(arguments: object) -> str:
+    """Return the OBS scene that a Streamer.bot action explicitly supplied."""
+
+    if not isinstance(arguments, dict):
+        return ""
+    for argument_name in STREAMERBOT_SCENE_ARGUMENT_NAMES:
+        value = arguments.get(argument_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for container_name in ("obs", "trigger", "event", "context"):
+        nested = arguments.get(container_name)
+        nested_scene = streamerbot_scene_from_arguments(nested)
+        if nested_scene:
+            return nested_scene
+    return ""
+
+
+def streamerbot_scene_from_event(document: object) -> str:
+    """Return the active scene from a Streamer.bot OBS SceneChanged event."""
+
+    if not isinstance(document, dict):
+        return ""
+    event = document.get("event", {})
+    if not isinstance(event, dict):
+        return ""
+    if (
+        str(event.get("source", "")).casefold() != "obs"
+        or str(event.get("type", "")).casefold() != "scenechanged"
+    ):
+        return ""
+    data = document.get("data", {})
+    if not isinstance(data, dict):
+        return ""
+    for name in (
+        "sceneName",
+        "currentProgramSceneName",
+        "currentScene",
+        "name",
+    ):
+        value = data.get(name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for name in ("scene", "eventData", "obs", "data"):
+        nested = data.get(name)
+        if isinstance(nested, dict):
+            scene = streamerbot_scene_from_arguments(nested)
+            if scene:
+                return scene
+            nested_name = nested.get("name")
+            if isinstance(nested_name, str) and nested_name.strip():
+                return nested_name.strip()
+    return ""
+
+
+def streamerbot_song_reward_from_event(
+    document: object,
+) -> dict[str, Any] | None:
+    """Normalize a Streamer.bot Twitch reward-redemption event."""
+
+    if not isinstance(document, dict):
+        return None
+    event = document.get("event", {})
+    if not isinstance(event, dict):
+        return None
+    if (
+        str(event.get("source", "")).casefold() != "twitch"
+        or str(event.get("type", "")).casefold() != "rewardredemption"
+    ):
+        return None
+    data = document.get("data", {})
+    if not isinstance(data, dict):
+        return None
+    reward = data.get("reward", {})
+    reward = reward if isinstance(reward, dict) else {}
+    user = data.get("user", {})
+    user = user if isinstance(user, dict) else {}
+    reward_name = str(
+        reward.get("title") or data.get("rewardName") or ""
+    ).strip()
+    if not reward_name:
+        return None
+    return {
+        "rewardName": reward_name,
+        "rewardId": str(
+            reward.get("id") or data.get("rewardId") or ""
+        ).strip(),
+        "redemptionId": str(data.get("redemptionId") or "").strip(),
+        "userName": str(
+            user.get("name")
+            or user.get("displayName")
+            or user.get("login")
+            or data.get("userName")
+            or ""
+        ).strip(),
+        "userLogin": str(
+            user.get("login") or data.get("userLogin") or ""
+        ).strip(),
+        "userInput": str(data.get("userInput") or "").strip(),
+        "directChatReply": True,
+    }
 
 
 def recommended_streamerbot_action_mappings(
@@ -25244,6 +26700,22 @@ class StreamerBotConnection:
     def subscribe_action_events(self) -> dict[str, Any]:
         return self.request("Subscribe", events={"raw": ["Action"]})
 
+    def subscribe_tracker_events(
+        self,
+        *,
+        include_actions: bool = True,
+        include_song_reward: bool = False,
+    ) -> dict[str, Any]:
+        events: dict[str, list[str]] = {}
+        if include_actions:
+            events["raw"] = ["Action"]
+        if include_song_reward:
+            events["twitch"] = ["RewardRedemption"]
+            events["obs"] = ["SceneChanged"]
+        if not events:
+            raise ValueError("At least one Streamer.bot event is required.")
+        return self.request("Subscribe", events=events)
+
     def receive_document(self) -> dict[str, Any]:
         if self.socket is None:
             raise ConnectionError("Streamer.bot is not connected.")
@@ -25267,6 +26739,24 @@ class StreamerBotConnection:
             "DoAction",
             action=action_reference,
             args=dict(arguments),
+        )
+
+    def send_message(
+        self,
+        message: object,
+        *,
+        platform: str = "twitch",
+        use_bot: bool = True,
+    ) -> dict[str, Any]:
+        text = str(message or "").strip()
+        if not text:
+            raise ValueError("The Streamer.bot chat message is empty.")
+        return self.request(
+            "SendMessage",
+            platform=str(platform or "twitch").strip().casefold() or "twitch",
+            bot=bool(use_bot),
+            internal=False,
+            message=text,
         )
 
     def close(self) -> None:
@@ -25437,6 +26927,7 @@ class StreamerBotControlListener:
         self._stop_event = threading.Event()
         self._connection: StreamerBotConnection | None = None
         self._connection_signature: tuple[Any, ...] | None = None
+        self._active_obs_scene = ""
         self._last_status: tuple[bool, str] | None = None
         self._thread = threading.Thread(
             target=self._run,
@@ -25487,7 +26978,14 @@ class StreamerBotControlListener:
             timeout=1.0,
         )
         connection.connect()
-        connection.subscribe_action_events()
+        controls_active = bool(settings.get("controls_enabled", False)) and bool(
+            settings.get("control_actions", {})
+        )
+        song_reward_active = bool(settings.get("song_reward_enabled", False))
+        connection.subscribe_tracker_events(
+            include_actions=controls_active,
+            include_song_reward=song_reward_active,
+        )
         self._connection = connection
         self._connection_signature = signature
         self._status(True, "Streamer.bot controls are connected.")
@@ -25505,11 +27003,17 @@ class StreamerBotControlListener:
         while not self._stop_event.is_set():
             settings = self._settings_snapshot()
             mappings = settings.get("control_actions", {})
-            active = (
-                bool(settings.get("enabled", False))
-                and bool(settings.get("controls_enabled", False))
+            controls_active = (
+                bool(settings.get("controls_enabled", False))
                 and isinstance(mappings, dict)
                 and bool(mappings)
+            )
+            song_reward_active = bool(
+                settings.get("song_reward_enabled", False)
+            )
+            active = (
+                bool(settings.get("enabled", False))
+                and (controls_active or song_reward_active)
             )
             if not active:
                 self._close_connection()
@@ -25518,12 +27022,74 @@ class StreamerBotControlListener:
             try:
                 connection = self._connect(settings)
                 document = connection.receive_document()
-                command = streamerbot_control_from_action_event(
-                    document,
-                    mappings,
-                )
-                if command is not None:
-                    self._control_callback(*command)
+                changed_scene = streamerbot_scene_from_event(document)
+                if changed_scene:
+                    self._active_obs_scene = changed_scene
+                    retry_delay = 0.4
+                    continue
+                if song_reward_active:
+                    reward = streamerbot_song_reward_from_event(document)
+                    configured_reward = str(
+                        settings.get(
+                            "song_reward_name",
+                            STREAMERBOT_DEFAULT_SONG_REWARD_NAME,
+                        )
+                        or STREAMERBOT_DEFAULT_SONG_REWARD_NAME
+                    ).strip()
+                    if reward is not None and str(
+                        reward.get("rewardName", "")
+                    ).casefold() == configured_reward.casefold():
+                        required_scene = str(
+                            settings.get(
+                                "song_scene_name",
+                                STREAMERBOT_SONG_SCENE_NAME,
+                            )
+                            or STREAMERBOT_SONG_SCENE_NAME
+                        ).strip()
+                        active_scene = self._active_obs_scene
+                        if not active_scene:
+                            if bool(
+                                settings.get(
+                                    "song_reward_actions_installed",
+                                    False,
+                                )
+                            ):
+                                # The installed Streamer.bot visibility Action
+                                # has already disabled this reward on every other
+                                # scene, so an actual redemption is sufficient
+                                # proof that the configured scene is active.
+                                active_scene = required_scene
+                            else:
+                                self._status(
+                                    True,
+                                    "Current level song reward ignored until "
+                                    "Streamer.bot reports the active OBS scene. "
+                                    "Switch scenes once, then try the reward again.",
+                                )
+                                retry_delay = 0.4
+                                continue
+                        if active_scene.casefold() != required_scene.casefold():
+                            self._status(
+                                True,
+                                f'Current level song reward ignored — OBS is on "{active_scene}", '
+                                f'not "{required_scene}".',
+                            )
+                            retry_delay = 0.4
+                            continue
+                        reward["sceneName"] = active_scene
+                        self._control_callback(
+                            "identify_current_song",
+                            reward,
+                        )
+                        retry_delay = 0.4
+                        continue
+                if controls_active:
+                    command = streamerbot_control_from_action_event(
+                        document,
+                        mappings,
+                    )
+                    if command is not None:
+                        self._control_callback(*command)
                 retry_delay = 0.4
             except websocket.WebSocketTimeoutException:
                 continue
@@ -25567,6 +27133,17 @@ DEFAULT_CONFIG = {
     "streamerbot_event_actions": {},
     "streamerbot_controls_enabled": False,
     "streamerbot_control_actions": {},
+    "streamerbot_song_scene_name": STREAMERBOT_SONG_SCENE_NAME,
+    "streamerbot_song_reward_enabled": False,
+    "streamerbot_song_reward_actions_installed": False,
+    "streamerbot_song_reply_action": {},
+    "streamerbot_song_reward_name": STREAMERBOT_DEFAULT_SONG_REWARD_NAME,
+    "streamerbot_song_reward_cost": STREAMERBOT_DEFAULT_SONG_REWARD_COST,
+    "streamerbot_song_reward_cooldown": (
+        STREAMERBOT_DEFAULT_SONG_REWARD_COOLDOWN
+    ),
+    "music_identifier_audio_source": "",
+    "music_identifier_level_songs": {},
     # Keep tracker-owned dialogs inside the main window so a single OBS
     # Window Capture source can include them.  Native OS and third-party
     # windows (browsers, installers, file pickers) intentionally stay native.
@@ -26081,7 +27658,7 @@ def mister_safe_rom_filename(game: dict[str, Any], suffix: str = ".sfc") -> str:
 
 
 def mister_mgl_text(
-    relative_rom_path: str,
+    rom_path: str,
     *,
     retroachievements: bool = False,
 ) -> str:
@@ -26100,9 +27677,12 @@ def mister_mgl_text(
     file_node = ET.SubElement(
         root,
         "file",
+        # MiSTer's SNES MGL mapping uses file index 0.  Use the full SD-card
+        # path as well: a path relative to games/SNES is instead resolved from
+        # the MGL's own directory and can load the core without the cartridge.
         {"delay": "2", "type": "f", "index": "0"},
     )
-    file_node.set("path", str(PurePosixPath(relative_rom_path)))
+    file_node.set("path", str(PurePosixPath(rom_path)))
     return ET.tostring(root, encoding="unicode") + "\n"
 
 SRAM_BASE_ADDRESS = 0xE00000
@@ -26132,6 +27712,7 @@ PIPE_TIMER_ADDRESS = "F50088"      # $7E0088; active pipe travel countdown
 PIPE_ACTION_ADDRESS = "F50089"     # $7E0089; pipe entry/exit direction
 SPRITE_LOCK_ADDRESS = "F5009D"      # $7E009D; gameplay/sprites are frozen
 PLAYER_LIVES_ADDRESS = "F50DBE"    # $7E0DBE; current player's lives
+MUSIC_TRACK_ADDRESS = "F50DDA"     # $7E0DDA; copy of current music register
 PAUSE_FLAG_ADDRESS = "F513D4"      # $7E13D4
 TRANSLEVEL_ADDRESS = "F513BF"      # $7E13BF
 MIDWAY_POINT_FLAG_ADDRESS = "F513CE"  # $7E13CE; nonzero = use midpoint
@@ -26177,6 +27758,32 @@ LIVE_STATE_CONFIRMATION_SAMPLES = {
     "exits": 3,
 }
 LIVE_STATE_INITIAL_CONFIRMATION_SAMPLES = 2
+
+
+def is_snes_initial_wram_pattern(
+    address: str,
+    payload: bytes,
+) -> bool:
+    """Return whether a WRAM block is untouched SNES2 initialization data.
+
+    Current MiSTer SNES cores initialize WRAM with a repeating 99/66 pattern
+    before a cartridge begins executing. Treating those bytes as live SMW
+    state produces impossible values such as 153 exits and prevents both
+    timers from starting.
+    """
+    try:
+        start = int(str(address), 16) - int(LIVE_STATE_BASE_ADDRESS, 16)
+    except (TypeError, ValueError):
+        return False
+    data = bytes(payload)
+    if start < 0 or len(data) < 64:
+        return False
+    for index, value in enumerate(data):
+        offset = start + index
+        expected = 0x66 if ((offset >> 8) ^ (offset >> 2)) & 1 else 0x99
+        if value != expected:
+            return False
+    return True
 
 
 def live_state_confirmation_samples(
@@ -26503,6 +28110,50 @@ OBS_WIDGET_FIELDS = (
 )
 
 
+def _obs_radio_time_seconds(value: object) -> float:
+    pieces = str(value or "").strip().split(":")
+    if not pieces or any(not piece.strip().isdigit() for piece in pieces):
+        return 0.0
+    seconds = 0.0
+    for piece in pieces:
+        seconds = seconds * 60.0 + float(piece)
+    return max(0.0, seconds)
+
+
+def obs_radio_widget_state(state: object) -> dict[str, Any]:
+    source = dict(state) if isinstance(state, dict) else {}
+    title = str(source.get("title", "") or "").strip()
+    artist = str(source.get("subtitle", "") or "").strip()
+    details = str(source.get("details", "") or "").strip()
+    elapsed = str(source.get("elapsed", "0:00") or "0:00").strip()
+    duration = str(source.get("duration", "0:00") or "0:00").strip()
+    elapsed_seconds = _obs_radio_time_seconds(elapsed)
+    duration_seconds = _obs_radio_time_seconds(duration)
+    try:
+        progress = float(source.get("progress", 0.0) or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        progress = 0.0
+    if duration_seconds > 0.0:
+        progress = max(progress, elapsed_seconds / duration_seconds)
+    progress = max(0.0, min(1.0, progress))
+    ready = bool(source.get("ready") and title and duration_seconds > 0.0)
+    return {
+        "source": "SMW Central Radio",
+        "ready": ready,
+        "playing": bool(ready and source.get("playing")),
+        "title": title[:240],
+        "artist": artist[:220],
+        "details": details[:220],
+        "elapsed": elapsed[:24],
+        "duration": duration[:24],
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "duration_seconds": round(duration_seconds, 3),
+        "progress": round(progress, 6),
+        "can_skip": bool(source.get("can_skip")),
+        "up_next": str(source.get("up_next", "") or "").strip()[:240],
+    }
+
+
 def _obs_widget_nonnegative_integer(value: object) -> int:
     try:
         return max(0, int(float(value or 0)))
@@ -26576,6 +28227,7 @@ def build_obs_widget_state(
     game_timer: object = "00:00",
     level_timer: object = "00:00",
     achievements: object = None,
+    radio: object = None,
     connected: bool = False,
 ) -> dict[str, Any]:
     exits_match = re.search(
@@ -26641,6 +28293,7 @@ def build_obs_widget_state(
             "level": str(level_timer or "00:00")[:40],
         },
         "achievements": obs_widget_achievement_summary(achievements),
+        "radio": obs_radio_widget_state(radio),
     }
 
 
@@ -26770,7 +28423,14 @@ class ObsWidgetRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _serve_asset(self, filename: str, content_type: str) -> None:
-        if filename not in {"index.html", "widget.css", "widget.js"}:
+        if filename not in {
+            "index.html",
+            "widget.css",
+            "widget.js",
+            "radio.html",
+            "radio.css",
+            "radio.js",
+        }:
             self._send_not_found()
             return
         asset_path = self.server.assets_root / filename
@@ -26951,6 +28611,18 @@ class ObsWidgetRequestHandler(BaseHTTPRequestHandler):
         if request_path == "/obs-widget/widget.js":
             self._serve_asset(
                 "widget.js",
+                "application/javascript; charset=utf-8",
+            )
+            return
+        if request_path in {"/obs-radio", "/obs-radio/"}:
+            self._serve_asset("radio.html", "text/html; charset=utf-8")
+            return
+        if request_path == "/obs-radio/radio.css":
+            self._serve_asset("radio.css", "text/css; charset=utf-8")
+            return
+        if request_path == "/obs-radio/radio.js":
+            self._serve_asset(
+                "radio.js",
                 "application/javascript; charset=utf-8",
             )
             return
@@ -27711,6 +29383,7 @@ class TrackerWorker:
         self.pending_catalog_launch_at = 0.0
         self.current_mode: int | None = None
         self.current_translevel: int | None = None
+        self.current_music_track: int | None = None
 
         # Legacy workbook writes are retained only for optional export/import compatibility.
         self.spreadsheet_update_lock = threading.Lock()
@@ -27726,6 +29399,10 @@ class TrackerWorker:
         self.session_started_at = datetime.now().astimezone().isoformat(
             timespec="seconds"
         )
+        # Set before a normal app shutdown begins.  The connection thread has
+        # its own final checkpoint write, so it must preserve the clean marker
+        # instead of racing the UI thread and changing it back to a crash.
+        self.clean_shutdown_requested = False
         self.connection_gate_lock = threading.Lock()
         self.connection_pause_event = threading.Event()
         self.connection_released_event = threading.Event()
@@ -27751,9 +29428,22 @@ class TrackerWorker:
         )
         self.thread.start()
 
-    def stop(self) -> None:
+    def stop(self, *, clean_shutdown: bool = False) -> None:
+        if clean_shutdown:
+            self.clean_shutdown_requested = True
         self.cancel_streamerbot_level_session("tracker stopped")
         self.stop_event.set()
+
+    def confirmed_completed_exit_count(self) -> int:
+        """Return the visible confirmed exits without treating zero as absent."""
+
+        value = self.displayed_exit_count
+        if value is None:
+            value = self.authoritative_exit_count
+        try:
+            return max(0, int(value if value is not None else 0))
+        except (TypeError, ValueError, OverflowError):
+            return 0
 
     def record_reconciliation_correction(
         self,
@@ -27814,7 +29504,10 @@ class TrackerWorker:
         if not bool(self.config.get("crash_recovery_enabled", True)):
             return
         payload = {
-            "schema": 1,
+            # Schema 2 marks checkpoints written after the normal-shutdown
+            # race was fixed. Older unclean markers are not reliable because
+            # the connection thread could overwrite a successful X-close.
+            "schema": 2,
             "clean_shutdown": bool(clean_shutdown),
             "started_at": self.session_started_at,
             "updated_at": datetime.now().astimezone().isoformat(
@@ -27834,10 +29527,7 @@ class TrackerWorker:
             "level_seconds": max(0.0, float(self.level_elapsed)),
             "total_deaths": max(0, int(self.death_count)),
             "level_deaths": max(0, int(self.level_death_count)),
-            "completed_exits": max(
-                0,
-                int(self.displayed_exit_count or self.authoritative_exit_count or 0),
-            ),
+            "completed_exits": self.confirmed_completed_exit_count(),
             "total_exits": self.current_total,
             "save_slot": self.active_save_slot,
             "generic_game": bool(self.generic_game_active),
@@ -27872,10 +29562,7 @@ class TrackerWorker:
             "level_time": format_timer(self.level_elapsed, False),
             "level_deaths": max(0, int(self.level_death_count)),
             "total_deaths": max(0, int(self.death_count)),
-            "completed_exits": max(
-                0,
-                int(self.displayed_exit_count or self.authoritative_exit_count or 0),
-            ),
+            "completed_exits": self.confirmed_completed_exit_count(),
             "total_exits": self.current_total,
             "generic_game": bool(self.generic_game_active),
             "statistics_corrected": int(self.reconciliation_correction_count),
@@ -28817,6 +30504,7 @@ class TrackerWorker:
         self.last_progress_exit_count = None
         self.current_mode = None
         self.current_translevel = None
+        self.current_music_track = None
         self.death_count = 0
         self.level_death_count = 0
         self.game_manual_paused = False
@@ -33432,6 +35120,18 @@ finally {
             for address, size in LIVE_STATE_WINDOWS
         ]
 
+        if (
+            snapshots
+            and is_snes_initial_wram_pattern(
+                LIVE_STATE_WINDOWS[0][0],
+                snapshots[0][1],
+            )
+        ):
+            raise RuntimeError(
+                "MiSTer loaded the SNES core, but the ROM did not start. "
+                "Launch the game again from the tracker."
+            )
+
         def byte_at(address: str) -> int:
             numeric_address = int(address, 16)
             for window_start, snapshot in snapshots:
@@ -33494,6 +35194,7 @@ finally {
             "intentional_transition": int(intentional_transition),
             "sprite_lock": byte_at(SPRITE_LOCK_ADDRESS),
             "player_lives": byte_at(PLAYER_LIVES_ADDRESS),
+            "music_track": byte_at(MUSIC_TRACK_ADDRESS),
             "paused": byte_at(PAUSE_FLAG_ADDRESS),
             "translevel": translevel,
             "midway_point": byte_at(MIDWAY_POINT_FLAG_ADDRESS),
@@ -34125,6 +35826,12 @@ finally {
         self.update_death_file()
         self.update_timer_files()
         self.start_streamerbot_level_session(translevel)
+        self.send_event(
+            "level_started",
+            level_id=int(translevel),
+            rom_key=str(self.current_rom_key or ""),
+            session_id=str(self.streamerbot_level_session_id or ""),
+        )
 
         if self.level_elapsed > 0 or self.level_death_count > 0:
             self.log(
@@ -34212,6 +35919,7 @@ finally {
         gameplay_active = raw_gameplay_active and not focus_blocked
         self.current_mode = mode
         self.current_translevel = translevel
+        self.current_music_track = state.get("music_track")
 
         if focus_blocked and not self.retroarch_focus_paused:
             self.retroarch_focus_paused = True
@@ -35267,7 +36975,9 @@ finally {
             self.save_current_level_progress()
             self.save_current_game_time()
             self.save_current_death_count()
-            self.write_session_recovery_checkpoint()
+            self.write_session_recovery_checkpoint(
+                clean_shutdown=self.clean_shutdown_requested
+            )
 
             try:
                 ws.close()
@@ -35865,8 +37575,85 @@ class TrackerApp:
         self.smwcentral_webview_process: subprocess.Popen | None = None
         self.smwcentral_spc_overlay_host: tk.Frame | None = None
         self.smwcentral_spc_overlay_poll_after_id: str | None = None
+        self.smwcentral_spc_overlay_target_url = ""
+        self.smwcentral_spc_overlay_mode = ""
+        self.smwcentral_spc_ready_signal_path: Path | None = None
+        self.smwcentral_spc_profile_dir: Path | None = None
+        self.smwcentral_spc_state_path: Path | None = None
+        self.smwcentral_spc_command_path: Path | None = None
+        self.smwcentral_spc_native_widgets: dict[str, Any] = {}
+        self.smwcentral_spc_native_state: dict[str, Any] = {}
+        self.smwcentral_spc_native_collapsed = False
+        self.smwcentral_spc_native_updating = False
+        self.smwcentral_spc_native_drag_origin: tuple[int, ...] | None = None
+        self.smwcentral_spc_preloaded = False
+        self.smwcentral_spc_launch_monotonic = 0.0
         self.smwcentral_home_feed_process: subprocess.Popen | None = None
         self.pending_smwcentral_completion: dict[str, Any] | None = None
+        self.music_identifier_source_var = tk.StringVar(value="")
+        self.music_identifier_status_var = tk.StringVar(
+            value=self._translate_ui_text("Ready to listen")
+        )
+        self.music_identifier_detail_var = tk.StringVar(
+            value=self._translate_ui_text(
+                "Choose an audio source, start the music, then select Identify What's Playing."
+            )
+        )
+        self.music_identifier_title_var = tk.StringVar(
+            value=self._translate_ui_text("No song identified yet")
+        )
+        self.music_identifier_artist_var = tk.StringVar(value="")
+        self.music_identifier_confidence_var = tk.StringVar(value="")
+        self.music_identifier_progress_var = tk.DoubleVar(value=0.0)
+        self.music_identifier_sources: dict[str, dict[str, Any]] = {}
+        self.music_identifier_widgets: dict[str, Any] = {}
+        self.music_identifier_events: queue.Queue = queue.Queue()
+        self.music_identifier_thread: threading.Thread | None = None
+        self.music_identifier_cancel_event = threading.Event()
+        self.music_identifier_poll_after_id: str | None = None
+        self.music_identifier_animation_after_id: str | None = None
+        self.music_identifier_animation_frame = 0
+        self.music_identifier_state = "ready"
+        self.music_identifier_last_result: dict[str, Any] = {}
+        # Channel-point redemptions use a remembered level-scoped result when
+        # available. If this level has not been identified yet, the tracker can
+        # now start a local live-audio lookup and reply when it finishes.
+        stored_level_songs = self.config.get("music_identifier_level_songs", {})
+        self.music_identifier_context_results: dict[str, dict[str, Any]] = {
+            str(context_key): dict(song)
+            for context_key, song in (
+                stored_level_songs.items()
+                if isinstance(stored_level_songs, dict)
+                else ()
+            )
+            if str(context_key).strip() and isinstance(song, dict)
+        }
+        self.music_identifier_streamerbot_request: dict[str, Any] | None = None
+        self.music_identifier_queued_streamerbot_request: (
+            dict[str, Any] | None
+        ) = None
+        self.music_identifier_lookup_context_key = ""
+        self.music_identifier_prefetch_after_id: str | None = None
+        self.music_identifier_prefetch_session_id = ""
+        self.music_index_details: dict[str, Any] = {}
+        self.music_index_events: queue.Queue = queue.Queue()
+        self.music_index_update_thread: threading.Thread | None = None
+        self.music_index_poll_after_id: str | None = None
+        self.music_index_next_check_after_id: str | None = None
+        try:
+            self.music_index_details = (
+                smwc_music_index.ensure_bundled_music_index(
+                    SMWC_BUNDLED_MUSIC_INDEX_FILE,
+                    SMWC_MUSIC_INDEX_FILE,
+                )
+            )
+            music_index_status = (
+                "SMW Central index ready — "
+                f"{int(self.music_index_details.get('track_count', 0)):,} songs"
+            )
+        except Exception:
+            music_index_status = "SMW Central music index is not installed"
+        self.music_index_status_var = tk.StringVar(value=music_index_status)
         self.obs_settings_dialog: tk.Toplevel | None = None
         self.obs_widget_dialog: tk.Toplevel | None = None
         self.obs_widget_server: ObsWidgetHTTPServer | None = None
@@ -36063,6 +37850,10 @@ class TrackerApp:
             self.root.after(
                 3200,
                 self._schedule_automatic_catalog_refresh,
+            )
+            self.root.after(
+                3600,
+                self._start_music_index_update_check,
             )
             self.root.after_idle(
                 self._maximize_main_window,
@@ -37265,6 +39056,8 @@ class TrackerApp:
             return "smwcentral"
         if normalized in {"language", "language_settings"}:
             return "language"
+        if normalized in {"music", "music_identifier"}:
+            return "music_identifier"
         if normalized in {
             "settings",
             "setup_health_check",
@@ -37308,6 +39101,7 @@ class TrackerApp:
             "modes": self._open_game_modes_page,
             "smwcentral": self._open_smwcentral_page,
             "language": self._open_language_page,
+            "music_identifier": self._open_music_identifier_page,
             "settings": self._open_settings_dialog,
         }
         command = routes.get(normalized_section)
@@ -37366,17 +39160,17 @@ class TrackerApp:
         **kwargs,
     ) -> int:
         radius = max(0.0, min(float(radius), (x2 - x1) / 2, (y2 - y1) / 2))
-        points = (
-            x1 + radius, y1, x2 - radius, y1, x2, y1,
-            x2, y1 + radius, x2, y2 - radius, x2, y2,
-            x2 - radius, y2, x1 + radius, y2, x1, y2,
-            x1, y2 - radius, x1, y1 + radius, x1, y1,
-        )
-        return canvas.create_polygon(
-            points,
-            smooth=True,
-            splinesteps=24,
-            **kwargs,
+        return draw_smooth_canvas_rounded_rectangle(
+            canvas,
+            x1,
+            y1,
+            x2,
+            y2,
+            radius,
+            fill=str(kwargs.pop("fill", "")),
+            outline=str(kwargs.pop("outline", "")),
+            outline_width=max(0, int(kwargs.pop("width", 1))),
+            tags=kwargs.pop("tags", ()),
         )
 
     def _hide_pointer_tooltip(self) -> None:
@@ -37632,6 +39426,7 @@ class TrackerApp:
             "smw_central",
             "mario_hat",
             "streamerbot",
+            "music_note",
         }
         if (
             key in reference_icon_keys
@@ -38036,6 +39831,15 @@ class TrackerApp:
                          *aa_point(button_x + 1.8, button_y + 1.8)),
                         fill=color,
                     )
+            elif key == "music_note":
+                draw_antialiased_music_note(
+                    icon_image,
+                    origin_x=0,
+                    origin_y=0,
+                    unit=unit,
+                    color=color,
+                    full_color=full_color,
+                )
             elif key == "settings":
                 settings_color = "#22C55E" if full_color else color
                 aa_line((
@@ -38245,6 +40049,9 @@ class TrackerApp:
         ) -> int:
             px1, py1 = point(x1, y1)
             px2, py2 = point(x2, y2)
+            resolved_fill = kwargs.pop("fill", "")
+            resolved_outline = kwargs.pop("outline", color)
+            resolved_width = kwargs.pop("width", stroke)
             return self._canvas_round_rectangle(
                 canvas,
                 px1,
@@ -38252,9 +40059,9 @@ class TrackerApp:
                 px2,
                 py2,
                 radius * scale,
-                outline=color,
-                width=stroke,
-                fill="",
+                outline=resolved_outline,
+                width=resolved_width,
+                fill=resolved_fill,
                 **kwargs,
             )
 
@@ -38363,6 +40170,13 @@ class TrackerApp:
                 fill="#27DCE5",
                 width=brand_stroke,
             )
+        elif key == "music_note":
+            note_stroke = max(2, round(4.1 * scale))
+            line(19, 11, 38, 7, 38, 30, fill="#9A4DE3", width=note_stroke)
+            line(19, 11, 19, 34, fill="#27DCE5", width=note_stroke)
+            line(19, 18, 38, 14, fill="#F4C542", width=max(2, round(3 * scale)))
+            oval(7, 32, 19, 40, fill="#27DCE5")
+            oval(26, 28, 38, 36, fill="#9A4DE3")
         elif key in {"timer", "stopwatch"}:
             oval(9, 12, 39, 42)
             line(24, 12, 24, 6)
@@ -38516,14 +40330,15 @@ class TrackerApp:
             and (moderated_new or waiting_new)
         )
         if show_notification:
-            canvas.create_oval(
+            draw_smooth_notification_badge(
+                canvas,
                 self._ui_px(34),
                 self._ui_px(5),
                 self._ui_px(43),
                 self._ui_px(14),
                 fill=STREAM_DESK["red"],
                 outline=STREAM_DESK["text_strong"],
-                width=max(1, self._ui_px(1)),
+                outline_width=max(1, self._ui_px(1)),
                 tags=("update_badge",),
             )
 
@@ -39082,6 +40897,15 @@ class TrackerApp:
             )
         if target is getattr(self, "tracker_list_dialog", None):
             self._dispose_tracker_list_ui()
+        if (
+            target is not None
+            and getattr(target, "page_key", "") == "music_identifier"
+        ):
+            # Navigating through the sidebar replaces the page directly
+            # instead of invoking its window-close protocol. Stop an active
+            # recording here as well so no audio capture continues after the
+            # Music Identifier is no longer visible.
+            self._close_music_identifier_page()
         if target is not None:
             try:
                 target._destroy_from_app()
@@ -42664,12 +44488,6 @@ class TrackerApp:
             self.open_smwcentral_home,
             "toad",
         )
-        add_mario_command(
-            smwcentral_menu,
-            "SMW Central Radio",
-            self._open_smwcentral_radio,
-            "music",
-        )
         smwcentral_menu.add_separator()
         add_mario_command(
             smwcentral_menu,
@@ -42762,14 +44580,15 @@ class TrackerApp:
             bd=0,
             cursor="hand2",
         )
-        self.help_update_badge.create_oval(
+        draw_smooth_notification_badge(
+            self.help_update_badge,
             1,
             1,
             badge_size - 1,
             badge_size - 1,
             fill=THEME["red"],
             outline="white",
-            width=1,
+            outline_width=1,
         )
         self.help_update_badge.create_text(
             badge_size / 2,
@@ -42920,7 +44739,8 @@ class TrackerApp:
                 if is_dark
                 else self._ui_px(4)
             )
-            self.stream_theme_toggle.create_oval(
+            draw_smooth_canvas_ellipse(
+                self.stream_theme_toggle,
                 knob_x,
                 knob_y,
                 knob_x + knob_diameter,
@@ -43268,6 +45088,243 @@ class TrackerApp:
                 if match is not None:
                     return match
         return None
+
+    @staticmethod
+    def _managed_streamerbot_install_directory() -> Path:
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if not local_app_data:
+            raise RuntimeError(
+                "Windows did not provide a local application-data folder."
+            )
+        return Path(local_app_data) / "Programs" / "Streamer.bot"
+
+    def _managed_streamerbot_executable(self) -> Path | None:
+        try:
+            executable = (
+                self._managed_streamerbot_install_directory()
+                / STREAMERBOT_EXECUTABLE_NAME
+            )
+        except RuntimeError:
+            return None
+        return executable.resolve() if executable.is_file() else None
+
+    @staticmethod
+    def _launch_streamerbot(executable: Path) -> None:
+        subprocess.Popen(
+            [str(executable)],
+            cwd=str(executable.parent),
+            close_fds=True,
+        )
+
+    def _finish_streamerbot_install(
+        self,
+        executable: Path | None,
+        progress_dialog: tk.Toplevel | None,
+        parent: tk.Misc,
+        button: tk.Widget | None,
+        error_text: str = "",
+    ) -> None:
+        if progress_dialog is not None:
+            try:
+                progress_dialog.grab_release()
+            except tk.TclError:
+                pass
+            try:
+                progress_dialog.destroy()
+            except tk.TclError:
+                pass
+
+        try:
+            if button is not None:
+                button.configure(state="normal")
+        except tk.TclError:
+            pass
+
+        if error_text or executable is None:
+            message = error_text or "Streamer.bot could not be installed."
+            self.streamerbot_status_var.set(message)
+            self._show_localized_info(
+                "Streamer.bot Setup Failed",
+                message,
+                parent=parent,
+                kind="error",
+            )
+            return
+
+        try:
+            self._launch_streamerbot(executable)
+        except (OSError, subprocess.SubprocessError) as error:
+            message = (
+                "Streamer.bot was installed, but Windows could not start it."
+                f"\n\n{error}\n\nInstalled at:\n{executable.parent}"
+            )
+            self.streamerbot_status_var.set(message)
+            self._show_localized_info(
+                "Could Not Open Streamer.bot",
+                message,
+                parent=parent,
+                kind="error",
+            )
+            return
+
+        self.config["streamerbot_executable_path"] = str(executable)
+        try:
+            save_config(self.config)
+        except OSError as error:
+            append_error_log(
+                "Streamer.bot install path could not be saved",
+                f"{type(error).__name__}: {error}",
+            )
+        self.streamerbot_status_var.set(
+            "Streamer.bot is installed and has been opened."
+        )
+        try:
+            if button is not None:
+                button.configure(text="\u25b6  Open Streamer.bot")
+        except tk.TclError:
+            pass
+        self._show_localized_info(
+            "Streamer.bot Ready",
+            "Streamer.bot is installed and has been opened.\n\n"
+            f"Installed at:\n{executable.parent}",
+            parent=parent,
+        )
+
+    def install_streamerbot(
+        self,
+        *,
+        parent: tk.Misc | None = None,
+        button: tk.Widget | None = None,
+    ) -> None:
+        parent = parent or self.root
+        if not IS_WINDOWS:
+            self._show_localized_info(
+                "Streamer.bot Setup",
+                "Automatic Streamer.bot installation is available on Windows only.",
+                parent=parent,
+                kind="error",
+            )
+            return
+
+        existing = self._managed_streamerbot_executable()
+        if existing is not None:
+            self._finish_streamerbot_install(
+                existing,
+                None,
+                parent,
+                button,
+            )
+            return
+
+        try:
+            if button is not None:
+                button.configure(state="disabled")
+        except tk.TclError:
+            pass
+        progress_dialog, status_variable = self._show_optional_install_progress(
+            "Install Streamer.bot",
+            header_text="STREAMER.BOT SETUP",
+        )
+        self.streamerbot_status_var.set(
+            "Installing the latest stable Streamer.bot for Windows…"
+        )
+
+        def worker() -> None:
+            staging_directory: Path | None = None
+            archive_path = (
+                APP_DATA_DIR
+                / "DependencyDownloads"
+                / "Streamer.bot-latest.zip"
+            )
+            try:
+                self._download_dependency_file(
+                    STREAMERBOT_LATEST_DOWNLOAD_URL,
+                    archive_path,
+                    maximum_bytes=STREAMERBOT_DOWNLOAD_MAXIMUM_BYTES,
+                    status_variable=status_variable,
+                    description="Streamer.bot",
+                )
+                self._set_optional_install_status(
+                    status_variable,
+                    "Installing Streamer.bot…",
+                )
+                APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+                staging_directory = Path(
+                    tempfile.mkdtemp(
+                        prefix="StreamerBotInstall_",
+                        dir=str(APP_DATA_DIR),
+                    )
+                )
+                with zipfile.ZipFile(archive_path, "r") as archive:
+                    damaged_member = archive.testzip()
+                    if damaged_member:
+                        raise RuntimeError(
+                            "The Streamer.bot download was damaged."
+                        )
+                self._extract_dependency_zip(
+                    archive_path,
+                    staging_directory,
+                )
+                source_executable = next(
+                    (
+                        candidate
+                        for candidate in staging_directory.rglob(
+                            STREAMERBOT_EXECUTABLE_NAME
+                        )
+                        if candidate.is_file()
+                    ),
+                    None,
+                )
+                if source_executable is None:
+                    raise FileNotFoundError(
+                        "The official Streamer.bot package did not contain "
+                        "Streamer.bot.exe."
+                    )
+                install_directory = (
+                    self._managed_streamerbot_install_directory()
+                )
+                install_directory.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(
+                    source_executable.parent,
+                    install_directory,
+                    dirs_exist_ok=True,
+                )
+                executable = install_directory / STREAMERBOT_EXECUTABLE_NAME
+                if not executable.is_file():
+                    raise FileNotFoundError(
+                        "Streamer.bot.exe was not found after installation."
+                    )
+                archive_path.unlink(missing_ok=True)
+                self.root.after(
+                    0,
+                    lambda: self._finish_streamerbot_install(
+                        executable.resolve(),
+                        progress_dialog,
+                        parent,
+                        button,
+                    ),
+                )
+            except Exception as error:
+                append_error_log(
+                    "Streamer.bot installation failed",
+                    traceback.format_exc(),
+                )
+                error_text = str(error).strip() or type(error).__name__
+                self.root.after(
+                    0,
+                    lambda: self._finish_streamerbot_install(
+                        None,
+                        progress_dialog,
+                        parent,
+                        button,
+                        error_text,
+                    ),
+                )
+            finally:
+                if staging_directory is not None:
+                    shutil.rmtree(staging_directory, ignore_errors=True)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _show_optional_install_progress(
         self,
@@ -44979,13 +47036,14 @@ class TrackerApp:
         )
         icon_size = self._ui_px(58)
         icon_inset = self._ui_px(4)
-        credential_icon.create_oval(
+        draw_smooth_canvas_ellipse(
+            credential_icon,
             icon_inset,
             icon_inset,
             icon_size - icon_inset,
             icon_size - icon_inset,
             outline=STREAM_DESK["green"],
-            width=max(2, self._ui_px(2)),
+            outline_width=max(2, self._ui_px(2)),
         )
         credential_icon.create_text(
             icon_size // 2,
@@ -46021,13 +48079,14 @@ class TrackerApp:
             sticky="n",
             padx=(0, self._ui_px(16)),
         )
-        warning_icon.create_oval(
+        draw_smooth_canvas_ellipse(
+            warning_icon,
             self._ui_px(4),
             self._ui_px(4),
             self._ui_px(44),
             self._ui_px(44),
             outline=STREAM_DESK["yellow"],
-            width=max(2, self._ui_px(2)),
+            outline_width=max(2, self._ui_px(2)),
         )
         warning_icon.create_text(
             self._ui_px(24),
@@ -47758,11 +49817,20 @@ class TrackerApp:
         result: dict[str, bool | None | str] = {"value": None}
         dialog = self._create_tracker_dialog(owner)
         dialog.title(translated_title or APP_NAME)
-        long_message = len(translated_message) > 520 or translated_message.count("\n") > 7
+        message_lines = translated_message.splitlines() or [""]
+        estimated_wrapped_lines = sum(
+            max(1, math.ceil(len(line) / 68))
+            for line in message_lines
+        )
+        long_message = estimated_wrapped_lines > 5
+        dialog_height = min(
+            650,
+            max(370, 260 + (estimated_wrapped_lines * 28)),
+        )
         self._size_dialog_for_ui(
             dialog,
             760,
-            450 if long_message else 370,
+            dialog_height,
             620,
             320,
         )
@@ -47828,13 +49896,14 @@ class TrackerApp:
         )
         size = self._ui_px(54)
         inset = self._ui_px(5)
-        icon.create_oval(
+        draw_smooth_canvas_ellipse(
+            icon,
             inset,
             inset,
             size - inset,
             size - inset,
             outline=accent,
-            width=max(2, self._ui_px(2)),
+            outline_width=max(2, self._ui_px(2)),
         )
         icon.create_text(
             size // 2,
@@ -48804,7 +50873,6 @@ class TrackerApp:
                 "SMW Central",
                 (
                     ("SMW Central Updates", self.open_smwcentral_home),
-                    ("SMW Central Radio", self._open_smwcentral_radio),
                     ("Log In to SMW Central...", self.open_smwcentral_account),
                     (
                         "Visit SMW Central",
@@ -48896,6 +50964,1369 @@ class TrackerApp:
 
         panel.bind("<Configure>", layout_smwcentral_actions, add="+")
         dialog.add_prepaint_callback(layout_smwcentral_actions)
+
+    def _music_index_ready_text(self, details: dict[str, Any] | None = None) -> str:
+        selected = details or self.music_index_details
+        if str(selected.get("catalog_complete", "0")) != "1":
+            return (
+                "Starter index only — "
+                f"{int(selected.get('track_count', 0) or 0):,} songs; "
+                "complete catalog required"
+            )
+        return (
+            "SMW Central index ready — "
+            f"{int(selected.get('track_count', 0) or 0):,} songs"
+        )
+
+    def _start_music_index_update_check(self, *, manual: bool = False) -> None:
+        """Quietly install new SMW Central fingerprints without blocking the UI."""
+        if (
+            self.music_index_update_thread is not None
+            and self.music_index_update_thread.is_alive()
+        ):
+            if manual:
+                self.music_index_status_var.set("Music index update already in progress…")
+            return
+        if self.music_index_next_check_after_id is not None:
+            try:
+                self.root.after_cancel(self.music_index_next_check_after_id)
+            except tk.TclError:
+                pass
+            self.music_index_next_check_after_id = None
+        if manual:
+            self.music_index_status_var.set("Checking for new SMW Central music…")
+
+        def run_update() -> None:
+            try:
+                try:
+                    current = smwc_music_index.validate_music_index(
+                        SMWC_MUSIC_INDEX_FILE,
+                        require_tracks=True,
+                    )
+                except smwc_music_index.MusicIndexError:
+                    current = {}
+                manifest = smwc_music_index.fetch_music_index_manifest(
+                    SMWC_MUSIC_INDEX_MANIFEST_URL
+                )
+                if smwc_music_index.music_index_update_needed(manifest, current):
+                    incremental = (
+                        smwc_music_index.validate_incremental_update_manifest(
+                            manifest
+                        )
+                    )
+                    self.music_index_events.put(
+                        (
+                            "downloading",
+                            int(incremental.get("submission_count", 0) or 0),
+                        )
+                    )
+                    details = smwc_music_index.download_incremental_music_update(
+                        manifest,
+                        SMWC_MUSIC_INDEX_FILE,
+                        progress_callback=lambda downloaded, total: (
+                            self.music_index_events.put(
+                                ("download_progress", int(downloaded), int(total))
+                            )
+                        ),
+                    )
+                    self.music_index_events.put(("ready", details, True))
+                else:
+                    self.music_index_events.put(("ready", current, False))
+            except Exception as error:
+                self.music_index_events.put(("update_error", str(error), manual))
+            finally:
+                self.music_index_events.put(("update_finished",))
+
+        self.music_index_update_thread = threading.Thread(
+            target=run_update,
+            name="SMWCentralMusicIndexUpdate",
+            daemon=True,
+        )
+        self.music_index_update_thread.start()
+        self._queue_music_index_poll()
+
+    def _queue_music_index_poll(self) -> None:
+        if self.music_index_poll_after_id is not None:
+            return
+        try:
+            self.music_index_poll_after_id = self.root.after(
+                150,
+                self._poll_music_index_events,
+            )
+        except tk.TclError:
+            self.music_index_poll_after_id = None
+
+    def _poll_music_index_events(self) -> None:
+        self.music_index_poll_after_id = None
+        finished = False
+        while True:
+            try:
+                event = self.music_index_events.get_nowait()
+            except queue.Empty:
+                break
+            event_name = str(event[0])
+            if event_name == "downloading":
+                changed_songs = max(0, int(event[1]))
+                self.music_index_status_var.set(
+                    "New SMW Central music found — downloading "
+                    f"{changed_songs:,} changed submission"
+                    f"{'s' if changed_songs != 1 else ''} in the background…"
+                )
+            elif event_name == "download_progress":
+                downloaded = max(0, int(event[1]))
+                total = max(1, int(event[2]))
+                self.music_index_status_var.set(
+                    "Adding new and changed SMW Central music — "
+                    f"{min(100, round(downloaded * 100 / total))}%"
+                )
+            elif event_name == "ready":
+                self.music_index_details = dict(event[1])
+                suffix = " — new music added" if bool(event[2]) else ""
+                self.music_index_status_var.set(
+                    self._music_index_ready_text() + suffix
+                )
+            elif event_name == "update_error":
+                if bool(event[2]) or not self.music_index_details:
+                    self.music_index_status_var.set(
+                        "Music index update will retry later — " + str(event[1])
+                    )
+            elif event_name == "update_finished":
+                finished = True
+
+        running = (
+            self.music_index_update_thread is not None
+            and self.music_index_update_thread.is_alive()
+        )
+        if running or not self.music_index_events.empty():
+            self._queue_music_index_poll()
+        elif finished:
+            try:
+                self.music_index_next_check_after_id = self.root.after(
+                    SMWC_MUSIC_INDEX_CHECK_INTERVAL_MS,
+                    self._start_music_index_update_check,
+                )
+            except tk.TclError:
+                self.music_index_next_check_after_id = None
+
+    def _open_music_identifier_page(self) -> None:
+        """Open the Windows audio recorder and music-identification page."""
+        palette = self._library_palette()
+        dark = self.appearance_var.get() == "dark"
+        dialog = self._open_in_app_page(
+            "music_identifier",
+            "Music Identifier & Radio",
+        )
+        dialog.title(self._translate_ui_text("Music Identifier & Radio"))
+        dialog.configure(bg=palette["window"])
+        self._build_main_sidebar_page_heading(
+            dialog,
+            kicker="NOW PLAYING",
+            title="Music Identifier & Radio",
+        )
+
+        panel = self._create_centered_page_panel(
+            dialog,
+            outer_bg=palette["window"],
+            panel_bg=palette["panel"],
+            border=palette["border"],
+            max_width=1320,
+            padx=24,
+            pady=18,
+            outer_pad=16,
+        )
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(1, weight=1)
+
+        source_card = tk.Frame(
+            panel,
+            bg=palette["panel_alt"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=self._ui_px(18),
+            pady=self._ui_px(13),
+        )
+        source_card.grid(row=0, column=0, sticky="ew")
+        source_card.columnconfigure(0, weight=1)
+        tk.Label(
+            source_card,
+            text=self._translate_ui_text("Audio source"),
+            font=("Segoe UI", 13, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew")
+        tk.Label(
+            source_card,
+            text=self._translate_ui_text(
+                "Choose a capture card, microphone, or a System audio source for MiSTer and RetroArch sound."
+            ),
+            font=("Segoe UI", 10),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(self._ui_px(2), self._ui_px(9)),
+        )
+        source_box = ttk.Combobox(
+            source_card,
+            textvariable=self.music_identifier_source_var,
+            state="readonly",
+            font=("Segoe UI", 10),
+        )
+        source_box.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            padx=(0, self._ui_px(10)),
+            ipady=self._ui_px(5),
+        )
+        refresh_button = self._make_action_button(
+            source_card,
+            text="Refresh Sources",
+            command=self._refresh_music_identifier_sources,
+            bg=STREAM_DESK["surface_alt"] if dark else THEME["blue"],
+            active_bg=STREAM_DESK["selected"] if dark else THEME["sky_dark"],
+            width=17,
+            pad_y=7,
+        )
+        refresh_button.grid(row=2, column=1, sticky="e")
+        tk.Label(
+            source_card,
+            textvariable=self.music_index_status_var,
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["green"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            pady=(self._ui_px(9), 0),
+        )
+        index_button = self._make_action_button(
+            source_card,
+            text="Check Music Index",
+            command=lambda: self._start_music_index_update_check(manual=True),
+            bg=STREAM_DESK["surface_alt"] if dark else THEME["blue"],
+            active_bg=STREAM_DESK["selected"] if dark else THEME["sky_dark"],
+            width=17,
+            pad_y=6,
+        )
+        index_button.grid(
+            row=3,
+            column=1,
+            sticky="e",
+            pady=(self._ui_px(8), 0),
+        )
+        tk.Label(
+            source_card,
+            text=self._translate_ui_text("Listen to SMW Central Radio"),
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(
+            row=4,
+            column=0,
+            sticky="ew",
+            pady=(self._ui_px(8), 0),
+        )
+        radio_button = self._make_action_button(
+            source_card,
+            text="Play SMW Central Radio",
+            command=self._open_smwcentral_radio,
+            bg=STREAM_DESK["surface_alt"] if dark else THEME["blue"],
+            active_bg=STREAM_DESK["selected"] if dark else THEME["sky_dark"],
+            width=21,
+            pad_y=6,
+        )
+        radio_button.grid(
+            row=4,
+            column=1,
+            sticky="e",
+            pady=(self._ui_px(8), 0),
+        )
+
+        listening_card = tk.Frame(
+            panel,
+            bg=palette["panel_alt"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=self._ui_px(18),
+            pady=self._ui_px(14),
+        )
+        listening_card.grid(
+            row=1,
+            column=0,
+            sticky="nsew",
+            pady=self._ui_px(12),
+        )
+        listening_card.columnconfigure(1, weight=1)
+        listening_card.rowconfigure(0, weight=1)
+        listening_canvas = tk.Canvas(
+            listening_card,
+            width=self._ui_px(164),
+            height=self._ui_px(164),
+            bg=palette["panel_alt"],
+            bd=0,
+            highlightthickness=0,
+        )
+        listening_canvas.grid(
+            row=0,
+            column=0,
+            rowspan=4,
+            sticky="n",
+            padx=(0, self._ui_px(20)),
+        )
+        tk.Label(
+            listening_card,
+            textvariable=self.music_identifier_status_var,
+            font=("Segoe UI", 20, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=0, column=1, sticky="sw")
+        tk.Label(
+            listening_card,
+            textvariable=self.music_identifier_detail_var,
+            font=("Segoe UI", 10),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            justify="left",
+            anchor="nw",
+            wraplength=self._ui_px(760),
+        ).grid(
+            row=1,
+            column=1,
+            sticky="new",
+            pady=(self._ui_px(4), self._ui_px(10)),
+        )
+        progress_canvas = tk.Canvas(
+            listening_card,
+            height=self._ui_px(14),
+            bg=palette["entry"],
+            bd=0,
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        progress_canvas.grid(row=2, column=1, sticky="ew")
+        action_row = tk.Frame(listening_card, bg=palette["panel_alt"])
+        action_row.grid(
+            row=3,
+            column=1,
+            sticky="ew",
+            pady=(self._ui_px(12), 0),
+        )
+        identify_button = self._make_action_button(
+            action_row,
+            text="Identify What's Playing",
+            command=self._start_music_identifier,
+            bg=STREAM_DESK["green"],
+            active_bg=STREAM_DESK["green_dark"],
+            width=26,
+            pad_y=10,
+            font_size=12,
+        )
+        identify_button.pack(side="left")
+        cancel_button = self._make_action_button(
+            action_row,
+            text="Stop Listening",
+            command=self._cancel_music_identifier,
+            bg=STREAM_DESK["surface_alt"],
+            active_bg=STREAM_DESK["selected"],
+            width=17,
+            pad_y=10,
+            font_size=11,
+        )
+
+        result_card = tk.Frame(
+            panel,
+            bg=palette["panel_alt"],
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+            padx=self._ui_px(18),
+            pady=self._ui_px(12),
+        )
+        result_card.grid(row=2, column=0, sticky="ew")
+        result_card.columnconfigure(0, weight=1)
+        tk.Label(
+            result_card,
+            text=self._translate_ui_text("IDENTIFIED SONG"),
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["yellow"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        tk.Label(
+            result_card,
+            textvariable=self.music_identifier_title_var,
+            font=("Segoe UI", 16, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", pady=(self._ui_px(2), 0))
+        tk.Label(
+            result_card,
+            textvariable=self.music_identifier_artist_var,
+            font=("Segoe UI", 10),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=2, column=0, sticky="ew")
+        tk.Label(
+            result_card,
+            textvariable=self.music_identifier_confidence_var,
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["green"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=3, column=0, sticky="ew", pady=(self._ui_px(3), 0))
+        result_actions = tk.Frame(result_card, bg=palette["panel_alt"])
+        result_actions.grid(
+            row=0,
+            column=1,
+            rowspan=4,
+            sticky="e",
+            padx=(self._ui_px(14), 0),
+        )
+        play_button = self._make_action_button(
+            result_actions,
+            text="Play Found Song",
+            command=self._play_music_identifier_match,
+            bg=STREAM_DESK["green"],
+            active_bg=STREAM_DESK["green_dark"],
+            width=24,
+            pad_y=8,
+        )
+        play_button.pack(side="top", fill="x")
+        smwc_button = self._make_action_button(
+            result_actions,
+            text="Open SMW Central Entry",
+            command=self._open_music_identifier_smwcentral_match,
+            bg=STREAM_DESK["surface_alt"],
+            active_bg=STREAM_DESK["selected"],
+            width=24,
+            pad_y=8,
+        )
+        smwc_button.pack(side="top", fill="x")
+        track_button = self._make_action_button(
+            result_actions,
+            text="Download Music Submission",
+            command=self._open_music_identifier_track_match,
+            bg=STREAM_DESK["surface_alt"],
+            active_bg=STREAM_DESK["selected"],
+            width=24,
+            pad_y=8,
+        )
+        track_button.pack(side="top", fill="x", pady=(self._ui_px(6), 0))
+
+        self.music_identifier_widgets = {
+            "page": dialog,
+            "source_box": source_box,
+            "refresh_button": refresh_button,
+            "index_button": index_button,
+            "radio_button": radio_button,
+            "listening_canvas": listening_canvas,
+            "progress_canvas": progress_canvas,
+            "identify_button": identify_button,
+            "cancel_button": cancel_button,
+            "action_row": action_row,
+            "play_button": play_button,
+            "smwc_button": smwc_button,
+            "track_button": track_button,
+        }
+        source_box.bind(
+            "<<ComboboxSelected>>",
+            self._on_music_identifier_source_selected,
+            add="+",
+        )
+        dialog.protocol("WM_DELETE_WINDOW", self._close_music_identifier_page)
+        self._refresh_music_identifier_sources()
+        self._set_music_identifier_running_ui(
+            self.music_identifier_thread is not None
+            and self.music_identifier_thread.is_alive()
+        )
+        self._draw_music_identifier_listening_art()
+        self._draw_music_identifier_progress()
+        if self.music_identifier_state in {"listening", "identifying"}:
+            self._queue_music_identifier_poll()
+            self._animate_music_identifier()
+        try:
+            self.root.after(75, self._preload_smwcentral_radio_player)
+        except tk.TclError:
+            pass
+
+    def _music_identifier_page_is_open(self) -> bool:
+        page = self.music_identifier_widgets.get("page")
+        try:
+            return bool(
+                page is not None
+                and page.winfo_exists()
+                and page is getattr(self, "active_in_app_page", None)
+            )
+        except tk.TclError:
+            return False
+
+    def _close_music_identifier_page(self) -> None:
+        self._cancel_music_identifier(silent=True)
+        for attribute_name in (
+            "music_identifier_poll_after_id",
+            "music_identifier_animation_after_id",
+        ):
+            after_id = getattr(self, attribute_name, None)
+            setattr(self, attribute_name, None)
+            if after_id is not None:
+                try:
+                    self.root.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+
+    def _refresh_music_identifier_sources(self) -> None:
+        source_box = self.music_identifier_widgets.get("source_box")
+        try:
+            sources = enumerate_windows_music_audio_sources()
+        except Exception as error:
+            sources = []
+            self.music_identifier_status_var.set(
+                self._translate_ui_text("Audio sources unavailable")
+            )
+            self.music_identifier_detail_var.set(str(error))
+        self.music_identifier_sources = {
+            str(source["label"]): source for source in sources
+        }
+        labels = tuple(self.music_identifier_sources)
+        if source_box is not None:
+            try:
+                source_box.configure(values=labels)
+            except tk.TclError:
+                pass
+        saved_token = str(
+            self.config.get("music_identifier_audio_source", "") or ""
+        )
+        selected_label = next(
+            (
+                label
+                for label, source in self.music_identifier_sources.items()
+                if str(source.get("token", "")) == saved_token
+            ),
+            "",
+        )
+        if not selected_label and labels:
+            selected_label = labels[0]
+        self.music_identifier_source_var.set(selected_label)
+        if not labels:
+            self.music_identifier_status_var.set(
+                self._translate_ui_text("No audio sources found")
+            )
+            self.music_identifier_detail_var.set(
+                self._translate_ui_text(
+                    "Connect or enable a Windows recording source, then select Refresh Sources."
+                )
+            )
+        elif self.music_identifier_state not in {"listening", "identifying"}:
+            self.music_identifier_status_var.set(
+                self._translate_ui_text("Ready to listen")
+            )
+            self.music_identifier_detail_var.set(
+                self._translate_ui_text(
+                    "Start the music, then select Identify What's Playing. The temporary sample stays on this computer, is checked against the SMW Central index, and is deleted immediately afterward."
+                )
+            )
+
+    def _on_music_identifier_source_selected(self, _event=None) -> None:
+        source = self.music_identifier_sources.get(
+            self.music_identifier_source_var.get()
+        )
+        if source is None:
+            return
+        self.config["music_identifier_audio_source"] = str(
+            source.get("token", "")
+        )
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+
+    def _start_music_identifier(self) -> bool:
+        if self.music_identifier_thread is not None and self.music_identifier_thread.is_alive():
+            return False
+        try:
+            self.music_index_details = smwc_music_index.validate_music_index(
+                SMWC_MUSIC_INDEX_FILE,
+                require_tracks=True,
+                require_complete=True,
+            )
+        except smwc_music_index.MusicIndexError as error:
+            self.music_identifier_status_var.set(
+                self._translate_ui_text("Music index unavailable")
+            )
+            self.music_identifier_detail_var.set(str(error))
+            return False
+        source = self.music_identifier_sources.get(
+            self.music_identifier_source_var.get()
+        )
+        if source is None:
+            self.music_identifier_status_var.set(
+                self._translate_ui_text("Select an audio source")
+            )
+            self.music_identifier_detail_var.set(
+                self._translate_ui_text(
+                    "Choose where the game audio is coming from before listening."
+                )
+            )
+            return False
+        self.config["music_identifier_audio_source"] = str(
+            source.get("token", "")
+        )
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        while True:
+            try:
+                self.music_identifier_events.get_nowait()
+            except queue.Empty:
+                break
+        self.music_identifier_cancel_event.clear()
+        self.music_identifier_state = "listening"
+        self.music_identifier_animation_frame = 0
+        self.music_identifier_progress_var.set(0.0)
+        self.music_identifier_status_var.set(
+            self._translate_ui_text("Listening") + "…"
+        )
+        self.music_identifier_detail_var.set(
+            self._format_ui_text(
+                "Listening for up to {seconds} seconds and checking for an early match after {early} seconds. Keep the music playing.",
+                seconds=MUSIC_IDENTIFIER_RECORD_SECONDS,
+                early=MUSIC_IDENTIFIER_EARLY_MATCH_SECONDS[0],
+            )
+        )
+        self.music_identifier_title_var.set(
+            self._translate_ui_text("Listening for a clear match…")
+        )
+        self.music_identifier_artist_var.set("")
+        self.music_identifier_confidence_var.set("")
+        self.music_identifier_last_result = {}
+        # Pin this recording to the exact live level/session that started it.
+        # A room transition can happen before fingerprinting finishes.
+        self.music_identifier_lookup_context_key = (
+            self._current_tracker_music_context_key()
+        )
+        self._set_music_identifier_running_ui(True)
+        self._draw_music_identifier_progress()
+        self._draw_music_identifier_listening_art()
+
+        def prepare_result(raw_result: dict[str, Any]) -> dict[str, Any]:
+            result = dict(raw_result)
+            confidence = float(result.get("confidence", 0.0) or 0.0)
+            result["confidence_value"] = confidence
+            result["confidence"] = (
+                f"{confidence:.0f}% local SMW Central match"
+            )
+            result["track_url"] = str(result.get("download_url", ""))
+            result["smwcentral_url"] = str(
+                result.get("submission_url", "")
+            )
+            return result
+
+        def run_identifier() -> None:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix="smw-stream-tracker-music-",
+                suffix=".wav",
+            )
+            os.close(descriptor)
+            sample_path = Path(temporary_name)
+            early_result: dict[str, Any] = {}
+
+            def report_match_progress(current: int, total: int) -> None:
+                if self.music_identifier_cancel_event.is_set():
+                    raise MusicIdentifierCancelled()
+                self.music_identifier_events.put(
+                    (
+                        "identify_progress",
+                        int(current),
+                        int(total),
+                    )
+                )
+
+            def check_early_match(
+                checkpoint_path: Path,
+                elapsed_seconds: int,
+            ) -> bool:
+                if self.music_identifier_cancel_event.is_set():
+                    raise MusicIdentifierCancelled()
+                self.music_identifier_events.put(
+                    ("early_check", int(elapsed_seconds))
+                )
+                try:
+                    matches = smwc_music_index.match_wav(
+                        SMWC_MUSIC_INDEX_FILE,
+                        checkpoint_path,
+                        limit=2,
+                        chromaprint_only=True,
+                        progress_callback=report_match_progress,
+                    )
+                except smwc_music_index.MusicIndexError:
+                    matches = []
+                if matches:
+                    candidate = dict(matches[0])
+                    confidence = float(
+                        candidate.get("confidence", 0.0) or 0.0
+                    )
+                    if confidence >= MUSIC_IDENTIFIER_EARLY_MATCH_CONFIDENCE:
+                        early_result.update(prepare_result(candidate))
+                        self.music_identifier_events.put(
+                            ("result", dict(early_result))
+                        )
+                        return True
+                self.music_identifier_events.put(
+                    ("early_continue", int(elapsed_seconds))
+                )
+                return False
+
+            try:
+                record_windows_music_sample(
+                    dict(source),
+                    sample_path,
+                    seconds=MUSIC_IDENTIFIER_RECORD_SECONDS,
+                    cancel_event=self.music_identifier_cancel_event,
+                    progress_callback=lambda progress, remaining: (
+                        self.music_identifier_events.put(
+                            ("progress", float(progress), int(remaining))
+                        )
+                    ),
+                    checkpoint_seconds=MUSIC_IDENTIFIER_EARLY_MATCH_SECONDS,
+                    checkpoint_callback=check_early_match,
+                )
+                if self.music_identifier_cancel_event.is_set():
+                    raise MusicIdentifierCancelled()
+                if early_result:
+                    return
+                self.music_identifier_events.put(
+                    ("identifying", 1)
+                )
+                matches = smwc_music_index.match_wav(
+                    SMWC_MUSIC_INDEX_FILE,
+                    sample_path,
+                    limit=3,
+                    progress_callback=report_match_progress,
+                )
+                result = prepare_result(dict(matches[0])) if matches else {}
+                if result:
+                    self.music_identifier_events.put(("result", result))
+                else:
+                    self.music_identifier_events.put(("no_match",))
+            except MusicIdentifierCancelled:
+                self.music_identifier_events.put(("cancelled",))
+            except Exception as error:
+                self.music_identifier_events.put(("error", str(error)))
+            finally:
+                try:
+                    sample_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        self.music_identifier_thread = threading.Thread(
+            target=run_identifier,
+            name="MusicIdentifier",
+            daemon=True,
+        )
+        self.music_identifier_thread.start()
+        self._queue_music_identifier_poll()
+        self._animate_music_identifier()
+        return True
+
+    def _cancel_music_identifier(self, *, silent: bool = False) -> None:
+        running = (
+            self.music_identifier_thread is not None
+            and self.music_identifier_thread.is_alive()
+        )
+        self.music_identifier_cancel_event.set()
+        if not running:
+            return
+
+        # Stop the visible listening state in the button callback itself.  The
+        # recorder/fingerprint worker is deliberately never joined from the UI
+        # thread; it observes the event and deletes its temporary WAV in the
+        # background.  This keeps Stop Listening instantaneous even when a
+        # fingerprint pass happens to be in progress.
+        self.music_identifier_state = "cancelled"
+        animation_after_id = self.music_identifier_animation_after_id
+        self.music_identifier_animation_after_id = None
+        if animation_after_id is not None:
+            try:
+                self.root.after_cancel(animation_after_id)
+            except tk.TclError:
+                pass
+
+        if not silent:
+            self.music_identifier_progress_var.set(0.0)
+            self.music_identifier_status_var.set(
+                self._translate_ui_text("Listening stopped")
+            )
+            self.music_identifier_detail_var.set(
+                self._translate_ui_text(
+                    "The audio capture stopped. Temporary sample cleanup is finishing in the background."
+                )
+            )
+            self._set_music_identifier_running_ui(
+                False,
+                cleanup_pending=True,
+            )
+            self._draw_music_identifier_listening_art()
+            self._draw_music_identifier_progress()
+
+        # Keep the lightweight event poll alive only long enough to observe the
+        # worker's exit and re-enable Identify What's Playing.
+        self._queue_music_identifier_poll()
+
+    def _queue_music_identifier_poll(self) -> None:
+        if self.music_identifier_poll_after_id is not None:
+            return
+        try:
+            self.music_identifier_poll_after_id = self.root.after(
+                90,
+                self._poll_music_identifier_events,
+            )
+        except tk.TclError:
+            self.music_identifier_poll_after_id = None
+
+    def _poll_music_identifier_events(self) -> None:
+        self.music_identifier_poll_after_id = None
+        finished = False
+        while True:
+            try:
+                event = self.music_identifier_events.get_nowait()
+            except queue.Empty:
+                break
+            event_name = str(event[0])
+            cancelled_by_user = (
+                self.music_identifier_cancel_event.is_set()
+                and self.music_identifier_state == "cancelled"
+            )
+            if cancelled_by_user and event_name != "cancelled":
+                # Events already queued by the old sample must never bring the
+                # pulse, progress bar, or a late result back after Stop was
+                # clicked.
+                continue
+            if event_name == "progress":
+                self.music_identifier_progress_var.set(
+                    MUSIC_IDENTIFIER_LISTEN_PROGRESS_WEIGHT
+                    * float(event[1])
+                )
+                remaining = int(event[2])
+                self.music_identifier_detail_var.set(
+                    self._translate_ui_text("Listening to the selected source")
+                    + f" — {remaining} "
+                    + self._translate_ui_text(
+                        "second remaining" if remaining == 1 else "seconds remaining"
+                    )
+                )
+                self._draw_music_identifier_progress()
+            elif event_name == "early_check":
+                self.music_identifier_state = "identifying"
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("Checking for a match") + "…"
+                )
+                self.music_identifier_detail_var.set(
+                    self._format_ui_text(
+                        "Checking the first {seconds} seconds now. A confident result will appear immediately.",
+                        seconds=int(event[1]),
+                    )
+                )
+                self._draw_music_identifier_progress()
+            elif event_name == "early_continue":
+                self.music_identifier_state = "listening"
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("Listening") + "…"
+                )
+                self.music_identifier_detail_var.set(
+                    self._translate_ui_text(
+                        "No confident match yet. Listening a little longer for a clearer result."
+                    )
+                )
+                self._draw_music_identifier_progress()
+            elif event_name == "identifying":
+                self.music_identifier_state = "identifying"
+                self.music_identifier_progress_var.set(
+                    MUSIC_IDENTIFIER_LISTEN_PROGRESS_WEIGHT
+                )
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("Identifying") + "…"
+                )
+                self.music_identifier_detail_var.set(
+                    self._translate_ui_text(
+                        "The sample is recorded. Comparing its audio landmarks with the local SMW Central music index."
+                    )
+                )
+                self._draw_music_identifier_progress()
+            elif event_name == "identify_progress":
+                current = max(1, int(event[1]))
+                total = max(current, int(event[2]))
+                self.music_identifier_progress_var.set(
+                    MUSIC_IDENTIFIER_LISTEN_PROGRESS_WEIGHT
+                    + (1.0 - MUSIC_IDENTIFIER_LISTEN_PROGRESS_WEIGHT)
+                    * (current / total)
+                )
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("Verifying the match") + "…"
+                )
+                self.music_identifier_detail_var.set(
+                    self._format_ui_text(
+                        "Checking local music fingerprints — pass {current} of {total}.",
+                        current=current,
+                        total=total,
+                    )
+                )
+                self._draw_music_identifier_progress()
+            elif event_name == "result":
+                result = dict(event[1])
+                pending_song_request = getattr(
+                    self,
+                    "music_identifier_streamerbot_request",
+                    None,
+                )
+                requested_context_key = (
+                    str(
+                        pending_song_request.get(
+                            "_trackerMusicContextKey",
+                            "",
+                        )
+                    ).strip()
+                    if isinstance(pending_song_request, dict)
+                    else ""
+                )
+                lookup_context_key = str(
+                    getattr(
+                        self,
+                        "music_identifier_lookup_context_key",
+                        "",
+                    )
+                    or ""
+                ).strip()
+                # A lookup can finish while Mario is already entering another
+                # room. Associate it with the context captured when recording
+                # began, never whichever room happens to be active at finish.
+                result = self._remember_current_level_song(
+                    result,
+                    context_key=(
+                        lookup_context_key or requested_context_key
+                    ),
+                )
+                self.music_identifier_last_result = result
+                self.music_identifier_state = "success"
+                self.music_identifier_progress_var.set(1.0)
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("Match found")
+                )
+                self.music_identifier_detail_var.set(
+                    self._translate_ui_text(
+                        "The local fingerprint index found the matching SMW Central submission below. No recording left this computer."
+                    )
+                )
+                self.music_identifier_title_var.set(
+                    str(result.get("title", ""))
+                )
+                artist = str(result.get("artist", "")).strip()
+                self.music_identifier_artist_var.set(
+                    (self._translate_ui_text("By") + " " + artist)
+                    if artist
+                    else self._translate_ui_text("Artist unavailable")
+                )
+                self.music_identifier_confidence_var.set(
+                    self._translate_ui_text(
+                        str(result.get("confidence", "Possible match"))
+                    )
+                )
+                self._draw_music_identifier_progress()
+                self._complete_streamerbot_song_request(result=result)
+                finished = True
+            elif event_name == "no_match":
+                self.music_identifier_state = "no_match"
+                self.music_identifier_progress_var.set(1.0)
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("No match this time")
+                )
+                self.music_identifier_detail_var.set(
+                    self._translate_ui_text(
+                        str(event[1])
+                        if len(event) > 1 and str(event[1]).strip()
+                        else "Try again during a section with clear music and less sound effects."
+                    )
+                )
+                self.music_identifier_title_var.set(
+                    self._translate_ui_text("Song not identified")
+                )
+                self.music_identifier_artist_var.set("")
+                self.music_identifier_confidence_var.set("")
+                self._draw_music_identifier_progress()
+                self._complete_streamerbot_song_request(
+                    error=str(event[1])
+                    if len(event) > 1 and str(event[1]).strip()
+                    else "The current song could not be identified.",
+                )
+                finished = True
+            elif event_name == "cancelled":
+                self.music_identifier_state = "cancelled"
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("Listening stopped")
+                )
+                self.music_identifier_detail_var.set(
+                    self._translate_ui_text(
+                        "The temporary local sample was deleted without being checked."
+                    )
+                )
+                self._complete_streamerbot_song_request(
+                    error="Listening was stopped before the song was identified.",
+                )
+                finished = True
+            elif event_name == "error":
+                self.music_identifier_state = "error"
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("Could not identify the music")
+                )
+                self.music_identifier_detail_var.set(str(event[1]))
+                self.music_identifier_title_var.set(
+                    self._translate_ui_text("Try another source or sample")
+                )
+                self.music_identifier_artist_var.set("")
+                self.music_identifier_confidence_var.set("")
+                self._complete_streamerbot_song_request(error=str(event[1]))
+                finished = True
+
+        thread_running = (
+            self.music_identifier_thread is not None
+            and self.music_identifier_thread.is_alive()
+        )
+        if finished or not thread_running:
+            self._set_music_identifier_running_ui(False)
+            self._draw_music_identifier_listening_art()
+            self._draw_music_identifier_progress()
+        if not thread_running:
+            self.music_identifier_lookup_context_key = ""
+        if (
+            (finished or not thread_running)
+            and isinstance(
+                getattr(
+                    self,
+                    "music_identifier_queued_streamerbot_request",
+                    None,
+                ),
+                dict,
+            )
+        ):
+            try:
+                self.root.after(
+                    60,
+                    self._start_queued_streamerbot_song_lookup,
+                )
+            except tk.TclError:
+                pass
+        if thread_running or not self.music_identifier_events.empty():
+            self._queue_music_identifier_poll()
+
+    def _set_music_identifier_running_ui(
+        self,
+        running: bool,
+        *,
+        cleanup_pending: bool = False,
+    ) -> None:
+        widgets = self.music_identifier_widgets
+        source_box = widgets.get("source_box")
+        refresh_button = widgets.get("refresh_button")
+        radio_button = widgets.get("radio_button")
+        identify_button = widgets.get("identify_button")
+        cancel_button = widgets.get("cancel_button")
+        action_row = widgets.get("action_row")
+        play_button = widgets.get("play_button")
+        smwc_button = widgets.get("smwc_button")
+        track_button = widgets.get("track_button")
+        controls_busy = bool(running or cleanup_pending)
+        try:
+            if source_box is not None:
+                source_box.configure(state="disabled" if controls_busy else "readonly")
+            if refresh_button is not None:
+                refresh_button.configure(state="disabled" if controls_busy else "normal")
+            if radio_button is not None:
+                radio_button.configure(state="disabled" if controls_busy else "normal")
+            if identify_button is not None:
+                identify_button.configure(state="disabled" if controls_busy else "normal")
+            if cancel_button is not None and action_row is not None:
+                if running and not cancel_button.winfo_manager():
+                    cancel_button.pack(side="left", padx=(self._ui_px(9), 0))
+                elif not running and cancel_button.winfo_manager():
+                    cancel_button.pack_forget()
+            playable_match = bool(
+                self.music_identifier_last_result.get("smwcentral_url")
+            )
+            if play_button is not None:
+                play_button.configure(
+                    state="normal" if playable_match and not controls_busy else "disabled"
+                )
+                if playable_match and not play_button.winfo_manager():
+                    if smwc_button is not None:
+                        play_button.pack(side="top", fill="x", before=smwc_button)
+                    else:
+                        play_button.pack(side="top", fill="x")
+                elif not playable_match and play_button.winfo_manager():
+                    play_button.pack_forget()
+            if smwc_button is not None:
+                smwc_button.configure(
+                    state=(
+                        "normal"
+                        if self.music_identifier_last_result.get("title")
+                        else "disabled"
+                    )
+                )
+            if track_button is not None:
+                track_button.configure(
+                    state=(
+                        "normal"
+                        if self.music_identifier_last_result.get("track_url")
+                        else "disabled"
+                    )
+                )
+        except tk.TclError:
+            pass
+
+    def _draw_music_identifier_progress(self) -> None:
+        canvas = self.music_identifier_widgets.get("progress_canvas")
+        if canvas is None:
+            return
+        try:
+            width = max(1, int(canvas.winfo_width()))
+            height = max(1, int(canvas.winfo_height()))
+            progress = max(0.0, min(1.0, float(self.music_identifier_progress_var.get())))
+            canvas.delete("all")
+            canvas.create_rectangle(
+                0,
+                0,
+                width,
+                height,
+                fill=STREAM_DESK["surface_deep"],
+                outline="",
+            )
+            if progress > 0:
+                canvas.create_rectangle(
+                    0,
+                    0,
+                    max(2, round(width * progress)),
+                    height,
+                    fill=(
+                        STREAM_DESK["purple"]
+                        if self.music_identifier_state == "identifying"
+                        else STREAM_DESK["green"]
+                    ),
+                    outline="",
+                )
+        except (tk.TclError, TypeError, ValueError):
+            pass
+
+    def _draw_music_identifier_listening_art(self) -> None:
+        canvas = self.music_identifier_widgets.get("listening_canvas")
+        if canvas is None:
+            return
+        try:
+            width = max(1, int(canvas.winfo_width()))
+            height = max(1, int(canvas.winfo_height()))
+            canvas.delete("all")
+            center_x = width / 2
+            center_y = height / 2
+            active = self.music_identifier_state in {"listening", "identifying"}
+            accent = (
+                STREAM_DESK["purple"]
+                if self.music_identifier_state == "identifying"
+                else STREAM_DESK["green"]
+            )
+            # Thirty-six small frames make one calm pulse.  A sine curve keeps
+            # the center badge breathing smoothly instead of growing in large
+            # steps and snapping back at the end of every cycle.
+            cycle = (self.music_identifier_animation_frame % 36) / 36.0
+            breath = (math.sin((cycle * math.tau) - (math.pi / 2.0)) + 1.0) / 2.0
+
+            if Image is not None and ImageDraw is not None and ImageTk is not None:
+                supersample = 4
+                render_width = width * supersample
+                render_height = height * supersample
+
+                def _rgb(color: str) -> tuple[int, int, int]:
+                    value = str(color or "#000000").lstrip("#")
+                    if len(value) == 3:
+                        value = "".join(character * 2 for character in value)
+                    try:
+                        return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))
+                    except (TypeError, ValueError):
+                        return (0, 0, 0)
+
+                background_rgb = _rgb(STREAM_DESK["surface_alt"])
+                accent_rgb = _rgb(accent)
+                border_rgb = _rgb(STREAM_DESK["border_strong"])
+                deep_rgb = _rgb(STREAM_DESK["surface_deep"])
+                rendered = Image.new(
+                    "RGBA",
+                    (render_width, render_height),
+                    (*background_rgb, 255),
+                )
+                waves = Image.new(
+                    "RGBA",
+                    (render_width, render_height),
+                    (0, 0, 0, 0),
+                )
+                wave_draw = ImageDraw.Draw(waves, "RGBA")
+                render_center_x = center_x * supersample
+                render_center_y = center_y * supersample
+                core_radius = self._ui_px(39.0 + (2.5 * breath if active else 0.0))
+                outer_radius = self._ui_px(65.0)
+
+                def _oval_bounds(radius: float) -> tuple[int, int, int, int]:
+                    scaled_radius = radius * supersample
+                    return (
+                        round(render_center_x - scaled_radius),
+                        round(render_center_y - scaled_radius),
+                        round(render_center_x + scaled_radius),
+                        round(render_center_y + scaled_radius),
+                    )
+
+                if active:
+                    # Three evenly spaced waves move away from the note and
+                    # fade before reaching the edge, producing a clean pulse
+                    # with no visible reset point.
+                    wave_draw.ellipse(
+                        _oval_bounds(core_radius + self._ui_px(8.0 + 3.0 * breath)),
+                        fill=(*accent_rgb, 18),
+                    )
+                    wave_span = max(self._ui_px(1), outer_radius - core_radius - self._ui_px(7))
+                    for ring_index in range(3):
+                        ring_progress = (cycle + ring_index / 3.0) % 1.0
+                        ring_radius = core_radius + self._ui_px(7) + wave_span * ring_progress
+                        ring_alpha = round(178 * ((1.0 - ring_progress) ** 1.35))
+                        wave_draw.ellipse(
+                            _oval_bounds(ring_radius),
+                            outline=(*accent_rgb, ring_alpha),
+                            width=max(4, round(self._ui_px(1.7) * supersample)),
+                        )
+                else:
+                    wave_draw.ellipse(
+                        _oval_bounds(self._ui_px(56)),
+                        outline=(*border_rgb, 190),
+                        width=max(4, round(self._ui_px(1.5) * supersample)),
+                    )
+                rendered = Image.alpha_composite(rendered, waves)
+                draw = ImageDraw.Draw(rendered, "RGBA")
+                draw.ellipse(
+                    _oval_bounds(core_radius + self._ui_px(2)),
+                    fill=(*background_rgb, 255),
+                )
+                draw.ellipse(
+                    _oval_bounds(core_radius),
+                    fill=(*deep_rgb, 255),
+                    outline=(*accent_rgb, 235 if active else 145),
+                    width=max(5, round(self._ui_px(2) * supersample)),
+                )
+
+                # Draw the paired music note at the same supersampled scale so
+                # its diagonals and rounded stems remain crisp on high-DPI
+                # Windows displays.  The note breathes subtly with the badge.
+                icon_size = self._ui_px(52.0 * (1.0 + (0.035 * breath if active else 0.0)))
+                icon_unit = icon_size * supersample / 48.0
+                icon_left = render_center_x - (icon_size * supersample / 2.0)
+                icon_top = render_center_y - (icon_size * supersample / 2.0)
+                draw_antialiased_music_note(
+                    rendered,
+                    origin_x=icon_left,
+                    origin_y=icon_top,
+                    unit=icon_unit,
+                    color=STREAM_DESK["text_strong"],
+                    full_color=True,
+                )
+
+                rendered = rendered.resize(
+                    (width, height),
+                    Image.Resampling.LANCZOS,
+                )
+                listening_photo = ImageTk.PhotoImage(rendered, master=canvas)
+                canvas.create_image(0, 0, anchor="nw", image=listening_photo)
+                canvas._music_identifier_listening_photo = listening_photo
+                return
+
+            # Pillow is optional in development environments.  Keep a simple
+            # Canvas fallback with the same smooth breathing motion.
+            for ring_index in range(3):
+                ring_progress = (cycle + ring_index / 3.0) % 1.0
+                radius = self._ui_px(45 + 20 * ring_progress)
+                canvas.create_oval(
+                    center_x - radius,
+                    center_y - radius,
+                    center_x + radius,
+                    center_y + radius,
+                    outline=accent if active else STREAM_DESK["border_strong"],
+                    width=max(1, self._ui_px(2)),
+                )
+            icon_size = self._ui_px(54)
+            self._draw_stream_desk_icon(
+                canvas,
+                "music_note",
+                STREAM_DESK["text_strong"],
+                size=icon_size,
+                origin_x=round(center_x - icon_size / 2),
+                origin_y=round(center_y - icon_size / 2),
+                full_color=True,
+            )
+        except (tk.TclError, TypeError, ValueError):
+            pass
+
+    def _animate_music_identifier(self) -> None:
+        self.music_identifier_animation_after_id = None
+        if (
+            self.music_identifier_state not in {"listening", "identifying"}
+            or not self._music_identifier_page_is_open()
+        ):
+            return
+        self.music_identifier_animation_frame += 1
+        dots = "." * (((self.music_identifier_animation_frame // 5) % 3) + 1)
+        self.music_identifier_status_var.set(
+            self._translate_ui_text(
+                "Identifying"
+                if self.music_identifier_state == "identifying"
+                else "Listening"
+            )
+            + dots
+        )
+        self._draw_music_identifier_listening_art()
+        try:
+            self.music_identifier_animation_after_id = self.root.after(
+                75,
+                self._animate_music_identifier,
+            )
+        except tk.TclError:
+            self.music_identifier_animation_after_id = None
+
+    def _open_music_identifier_smwcentral_match(self) -> None:
+        target_url = str(
+            self.music_identifier_last_result.get("smwcentral_url", "")
+        )
+        if target_url:
+            self._open_smwcentral_webview(target_url, mode="browse")
+
+    def _play_music_identifier_match(self) -> None:
+        """Play the identified SMW Central submission in the embedded player."""
+        target_url = str(
+            self.music_identifier_last_result.get("smwcentral_url", "")
+        ).strip()
+        if target_url:
+            self._open_smwcentral_music_player(target_url)
+
+    def _open_music_identifier_track_match(self) -> None:
+        target_url = str(
+            self.music_identifier_last_result.get("track_url", "")
+        ).strip()
+        parsed = urlparse(target_url)
+        if parsed.scheme.casefold() == "https" and parsed.hostname:
+            webbrowser.open(target_url)
 
     def _open_language_page(self) -> None:
         """Open the application language picker without the Settings shell."""
@@ -50406,13 +53837,15 @@ class TrackerApp:
                     highlightthickness=0,
                     cursor="hand2",
                 )
-                update_badge.create_oval(
+                draw_smooth_notification_badge(
+                    update_badge,
                     self._ui_px(2),
                     self._ui_px(2),
                     self._ui_px(10),
                     self._ui_px(10),
                     fill=STREAM_DESK["red"],
-                    outline="",
+                    outline=STREAM_DESK["text_strong"],
+                    outline_width=max(1, self._ui_px(1)),
                 )
                 update_badge.bind("<Button-1>", section_command)
                 self.settings_update_badge = update_badge
@@ -50464,6 +53897,32 @@ class TrackerApp:
             anchor="nw",
         )
 
+        def settings_widget_content_height(widget: tk.Widget) -> int:
+            """Measure content that extends past a placed settings panel."""
+            try:
+                requested_height = max(1, int(widget.winfo_reqheight()))
+                children = widget.winfo_children()
+            except (tk.TclError, TypeError, ValueError):
+                return 1
+            content_bottom = 0
+            for child in children:
+                try:
+                    if not child.winfo_ismapped():
+                        continue
+                    child_bottom = int(child.winfo_y()) + max(
+                        int(child.winfo_reqheight()),
+                        int(child.winfo_height()),
+                    )
+                except (tk.TclError, TypeError, ValueError):
+                    continue
+                content_bottom = max(content_bottom, child_bottom)
+            if content_bottom:
+                requested_height = max(
+                    requested_height,
+                    content_bottom + self._ui_px(24),
+                )
+            return requested_height
+
         def sync_settings_content_width(event=None) -> None:
             try:
                 visible_width = max(
@@ -50493,7 +53952,7 @@ class TrackerApp:
                 natural_height = max(
                     1,
                     int(active_panel.winfo_reqheight()),
-                    int(active_body.winfo_reqheight()),
+                    settings_widget_content_height(active_body),
                 )
                 requested_height = max(visible_height, natural_height)
                 settings_content_canvas.itemconfigure(
@@ -50716,6 +54175,45 @@ class TrackerApp:
             value=str(self.config.get("streamerbot_password", "") or "")
         )
         local_streamerbot_show_password = tk.BooleanVar(value=False)
+        local_streamerbot_song_scene_name = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "streamerbot_song_scene_name",
+                    STREAMERBOT_SONG_SCENE_NAME,
+                )
+                or STREAMERBOT_SONG_SCENE_NAME
+            ).strip()
+        )
+        local_streamerbot_song_reward_enabled = tk.BooleanVar(
+            value=bool(
+                self.config.get("streamerbot_song_reward_enabled", False)
+            )
+        )
+        local_streamerbot_song_reward_name = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "streamerbot_song_reward_name",
+                    STREAMERBOT_DEFAULT_SONG_REWARD_NAME,
+                )
+                or STREAMERBOT_DEFAULT_SONG_REWARD_NAME
+            ).strip()
+        )
+        local_streamerbot_song_reward_cost = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "streamerbot_song_reward_cost",
+                    STREAMERBOT_DEFAULT_SONG_REWARD_COST,
+                )
+            )
+        )
+        local_streamerbot_song_reward_cooldown = tk.StringVar(
+            value=str(
+                self.config.get(
+                    "streamerbot_song_reward_cooldown",
+                    STREAMERBOT_DEFAULT_SONG_REWARD_COOLDOWN,
+                )
+            )
+        )
         configured_streamerbot_actions = self.config.get(
             "streamerbot_event_actions",
             {},
@@ -51284,6 +54782,7 @@ class TrackerApp:
 
         def build_streamerbot_settings_page() -> None:
             tr = self._translate_ui_text
+
             streamerbot_body = self._create_centered_page_panel(
                 settings_panels["Streamer.bot"],
                 outer_bg=STREAM_DESK["window"],
@@ -51320,7 +54819,7 @@ class TrackerApp:
                 bd=0,
                 highlightthickness=0,
             )
-            brand_icon.grid(row=0, column=1, sticky="e")
+            brand_icon.grid(row=0, column=2, sticky="e")
             self._draw_stream_desk_icon(
                 brand_icon,
                 "streamerbot",
@@ -51329,6 +54828,32 @@ class TrackerApp:
                 origin_x=self._ui_px(3),
                 origin_y=self._ui_px(3),
             )
+            download_streamerbot_button = self._make_action_button(
+                heading_row,
+                text=(
+                    "▶  Open Streamer.bot"
+                    if self._managed_streamerbot_executable() is not None
+                    else "✦  Install Streamer.bot"
+                ),
+                command=lambda: self.install_streamerbot(
+                    parent=dialog,
+                    button=download_streamerbot_button,
+                ),
+                bg=STREAM_DESK["green"],
+                active_bg=STREAM_DESK["green_dark"],
+                width=22,
+                pad_y=7,
+                font_size=10,
+            )
+            download_streamerbot_button.grid(
+                row=0,
+                column=1,
+                sticky="e",
+                padx=(0, self._ui_px(14)),
+            )
+            self.settings_action_buttons[
+                ("Streamer.bot", "Install Streamer.bot")
+            ] = download_streamerbot_button
             tk.Label(
                 streamerbot_body,
                 text=tr(
@@ -51688,26 +55213,216 @@ class TrackerApp:
                     pady=self._ui_px(4),
                 )
                 streamerbot_control_action_boxes.append(action_box)
+            song_scene_row = 2 + len(STREAMERBOT_CONTROL_DEFINITIONS)
             tk.Label(
                 controls_card,
-                text=tr(
-                    "Search & Play reads query, hackTitle, title, or a chat "
-                    "command's rawInput. Random Hack also accepts the widget's rating, "
-                    "difficulty, type, released, and hallOfFame filters."
-                ),
-                font=("Segoe UI", 9),
-                fg=STREAM_DESK["muted"],
+                text=tr("Song reward scene"),
+                font=("Segoe UI", 10, "bold"),
+                fg=STREAM_DESK["text_strong"],
                 bg=STREAM_DESK["surface_alt"],
                 anchor="w",
-                justify="left",
-                wraplength=self._ui_px(520),
             ).grid(
-                row=2 + len(STREAMERBOT_CONTROL_DEFINITIONS),
+                row=song_scene_row,
+                column=0,
+                sticky="w",
+                padx=(0, self._ui_px(12)),
+                pady=self._ui_px(4),
+            )
+            tk.Entry(
+                controls_card,
+                textvariable=local_streamerbot_song_scene_name,
+                justify="center",
+                **entry_style,
+            ).grid(
+                row=song_scene_row,
+                column=1,
+                sticky="ew",
+                pady=self._ui_px(4),
+                ipady=self._ui_px(6),
+            )
+            tk.Label(
+                controls_card,
+                text=tr("Channel point reward name"),
+                font=("Segoe UI", 10, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+            ).grid(
+                row=song_scene_row + 1,
+                column=0,
+                sticky="w",
+                padx=(0, self._ui_px(12)),
+                pady=self._ui_px(4),
+            )
+            tk.Entry(
+                controls_card,
+                textvariable=local_streamerbot_song_reward_name,
+                justify="center",
+                **entry_style,
+            ).grid(
+                row=song_scene_row + 1,
+                column=1,
+                sticky="ew",
+                pady=self._ui_px(4),
+                ipady=self._ui_px(6),
+            )
+            tk.Label(
+                controls_card,
+                text=tr("Reward cost (channel points)"),
+                font=("Segoe UI", 10, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+            ).grid(
+                row=song_scene_row + 2,
+                column=0,
+                sticky="w",
+                padx=(0, self._ui_px(12)),
+                pady=self._ui_px(4),
+            )
+            tk.Entry(
+                controls_card,
+                textvariable=local_streamerbot_song_reward_cost,
+                justify="center",
+                **entry_style,
+            ).grid(
+                row=song_scene_row + 2,
+                column=1,
+                sticky="ew",
+                pady=self._ui_px(4),
+                ipady=self._ui_px(6),
+            )
+            tk.Label(
+                controls_card,
+                text=tr("Global cooldown (seconds)"),
+                font=("Segoe UI", 10, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+            ).grid(
+                row=song_scene_row + 3,
+                column=0,
+                sticky="w",
+                padx=(0, self._ui_px(12)),
+                pady=self._ui_px(4),
+            )
+            tk.Entry(
+                controls_card,
+                textvariable=local_streamerbot_song_reward_cooldown,
+                justify="center",
+                **entry_style,
+            ).grid(
+                row=song_scene_row + 3,
+                column=1,
+                sticky="ew",
+                pady=self._ui_px(4),
+                ipady=self._ui_px(6),
+            )
+            song_reward_button = self._make_action_button(
+                controls_card,
+                text=(
+                    "Update Song Reward + Actions"
+                    if local_streamerbot_song_reward_enabled.get()
+                    else "Set Up Song Reward + Actions"
+                ),
+                command=lambda: enable_one_click_song_reward(),
+                bg=STREAM_DESK["green"],
+                active_bg=STREAM_DESK["green_dark"],
+                width=30,
+                pad_y=7,
+                font_size=10,
+            )
+            song_reward_button.grid(
+                row=song_scene_row + 4,
                 column=0,
                 columnspan=2,
                 sticky="ew",
-                pady=(self._ui_px(8), 0),
+                pady=(self._ui_px(7), self._ui_px(3)),
             )
+            song_reward_setup_status_var = tk.StringVar(
+                value=streamerbot_song_reward_setup_status(
+                    local_streamerbot_song_reward_enabled.get(),
+                    local_streamerbot_song_reward_name.get(),
+                    local_streamerbot_song_scene_name.get(),
+                    local_streamerbot_song_reward_cost.get(),
+                    local_streamerbot_song_reward_cooldown.get(),
+                )
+            )
+            tk.Label(
+                controls_card,
+                textvariable=song_reward_setup_status_var,
+                font=("Segoe UI", 9, "bold"),
+                fg=(
+                    STREAM_DESK["green"]
+                    if local_streamerbot_song_reward_enabled.get()
+                    else STREAM_DESK["muted"]
+                ),
+                bg=STREAM_DESK["surface_alt"],
+                anchor="center",
+                justify="center",
+                wraplength=self._ui_px(520),
+            ).grid(
+                row=song_scene_row + 5,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(self._ui_px(3), self._ui_px(2)),
+            )
+
+            def open_song_reward_setup_guide() -> None:
+                reward_name = (
+                    local_streamerbot_song_reward_name.get().strip()
+                    or STREAMERBOT_DEFAULT_SONG_REWARD_NAME
+                )
+                try:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(reward_name)
+                    self.root.update_idletasks()
+                except tk.TclError:
+                    pass
+                webbrowser.open_new_tab(STREAMERBOT_TWITCH_REWARDS_GUIDE_URL)
+                self.streamerbot_status_var.set(
+                    f'Copied reward name “{reward_name}” and opened the '
+                    "Streamer.bot reward instructions."
+                )
+
+            song_reward_guide_button = self._make_action_button(
+                controls_card,
+                text="Open Streamer.bot Reward Help",
+                command=open_song_reward_setup_guide,
+                bg=STREAM_DESK["surface_deep"],
+                active_bg=STREAM_DESK["selected"],
+                width=34,
+                pad_y=6,
+                font_size=9,
+            )
+            song_reward_guide_button.grid(
+                row=song_scene_row + 6,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(self._ui_px(5), self._ui_px(2)),
+            )
+            def refresh_streamerbot_scroll_extent(_event=None) -> None:
+                try:
+                    settings_content_canvas.after_idle(
+                        sync_settings_content_width
+                    )
+                except tk.TclError:
+                    pass
+
+            # The centered page panel is managed with ``place`` so its own
+            # requested height can remain equal to the viewport even when
+            # the reward controls extend farther down. Re-measure the true
+            # card bottom after layout and whenever wrapped status/help text
+            # changes size, keeping every reward field above the fixed
+            # Settings footer and reachable with the page scrollbar.
+            controls_card.bind(
+                "<Configure>",
+                refresh_streamerbot_scroll_extent,
+                add="+",
+            )
+            streamerbot_body.after_idle(refresh_streamerbot_scroll_extent)
 
             tk.Label(
                 streamerbot_body,
@@ -51926,6 +55641,269 @@ class TrackerApp:
                     daemon=True,
                 ).start()
 
+            def enable_one_click_song_reward() -> None:
+                try:
+                    reward_settings = normalize_streamerbot_song_reward_settings(
+                        local_streamerbot_song_reward_name.get(),
+                        local_streamerbot_song_scene_name.get(),
+                        local_streamerbot_song_reward_cost.get(),
+                        local_streamerbot_song_reward_cooldown.get(),
+                    )
+                except ValueError as error:
+                    self.streamerbot_status_var.set(
+                        str(error)
+                    )
+                    self._show_localized_info(
+                        "Song Reward Setup Needs Information",
+                        str(error),
+                        parent=dialog,
+                        kind="warning",
+                    )
+                    return
+                scene_name = reward_settings["scene_name"]
+                reward_name = reward_settings["reward_name"]
+                reward_cost = reward_settings["cost"]
+                reward_cooldown = reward_settings["cooldown"]
+                host_value = local_streamerbot_host.get().strip() or "127.0.0.1"
+                endpoint_value = local_streamerbot_endpoint.get().strip() or "/"
+                password_value = local_streamerbot_password.get()
+                try:
+                    port_value = int(local_streamerbot_port.get().strip())
+                    connection_url = streamerbot_websocket_url(
+                        host_value,
+                        port_value,
+                        endpoint_value,
+                    )
+                except (TypeError, ValueError) as error:
+                    report_streamerbot_test_error(error)
+                    return
+                self.streamerbot_status_var.set(
+                    f"Setting up the Twitch reward and Actions through {connection_url}…"
+                )
+                song_reward_setup_status_var.set(
+                    "SETTING UP · Creating the reward and installing Actions…"
+                )
+                song_reward_button.configure(
+                    text="Installing Streamer.bot Reward + Actions…",
+                    state="disabled",
+                )
+
+                def finish_setup_error(error: Exception) -> None:
+                    try:
+                        if not dialog.winfo_exists():
+                            return
+                    except tk.TclError:
+                        return
+                    song_reward_button.configure(
+                        text="Try Reward + Actions Setup Again",
+                        state="normal",
+                    )
+                    song_reward_setup_status_var.set(
+                        "SETUP FAILED · The reward and Actions are not ready."
+                    )
+                    self.streamerbot_status_var.set(
+                        f"Could not set up the song reward: {error}"
+                    )
+                    self._show_localized_info(
+                        "Song Reward Setup Failed",
+                        "The tracker could not finish the one-click Streamer.bot "
+                        "reward setup.\n\n"
+                        f"{error}\n\nKeep Streamer.bot open and unlocked, confirm its "
+                        "WebSocket Server is running, then try again.",
+                        parent=dialog,
+                        kind="error",
+                    )
+
+                def setup_worker() -> None:
+                    connection = StreamerBotConnection(
+                        host=host_value,
+                        port=port_value,
+                        endpoint=endpoint_value,
+                        password=password_value,
+                        timeout=5.0,
+                    )
+                    try:
+                        info = connection.connect()
+                        connection.close()
+                        setup_result = install_streamerbot_song_reward(
+                            reward_name,
+                            scene_name,
+                            reward_cost,
+                            reward_cooldown,
+                        )
+                        reconnect_deadline = time.monotonic() + 40.0
+                        reconnect_error: Exception | None = None
+                        while time.monotonic() < reconnect_deadline:
+                            try:
+                                info = connection.connect()
+                                reconnect_error = None
+                                break
+                            except Exception as error:
+                                reconnect_error = error
+                                connection.close()
+                                time.sleep(0.6)
+                        if reconnect_error is not None:
+                            raise RuntimeError(
+                                "Streamer.bot was updated and reopened, but its "
+                                "WebSocket Server did not come back online in time."
+                            ) from reconnect_error
+                        visibility_action = {
+                            "id": str(
+                                setup_result.get("visibilityActionId", "")
+                            ).strip(),
+                            "name": STREAMERBOT_SONG_VISIBILITY_ACTION_NAME,
+                        }
+                        if not visibility_action["id"]:
+                            raise RuntimeError(
+                                "The song reward visibility Action was not installed."
+                            )
+                        reply_action = {
+                            "id": str(
+                                setup_result.get("replyActionId", "")
+                            ).strip(),
+                            "name": STREAMERBOT_SONG_REPLY_ACTION_NAME,
+                        }
+                        if not reply_action["id"]:
+                            raise RuntimeError(
+                                "The song reward chat reply Action was not installed."
+                            )
+                        # Apply the visibility rule immediately instead of
+                        # waiting for the next OBS scene change.
+                        connection.do_action(visibility_action, {})
+                        connection.subscribe_tracker_events(
+                            include_actions=False,
+                            include_song_reward=True,
+                        )
+                    except Exception as error:
+                        try:
+                            self.root.after(
+                                0,
+                                lambda captured_error=error: finish_setup_error(
+                                    captured_error
+                                ),
+                            )
+                        except tk.TclError:
+                            pass
+                    else:
+                        def finish_setup() -> None:
+                            try:
+                                if not dialog.winfo_exists():
+                                    return
+                            except tk.TclError:
+                                return
+                            local_streamerbot_enabled.set(True)
+                            local_streamerbot_song_reward_enabled.set(True)
+                            configured_event_actions = self.config.get(
+                                "streamerbot_event_actions",
+                                {},
+                            )
+                            configured_event_actions = (
+                                dict(configured_event_actions)
+                                if isinstance(configured_event_actions, dict)
+                                else {}
+                            )
+                            configured_event_actions["song_identified"] = dict(
+                                reply_action
+                            )
+                            reply_display = (
+                                "SMW Stream Tracker / "
+                                + STREAMERBOT_SONG_REPLY_ACTION_NAME
+                            )
+                            streamerbot_action_choices[reply_display] = dict(
+                                reply_action
+                            )
+                            local_streamerbot_action_vars[
+                                "song_identified"
+                            ].set(reply_display)
+                            self.config.update(
+                                {
+                                    "streamerbot_enabled": True,
+                                    "streamerbot_host": host_value,
+                                    "streamerbot_port": port_value,
+                                    "streamerbot_endpoint": endpoint_value,
+                                    "streamerbot_password": password_value,
+                                    "streamerbot_song_reward_enabled": True,
+                                    "streamerbot_song_reward_actions_installed": True,
+                                    "streamerbot_event_actions": (
+                                        configured_event_actions
+                                    ),
+                                    "streamerbot_song_reply_action": dict(
+                                        reply_action
+                                    ),
+                                    "streamerbot_song_reward_name": reward_name,
+                                    "streamerbot_song_scene_name": scene_name,
+                                    "streamerbot_song_reward_cost": reward_cost,
+                                    "streamerbot_song_reward_cooldown": (
+                                        reward_cooldown
+                                    ),
+                                }
+                            )
+                            try:
+                                save_config(self.config)
+                            except OSError as error:
+                                finish_setup_error(error)
+                                return
+                            if self.worker is not None:
+                                self.worker.config.update(self.config)
+                            self._configure_streamerbot_dispatcher()
+                            version = str(info.get("version", "")).strip()
+                            song_reward_button.configure(
+                                text="✓ Song Reward + Actions Installed",
+                                state="normal",
+                            )
+                            setup_status = str(
+                                setup_result.get("status", "updated")
+                            ).strip().casefold()
+                            setup_verb = (
+                                "created"
+                                if setup_status == "created"
+                                else "updated"
+                            )
+                            confirmation = (
+                                f"Current level song reward and Actions {setup_verb}"
+                                + (f" in Streamer.bot {version}" if version else "")
+                                + f'. “{reward_name}” costs {reward_cost:,} points, '
+                                + f"has a {reward_cooldown:,}-second cooldown, and "
+                                + f'is visible only on “{scene_name}”.'
+                            )
+                            self.streamerbot_status_var.set(confirmation)
+                            song_reward_setup_status_var.set(
+                                streamerbot_song_reward_setup_status(
+                                    True,
+                                    reward_name,
+                                    scene_name,
+                                    reward_cost,
+                                    reward_cooldown,
+                                )
+                            )
+                            self._show_localized_info(
+                                "Current Level Song Reward Installed",
+                                f"Streamer.bot {setup_verb} the Twitch channel point "
+                                "reward and installed three visible Actions under the "
+                                '“SMW Stream Tracker” Actions group.\n\n'
+                                f"Reward: {reward_name}\n"
+                                f"Cost: {reward_cost:,} channel points\n"
+                                f"Global cooldown: {reward_cooldown:,} seconds\n"
+                                f"Visible OBS scene: {scene_name}\n\n"
+                                f"Action: {STREAMERBOT_SONG_REWARD_ACTION_NAME}\n"
+                                f"Visibility: {STREAMERBOT_SONG_VISIBILITY_ACTION_NAME}\n"
+                                f"Chat reply: {STREAMERBOT_SONG_REPLY_ACTION_NAME}",
+                                parent=dialog,
+                            )
+
+                        try:
+                            self.root.after(0, finish_setup)
+                        except tk.TclError:
+                            pass
+                    finally:
+                        connection.close()
+
+                threading.Thread(
+                    target=setup_worker,
+                    name="StreamerBotSongRewardSetup",
+                    daemon=True,
+                ).start()
+
             test_button = self._make_action_button(
                 test_button_holder,
                 text="Test & Load Actions",
@@ -52031,7 +56009,7 @@ class TrackerApp:
                 "OBS Companion Tools",
                 (
                     (
-                        "Open OBS Widget Setup...",
+                        "Open OBS Widget & Radio Setup...",
                         self.open_obs_widget_setup,
                     ),
                     (
@@ -53108,6 +57086,28 @@ class TrackerApp:
                 streamerbot_endpoint = (
                     local_streamerbot_endpoint.get().strip() or "/"
                 )
+                streamerbot_song_scene_name = (
+                    local_streamerbot_song_scene_name.get().strip()
+                    or STREAMERBOT_SONG_SCENE_NAME
+                )
+                streamerbot_song_reward_name = (
+                    local_streamerbot_song_reward_name.get().strip()
+                    or STREAMERBOT_DEFAULT_SONG_REWARD_NAME
+                )
+                streamerbot_song_reward_settings = (
+                    normalize_streamerbot_song_reward_settings(
+                        streamerbot_song_reward_name,
+                        streamerbot_song_scene_name,
+                        local_streamerbot_song_reward_cost.get(),
+                        local_streamerbot_song_reward_cooldown.get(),
+                    )
+                )
+                streamerbot_song_reward_cost = (
+                    streamerbot_song_reward_settings["cost"]
+                )
+                streamerbot_song_reward_cooldown = (
+                    streamerbot_song_reward_settings["cooldown"]
+                )
                 streamerbot_websocket_url(
                     streamerbot_host,
                     streamerbot_port,
@@ -53140,6 +57140,8 @@ class TrackerApp:
                         "between 1 and 65535. The Streamer.bot port "
                         "must also be between 1 and 65535."
                         " Automatic refresh must be between 1 and 168 hours."
+                        " Reward cost must be 1–1,000,000 points, and its "
+                        "global cooldown must be 0–604,800 seconds."
                     ),
                     parent=dialog,
                 )
@@ -53321,6 +57323,21 @@ class TrackerApp:
                     ),
                     "streamerbot_control_actions": (
                         streamerbot_control_actions
+                    ),
+                    "streamerbot_song_scene_name": (
+                        streamerbot_song_scene_name
+                    ),
+                    "streamerbot_song_reward_enabled": bool(
+                        local_streamerbot_song_reward_enabled.get()
+                    ),
+                    "streamerbot_song_reward_name": (
+                        streamerbot_song_reward_name
+                    ),
+                    "streamerbot_song_reward_cost": (
+                        streamerbot_song_reward_cost
+                    ),
+                    "streamerbot_song_reward_cooldown": (
+                        streamerbot_song_reward_cooldown
                     ),
                 }
             )
@@ -60495,7 +64512,8 @@ class TrackerApp:
 
             for index, (label_text, value, color) in enumerate(status_data):
                 row_y = legend_y + index * self._ui_px(28)
-                pie_canvas.create_oval(
+                draw_smooth_canvas_ellipse(
+                    pie_canvas,
                     legend_x,
                     row_y + self._ui_px(5),
                     legend_x + self._ui_px(14),
@@ -62162,7 +66180,8 @@ class TrackerApp:
             ) -> None:
                 radius = max(1.0, (y2 - y1) / 2)
                 if (x2 - x1) <= (radius * 2):
-                    canvas.create_oval(
+                    draw_smooth_canvas_ellipse(
+                        canvas,
                         x1,
                         y1,
                         x2,
@@ -62179,7 +66198,8 @@ class TrackerApp:
                     fill=color,
                     outline="",
                 )
-                canvas.create_oval(
+                draw_smooth_canvas_ellipse(
+                    canvas,
                     x1,
                     y1,
                     x1 + (radius * 2),
@@ -62187,7 +66207,8 @@ class TrackerApp:
                     fill=color,
                     outline="",
                 )
-                canvas.create_oval(
+                draw_smooth_canvas_ellipse(
+                    canvas,
                     x2 - (radius * 2),
                     y1,
                     x2,
@@ -82112,7 +86133,8 @@ class TrackerApp:
                     return
                 inset = max(self._ui_px(10), round(size * 0.10))
                 glow = max(self._ui_px(2), round(size * 0.025))
-                symbol_canvas.create_oval(
+                draw_smooth_canvas_ellipse(
+                    symbol_canvas,
                     inset - glow,
                     inset - glow,
                     size - inset + glow,
@@ -82120,7 +86142,8 @@ class TrackerApp:
                     fill=blend_hex_colors(accent, STREAM_DESK["surface"], 0.82),
                     outline="",
                 )
-                symbol_canvas.create_oval(
+                draw_smooth_canvas_ellipse(
+                    symbol_canvas,
                     inset,
                     inset,
                     size - inset,
@@ -86485,18 +90508,20 @@ class TrackerApp:
                 preset_indicator.delete("all")
                 inset = self._ui_px(3)
                 end = indicator_size - inset
-                preset_indicator.create_oval(
+                draw_smooth_canvas_ellipse(
+                    preset_indicator,
                     inset,
                     inset,
                     end,
                     end,
                     fill=card_bg,
                     outline=outline,
-                    width=max(2, self._ui_px(2)),
+                    outline_width=max(2, self._ui_px(2)),
                 )
                 if selected:
                     dot_inset = self._ui_px(8)
-                    preset_indicator.create_oval(
+                    draw_smooth_canvas_ellipse(
+                        preset_indicator,
                         dot_inset,
                         dot_inset,
                         indicator_size - dot_inset,
@@ -90318,16 +94343,27 @@ class TrackerApp:
             bd=0,
         )
         new_since_strip.pack(fill="x", pady=(0, self._ui_px(8)))
-        new_since_dot = tk.Label(
+        new_since_dot = tk.Canvas(
             new_since_strip,
-            text="●",
-            font=("Segoe UI Symbol", 9),
-            fg=(
+            width=self._ui_px(12),
+            height=self._ui_px(12),
+            bg=STREAM_DESK["surface_alt"],
+            bd=0,
+            highlightthickness=0,
+        )
+        draw_smooth_notification_badge(
+            new_since_dot,
+            self._ui_px(1),
+            self._ui_px(1),
+            self._ui_px(11),
+            self._ui_px(11),
+            fill=(
                 STREAM_DESK["red"]
                 if moderated_new or waiting_new
                 else STREAM_DESK["muted_dim"]
             ),
-            bg=STREAM_DESK["surface_alt"],
+            outline=STREAM_DESK["text_strong"],
+            outline_width=max(1, self._ui_px(1)),
         )
         new_since_dot.pack(side="left", padx=(0, self._ui_px(6)))
         tk.Label(
@@ -91934,12 +95970,20 @@ class TrackerApp:
             ready_games[:] = games_ready_for_platform(platform_name)
             new_since_var.set(self._catalog_new_since_refresh_status_text())
             new_moderated, new_waiting = self._catalog_notification_flags()
-            new_since_dot.configure(
-                fg=(
+            new_since_dot.delete("all")
+            draw_smooth_notification_badge(
+                new_since_dot,
+                self._ui_px(1),
+                self._ui_px(1),
+                self._ui_px(11),
+                self._ui_px(11),
+                fill=(
                     STREAM_DESK["red"]
                     if new_moderated or new_waiting
                     else STREAM_DESK["muted_dim"]
-                )
+                ),
+                outline=STREAM_DESK["text_strong"],
+                outline_width=max(1, self._ui_px(1)),
             )
             refresh_rows()
             self._refresh_catalog_notification_badges()
@@ -96759,9 +100803,6 @@ class TrackerApp:
 
         remote_filename = mister_safe_rom_filename(game, local_rom.suffix)
         remote_rom = str(PurePosixPath(remote_root) / remote_filename)
-        relative_rom = str(
-            PurePosixPath(remote_rom).relative_to("/media/fat/games/SNES")
-        )
         remote_mgl = str(
             PurePosixPath(menu_root) / "SMW Stream Tracker Launch.mgl"
         )
@@ -96809,11 +100850,13 @@ class TrackerApp:
                     game,
                 )
                 uploaded = upload_status == "uploaded"
+                # Use the verified full upload path. A filename sanitized by
+                # the uploader must be the exact path written to the MGL.
                 self._mister_sftp_write(
                     sftp,
                     remote_mgl,
                     mister_mgl_text(
-                        relative_rom,
+                        remote_rom,
                         retroachievements=use_retroachievements_core,
                     ).encode("utf-8"),
                 )
@@ -101892,6 +105935,29 @@ class TrackerApp:
                 self.config.get("streamerbot_controls_enabled", False)
             ),
             "control_actions": normalized_control_mappings,
+            "song_reward_enabled": bool(
+                self.config.get("streamerbot_song_reward_enabled", False)
+            ),
+            "song_reward_actions_installed": bool(
+                self.config.get(
+                    "streamerbot_song_reward_actions_installed",
+                    False,
+                )
+            ),
+            "song_reward_name": str(
+                self.config.get(
+                    "streamerbot_song_reward_name",
+                    STREAMERBOT_DEFAULT_SONG_REWARD_NAME,
+                )
+                or STREAMERBOT_DEFAULT_SONG_REWARD_NAME
+            ).strip(),
+            "song_scene_name": str(
+                self.config.get(
+                    "streamerbot_song_scene_name",
+                    STREAMERBOT_SONG_SCENE_NAME,
+                )
+                or STREAMERBOT_SONG_SCENE_NAME
+            ).strip(),
         }
 
     def _queue_streamerbot_status(self, connected: bool, message: str) -> None:
@@ -101951,7 +106017,10 @@ class TrackerApp:
             bool(settings.get("controls_enabled", False))
             and bool(settings.get("control_actions", {}))
         )
-        if controls_active:
+        listener_active = controls_active or bool(
+            settings.get("song_reward_enabled", False)
+        )
+        if listener_active:
             if self.streamerbot_control_listener is None:
                 self.streamerbot_control_listener = StreamerBotControlListener(
                     settings,
@@ -102131,6 +106200,7 @@ class TrackerApp:
                 game_timer=self.game_timer_var.get(),
                 level_timer=self.level_timer_var.get(),
                 achievements=self._retroachievements_overview_summary,
+                radio=self.smwcentral_spc_native_state,
                 connected=self.connection_is_connected,
             )
         except (AttributeError, tk.TclError):
@@ -102162,6 +106232,17 @@ class TrackerApp:
             f"?{urlencode({'token': self.obs_widget_access_token})}"
         )
 
+    def _obs_radio_widget_url(self) -> str:
+        port = int(
+            self.obs_widget_server_port
+            or self.config.get("obs_widget_port", OBS_WIDGET_DEFAULT_PORT)
+            or OBS_WIDGET_DEFAULT_PORT
+        )
+        return (
+            f"http://{OBS_WIDGET_HOST}:{port}/obs-radio/"
+            f"?{urlencode({'token': self.obs_widget_access_token, 'autoplay': '1'})}"
+        )
+
     def _publish_obs_widget_event(self, document: dict[str, Any]) -> None:
         server = self.obs_widget_server
         if server is not None:
@@ -102176,6 +106257,10 @@ class TrackerApp:
             "search_hacks",
             "play_hack",
             "play_random_hack",
+            "radio_start",
+            "radio_toggle",
+            "radio_next",
+            "radio_restart",
         }:
             return
         copied_document = dict(document)
@@ -102292,6 +106377,36 @@ class TrackerApp:
     def _handle_obs_widget_command(self, document: dict[str, Any]) -> None:
         command = str(document.get("command", "")).strip()
         request_id = self._obs_widget_request_id(document)
+        if command in {
+            "radio_start",
+            "radio_toggle",
+            "radio_next",
+            "radio_restart",
+        }:
+            if command == "radio_start":
+                self._open_smwcentral_radio()
+                message = "SMW Central Radio is starting."
+            else:
+                action = {
+                    "radio_toggle": "toggle",
+                    "radio_next": "next",
+                    "radio_restart": "restart",
+                }[command]
+                self._send_smwcentral_spc_command(action)
+                message = {
+                    "radio_toggle": "Radio playback toggled.",
+                    "radio_next": "Loading the next radio track.",
+                    "radio_restart": "Radio track restarted.",
+                }[command]
+            self._publish_obs_widget_event(
+                {
+                    "event": "command_result",
+                    "request_id": request_id,
+                    "ok": True,
+                    "message": message,
+                }
+            )
+            return
         if command == "get_configuration":
             self._publish_obs_widget_event(
                 {
@@ -102387,6 +106502,521 @@ class TrackerApp:
         except (AttributeError, tk.TclError):
             pass
 
+    @staticmethod
+    def _streamerbot_song_request_value(
+        request: dict[str, Any],
+        *names: str,
+    ) -> str:
+        for name in names:
+            value = request.get(name)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ""
+
+    def _current_tracker_music_context_key(self) -> str:
+        """Return the live ROM + level + music identity for song lookups."""
+
+        worker = getattr(self, "worker", None)
+        game_key = ""
+        translevel: int | None = None
+        room_number: int | None = None
+        music_track: int | None = None
+        level_session_id = ""
+        if worker is not None:
+            game_key = str(
+                getattr(worker, "current_rom_key", "")
+                or getattr(worker, "current_time_key", "")
+                or getattr(worker, "previous_rom_path", "")
+                or ""
+            ).strip()
+            # current_translevel is refreshed from the latest stabilized WRAM
+            # sample. level_id can retain the previous level briefly while the
+            # timer completes its transition bookkeeping.
+            translevel = getattr(worker, "current_translevel", None)
+            if translevel is None:
+                translevel = getattr(worker, "level_id", None)
+            room_number = getattr(worker, "last_gameplay_level_number", None)
+            music_track = getattr(worker, "current_music_track", None)
+            raw_level_session_id = getattr(
+                worker,
+                "streamerbot_level_session_id",
+                "",
+            )
+            if isinstance(raw_level_session_id, str):
+                level_session_id = raw_level_session_id.strip()
+
+        if not game_key:
+            game = getattr(self, "current_hack_record", {})
+            if isinstance(game, dict):
+                game_key = str(
+                    game.get("catalog_key")
+                    or game.get("id")
+                    or game.get("local_rom_path")
+                    or game.get("title")
+                    or ""
+                ).strip()
+        if not game_key:
+            return ""
+
+        def identity_number(value: object) -> str:
+            try:
+                return str(int(value))
+            except (TypeError, ValueError):
+                return "unknown"
+
+        normalized_game = os.path.normcase(os.path.normpath(game_key)).casefold()
+        context_key = (
+            f"{normalized_game}|translevel:{identity_number(translevel)}"
+            f"|room:{identity_number(room_number)}"
+            f"|music:{identity_number(music_track)}"
+        )
+        # The level-session token changes only when a genuinely fresh playable
+        # level starts. It prevents two levels that reuse the same translevel,
+        # room, and music byte from sharing a cached identification.
+        if level_session_id:
+            context_key += f"|session:{level_session_id}"
+        return context_key
+
+    def _remember_current_level_song(
+        self,
+        result: dict[str, Any],
+        *,
+        context_key: str = "",
+    ) -> dict[str, Any]:
+        """Associate one verified music match with the level being tracked."""
+
+        stored_result = dict(result)
+        context_key = str(context_key).strip() or (
+            self._current_tracker_music_context_key()
+        )
+        if not context_key:
+            return stored_result
+        stored_result["_tracker_context_key"] = context_key
+        context_results = getattr(
+            self,
+            "music_identifier_context_results",
+            None,
+        )
+        if not isinstance(context_results, dict):
+            context_results = {}
+            self.music_identifier_context_results = context_results
+        context_results[context_key] = dict(stored_result)
+
+        # Keep the useful level association across restarts without retaining
+        # any captured audio. Limit the cache so a very large ROM collection
+        # cannot make the settings file grow forever.
+        if len(context_results) > 500:
+            oldest_keys = tuple(context_results)[: len(context_results) - 500]
+            for oldest_key in oldest_keys:
+                context_results.pop(oldest_key, None)
+        config = getattr(self, "config", None)
+        if isinstance(config, dict):
+            config["music_identifier_level_songs"] = {
+                key: dict(song)
+                for key, song in context_results.items()
+                if isinstance(song, dict)
+            }
+            try:
+                save_config(config)
+            except OSError:
+                pass
+        return stored_result
+
+    def _current_level_song_result(self) -> dict[str, Any]:
+        """Return only song data belonging to the level currently in play."""
+
+        context_key = self._current_tracker_music_context_key()
+        if not context_key:
+            return {}
+        context_results = getattr(
+            self,
+            "music_identifier_context_results",
+            {},
+        )
+        if isinstance(context_results, dict):
+            result = context_results.get(context_key, {})
+            if isinstance(result, dict) and str(result.get("title", "")).strip():
+                return dict(result)
+        last_result = getattr(self, "music_identifier_last_result", {})
+        if (
+            isinstance(last_result, dict)
+            and last_result.get("_tracker_context_key") == context_key
+            and str(last_result.get("title", "")).strip()
+        ):
+            return dict(last_result)
+        return {}
+
+    def _configured_streamerbot_song_scene_name(self) -> str:
+        return str(
+            self.config.get(
+                "streamerbot_song_scene_name",
+                STREAMERBOT_SONG_SCENE_NAME,
+            )
+            or STREAMERBOT_SONG_SCENE_NAME
+        ).strip()
+
+    def _schedule_streamerbot_song_prefetch(
+        self,
+        session_id: object,
+        *,
+        delay_ms: int = 1200,
+    ) -> bool:
+        """Prepare the current level's song before a viewer redeems it."""
+
+        if not (
+            bool(self.config.get("streamerbot_enabled", False))
+            and bool(self.config.get("streamerbot_song_reward_enabled", False))
+        ):
+            return False
+        clean_session_id = str(session_id or "").strip()
+        if not clean_session_id:
+            return False
+        previous_after_id = getattr(
+            self,
+            "music_identifier_prefetch_after_id",
+            None,
+        )
+        if previous_after_id is not None:
+            try:
+                self.root.after_cancel(previous_after_id)
+            except tk.TclError:
+                pass
+        self.music_identifier_prefetch_session_id = clean_session_id
+        try:
+            self.music_identifier_prefetch_after_id = self.root.after(
+                max(0, int(delay_ms)),
+                self._prefetch_streamerbot_current_level_song,
+            )
+        except tk.TclError:
+            self.music_identifier_prefetch_after_id = None
+            return False
+        return True
+
+    def _prefetch_streamerbot_current_level_song(self) -> bool:
+        """Start a silent level-scoped lookup for instant reward replies."""
+
+        self.music_identifier_prefetch_after_id = None
+        if not (
+            bool(self.config.get("streamerbot_enabled", False))
+            and bool(self.config.get("streamerbot_song_reward_enabled", False))
+        ):
+            return False
+        expected_session = str(
+            getattr(self, "music_identifier_prefetch_session_id", "") or ""
+        ).strip()
+        current_context = self._current_tracker_music_context_key()
+        if not expected_session or not current_context.endswith(
+            f"|session:{expected_session}"
+        ):
+            return False
+        if self._current_level_song_result():
+            return True
+        if isinstance(
+            getattr(self, "music_identifier_streamerbot_request", None),
+            dict,
+        ):
+            return True
+        identifier_thread = getattr(self, "music_identifier_thread", None)
+        if identifier_thread is not None and identifier_thread.is_alive():
+            active_context = str(
+                getattr(self, "music_identifier_lookup_context_key", "") or ""
+            ).strip()
+            if active_context == current_context:
+                return True
+            # Let the old level's result finish under its own key, then prepare
+            # the new level without ever mixing their songs.
+            return self._schedule_streamerbot_song_prefetch(
+                expected_session,
+                delay_ms=700,
+            )
+
+        sources = getattr(self, "music_identifier_sources", {})
+        selected_label = ""
+        try:
+            selected_label = str(self.music_identifier_source_var.get()).strip()
+        except (AttributeError, tk.TclError):
+            pass
+        if not isinstance(sources, dict) or selected_label not in sources:
+            self._refresh_music_identifier_sources()
+        started = self._start_music_identifier()
+        if started:
+            self._set_streamerbot_control_status(
+                "Preparing the current level song for fast channel-point "
+                "reward replies."
+            )
+        return bool(started)
+
+    def _start_streamerbot_live_song_lookup(
+        self,
+        request: dict[str, Any],
+    ) -> bool:
+        """Identify uncached current-level music and reply when it finishes."""
+
+        request = dict(request) if isinstance(request, dict) else {}
+        pending_request = getattr(
+            self,
+            "music_identifier_streamerbot_request",
+            None,
+        )
+        queued_request = getattr(
+            self,
+            "music_identifier_queued_streamerbot_request",
+            None,
+        )
+        if isinstance(pending_request, dict) or isinstance(queued_request, dict):
+            self._dispatch_streamerbot_song_response(
+                request,
+                error="Another current-song lookup is already in progress.",
+            )
+            self._set_streamerbot_control_status(
+                "Current song request ignored because a music lookup is already "
+                "in progress."
+            )
+            return False
+
+        request["_trackerMusicContextKey"] = (
+            self._current_tracker_music_context_key()
+        )
+        identifier_thread = getattr(self, "music_identifier_thread", None)
+        if identifier_thread is not None and identifier_thread.is_alive():
+            active_context = str(
+                getattr(self, "music_identifier_lookup_context_key", "") or ""
+            ).strip()
+            requested_context = str(
+                request.get("_trackerMusicContextKey", "") or ""
+            ).strip()
+            if active_context and active_context != requested_context:
+                # A background lookup from the previous room must never answer
+                # a redemption for the new room. Queue the redemption and run
+                # its lookup as soon as the old sample has released the audio
+                # source.
+                self.music_identifier_queued_streamerbot_request = request
+                self._set_streamerbot_control_status(
+                    "Current song requested — switching the prepared lookup "
+                    "to the current level."
+                )
+                return True
+            self.music_identifier_streamerbot_request = request
+            self._set_streamerbot_control_status(
+                "Current song requested — using the lookup already prepared "
+                "for this level."
+            )
+            return True
+
+        sources = getattr(self, "music_identifier_sources", {})
+        selected_label = ""
+        try:
+            selected_label = str(self.music_identifier_source_var.get()).strip()
+        except (AttributeError, tk.TclError):
+            pass
+        if not isinstance(sources, dict) or selected_label not in sources:
+            self._refresh_music_identifier_sources()
+
+        self.music_identifier_streamerbot_request = request
+        if self._start_music_identifier():
+            self._set_streamerbot_control_status(
+                "Current song requested — listening to live game audio and "
+                "checking the local SMW Central music index."
+            )
+            return True
+
+        self.music_identifier_streamerbot_request = None
+        detail = ""
+        try:
+            detail = str(self.music_identifier_detail_var.get()).strip()
+        except (AttributeError, tk.TclError):
+            pass
+        if not detail:
+            detail = (
+                "The tracker could not start a live music lookup. Select a "
+                "working audio source in Music Identifier & Radio."
+            )
+        self._dispatch_streamerbot_song_response(request, error=detail)
+        self._set_streamerbot_control_status(
+            "Current song was requested, but live music identification could "
+            "not start."
+        )
+        return False
+
+    def _start_queued_streamerbot_song_lookup(self) -> bool:
+        """Start a reward lookup after an older level releases audio input."""
+
+        queued_request = getattr(
+            self,
+            "music_identifier_queued_streamerbot_request",
+            None,
+        )
+        if not isinstance(queued_request, dict):
+            return False
+        identifier_thread = getattr(self, "music_identifier_thread", None)
+        if identifier_thread is not None and identifier_thread.is_alive():
+            try:
+                self.root.after(
+                    60,
+                    self._start_queued_streamerbot_song_lookup,
+                )
+            except tk.TclError:
+                pass
+            return True
+        self.music_identifier_queued_streamerbot_request = None
+        return self._start_streamerbot_live_song_lookup(queued_request)
+
+    def _send_streamerbot_chat_message_async(self, message: object) -> bool:
+        text = str(message or "").strip()
+        if not text:
+            return False
+        settings = self._streamerbot_settings_snapshot()
+
+        def send_worker() -> None:
+            connection = StreamerBotConnection(
+                host=settings.get("host", "127.0.0.1"),
+                port=settings.get("port", 8080),
+                endpoint=settings.get("endpoint", "/"),
+                password=settings.get("password", ""),
+                timeout=5.0,
+            )
+            try:
+                connection.connect()
+                connection.send_message(text, platform="twitch", use_bot=True)
+            except Exception as error:
+                self._queue_streamerbot_status(
+                    False,
+                    f"Streamer.bot could not send the song reply: {error}",
+                )
+            else:
+                self._queue_streamerbot_status(
+                    True,
+                    "Current level song sent to Twitch chat.",
+                )
+            finally:
+                connection.close()
+
+        threading.Thread(
+            target=send_worker,
+            name="StreamerBotSongChatReply",
+            daemon=True,
+        ).start()
+        return True
+
+    def _dispatch_streamerbot_song_response(
+        self,
+        request: dict[str, Any],
+        *,
+        result: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> bool:
+        """Expose a finished music lookup to a mapped Streamer.bot action."""
+
+        request = dict(request) if isinstance(request, dict) else {}
+        result = dict(result) if isinstance(result, dict) else {}
+        requester = self._streamerbot_song_request_value(
+            request,
+            "userName",
+            "displayName",
+            "user",
+            "userLogin",
+            "username",
+        )
+        reward_name = self._streamerbot_song_request_value(
+            request,
+            "rewardName",
+            "rewardTitle",
+            "reward",
+        )
+        scene_name = streamerbot_scene_from_arguments(request)
+        title = str(result.get("title", "")).strip()
+        artist = str(result.get("artist", "")).strip()
+        song_url = str(
+            result.get("smwcentral_url")
+            or result.get("submission_url")
+            or result.get("track_url")
+            or result.get("download_url")
+            or ""
+        ).strip()
+        found = bool(title and song_url and not error)
+        if found:
+            chat_message = (
+                f"{requester}, the song playing is “{title}”"
+                if requester
+                else f"The song playing is “{title}”"
+            )
+            if artist:
+                chat_message += f" by {artist}"
+            chat_message += f". Listen on SMW Central: {song_url}"
+        else:
+            chat_message = (
+                f"Sorry {requester}, the tracker could not identify the song "
+                "playing right now."
+                if requester
+                else (
+                    "The tracker could not identify the song playing right now."
+                )
+            )
+
+        response_arguments = {
+                "songFound": found,
+                "songTitle": title,
+                "songArtist": artist,
+                "songUrl": song_url,
+                "songListenUrl": song_url,
+                "songDownloadUrl": str(
+                    result.get("track_url")
+                    or result.get("download_url")
+                    or ""
+                ).strip(),
+                "songConfidence": result.get(
+                    "confidence_value",
+                    result.get("confidence", ""),
+                ),
+                "songError": str(error).strip(),
+                "chatMessage": chat_message,
+                "redeemingUser": requester,
+                "rewardName": reward_name,
+                "sceneName": scene_name,
+                "requiredScene": self._configured_streamerbot_song_scene_name(),
+            }
+        if bool(request.get("directChatReply", False)):
+            # SendMessage is a privileged WebSocket request and Streamer.bot
+            # requires authentication for it even when ordinary subscriptions
+            # are open. The one-click setup installs and maps a normal chat
+            # Action, so DoAction can post the response without asking users to
+            # turn on a WebSocket password.
+            dispatched = self._dispatch_streamerbot_event(
+                "song_identified",
+                response_arguments,
+            )
+            if not dispatched:
+                self._queue_streamerbot_status(
+                    False,
+                    "The song was found, but the Streamer.bot chat reply Action "
+                    "is not mapped. Run Update One-Click Song Reward again.",
+                )
+            return dispatched
+        return self._dispatch_streamerbot_event(
+            "song_identified",
+            response_arguments,
+        )
+
+    def _complete_streamerbot_song_request(
+        self,
+        *,
+        result: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> bool:
+        request = getattr(
+            self,
+            "music_identifier_streamerbot_request",
+            None,
+        )
+        if not isinstance(request, dict):
+            return False
+        self.music_identifier_streamerbot_request = None
+        return self._dispatch_streamerbot_song_response(
+            request,
+            result=result,
+            error=error,
+        )
+
     def _handle_streamerbot_control_command(
         self,
         command: str,
@@ -102394,13 +107024,82 @@ class TrackerApp:
     ) -> None:
         """Run an approved Streamer.bot command on Tk's UI thread."""
 
-        if not (
-            bool(self.config.get("streamerbot_enabled", False))
-            and bool(self.config.get("streamerbot_controls_enabled", False))
-        ):
-            return
         command = str(command).strip()
         arguments = dict(arguments) if isinstance(arguments, dict) else {}
+        direct_song_reward = bool(arguments.get("directChatReply", False)) and bool(
+            self.config.get("streamerbot_song_reward_enabled", False)
+        )
+        if not bool(self.config.get("streamerbot_enabled", False)):
+            return
+        if not bool(self.config.get("streamerbot_controls_enabled", False)) and not (
+            command == "identify_current_song" and direct_song_reward
+        ):
+            return
+
+        if command in {"identify_current_song", "post_current_level_song"}:
+            required_scene = self._configured_streamerbot_song_scene_name()
+            active_scene = streamerbot_scene_from_arguments(arguments)
+            if not active_scene:
+                self._set_streamerbot_control_status(
+                    "Song request ignored — Streamer.bot must pass the active "
+                    f'OBS scene as sceneName="{required_scene}".'
+                )
+                return
+            if active_scene.casefold() != required_scene.casefold():
+                self._set_streamerbot_control_status(
+                    f'Song request ignored — OBS is on "{active_scene}", not '
+                    f'"{required_scene}".'
+                )
+                return
+            if not direct_song_reward:
+                event_mappings = self.config.get("streamerbot_event_actions", {})
+                song_response_action = (
+                    event_mappings.get("song_identified", {})
+                    if isinstance(event_mappings, dict)
+                    else {}
+                )
+                if not isinstance(song_response_action, dict) or not any(
+                    str(song_response_action.get(key, "")).strip()
+                    for key in ("id", "name")
+                ):
+                    self._set_streamerbot_control_status(
+                        "Map Song Identified for Chat to a Streamer.bot reply "
+                        "action before using the channel-point reward."
+                    )
+                    return
+            # A live level-session token makes this cache safe even when a hack
+            # reuses the same translevel, room, and music byte in later levels.
+            # Repeated rewards in the active level can therefore post at once;
+            # the first request in a new level still records a fresh sample.
+            if direct_song_reward:
+                current_context = self._current_tracker_music_context_key()
+                if "|session:" in current_context:
+                    current_song = self._current_level_song_result()
+                    if current_song:
+                        self._dispatch_streamerbot_song_response(
+                            arguments,
+                            result=current_song,
+                        )
+                        self._set_streamerbot_control_status(
+                            "Posted the verified current-level song from the "
+                            "live level cache."
+                        )
+                        return
+                self._start_streamerbot_live_song_lookup(arguments)
+                return
+
+            current_song = self._current_level_song_result()
+            if not current_song:
+                self._start_streamerbot_live_song_lookup(arguments)
+                return
+            self._dispatch_streamerbot_song_response(
+                arguments,
+                result=current_song,
+            )
+            self._set_streamerbot_control_status(
+                f'Posted the current level song for the "{required_scene}" scene.'
+            )
+            return
 
         if command == "search_and_play_hack":
             query = str(
@@ -102517,7 +107216,14 @@ class TrackerApp:
         if self.obs_widget_server is not None:
             return True
         assets_root = bundled_resource_path("obs_widget")
-        required_assets = ("index.html", "widget.css", "widget.js")
+        required_assets = (
+            "index.html",
+            "widget.css",
+            "widget.js",
+            "radio.html",
+            "radio.css",
+            "radio.js",
+        )
         if not all((assets_root / name).is_file() for name in required_assets):
             self.obs_widget_server_error = (
                 "The OBS Widget files are missing. Run the complete Windows "
@@ -102626,7 +107332,7 @@ class TrackerApp:
         dialog.configure(bg=palette["window"])
         dialog.transient(self.root)
         dialog.resizable(True, True)
-        self._size_dialog_for_ui(dialog, 980, 760, 820, 650)
+        self._size_dialog_for_ui(dialog, 1050, 880, 860, 720)
         self._create_stream_desk_page_header(
             dialog,
             kicker="OBS COMPANION",
@@ -102768,6 +107474,17 @@ class TrackerApp:
             self._obs_widget_url(),
         )
 
+        add_url_row(
+            2,
+            "SMW Central Radio Browser Source URL",
+            (
+                "Add this as an OBS Browser Source at 1000 × 260. It starts "
+                "the tracker radio, displays the live title and artist, and "
+                "follows the real playback position over WebSocket."
+            ),
+            self._obs_radio_widget_url(),
+        )
+
         choose_card = tk.Frame(
             body,
             bg=palette["panel_alt"],
@@ -102775,7 +107492,7 @@ class TrackerApp:
             highlightthickness=1,
         )
         choose_card.grid(
-            row=2,
+            row=3,
             column=0,
             columnspan=3,
             sticky="nsew",
@@ -102797,7 +107514,10 @@ class TrackerApp:
                 "Counter, Deaths, Timers, RetroAchievements, Search & Play, "
                 "and Play Random Hack on or off. The random controls include "
                 "the same Rating, Difficulty, Type, Released, and Hall of Fame "
-                "filters as Game Library. Your choices are remembered by the dock."
+                "filters as Game Library. Your choices are remembered by the dock. "
+                "The radio Browser Source is display-only; its audio plays through "
+                "SMW Stream Tracker, so keep Desktop Audio or an Application Audio "
+                "Capture for the tracker enabled in OBS."
             ),
             font=("Segoe UI", 10),
             fg=palette["muted"],
@@ -102846,6 +107566,15 @@ class TrackerApp:
             palette["panel_alt"],
             STREAM_DESK["selected"],
             width=20,
+            pad_y=8,
+        ).pack(side="left", padx=(8, 0))
+        self._make_action_button(
+            actions,
+            "Start SMW Central Radio",
+            self._open_smwcentral_radio,
+            palette["panel_alt"],
+            STREAM_DESK["selected"],
+            width=22,
             pad_y=8,
         ).pack(side="left", padx=(8, 0))
         self._make_action_button(
@@ -103980,6 +108709,15 @@ class TrackerApp:
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return {}
         if not isinstance(payload, dict) or bool(payload.get("clean_shutdown")):
+            return {}
+        try:
+            recovery_schema = int(payload.get("schema", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            recovery_schema = 0
+        if recovery_schema < 2:
+            # Version-1 markers were affected by a shutdown race and can label
+            # an ordinary upper-right-X close as a crash. Do not show that
+            # known false warning after upgrading to the fixed build.
             return {}
         if not str(payload.get("rom_path", "")).strip() and not str(
             payload.get("title", "")
@@ -105156,26 +109894,91 @@ class TrackerApp:
         smwcentral_process = self.smwcentral_webview_process
         self.smwcentral_webview_process = None
         if smwcentral_process is not None and smwcentral_process.poll() is None:
-            try:
-                smwcentral_process.terminate()
-                smwcentral_process.wait(timeout=2)
-            except Exception:
+            if IS_WINDOWS:
                 try:
-                    smwcentral_process.kill()
+                    subprocess.run(
+                        [
+                            "taskkill",
+                            "/PID",
+                            str(int(smwcentral_process.pid)),
+                            "/T",
+                            "/F",
+                        ],
+                        check=False,
+                        capture_output=True,
+                        timeout=6,
+                        creationflags=getattr(
+                            subprocess,
+                            "CREATE_NO_WINDOW",
+                            0,
+                        ),
+                    )
                 except Exception:
                     pass
+            if smwcentral_process.poll() is None:
+                try:
+                    smwcentral_process.terminate()
+                    smwcentral_process.wait(timeout=2)
+                except Exception:
+                    try:
+                        smwcentral_process.kill()
+                    except Exception:
+                        pass
+
+        profile_dir = self.smwcentral_spc_profile_dir
+        self.smwcentral_spc_profile_dir = None
+        if profile_dir is not None:
+            try:
+                shutil.rmtree(profile_dir, ignore_errors=True)
+            except OSError:
+                pass
 
         overlay_host = self.smwcentral_spc_overlay_host
         self.smwcentral_spc_overlay_host = None
+        self.smwcentral_spc_overlay_target_url = ""
+        self.smwcentral_spc_overlay_mode = ""
+        self.smwcentral_spc_launch_monotonic = 0.0
+        self.smwcentral_spc_native_widgets = {}
+        self.smwcentral_spc_native_state = {}
+        self.smwcentral_spc_native_collapsed = False
+        self.smwcentral_spc_native_updating = False
+        self.smwcentral_spc_native_drag_origin = None
+        self.smwcentral_spc_preloaded = False
+        ready_signal_path = self.smwcentral_spc_ready_signal_path
+        self.smwcentral_spc_ready_signal_path = None
+        if ready_signal_path is not None:
+            try:
+                ready_signal_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for path_attribute in (
+            "smwcentral_spc_state_path",
+            "smwcentral_spc_command_path",
+        ):
+            bridge_path = getattr(self, path_attribute, None)
+            setattr(self, path_attribute, None)
+            if bridge_path is not None:
+                try:
+                    bridge_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
         if overlay_host is not None:
             try:
                 if overlay_host.winfo_exists():
                     overlay_host.destroy()
             except tk.TclError:
                 pass
+        try:
+            self._refresh_obs_widget_state()
+        except (AttributeError, RuntimeError, tk.TclError):
+            pass
 
-    def _create_smwcentral_spc_popup_payload(self) -> dict[str, Any]:
-        """Position the frameless player over the app's bottom-right corner."""
+    def _create_smwcentral_spc_popup_payload(
+        self,
+        *,
+        preload: bool = False,
+    ) -> dict[str, Any]:
+        """Create the in-app host used by SMW Central's native SPC player."""
         try:
             self.root.update_idletasks()
         except tk.TclError:
@@ -105194,14 +109997,16 @@ class TrackerApp:
         )
         usable_width = max(1, work_right - work_left - (margin * 2))
         usable_height = max(1, work_bottom - work_top - (margin * 2))
-        player_width = min(
-            usable_width,
-            max(520, min(820, root_width - (margin * 2))),
-        )
-        player_height = min(
-            usable_height,
-            max(400, min(420, root_height - (margin * 2))),
-        )
+        # Match SMW Central's native floating player.  The Tk frame appears
+        # immediately so the first click always has visible feedback; the
+        # WebView process is attached to this frame as soon as it is ready.
+        # Tk coordinates are physical pixels while the SMW Central player is
+        # sized in DPI-aware browser pixels. Scale the host itself as well as
+        # its contents so the in-app card matches the site at 125–200% DPI.
+        player_width = min(usable_width, self._ui_px(460))
+        # Match the current SMW Central card's approximately 2.1:1 expanded
+        # aspect ratio.  The former 240 px panel was visibly too tall.
+        player_height = min(usable_height, self._ui_px(220))
         # Clamp to the monitor's usable work area instead of the full desktop
         # bounds so the taskbar never covers or pushes the player off-screen.
         fallback_x = min(
@@ -105212,13 +110017,1830 @@ class TrackerApp:
             max(work_top + margin, root_y + root_height - player_height - margin),
             work_bottom - player_height - margin,
         )
+        overlay_host = tk.Frame(
+            self.root,
+            width=player_width,
+            height=player_height,
+            bg=STREAM_DESK["window"],
+            highlightthickness=0,
+            bd=0,
+        )
+        overlay_host.place(
+            relx=1.0,
+            rely=1.0,
+            x=-margin,
+            y=-margin,
+            width=player_width,
+            height=player_height,
+            anchor="se",
+        )
+        if preload:
+            overlay_host.place_forget()
+        overlay_host.pack_propagate(False)
+        loading_label = tk.Label(
+            overlay_host,
+            text=self._translate_ui_text("Loading SPC Player…"),
+            bg="#0F1B2D",
+            fg=STREAM_DESK["text"],
+            font=("Segoe UI", 11, "bold"),
+            padx=self._ui_px(18),
+            pady=self._ui_px(18),
+        )
+        loading_label.place(relx=0.5, rely=0.5, anchor="center")
+        overlay_host.lift()
+        try:
+            overlay_host.update_idletasks()
+            embed_parent_hwnd = int(overlay_host.winfo_id())
+            embed_root_hwnd = int(self.root.winfo_id())
+        except (tk.TclError, TypeError, ValueError):
+            overlay_host.destroy()
+            return {}
+        self.smwcentral_spc_overlay_host = overlay_host
+        ready_signal_path = (
+            Path(tempfile.gettempdir())
+            / (
+                "smw_tracker_spc_ready_"
+                + str(os.getpid())
+                + "_"
+                + secrets.token_hex(6)
+                + ".flag"
+            )
+        )
+        self.smwcentral_spc_ready_signal_path = ready_signal_path
+        profile_token = str(os.getpid()) + "_" + secrets.token_hex(6)
+        self.smwcentral_spc_profile_dir = None
+        bridge_prefix = "smw_tracker_spc_" + profile_token
+        state_path = Path(tempfile.gettempdir()) / (bridge_prefix + "_state.json")
+        command_path = Path(tempfile.gettempdir()) / (bridge_prefix + "_command.json")
+        self.smwcentral_spc_state_path = state_path
+        self.smwcentral_spc_command_path = command_path
+        self.smwcentral_spc_launch_monotonic = time.monotonic()
+        # Draw the complete player immediately. Track data replaces the
+        # loading labels as soon as the hidden audio engine becomes ready.
+        self.smwcentral_spc_preloaded = bool(preload)
+        if not preload:
+            self._render_smwcentral_native_spc_player({})
+
         return {
             "embed_width": player_width,
             "embed_height": player_height,
             "embed_background": "#0F1B2D",
+            "embed_parent_hwnd": embed_parent_hwnd,
+            "embed_root_hwnd": embed_root_hwnd,
+            "ready_signal_path": str(ready_signal_path),
+            "native_panel": True,
+            "player_state_path": str(state_path),
+            "player_command_path": str(command_path),
+            "preload": bool(preload),
             "popup_x": fallback_x,
             "popup_y": fallback_y,
         }
+
+    def _send_smwcentral_spc_command(
+        self,
+        action: str,
+        value: object | None = None,
+    ) -> None:
+        """Send one small transport command to the hidden SPC audio engine."""
+        command_path = self.smwcentral_spc_command_path
+        if command_path is None:
+            return
+        payload: dict[str, Any] = {
+            "id": str(time.time_ns()),
+            "action": str(action or "").strip().casefold(),
+        }
+        if value is not None:
+            payload["value"] = value
+        temporary_path = command_path.with_suffix(".tmp")
+        try:
+            temporary_path.write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(temporary_path, command_path)
+        except OSError as error:
+            append_error_log("SPC player command failed", str(error))
+
+    def _toggle_smwcentral_native_spc_player(self) -> None:
+        overlay_host = self.smwcentral_spc_overlay_host
+        canvas = self.smwcentral_spc_native_widgets.get("canvas")
+        if overlay_host is None or canvas is None:
+            return
+        self.smwcentral_spc_native_collapsed = (
+            not self.smwcentral_spc_native_collapsed
+        )
+        try:
+            if self.smwcentral_spc_native_collapsed:
+                overlay_host.place_configure(height=self._ui_px(64))
+                self.smwcentral_spc_native_widgets[
+                    "marquee_started_at"
+                ] = time.monotonic()
+                start_marquee = self.smwcentral_spc_native_widgets.get(
+                    "start_marquee"
+                )
+                if callable(start_marquee):
+                    start_marquee()
+            else:
+                overlay_host.place_configure(height=self._ui_px(220))
+                marquee_after_id = self.smwcentral_spc_native_widgets.pop(
+                    "marquee_after_id", None
+                )
+                if marquee_after_id is not None:
+                    try:
+                        self.root.after_cancel(marquee_after_id)
+                    except tk.TclError:
+                        pass
+            self._draw_smwcentral_native_spc_player()
+            overlay_host.lift()
+        except tk.TclError:
+            pass
+
+    def _begin_smwcentral_native_spc_drag(self, event: tk.Event) -> None:
+        overlay_host = self.smwcentral_spc_overlay_host
+        if overlay_host is None:
+            return
+        try:
+            # Measure the panel and its bounds once. Querying Tk's geometry
+            # manager on every mouse event makes the floating card trail the
+            # pointer, especially while the audio bridge is also polling.
+            self.smwcentral_spc_native_drag_origin = (
+                int(event.x_root),
+                int(event.y_root),
+                int(overlay_host.winfo_x()),
+                int(overlay_host.winfo_y()),
+                max(1, int(overlay_host.winfo_width())),
+                max(1, int(overlay_host.winfo_height())),
+                max(1, int(self.root.winfo_width())),
+                max(1, int(self.root.winfo_height())),
+            )
+            widgets = self.smwcentral_spc_native_widgets
+            previous_after_id = widgets.pop("drag_after_id", None)
+            if previous_after_id is not None:
+                try:
+                    self.root.after_cancel(previous_after_id)
+                except tk.TclError:
+                    pass
+            widgets.pop("drag_pending_position", None)
+            widgets["drag_last_position"] = (
+                int(overlay_host.winfo_x()),
+                int(overlay_host.winfo_y()),
+            )
+            overlay_host.lift()
+        except (tk.TclError, TypeError, ValueError):
+            self.smwcentral_spc_native_drag_origin = None
+
+    def _apply_smwcentral_native_spc_drag_position(self) -> None:
+        """Apply only the newest queued pointer position for a smooth drag."""
+        widgets = self.smwcentral_spc_native_widgets
+        widgets["drag_after_id"] = None
+        pending_position = widgets.pop("drag_pending_position", None)
+        overlay_host = self.smwcentral_spc_overlay_host
+        if overlay_host is None or not pending_position:
+            return
+        try:
+            new_x, new_y = (int(pending_position[0]), int(pending_position[1]))
+            if widgets.get("drag_last_position") == (new_x, new_y):
+                return
+            overlay_host.place_configure(
+                relx=0.0,
+                rely=0.0,
+                x=new_x,
+                y=new_y,
+                anchor="nw",
+            )
+            widgets["drag_last_position"] = (new_x, new_y)
+        except (tk.TclError, TypeError, ValueError):
+            pass
+
+    def _move_smwcentral_native_spc_drag(self, event: tk.Event) -> None:
+        overlay_host = self.smwcentral_spc_overlay_host
+        origin = self.smwcentral_spc_native_drag_origin
+        if overlay_host is None or origin is None:
+            return
+        try:
+            (
+                pointer_x,
+                pointer_y,
+                start_x,
+                start_y,
+                width,
+                height,
+                root_width,
+                root_height,
+            ) = origin
+            new_x = start_x + int(event.x_root) - pointer_x
+            new_y = start_y + int(event.y_root) - pointer_y
+            new_x = min(max(0, new_x), max(0, root_width - width))
+            new_y = min(max(0, new_y), max(0, root_height - height))
+            widgets = self.smwcentral_spc_native_widgets
+            widgets["drag_pending_position"] = (new_x, new_y)
+            if widgets.get("drag_after_id") is None:
+                # Eight milliseconds supports displays up to 120 Hz while
+                # collapsing bursts of redundant Windows pointer messages.
+                widgets["drag_after_id"] = self.root.after(
+                    8,
+                    self._apply_smwcentral_native_spc_drag_position,
+                )
+        except (tk.TclError, TypeError, ValueError):
+            pass
+
+    def _finish_smwcentral_native_spc_drag(self, _event=None) -> None:
+        widgets = self.smwcentral_spc_native_widgets
+        pending_after_id = widgets.pop("drag_after_id", None)
+        if pending_after_id is not None:
+            try:
+                self.root.after_cancel(pending_after_id)
+            except tk.TclError:
+                pass
+        # Flush the final pointer coordinate before ending the gesture so the
+        # card never lands one frame behind the cursor.
+        self._apply_smwcentral_native_spc_drag_position()
+        self.smwcentral_spc_native_drag_origin = None
+        overlay_host = self.smwcentral_spc_overlay_host
+        if overlay_host is not None:
+            try:
+                overlay_host.lift()
+            except tk.TclError:
+                pass
+        if widgets.pop("redraw_after_drag", False):
+            self._draw_smwcentral_native_spc_player()
+
+    def _render_legacy_smwcentral_native_spc_player(
+        self,
+        state: dict[str, Any],
+    ) -> None:
+        """Render a site-matched player while WebView2 supplies only audio."""
+        overlay_host = self.smwcentral_spc_overlay_host
+        if overlay_host is None:
+            return
+        try:
+            if not overlay_host.winfo_exists():
+                return
+            for child in overlay_host.winfo_children():
+                child.destroy()
+        except tk.TclError:
+            return
+
+        # These colors and proportions mirror SMW Central's floating player,
+        # while keeping the tracker font readable at the current Windows DPI.
+        background = "#252421"
+        surface = "#1D1C1A"
+        button_surface = "#4A4945"
+        button_active = "#396779"
+        border = "#45433E"
+        text_color = "#F6F6F4"
+        muted = "#C6C5C1"
+        dim = "#96948E"
+        accent = STREAM_DESK["green"]
+        overlay_host.configure(
+            bg=background,
+            highlightbackground=border,
+            highlightcolor=border,
+        )
+
+        header = tk.Frame(
+            overlay_host,
+            height=self._ui_px(42),
+            bg=surface,
+            highlightthickness=0,
+        )
+        header.pack(side="top", fill="x")
+        header.pack_propagate(False)
+        header_button_style = {
+            "bg": surface,
+            "fg": text_color,
+            "activebackground": "#34322E",
+            "activeforeground": text_color,
+            "relief": "flat",
+            "bd": 0,
+            "font": ("Segoe UI Symbol", 13, "bold"),
+            "cursor": "hand2",
+            "width": 3,
+        }
+        toggle_button = tk.Button(
+            header,
+            text="↕",
+            command=self._toggle_smwcentral_native_spc_player,
+            **header_button_style,
+        )
+        toggle_button.pack(side="left", fill="y")
+        brand = tk.Label(
+            header,
+            text="SPC Player",
+            bg=surface,
+            fg=text_color,
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+            padx=self._ui_px(2),
+        )
+        brand.pack(side="left", fill="both", expand=True)
+        close_button = tk.Button(
+            header,
+            text="×",
+            command=self._stop_smwcentral_webview_process,
+            **header_button_style,
+        )
+        close_button.pack(side="right", fill="y")
+        for drag_widget in (header, brand):
+            drag_widget.bind(
+                "<ButtonPress-1>",
+                self._begin_smwcentral_native_spc_drag,
+            )
+            drag_widget.bind(
+                "<B1-Motion>",
+                self._move_smwcentral_native_spc_drag,
+            )
+            drag_widget.bind(
+                "<ButtonRelease-1>",
+                self._finish_smwcentral_native_spc_drag,
+            )
+
+        body = tk.Frame(overlay_host, bg=background)
+        body.pack(side="top", fill="both", expand=True)
+        info = tk.Frame(body, bg=background)
+        info.pack(
+            fill="x",
+            padx=self._ui_px(10),
+            pady=(self._ui_px(7), 0),
+        )
+        title_label = tk.Label(
+            info,
+            bg=background,
+            fg=text_color,
+            font=("Segoe UI", 12, "bold"),
+            anchor="w",
+            justify="left",
+        )
+        title_label.pack(fill="x")
+        subtitle_label = tk.Label(
+            info,
+            bg=background,
+            fg=muted,
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+        )
+        subtitle_label.pack(fill="x")
+        details_label = tk.Label(
+            info,
+            bg=background,
+            fg=dim,
+            font=("Segoe UI", 8),
+            anchor="w",
+            justify="left",
+        )
+        details_label.pack(fill="x")
+
+        progress_row = tk.Frame(body, bg=background)
+        progress_row.pack(
+            fill="x",
+            padx=self._ui_px(10),
+            pady=(self._ui_px(7), self._ui_px(5)),
+        )
+        elapsed_label = tk.Label(
+            progress_row,
+            text="0:00",
+            bg=background,
+            fg=text_color,
+            font=("Segoe UI", 9),
+            width=5,
+            anchor="w",
+        )
+        elapsed_label.pack(side="left")
+        progress_canvas = tk.Canvas(
+            progress_row,
+            height=self._ui_px(8),
+            bg=border,
+            highlightthickness=0,
+            bd=0,
+        )
+        progress_canvas.pack(side="left", fill="x", expand=True)
+        duration_label = tk.Label(
+            progress_row,
+            text="0:00",
+            bg=background,
+            fg=text_color,
+            font=("Segoe UI", 9),
+            width=5,
+            anchor="e",
+        )
+        duration_label.pack(side="right")
+
+        tk.Frame(body, height=max(1, self._ui_px(1)), bg=border).pack(
+            fill="x",
+            padx=self._ui_px(10),
+        )
+        controls = tk.Frame(body, bg=background)
+        controls.pack(
+            fill="x",
+            padx=self._ui_px(9),
+            pady=(self._ui_px(5), self._ui_px(6)),
+        )
+        transport = tk.Frame(controls, bg=background)
+        transport.pack(side="left")
+        control_style = {
+            "bg": button_surface,
+            "fg": text_color,
+            "activebackground": "#5A5853",
+            "activeforeground": text_color,
+            "relief": "flat",
+            "bd": 0,
+            "font": ("Segoe UI Symbol", 13, "bold"),
+            "cursor": "hand2",
+            "width": 3,
+            "height": 1,
+        }
+        play_button = tk.Button(
+            transport,
+            text="▶",
+            command=lambda: self._send_smwcentral_spc_command("toggle"),
+            **control_style,
+        )
+        play_button.pack(side="left", padx=(0, self._ui_px(3)))
+        tk.Button(
+            transport,
+            text="↻",
+            command=lambda: self._send_smwcentral_spc_command("restart"),
+            **control_style,
+        ).pack(side="left", padx=(0, self._ui_px(3)))
+        loop_button = tk.Button(
+            transport,
+            text="⟳",
+            command=lambda: self._send_smwcentral_spc_command("loop"),
+            **control_style,
+        )
+        loop_button.pack(side="left")
+        next_button = tk.Button(
+            transport,
+            text="⏭",
+            command=lambda: self._send_smwcentral_spc_command("next"),
+            **control_style,
+        )
+
+        volume_group = tk.Frame(controls, bg=background)
+        volume_group.pack(side="right", fill="y")
+        volume_label = tk.Label(
+            volume_group,
+            text="100%",
+            bg=background,
+            fg=text_color,
+            font=("Segoe UI", 9, "bold"),
+            width=5,
+            anchor="e",
+        )
+        volume_label.pack(side="left")
+        tk.Label(
+            volume_group,
+            text="◕",
+            bg=background,
+            fg=text_color,
+            font=("Segoe UI Symbol", 12, "bold"),
+            width=2,
+        ).pack(side="left", padx=(self._ui_px(3), 0))
+
+        def volume_changed(value: str) -> None:
+            if self.smwcentral_spc_native_updating:
+                return
+            try:
+                percentage = max(0, min(150, int(round(float(value)))))
+            except (TypeError, ValueError):
+                return
+            volume_label.configure(text=f"{percentage}%")
+            self._send_smwcentral_spc_command("volume", percentage)
+
+        volume_scale = tk.Scale(
+            volume_group,
+            from_=0,
+            to=150,
+            orient="horizontal",
+            showvalue=False,
+            command=volume_changed,
+            bg=background,
+            fg=text_color,
+            troughcolor="#5A5853",
+            activebackground=accent,
+            highlightthickness=0,
+            bd=0,
+            sliderrelief="flat",
+            sliderlength=self._ui_px(14),
+            width=self._ui_px(9),
+            length=self._ui_px(108),
+        )
+        volume_scale.pack(side="left", padx=(self._ui_px(2), 0))
+        self.smwcentral_spc_native_widgets = {
+            "body": body,
+            "toggle": toggle_button,
+            "title": title_label,
+            "subtitle": subtitle_label,
+            "details": details_label,
+            "elapsed": elapsed_label,
+            "duration": duration_label,
+            "progress": progress_canvas,
+            "play": play_button,
+            "loop": loop_button,
+            "next": next_button,
+            "volume": volume_scale,
+            "volume_label": volume_label,
+        }
+        self.smwcentral_spc_native_collapsed = False
+        self._update_smwcentral_native_spc_player(state)
+        overlay_host.lift()
+
+    def _update_legacy_smwcentral_native_spc_player(
+        self,
+        state: dict[str, Any],
+    ) -> None:
+        widgets = self.smwcentral_spc_native_widgets
+        if not widgets:
+            self._render_smwcentral_native_spc_player(state)
+            return
+        title = str(state.get("title", "") or "").strip() or "Loading music…"
+        subtitle = str(state.get("subtitle", "") or "").strip()
+        details = str(state.get("details", "") or "").strip()
+        elapsed_text = str(state.get("elapsed", "0:00") or "0:00")
+        duration_text = str(state.get("duration", "0:00") or "0:00")
+        try:
+            ratio = max(0.0, min(1.0, float(state.get("progress", 0.0) or 0.0)))
+        except (TypeError, ValueError):
+            ratio = 0.0
+        try:
+            volume = max(0, min(150, int(round(float(state.get("volume", 100))))))
+        except (TypeError, ValueError):
+            volume = 100
+        try:
+            widgets["title"].configure(text=title)
+            widgets["subtitle"].configure(text=subtitle)
+            widgets["details"].configure(text=details)
+            widgets["elapsed"].configure(text=elapsed_text)
+            widgets["duration"].configure(text=duration_text)
+            widgets["play"].configure(text="Ⅱ" if state.get("playing") else "▶")
+            widgets["loop"].configure(
+                bg=(
+                    "#396779"
+                    if state.get("looping")
+                    else "#4A4945"
+                )
+            )
+            self.smwcentral_spc_native_updating = True
+            widgets["volume"].set(volume)
+            widgets["volume_label"].configure(text=f"{volume}%")
+            self.smwcentral_spc_native_updating = False
+            up_next = str(state.get("up_next", "") or "").strip()
+            next_button = widgets["next"]
+            if up_next and not next_button.winfo_manager():
+                next_button.pack(side="left", padx=(self._ui_px(3), 0))
+            elif not up_next and next_button.winfo_manager():
+                next_button.pack_forget()
+            progress_canvas = widgets["progress"]
+            progress_canvas.update_idletasks()
+            width = max(1, int(progress_canvas.winfo_width()))
+            height = max(1, int(progress_canvas.winfo_height()))
+            progress_canvas.delete("all")
+            progress_canvas.create_rectangle(
+                0,
+                0,
+                max(1, int(round(width * ratio))),
+                height,
+                fill=STREAM_DESK["green"],
+                outline="",
+            )
+        except tk.TclError:
+            self.smwcentral_spc_native_widgets = {}
+        finally:
+            self.smwcentral_spc_native_updating = False
+
+    def _render_smwcentral_native_spc_player(
+        self,
+        state: dict[str, Any],
+    ) -> None:
+        """Draw the SMW Central player as one smooth, DPI-aware surface."""
+        overlay_host = self.smwcentral_spc_overlay_host
+        if overlay_host is None:
+            return
+        previous_marquee_after_id = self.smwcentral_spc_native_widgets.get(
+            "marquee_after_id"
+        )
+        if previous_marquee_after_id is not None:
+            try:
+                self.root.after_cancel(previous_marquee_after_id)
+            except tk.TclError:
+                pass
+        try:
+            if not overlay_host.winfo_exists():
+                return
+            for child in overlay_host.winfo_children():
+                child.destroy()
+        except tk.TclError:
+            return
+
+        canvas = tk.Canvas(
+            overlay_host,
+            bg=STREAM_DESK["window"],
+            highlightthickness=0,
+            bd=0,
+            cursor="arrow",
+        )
+        canvas.pack(fill="both", expand=True)
+        self.smwcentral_spc_native_widgets = {
+            "canvas": canvas,
+            "regions": {},
+            "progress_drag": False,
+            "volume_drag": False,
+            "hover": "",
+            "hover_point": (0, 0),
+            "marquee_after_id": None,
+            "marquee_started_at": time.monotonic(),
+            "fonts": {},
+        }
+        self.smwcentral_spc_native_state = dict(state or {})
+        self.smwcentral_spc_native_collapsed = False
+
+        def inside(region_name: str, x: int, y: int) -> bool:
+            region = self.smwcentral_spc_native_widgets.get(
+                "regions", {}
+            ).get(region_name)
+            return bool(
+                region
+                and region[0] <= x <= region[2]
+                and region[1] <= y <= region[3]
+            )
+
+        def set_volume_from_pointer(x: int) -> None:
+            region = self.smwcentral_spc_native_widgets.get("volume_axis")
+            if not region:
+                return
+            left, _top, right, _bottom = region
+            ratio = (x - left) / max(1, right - left)
+            # Keep the native slider continuous.  The label rounds only for
+            # display; the WebAudio volume receives the full float value.
+            percentage = max(0.0, min(150.0, ratio * 150.0))
+            self.smwcentral_spc_native_state["volume"] = percentage
+            self._draw_smwcentral_native_spc_player()
+            self._send_smwcentral_spc_command("volume", percentage)
+
+        def time_seconds(value: object) -> float:
+            try:
+                pieces = [
+                    float(piece)
+                    for piece in str(value or "").strip().split(":")
+                ]
+            except (TypeError, ValueError):
+                return 0.0
+            if not pieces:
+                return 0.0
+            total = 0.0
+            for piece in pieces:
+                total = total * 60.0 + piece
+            return max(0.0, total)
+
+        def display_time(seconds: float) -> str:
+            whole_seconds = max(0, int(round(seconds)))
+            hours, remainder = divmod(whole_seconds, 3600)
+            minutes, seconds_value = divmod(remainder, 60)
+            if hours:
+                return f"{hours}:{minutes:02d}:{seconds_value:02d}"
+            return f"{minutes}:{seconds_value:02d}"
+
+        def set_progress_from_pointer(x: int) -> None:
+            region = self.smwcentral_spc_native_widgets.get("progress_axis")
+            if not region:
+                return
+            left, _top, right, _bottom = region
+            ratio = max(0.0, min(1.0, (x - left) / max(1, right - left)))
+            self.smwcentral_spc_native_state["progress"] = ratio
+            duration_seconds = time_seconds(
+                self.smwcentral_spc_native_state.get("duration", "0:00")
+            )
+            if duration_seconds > 0:
+                self.smwcentral_spc_native_state["elapsed"] = display_time(
+                    duration_seconds * ratio
+                )
+            self._draw_smwcentral_native_spc_player()
+
+        def press(event: tk.Event) -> None:
+            x = int(event.x)
+            y = int(event.y)
+            if inside("close", x, y):
+                self._stop_smwcentral_webview_process()
+                return
+            if inside("toggle", x, y):
+                self._toggle_smwcentral_native_spc_player()
+                return
+            for region_name, action in (
+                ("play", "toggle"),
+                ("restart", "restart"),
+                ("next", "next"),
+            ):
+                if inside(region_name, x, y):
+                    self._send_smwcentral_spc_command(action)
+                    return
+            if inside("loop", x, y):
+                desired_looping = not bool(
+                    self.smwcentral_spc_native_state.get("looping")
+                )
+                self.smwcentral_spc_native_state[
+                    "looping"
+                ] = desired_looping
+                self.smwcentral_spc_native_widgets[
+                    "pending_looping"
+                ] = {
+                    "value": desired_looping,
+                    "sent_at": time.monotonic(),
+                }
+                self._draw_smwcentral_native_spc_player()
+                self._send_smwcentral_spc_command(
+                    "loop",
+                    desired_looping,
+                )
+                return
+            if inside("progress", x, y):
+                self.smwcentral_spc_native_widgets["progress_drag"] = True
+                set_progress_from_pointer(x)
+                return
+            if inside("volume", x, y):
+                self.smwcentral_spc_native_widgets["volume_drag"] = True
+                set_volume_from_pointer(x)
+                return
+            if inside("header", x, y):
+                self._begin_smwcentral_native_spc_drag(event)
+
+        def motion(event: tk.Event) -> None:
+            if self.smwcentral_spc_native_widgets.get("progress_drag"):
+                set_progress_from_pointer(int(event.x))
+            elif self.smwcentral_spc_native_widgets.get("volume_drag"):
+                set_volume_from_pointer(int(event.x))
+            elif self.smwcentral_spc_native_drag_origin is not None:
+                self._move_smwcentral_native_spc_drag(event)
+
+        def hover(event: tk.Event) -> None:
+            if self.smwcentral_spc_native_drag_origin is not None:
+                return
+            x = int(event.x)
+            y = int(event.y)
+            hovered = ""
+            for region_name in (
+                "play",
+                "restart",
+                "loop",
+                "next",
+                "toggle",
+                "close",
+                "progress",
+                "volume",
+                "header",
+            ):
+                if inside(region_name, x, y):
+                    hovered = region_name
+                    break
+            widgets = self.smwcentral_spc_native_widgets
+            previous = str(widgets.get("hover", "") or "")
+            widgets["hover"] = hovered
+            widgets["hover_point"] = (x, y)
+            try:
+                if hovered == "header":
+                    cursor_name = "fleur"
+                elif hovered:
+                    cursor_name = "hand2"
+                else:
+                    cursor_name = "arrow"
+                canvas.configure(cursor=cursor_name)
+            except tk.TclError:
+                return
+            if hovered != previous:
+                self._draw_smwcentral_native_spc_player()
+
+        def leave(_event: tk.Event) -> None:
+            if self.smwcentral_spc_native_drag_origin is not None:
+                return
+            widgets = self.smwcentral_spc_native_widgets
+            if widgets.get("hover"):
+                widgets["hover"] = ""
+                self._draw_smwcentral_native_spc_player()
+            try:
+                canvas.configure(cursor="arrow")
+            except tk.TclError:
+                pass
+
+        def marquee_tick() -> None:
+            widgets = self.smwcentral_spc_native_widgets
+            if (
+                widgets.get("canvas") is not canvas
+                or not self.smwcentral_spc_native_collapsed
+            ):
+                widgets["marquee_after_id"] = None
+                return
+            if self.smwcentral_spc_native_drag_origin is None:
+                self._draw_smwcentral_native_spc_player()
+            else:
+                widgets["redraw_after_drag"] = True
+            try:
+                widgets["marquee_after_id"] = self.root.after(
+                    40,
+                    marquee_tick,
+                )
+            except tk.TclError:
+                widgets["marquee_after_id"] = None
+
+        def start_marquee() -> None:
+            widgets = self.smwcentral_spc_native_widgets
+            if (
+                widgets.get("canvas") is canvas
+                and widgets.get("marquee_after_id") is None
+                and self.smwcentral_spc_native_collapsed
+            ):
+                try:
+                    widgets["marquee_after_id"] = self.root.after(
+                        40,
+                        marquee_tick,
+                    )
+                except tk.TclError:
+                    widgets["marquee_after_id"] = None
+
+        self.smwcentral_spc_native_widgets["start_marquee"] = start_marquee
+
+        def release(event: tk.Event) -> None:
+            widgets = self.smwcentral_spc_native_widgets
+            if widgets.get("progress_drag"):
+                set_progress_from_pointer(int(event.x))
+                widgets["progress_drag"] = False
+                try:
+                    seek_ratio = max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(
+                                self.smwcentral_spc_native_state.get(
+                                    "progress", 0.0
+                                )
+                            ),
+                        ),
+                    )
+                except (TypeError, ValueError):
+                    seek_ratio = 0.0
+                widgets["pending_seek"] = {
+                    "value": seek_ratio,
+                    "elapsed": self.smwcentral_spc_native_state.get(
+                        "elapsed", "0:00"
+                    ),
+                    "sent_at": time.monotonic(),
+                }
+                self._send_smwcentral_spc_command("seek", seek_ratio)
+            elif widgets.get("volume_drag"):
+                set_volume_from_pointer(int(event.x))
+                widgets["volume_drag"] = False
+            self._finish_smwcentral_native_spc_drag(event)
+
+        canvas.bind("<ButtonPress-1>", press)
+        canvas.bind("<B1-Motion>", motion)
+        canvas.bind("<ButtonRelease-1>", release)
+        canvas.bind("<Motion>", hover)
+        canvas.bind("<Leave>", leave)
+        canvas.bind(
+            "<Configure>",
+            lambda _event: self._draw_smwcentral_native_spc_player(),
+        )
+        if self.smwcentral_spc_native_drag_origin is None:
+            self._draw_smwcentral_native_spc_player()
+        else:
+            self.smwcentral_spc_native_widgets["redraw_after_drag"] = True
+        self._refresh_obs_widget_state()
+        overlay_host.lift()
+
+    def _draw_smwcentral_native_spc_player(self) -> None:
+        """Redraw the antialiased player from the most recent engine state."""
+        canvas = self.smwcentral_spc_native_widgets.get("canvas")
+        if canvas is None:
+            return
+        try:
+            canvas.update_idletasks()
+            width = max(1, int(canvas.winfo_width()))
+            height = max(1, int(canvas.winfo_height()))
+        except tk.TclError:
+            return
+        if (
+            Image is None
+            or ImageDraw is None
+            or ImageFont is None
+            or ImageTk is None
+        ):
+            try:
+                canvas.delete("all")
+                canvas.configure(bg="#252421")
+                canvas.create_text(
+                    12,
+                    12,
+                    anchor="nw",
+                    text="SPC Player",
+                    fill="#F6F6F4",
+                    font=("Segoe UI", 11, "bold"),
+                )
+            except tk.TclError:
+                pass
+            return
+
+        # Draw the complete surface larger than its final Tk canvas and then
+        # downsample it.  This antialiases every curve, line, glyph, progress
+        # edge, and moving marquee frame instead of only the transport icons.
+        output_width = width
+        output_height = height
+        render_supersample = 2
+        width *= render_supersample
+        height *= render_supersample
+        scale = max(0.5, output_width / 460.0) * render_supersample
+
+        def px(value: float) -> int:
+            return max(1, int(round(value * scale)))
+
+        def hit_bounds(
+            bounds: tuple[int, int, int, int],
+        ) -> tuple[int, int, int, int]:
+            return tuple(
+                int(round(value / render_supersample)) for value in bounds
+            )
+
+        fonts = self.smwcentral_spc_native_widgets.setdefault("fonts", {})
+
+        def font(size: int, *, bold: bool = False):
+            key = (max(7, int(round(size * scale))), bool(bold))
+            cached = fonts.get(key)
+            if cached is not None:
+                return cached
+            font_name = "segoeuib.ttf" if bold else "segoeui.ttf"
+            font_path = (
+                Path(os.environ.get("WINDIR", r"C:\Windows"))
+                / "Fonts"
+                / font_name
+            )
+            try:
+                loaded = ImageFont.truetype(str(font_path), key[0])
+            except (OSError, ValueError):
+                loaded = ImageFont.load_default()
+            fonts[key] = loaded
+            return loaded
+
+        def fitted_text(
+            draw: Any,
+            value: object,
+            selected_font: Any,
+            maximum_width: int,
+        ) -> str:
+            text_value = str(value or "").strip()
+            if not text_value:
+                return ""
+            if draw.textlength(text_value, font=selected_font) <= maximum_width:
+                return text_value
+            low = 0
+            high = len(text_value)
+            while low < high:
+                middle = (low + high + 1) // 2
+                candidate = text_value[:middle].rstrip() + "…"
+                if draw.textlength(candidate, font=selected_font) <= maximum_width:
+                    low = middle
+                else:
+                    high = middle - 1
+            return text_value[:low].rstrip() + "…"
+
+        image = Image.new("RGB", (width, height), STREAM_DESK["window"])
+        draw = ImageDraw.Draw(image)
+        background = "#29271F"
+        header = "#29271F"
+        border = "#4D4A44"
+        text_color = "#F7F7F5"
+        muted = "#CBC9C4"
+        dim = "#97948E"
+        # Match the current SMW Central player: translucent-looking charcoal
+        # controls, a soft blue selected state, and its bright green seek fill.
+        button = "#494640"
+        button_active = "#3F5A63"
+        progress_track = "#494640"
+        progress_fill = "#16BC10"
+        volume_fill = "#2498D2"
+        radius = px(12)
+        header_height = px(42)
+        draw.rounded_rectangle(
+            (0, 0, width - 1, height - 1),
+            radius=radius,
+            fill=background,
+            outline=border,
+            width=max(1, px(2)),
+        )
+        draw.rounded_rectangle(
+            (0, 0, width - 1, header_height + radius),
+            radius=radius,
+            fill=header,
+        )
+        draw.rectangle(
+            (0, px(12), width - 1, header_height),
+            fill=header,
+        )
+        draw.line(
+            (0, header_height, width - 1, header_height),
+            fill=border,
+            width=max(1, px(1)),
+        )
+
+        header_font = font(13, bold=True)
+        draw.text(
+            (px(44), px(12)),
+            "SPC Player",
+            font=header_font,
+            fill=text_color,
+        )
+        # The expanded SMW Central player points both chevrons inward toward
+        # the center rule; the collapsed player reverses them to indicate
+        # expansion.
+        center_x = px(20)
+        if self.smwcentral_spc_native_collapsed:
+            upper_points = [
+                (center_x, px(9)),
+                (px(14), px(15)),
+                (px(26), px(15)),
+            ]
+            lower_points = [
+                (px(14), px(25)),
+                (px(26), px(25)),
+                (center_x, px(31)),
+            ]
+        else:
+            upper_points = [
+                (px(14), px(9)),
+                (px(26), px(9)),
+                (center_x, px(15)),
+            ]
+            lower_points = [
+                (center_x, px(25)),
+                (px(14), px(31)),
+                (px(26), px(31)),
+            ]
+        draw.polygon(upper_points, fill=text_color)
+        draw.line(
+            (px(13), px(20), px(27), px(20)),
+            fill=text_color,
+            width=max(1, px(2)),
+        )
+        draw.polygon(lower_points, fill=text_color)
+        close_x = width - px(21)
+        draw.line(
+            (close_x - px(6), px(14), close_x + px(6), px(26)),
+            fill=text_color,
+            width=max(1, px(3)),
+        )
+        draw.line(
+            (close_x + px(6), px(14), close_x - px(6), px(26)),
+            fill=text_color,
+            width=max(1, px(3)),
+        )
+        regions: dict[str, tuple[int, int, int, int]] = {
+            "toggle": hit_bounds((px(5), px(5), px(35), px(36))),
+            "close": hit_bounds(
+                (width - px(38), px(5), width - px(4), px(36))
+            ),
+            "header": hit_bounds(
+                (px(36), 0, width - px(39), header_height)
+            ),
+        }
+        state = self.smwcentral_spc_native_state
+        title_value = str(state.get("title", "") or "").strip()
+        title_value = title_value or "Loading music…"
+        subtitle_value = str(state.get("subtitle", "") or "").strip()
+        details_value = str(state.get("details", "") or "").strip()
+        elapsed = str(state.get("elapsed", "0:00") or "0:00")
+        duration = str(state.get("duration", "0:00") or "0:00")
+        try:
+            ratio = max(
+                0.0,
+                min(1.0, float(state.get("progress", 0.0) or 0.0)),
+            )
+        except (TypeError, ValueError):
+            ratio = 0.0
+        if self.smwcentral_spc_native_collapsed:
+            # SMW Central's compact player is still a two-row card: the title
+            # travels across the open part of the header and the second row
+            # retains the live elapsed/progress/duration display.
+            brand_right = px(44) + int(
+                round(draw.textlength("SPC Player", font=header_font))
+            )
+            marquee_left = brand_right + px(16)
+            marquee_right = width - px(43)
+            marquee_width = max(1, marquee_right - marquee_left)
+            marquee_font = font(10, bold=True)
+            marquee_surface = Image.new(
+                "RGBA",
+                (marquee_width, header_height),
+                (0, 0, 0, 0),
+            )
+            marquee_draw = ImageDraw.Draw(marquee_surface)
+            marquee_text_width = max(
+                1,
+                int(
+                    round(
+                        marquee_draw.textlength(
+                            title_value,
+                            font=marquee_font,
+                        )
+                    )
+                ),
+            )
+            try:
+                marquee_started_at = float(
+                    self.smwcentral_spc_native_widgets.get(
+                        "marquee_started_at",
+                        time.monotonic(),
+                    )
+                )
+            except (TypeError, ValueError):
+                marquee_started_at = time.monotonic()
+            marquee_speed = max(18, px(34))
+            marquee_cycle = marquee_width + marquee_text_width + px(28)
+            marquee_phase = (
+                max(0.0, time.monotonic() - marquee_started_at)
+                * marquee_speed
+            ) % max(1, marquee_cycle)
+            marquee_x = int(round(marquee_width - marquee_phase))
+            marquee_draw.text(
+                (marquee_x, px(13)),
+                title_value,
+                font=marquee_font,
+                fill=text_color,
+            )
+            image.paste(
+                marquee_surface,
+                (marquee_left, 0),
+                marquee_surface,
+            )
+
+            compact_time_font = font(9, bold=True)
+            compact_y = px(47)
+            draw.text(
+                (px(10), compact_y),
+                elapsed,
+                font=compact_time_font,
+                fill=text_color,
+            )
+            duration_width = int(
+                round(draw.textlength(duration, font=compact_time_font))
+            )
+            draw.text(
+                (width - px(10) - duration_width, compact_y),
+                duration,
+                font=compact_time_font,
+                fill=text_color,
+            )
+            compact_progress_left = px(50)
+            compact_progress_right = width - px(50)
+            compact_progress_top = px(52)
+            compact_progress_bottom = px(58)
+            draw.rounded_rectangle(
+                (
+                    compact_progress_left,
+                    compact_progress_top,
+                    compact_progress_right,
+                    compact_progress_bottom,
+                ),
+                radius=px(3),
+                fill=progress_track,
+            )
+            if ratio > 0:
+                compact_fill_right = compact_progress_left + int(
+                    round(
+                        (compact_progress_right - compact_progress_left)
+                        * ratio
+                    )
+                )
+                draw.rounded_rectangle(
+                    (
+                        compact_progress_left,
+                        compact_progress_top,
+                        max(compact_progress_left + 1, compact_fill_right),
+                        compact_progress_bottom,
+                    ),
+                    radius=px(3),
+                    fill=progress_fill,
+                )
+            compact_knob_x = compact_progress_left + int(
+                round(
+                    (compact_progress_right - compact_progress_left) * ratio
+                )
+            )
+            draw.ellipse(
+                (
+                    compact_knob_x - px(4),
+                    compact_progress_top - px(2),
+                    compact_knob_x + px(4),
+                    compact_progress_bottom + px(2),
+                ),
+                fill=text_color,
+                outline=progress_fill,
+                width=max(1, px(1)),
+            )
+            regions["progress"] = hit_bounds(
+                (
+                    compact_progress_left - px(5),
+                    compact_progress_top - px(7),
+                    compact_progress_right + px(5),
+                    compact_progress_bottom + px(7),
+                )
+            )
+            self.smwcentral_spc_native_widgets["progress_axis"] = hit_bounds(
+                (
+                    compact_progress_left,
+                    compact_progress_top,
+                    compact_progress_right,
+                    compact_progress_bottom,
+                )
+            )
+            self.smwcentral_spc_native_widgets["regions"] = regions
+        else:
+            title_font = font(16, bold=True)
+            subtitle_font = font(13)
+            details_font = font(11)
+            time_font = font(11)
+            volume_font = font(10, bold=True)
+            maximum_text_width = width - px(32)
+            draw.text(
+                (px(16), px(55)),
+                fitted_text(draw, title_value, title_font, maximum_text_width),
+                font=title_font,
+                fill=text_color,
+            )
+            draw.text(
+                (px(16), px(84)),
+                fitted_text(
+                    draw,
+                    subtitle_value,
+                    subtitle_font,
+                    maximum_text_width,
+                ),
+                font=subtitle_font,
+                fill=muted,
+            )
+            draw.text(
+                (px(16), px(108)),
+                fitted_text(draw, details_value, details_font, maximum_text_width),
+                font=details_font,
+                fill=dim,
+            )
+
+            draw.text((px(16), px(132)), elapsed, font=time_font, fill=text_color)
+            duration_width = int(draw.textlength(duration, font=time_font))
+            draw.text(
+                (width - px(16) - duration_width, px(132)),
+                duration,
+                font=time_font,
+                fill=text_color,
+            )
+            progress_left = px(56)
+            progress_right = width - px(56)
+            progress_top = px(138)
+            progress_bottom = px(148)
+            draw.rounded_rectangle(
+                (progress_left, progress_top, progress_right, progress_bottom),
+                radius=px(5),
+                fill=progress_track,
+            )
+            if ratio > 0:
+                fill_right = progress_left + int(
+                    round((progress_right - progress_left) * ratio)
+                )
+                draw.rounded_rectangle(
+                    (progress_left, progress_top, max(progress_left + 1, fill_right), progress_bottom),
+                    radius=px(5),
+                    fill=progress_fill,
+                )
+            progress_knob_x = progress_left + int(
+                round((progress_right - progress_left) * ratio)
+            )
+            draw.ellipse(
+                (
+                    progress_knob_x - px(6),
+                    progress_top - px(1),
+                    progress_knob_x + px(6),
+                    progress_bottom + px(1),
+                ),
+                fill=text_color,
+                outline=progress_fill,
+                width=max(1, px(2)),
+            )
+            regions["progress"] = hit_bounds(
+                (
+                    progress_left - px(6),
+                    progress_top - px(8),
+                    progress_right + px(6),
+                    progress_bottom + px(8),
+                )
+            )
+            self.smwcentral_spc_native_widgets["progress_axis"] = hit_bounds(
+                (progress_left, progress_top, progress_right, progress_bottom)
+            )
+            separator_y = px(164)
+            draw.line(
+                (px(10), separator_y, width - px(10), separator_y),
+                fill=border,
+                width=max(1, px(1)),
+            )
+
+            button_top = px(175)
+            button_size = px(34)
+            button_gap = px(6)
+
+            def control_box(
+                name: str,
+                index: int,
+                *,
+                icon: str,
+                active: bool = False,
+            ):
+                left = px(12) + index * (button_size + button_gap)
+                bounds = (
+                    left,
+                    button_top,
+                    left + button_size - 1,
+                    button_top + button_size - 1,
+                )
+                # Render the SMW Central transport button at 4x
+                # resolution, then downsample it. This keeps the rounded box,
+                # circular arrows, and arrowheads clean at every Windows DPI.
+                supersample = 4
+                surface_size = max(1, button_size) * supersample
+                surface = Image.new(
+                    "RGBA",
+                    (surface_size, surface_size),
+                    (0, 0, 0, 0),
+                )
+                surface_draw = ImageDraw.Draw(surface)
+                coordinate_scale = surface_size / 30.0
+                surface_draw.rounded_rectangle(
+                    (0, 0, surface_size - 1, surface_size - 1),
+                    radius=max(1, px(6) * supersample),
+                    fill=button_active if active else button,
+                    outline="#8DD5EA" if active else None,
+                    width=(
+                        max(1, int(round(1.4 * coordinate_scale)))
+                        if active
+                        else 1
+                    ),
+                )
+
+                def local_point(x: float, y: float) -> tuple[int, int]:
+                    return (
+                        int(round((x + 3.0) * coordinate_scale)),
+                        int(round((y + 3.0) * coordinate_scale)),
+                    )
+
+                local_icon_color = text_color
+                if icon == "pause":
+                    surface_draw.rectangle(
+                        (*local_point(6, 5), *local_point(10, 19)),
+                        fill=local_icon_color,
+                    )
+                    surface_draw.rectangle(
+                        (*local_point(14, 5), *local_point(18, 19)),
+                        fill=local_icon_color,
+                    )
+                elif icon == "play":
+                    surface_draw.polygon(
+                        [
+                            local_point(7, 5),
+                            local_point(7, 19),
+                            local_point(19, 12),
+                        ],
+                        fill=local_icon_color,
+                    )
+                elif icon == "skip":
+                    surface_draw.polygon(
+                        [
+                            local_point(6, 6),
+                            local_point(14.5, 12),
+                            local_point(6, 18),
+                        ],
+                        fill=local_icon_color,
+                    )
+                    surface_draw.rectangle(
+                        (*local_point(16, 6), *local_point(18, 18)),
+                        fill=local_icon_color,
+                    )
+                elif icon == "restart":
+                    surface_draw.arc(
+                        (*local_point(4, 4), *local_point(20, 20)),
+                        start=-90,
+                        end=180,
+                        fill=local_icon_color,
+                        width=max(1, int(round(2.7 * coordinate_scale))),
+                    )
+                    surface_draw.polygon(
+                        [
+                            local_point(12, 1),
+                            local_point(7, 6),
+                            local_point(12, 11),
+                        ],
+                        fill=local_icon_color,
+                    )
+                elif icon == "loop":
+                    # This is Windows' purpose-built two-arrow Sync symbol,
+                    # matching the reference Toggle Looping icon exactly.
+                    sync_glyph = "\uE895"
+                    sync_font_size = max(
+                        1, int(round(20.0 * coordinate_scale))
+                    )
+                    sync_font_key = ("sync_glyph", sync_font_size)
+                    sync_glyph_font = fonts.get(sync_font_key)
+                    if sync_glyph_font is None:
+                        sync_font_path = (
+                            Path(os.environ.get("WINDIR", r"C:\Windows"))
+                            / "Fonts"
+                            / "segmdl2.ttf"
+                        )
+                        try:
+                            sync_glyph_font = ImageFont.truetype(
+                                str(sync_font_path), sync_font_size
+                            )
+                        except (OSError, ValueError):
+                            sync_glyph_font = False
+                        fonts[sync_font_key] = sync_glyph_font
+                    if sync_glyph_font:
+                        glyph_bounds = surface_draw.textbbox(
+                            (0, 0), sync_glyph, font=sync_glyph_font
+                        )
+                        glyph_width = glyph_bounds[2] - glyph_bounds[0]
+                        glyph_height = glyph_bounds[3] - glyph_bounds[1]
+                        glyph_x = (
+                            (surface_size - glyph_width) / 2 - glyph_bounds[0]
+                        )
+                        glyph_y = (
+                            (surface_size - glyph_height) / 2 - glyph_bounds[1]
+                        )
+                        # The stock Sync glyph is lighter than this player's
+                        # Replay arrow. Render it through a high-resolution
+                        # mask and expand the mask just enough to give both
+                        # controls the same final stroke weight.
+                        sync_mask = Image.new(
+                            "L", (surface_size, surface_size), 0
+                        )
+                        sync_mask_draw = ImageDraw.Draw(sync_mask)
+                        sync_mask_draw.text(
+                            (glyph_x, glyph_y),
+                            sync_glyph,
+                            font=sync_glyph_font,
+                            fill=255,
+                        )
+                        thicken_radius = max(
+                            1, int(round(0.55 * coordinate_scale))
+                        )
+                        sync_mask = sync_mask.filter(
+                            ImageFilter.MaxFilter(thicken_radius * 2 + 1)
+                        )
+                        sync_layer = Image.new(
+                            "RGBA",
+                            (surface_size, surface_size),
+                            "#B9E9F7" if active else local_icon_color,
+                        )
+                        sync_layer.putalpha(sync_mask)
+                        surface.alpha_composite(sync_layer)
+                    else:
+                        # Windows-only releases normally have Segoe MDL2. Keep
+                        # the same two-arrow silhouette as a defensive fallback.
+                        stroke_width = max(
+                            1, int(round(2.5 * coordinate_scale))
+                        )
+                        surface_draw.arc(
+                            (*local_point(4, 4), *local_point(20, 20)),
+                            start=205,
+                            end=350,
+                            fill=local_icon_color,
+                            width=stroke_width,
+                        )
+                        surface_draw.arc(
+                            (*local_point(4, 4), *local_point(20, 20)),
+                            start=25,
+                            end=170,
+                            fill=local_icon_color,
+                            width=stroke_width,
+                        )
+                        surface_draw.polygon(
+                            [
+                                local_point(21, 11),
+                                local_point(16, 6),
+                                local_point(16, 16),
+                            ],
+                            fill=local_icon_color,
+                        )
+                        surface_draw.polygon(
+                            [
+                                local_point(3, 13),
+                                local_point(8, 8),
+                                local_point(8, 18),
+                            ],
+                            fill=local_icon_color,
+                        )
+                surface = surface.resize(
+                    (button_size, button_size),
+                    Image.Resampling.LANCZOS,
+                )
+                image.paste(surface, (left, button_top), surface)
+                regions[name] = hit_bounds(bounds)
+                return bounds
+
+            # Keep the three controls shown on SMW Central's song player in
+            # their original order. Radio retains those controls and adds Skip
+            # afterward so Replay Track and Toggle Looping are always present.
+            control_index = 0
+            control_box(
+                "play",
+                control_index,
+                icon="pause" if state.get("playing") else "play",
+            )
+            control_index += 1
+
+            player_mode = str(state.get("player_mode", "") or "").casefold()
+            if player_mode == "radio":
+                can_skip, can_restart, can_loop = True, True, True
+            elif player_mode == "song":
+                can_skip, can_restart, can_loop = False, True, True
+            else:
+                can_skip = bool(state.get("can_skip", False))
+                can_restart = bool(state.get("can_restart", not can_skip))
+                can_loop = bool(state.get("can_loop", not can_skip))
+            if can_restart:
+                control_box("restart", control_index, icon="restart")
+                control_index += 1
+            if can_loop:
+                control_box(
+                    "loop",
+                    control_index,
+                    icon="loop",
+                    active=bool(state.get("looping")),
+                )
+                control_index += 1
+            if can_skip:
+                control_box("next", control_index, icon="skip")
+                control_index += 1
+
+            try:
+                volume = max(
+                    0.0,
+                    min(150.0, float(state.get("volume", 100))),
+                )
+            except (TypeError, ValueError):
+                volume = 100.0
+            volume_text = f"{int(round(volume))}%"
+            volume_text_width = int(draw.textlength(volume_text, font=volume_font))
+            volume_left = width - px(112)
+            volume_right = width - px(12)
+            volume_y = px(190)
+            speaker_left = volume_left - px(27)
+            draw.text(
+                (speaker_left - volume_text_width - px(10), px(181)),
+                volume_text,
+                font=volume_font,
+                fill=text_color,
+            )
+            draw.polygon(
+                [
+                    (speaker_left, px(186)),
+                    (speaker_left + px(5), px(186)),
+                    (speaker_left + px(11), px(180)),
+                    (speaker_left + px(11), px(200)),
+                    (speaker_left + px(5), px(194)),
+                    (speaker_left, px(194)),
+                ],
+                fill=text_color,
+            )
+            draw.arc(
+                (
+                    speaker_left + px(7),
+                    px(182),
+                    speaker_left + px(21),
+                    px(198),
+                ),
+                start=-55,
+                end=55,
+                fill=text_color,
+                width=max(1, px(2)),
+            )
+            draw.rounded_rectangle(
+                (volume_left, volume_y - px(3), volume_right, volume_y + px(3)),
+                radius=px(3),
+                fill=progress_track,
+            )
+            volume_ratio = volume / 150.0
+            knob_x = volume_left + int(round((volume_right - volume_left) * volume_ratio))
+            if knob_x > volume_left:
+                draw.rounded_rectangle(
+                    (volume_left, volume_y - px(3), knob_x, volume_y + px(3)),
+                    radius=px(3),
+                    fill=volume_fill,
+                )
+            draw.ellipse(
+                (
+                    knob_x - px(7),
+                    volume_y - px(7),
+                    knob_x + px(7),
+                    volume_y + px(7),
+                ),
+                fill=text_color,
+                outline=volume_fill,
+                width=max(1, px(2)),
+            )
+            regions["volume"] = (
+                *hit_bounds(
+                    (
+                        volume_left - px(5),
+                        volume_y - px(11),
+                        volume_right + px(5),
+                        volume_y + px(11),
+                    )
+                ),
+            )
+            self.smwcentral_spc_native_widgets["volume_axis"] = hit_bounds(
+                (volume_left, volume_y, volume_right, volume_y)
+            )
+            self.smwcentral_spc_native_widgets["regions"] = regions
+
+            hovered = str(
+                self.smwcentral_spc_native_widgets.get("hover", "") or ""
+            )
+            tooltip_labels = {
+                "play": "Pause Track" if state.get("playing") else "Play Track",
+                "restart": "Replay Track",
+                "loop": "Toggle Looping",
+                "next": "Next Track",
+                "toggle": "Collapse Player",
+                "close": "Close Player",
+                "progress": "Seek Through Track",
+                "volume": "Volume",
+            }
+            tooltip_text = tooltip_labels.get(hovered, "")
+            if tooltip_text:
+                tooltip_font = font(9, bold=True)
+                text_bounds = draw.textbbox(
+                    (0, 0),
+                    tooltip_text,
+                    font=tooltip_font,
+                )
+                tooltip_width = text_bounds[2] - text_bounds[0] + px(12)
+                tooltip_height = text_bounds[3] - text_bounds[1] + px(8)
+                pointer = self.smwcentral_spc_native_widgets.get(
+                    "hover_point", (width // 2, button_top)
+                )
+                try:
+                    pointer_x = int(pointer[0]) * render_supersample
+                except (TypeError, ValueError, IndexError):
+                    pointer_x = width // 2
+                tooltip_left = max(
+                    px(4),
+                    min(
+                        width - tooltip_width - px(4),
+                        pointer_x - tooltip_width // 2,
+                    ),
+                )
+                tooltip_top = button_top - tooltip_height - px(5)
+                draw.rounded_rectangle(
+                    (
+                        tooltip_left,
+                        tooltip_top,
+                        tooltip_left + tooltip_width,
+                        tooltip_top + tooltip_height,
+                    ),
+                    radius=px(4),
+                    fill="#171612",
+                    outline="#67635B",
+                    width=max(1, px(1)),
+                )
+                draw.text(
+                    (
+                        tooltip_left + px(6),
+                        tooltip_top + px(3) - text_bounds[1],
+                    ),
+                    tooltip_text,
+                    font=tooltip_font,
+                    fill=text_color,
+                )
+
+        # Repaint the outline last so the header and footer fills cannot cover
+        # the rounded corners, matching the floating SMW Central card.
+        draw.rounded_rectangle(
+            (0, 0, width - 1, height - 1),
+            radius=radius,
+            outline=border,
+            width=max(1, px(2)),
+        )
+        image = image.resize(
+            (output_width, output_height),
+            Image.Resampling.LANCZOS,
+        )
+        try:
+            photo = ImageTk.PhotoImage(image, master=canvas)
+            canvas.delete("all")
+            image_item = canvas.create_image(0, 0, anchor="nw", image=photo)
+            _retain_smooth_canvas_photo(canvas, image_item, photo)
+        except (tk.TclError, OSError, ValueError):
+            pass
+
+    def _update_smwcentral_native_spc_player(
+        self,
+        state: dict[str, Any],
+    ) -> None:
+        if self.smwcentral_spc_native_widgets.get("canvas") is None:
+            self._render_smwcentral_native_spc_player(state)
+            return
+        if isinstance(state, dict):
+            previous_title = str(
+                self.smwcentral_spc_native_state.get("title", "") or ""
+            ).strip()
+            resolved_state = dict(state)
+            widgets = self.smwcentral_spc_native_widgets
+            if widgets.get("volume_drag"):
+                # Keep bridge polling from tugging the volume knob away from
+                # the pointer during an active drag.
+                resolved_state["volume"] = self.smwcentral_spc_native_state.get(
+                    "volume", 100.0
+                )
+            if widgets.get("progress_drag"):
+                # The real seek is committed on release.  Until then the
+                # smoothly moving local knob and elapsed label own the view.
+                resolved_state["progress"] = self.smwcentral_spc_native_state.get(
+                    "progress", 0.0
+                )
+                resolved_state["elapsed"] = self.smwcentral_spc_native_state.get(
+                    "elapsed", "0:00"
+                )
+            else:
+                pending_seek = widgets.get("pending_seek")
+                if isinstance(pending_seek, dict):
+                    try:
+                        desired_progress = max(
+                            0.0,
+                            min(1.0, float(pending_seek.get("value", 0.0))),
+                        )
+                        incoming_progress = max(
+                            0.0,
+                            min(1.0, float(resolved_state.get("progress", 0.0))),
+                        )
+                        pending_age = time.monotonic() - float(
+                            pending_seek.get("sent_at", 0.0)
+                        )
+                    except (TypeError, ValueError):
+                        pending_age = 2.0
+                        desired_progress = 0.0
+                        incoming_progress = 0.0
+                    if abs(incoming_progress - desired_progress) <= 0.04:
+                        widgets.pop("pending_seek", None)
+                    elif pending_age < 4.0:
+                        # Hide stale pre-seek bridge samples while WebView2
+                        # applies the click to SMW Central's actual seek bar.
+                        resolved_state["progress"] = desired_progress
+                        resolved_state["elapsed"] = pending_seek.get(
+                            "elapsed", "0:00"
+                        )
+                    else:
+                        widgets.pop("pending_seek", None)
+            pending_looping = self.smwcentral_spc_native_widgets.get(
+                "pending_looping"
+            )
+            if isinstance(pending_looping, dict):
+                desired_looping = bool(pending_looping.get("value"))
+                try:
+                    pending_age = time.monotonic() - float(
+                        pending_looping.get("sent_at", 0.0)
+                    )
+                except (TypeError, ValueError):
+                    pending_age = 2.0
+                if bool(resolved_state.get("looping")) == desired_looping:
+                    self.smwcentral_spc_native_widgets.pop(
+                        "pending_looping", None
+                    )
+                elif pending_age < 2.0:
+                    # Do not let one stale bridge poll undo the immediate blue
+                    # selected state while the command reaches WebView2.
+                    resolved_state["looping"] = desired_looping
+                else:
+                    self.smwcentral_spc_native_widgets.pop(
+                        "pending_looping", None
+                    )
+            self.smwcentral_spc_native_state.update(resolved_state)
+            current_title = str(
+                self.smwcentral_spc_native_state.get("title", "") or ""
+            ).strip()
+            if current_title and current_title != previous_title:
+                self.smwcentral_spc_native_widgets[
+                    "marquee_started_at"
+                ] = time.monotonic()
+        if self.smwcentral_spc_native_drag_origin is None:
+            self._draw_smwcentral_native_spc_player()
+        else:
+            # Keep the latest time/progress state, but postpone the expensive
+            # supersampled repaint until the pointer is released.
+            self.smwcentral_spc_native_widgets["redraw_after_drag"] = True
+
+    def _read_smwcentral_spc_state(self) -> dict[str, Any]:
+        state_path = self.smwcentral_spc_state_path
+        if state_path is None or not state_path.is_file():
+            return {}
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return state if isinstance(state, dict) else {}
 
     def _watch_smwcentral_spc_player_process(self) -> None:
         """Clean up the frameless player's process after its window closes."""
@@ -105227,8 +111849,100 @@ class TrackerApp:
         if process is None or process.poll() is not None:
             self._stop_smwcentral_webview_process()
             return
+        native_state = self._read_smwcentral_spc_state()
+        if (
+            self.smwcentral_spc_preloaded
+            and native_state.get("engine_ready")
+        ):
+            # The official controls are warm, but a preload intentionally has
+            # no track. Do not expose its empty 0:00 shell or time it out.
+            self.smwcentral_spc_launch_monotonic = 0.0
+        if native_state.get("ready"):
+            if self.smwcentral_spc_native_widgets:
+                self._update_smwcentral_native_spc_player(native_state)
+            else:
+                self._render_smwcentral_native_spc_player(native_state)
+            # The native controls are now visible.  Keep polling for track and
+            # playback changes, but disable the loading timeout.
+            self.smwcentral_spc_launch_monotonic = 0.0
+        ready_signal_path = self.smwcentral_spc_ready_signal_path
+        if (
+            self.smwcentral_spc_state_path is None
+            and ready_signal_path is not None
+            and ready_signal_path.is_file()
+        ):
+            overlay_host = self.smwcentral_spc_overlay_host
+            self.smwcentral_spc_overlay_host = None
+            if overlay_host is not None:
+                try:
+                    if overlay_host.winfo_exists():
+                        overlay_host.destroy()
+                except tk.TclError:
+                    pass
+            try:
+                ready_signal_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.smwcentral_spc_ready_signal_path = None
+        overlay_host = self.smwcentral_spc_overlay_host
+        if overlay_host is not None:
+            try:
+                if (
+                    overlay_host.winfo_exists()
+                    and self.smwcentral_spc_native_drag_origin is None
+                ):
+                    overlay_host.lift()
+            except tk.TclError:
+                pass
+        launch_started = float(self.smwcentral_spc_launch_monotonic or 0.0)
+        loading_timeout = 90.0 if self.smwcentral_spc_preloaded else 45.0
+        if (
+            overlay_host is not None
+            and launch_started > 0.0
+            and time.monotonic() - launch_started >= loading_timeout
+        ):
+            target_url = self.smwcentral_spc_overlay_target_url
+            mode = self.smwcentral_spc_overlay_mode
+            # Preserve the visible host while stopping the failed child. The
+            # user gets a useful retry action instead of an eternal loading
+            # card or a panel that silently disappears.
+            self.smwcentral_spc_overlay_host = None
+            self._stop_smwcentral_webview_process()
+            try:
+                if overlay_host.winfo_exists():
+                    for child in overlay_host.winfo_children():
+                        child.destroy()
+                    tk.Label(
+                        overlay_host,
+                        text=self._translate_ui_text(
+                            "The SPC Player could not finish loading."
+                        ),
+                        bg="#0F1B2D",
+                        fg=STREAM_DESK["text"],
+                        font=("Segoe UI", 10, "bold"),
+                        wraplength=self._ui_px(340),
+                    ).pack(
+                        padx=self._ui_px(18),
+                        pady=(self._ui_px(34), self._ui_px(8)),
+                    )
+                    self._make_action_button(
+                        overlay_host,
+                        text="↻ Retry SPC Player",
+                        command=lambda: self._open_smwcentral_webview(
+                            target_url, mode=mode
+                        ),
+                        bg=STREAM_DESK["green"],
+                        active_bg=STREAM_DESK["green_dark"],
+                        width=20,
+                        pad_y=7,
+                    ).pack(pady=(self._ui_px(4), self._ui_px(18)))
+                    self.smwcentral_spc_overlay_host = overlay_host
+                    overlay_host.lift()
+            except tk.TclError:
+                pass
+            return
         self.smwcentral_spc_overlay_poll_after_id = self.root.after(
-            400,
+            180,
             self._watch_smwcentral_spc_player_process,
         )
 
@@ -105283,17 +111997,36 @@ class TrackerApp:
             )
             return
 
+        if (
+            normalized_mode in {"spc_player", "radio"}
+            and self.smwcentral_webview_process is not None
+            and self.smwcentral_webview_process.poll() is None
+            and self.smwcentral_spc_overlay_target_url == safe_url
+            and self.smwcentral_spc_overlay_mode == normalized_mode
+        ):
+            overlay_host = self.smwcentral_spc_overlay_host
+            if overlay_host is not None:
+                try:
+                    overlay_host.lift()
+                except tk.TclError:
+                    pass
+            return
+
         self._stop_smwcentral_webview_process()
         launch_payload = dict(payload or {})
         if normalized_mode in {"spc_player", "radio"}:
+            self.smwcentral_spc_overlay_target_url = safe_url
+            self.smwcentral_spc_overlay_mode = normalized_mode
             launch_payload.update(
-                self._create_smwcentral_spc_popup_payload()
+                self._create_smwcentral_spc_popup_payload(
+                    preload=bool(launch_payload.get("preload")),
+                )
             )
         environment = os.environ.copy()
-        for variable_name in tuple(environment):
-            if variable_name.startswith("_PYI_"):
-                environment.pop(variable_name, None)
-        environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        # A packaged player is the same executable running as a helper. Keep
+        # PyInstaller's inherited extraction directory so it starts from the
+        # already-unpacked files instead of unpacking the entire app again.
+        environment.pop("PYINSTALLER_RESET_ENVIRONMENT", None)
         try:
             self.smwcentral_webview_process = subprocess.Popen(
                 _smwcentral_webview_command(
@@ -105309,6 +112042,9 @@ class TrackerApp:
                     0,
                 ),
             )
+            if normalized_mode in {"spc_player", "radio"}:
+                self.smwcentral_spc_overlay_target_url = safe_url
+                self.smwcentral_spc_overlay_mode = normalized_mode
             self.status_var.set(
                 "SMW Central opened inside the app. Sign in there to post comments."
             )
@@ -105338,13 +112074,69 @@ class TrackerApp:
             return
         self._open_smwcentral_webview(safe_url, mode="spc_player")
 
-    def _open_smwcentral_radio(self) -> None:
-        """Open SMW Central's continuously playing music view in the app."""
+    def _show_smwcentral_spc_overlay(self) -> None:
+        """Reveal a preloaded player at the same size and corner as the site."""
+        overlay_host = self.smwcentral_spc_overlay_host
+        if overlay_host is None:
+            return
+        margin = self._ui_px(14)
+        try:
+            overlay_host.place(
+                relx=1.0,
+                rely=1.0,
+                x=-margin,
+                y=-margin,
+                width=self._ui_px(460),
+                height=self._ui_px(240),
+                anchor="se",
+            )
+            state = self._read_smwcentral_spc_state()
+            if state.get("ready"):
+                if self.smwcentral_spc_native_widgets:
+                    self._update_smwcentral_native_spc_player(state)
+                else:
+                    self._render_smwcentral_native_spc_player(state)
+            overlay_host.lift()
+            self.smwcentral_spc_preloaded = False
+            # A warm engine is not the same as a loaded track. Give the radio
+            # command a fresh visible loading window, and only replace the
+            # placeholder after SMW Central reports real track metadata.
+            self.smwcentral_spc_launch_monotonic = time.monotonic()
+        except tk.TclError:
+            pass
+
+    def _preload_smwcentral_radio_player(self) -> None:
+        """Warm the hidden SMW Central engine while the music page is open."""
+        process = self.smwcentral_webview_process
+        if process is not None and process.poll() is None:
+            return
         self._open_smwcentral_webview(
             urljoin(
                 SMW_CENTRAL_WEBSITE_URL,
                 "?p=section&s=smwmusic",
             ),
+            mode="radio",
+            payload={"preload": True},
+        )
+
+    def _open_smwcentral_radio(self) -> None:
+        """Open SMW Central's continuously playing music view in the app."""
+        radio_url = urljoin(
+            SMW_CENTRAL_WEBSITE_URL,
+            "?p=section&s=smwmusic",
+        )
+        process = self.smwcentral_webview_process
+        if (
+            process is not None
+            and process.poll() is None
+            and self.smwcentral_spc_overlay_mode == "radio"
+            and self.smwcentral_spc_overlay_target_url == radio_url
+        ):
+            self._show_smwcentral_spc_overlay()
+            self._send_smwcentral_spc_command("start_radio")
+            return
+        self._open_smwcentral_webview(
+            radio_url,
             mode="radio",
         )
 
@@ -109726,6 +116518,14 @@ class TrackerApp:
                             f'at {profile.get("host", "MiSTer")}.'
                         )
 
+                elif event_type == "level_started":
+                    # Identify in the background while the viewer is playing.
+                    # A later What Song Is Playing? redemption can then post
+                    # the prepared title and link to Twitch immediately.
+                    self._schedule_streamerbot_song_prefetch(
+                        event.get("session_id", ""),
+                    )
+
                 elif event_type == "completion_detected":
                     completed = max(0, int(event.get("completed", 0) or 0))
                     total = max(0, int(event.get("total", 0) or 0))
@@ -110591,6 +117391,7 @@ class TrackerApp:
         self.catalog_freshness_cancel_event.set()
         self.automatic_catalog_refresh_cancel_event.set()
         self.fxpak_sd_cancel_event.set()
+        self.music_identifier_cancel_event.set()
         for sequence, bind_id in tuple(
             self.main_mousewheel_bind_ids.items()
         ):
@@ -110606,8 +117407,11 @@ class TrackerApp:
             self.worker.save_current_game_time()
             self.worker.save_current_death_count()
             session_summary = self.worker.session_summary_payload()
+            # Mark the worker first. Its connection thread writes one final
+            # checkpoint while exiting and must not overwrite this normal-X
+            # close with an unclean-session marker.
+            self.worker.stop(clean_shutdown=True)
             self.worker.write_session_recovery_checkpoint(clean_shutdown=True)
-            self.worker.stop()
         elif SESSION_RECOVERY_FILE.is_file():
             try:
                 recovery_payload = json.loads(
@@ -111515,7 +118319,7 @@ def _smwcentral_prefill_javascript(
 """
 
 
-def _smwcentral_legacy_spc_player_javascript(
+def _smwcentral_spc_player_javascript(
     language: object = "en",
     background_color: object = "#0F1B2D",
     launch_preview: object = True,
@@ -111613,8 +118417,16 @@ def _smwcentral_legacy_spc_player_javascript(
     const text = """ + payload_json + r""";
     const trackerBackground = """ + background_json + r""";
     const launchPreview = """ + launch_preview_json + r""";
-    if (window.__smwStreamTrackerSpcPlayer) return true;
-    window.__smwStreamTrackerSpcPlayer = true;
+    if (!document.head || !document.body) return false;
+    if (document.documentElement?.dataset?.smwTrackerSpcReady === 'true') {
+        return true;
+    }
+    const previousInstall = window.__smwStreamTrackerSpcPlayer;
+    if (previousInstall?.running) return false;
+    document.getElementById('smw-stream-tracker-spc-style')?.remove();
+    document.getElementById('smw-tracker-spc-status')?.remove();
+    const installState = { running: true, ready: false };
+    window.__smwStreamTrackerSpcPlayer = installState;
 
     const style = document.createElement('style');
     style.id = 'smw-stream-tracker-spc-style';
@@ -111627,7 +118439,7 @@ def _smwcentral_legacy_spc_player_javascript(
             background: transparent !important;
             color: #FFFFFF !important;
         }
-        body > *:not(#spc-player-container):not(#spc-player-interface):not(#smw-tracker-spc-status):not(#smw-tracker-spc-close):not(#smw-tracker-spc-minimize) {
+        body > *:not(#spc-player-container):not(#spc-player-interface):not(#smw-tracker-spc-status) {
             display: none !important;
         }
         #spc-player-container {
@@ -111647,17 +118459,22 @@ def _smwcentral_legacy_spc_player_javascript(
             display: block !important;
             position: fixed !important;
             inset: auto 0 0 auto !important;
-            width: min(800px, 100vw) !important;
+            width: 100% !important;
             height: 100% !important;
+            min-height: 0 !important;
+            max-height: 100% !important;
             max-width: none !important;
             margin: 0 !important;
-            border: 2px solid #35516F !important;
-            border-radius: 24px !important;
-            box-shadow: 0 14px 36px rgba(0, 0, 0, .48) !important;
+            border: 0 !important;
+            border-radius: 12px !important;
+            box-shadow: none !important;
             overflow: hidden !important;
             box-sizing: border-box !important;
             pointer-events: auto !important;
             background: #101214 !important;
+        }
+        #spc-player-interface.smw-tracker-collapsed {
+            height: 42px !important;
         }
         #spc-player-interface,
         #spc-player-interface * {
@@ -111667,7 +118484,10 @@ def _smwcentral_legacy_spc_player_javascript(
             position: relative !important;
             min-width: 0 !important;
             overflow: hidden !important;
-            padding-right: 104px !important;
+            padding-right: 0 !important;
+            cursor: move !important;
+            touch-action: none !important;
+            user-select: none !important;
         }
         #spc-player-header > *,
         #spc-player-interface .track-info {
@@ -111684,7 +118504,7 @@ def _smwcentral_legacy_spc_player_javascript(
             text-overflow: ellipsis !important;
             -webkit-box-orient: vertical !important;
             -webkit-line-clamp: 2 !important;
-            font-size: clamp(21px, 3.7vw, 27px) !important;
+            font-size: 17px !important;
             line-height: 1.15 !important;
         }
         #spc-player-interface .track-info .subtitle {
@@ -111697,7 +118517,7 @@ def _smwcentral_legacy_spc_player_javascript(
             text-overflow: ellipsis !important;
             -webkit-box-orient: vertical !important;
             -webkit-line-clamp: 2 !important;
-            font-size: clamp(15px, 2.7vw, 19px) !important;
+            font-size: 14px !important;
             line-height: 1.2 !important;
         }
         #spc-player-interface .details {
@@ -111705,7 +118525,7 @@ def _smwcentral_legacy_spc_player_javascript(
             overflow: hidden !important;
             text-overflow: ellipsis !important;
             white-space: nowrap !important;
-            font-size: 15px !important;
+            font-size: 12px !important;
         }
         #smw-tracker-spc-status {
             position: fixed;
@@ -111720,48 +118540,6 @@ def _smwcentral_legacy_spc_player_javascript(
             font: 700 21px/1.4 Segoe UI, sans-serif;
             text-align: center;
         }
-        #smw-tracker-spc-close {
-            position: absolute !important;
-            z-index: 2147483647 !important;
-            top: 50% !important;
-            right: 14px !important;
-            width: 38px !important;
-            height: 38px !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            transform: translateY(-50%) !important;
-            border: 0 !important;
-            border-radius: 8px !important;
-            background: transparent !important;
-            color: #FFFFFF !important;
-            font: 300 34px/34px Segoe UI, sans-serif !important;
-            text-align: center !important;
-            cursor: pointer !important;
-        }
-        #smw-tracker-spc-close:hover {
-            background: rgba(255, 255, 255, .12);
-        }
-        #smw-tracker-spc-minimize {
-            position: absolute !important;
-            z-index: 2147483647 !important;
-            top: 50% !important;
-            right: 56px !important;
-            width: 38px !important;
-            height: 38px !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            transform: translateY(-50%) !important;
-            border: 0 !important;
-            border-radius: 8px !important;
-            background: transparent !important;
-            color: #FFFFFF !important;
-            font: 600 27px/34px Segoe UI, sans-serif !important;
-            text-align: center !important;
-            cursor: pointer !important;
-        }
-        #smw-tracker-spc-minimize:hover {
-            background: rgba(255, 255, 255, .12);
-        }
     `;
     document.head.appendChild(style);
 
@@ -111771,17 +118549,49 @@ def _smwcentral_legacy_spc_player_javascript(
     document.body.appendChild(status);
 
     let attempts = 0;
+    let previewLaunched = false;
+    let previewAttempts = 0;
+    let lastPreviewAttempt = 0;
     const prepare = () => {
         attempts += 1;
         const playerContainer = document.getElementById('spc-player-container');
         const playerInterface = document.getElementById('spc-player-interface');
         const player = playerInterface || playerContainer;
         const preview = document.getElementById('file-preview-button');
+        const trackTitle = String(
+            playerInterface?.querySelector('.track-info .title')?.textContent || ''
+        ).replace(/\s+/g, ' ').trim();
+        const trackDuration = String(
+            playerInterface?.querySelector('.track-duration')?.textContent || ''
+        ).trim();
+        const previewLoaded = Boolean(
+            trackTitle && trackTitle !== 'Song Title' &&
+            trackDuration && trackDuration !== '0:00'
+        );
+        if (previewLoaded) previewLaunched = true;
+        const now = Date.now();
+        if (
+            launchPreview && preview && !previewLoaded &&
+            previewAttempts < 30 && now - lastPreviewAttempt >= 900
+        ) {
+            previewAttempts += 1;
+            lastPreviewAttempt = now;
+            try {
+                preview.dispatchEvent(new window.MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                }));
+            } catch (_error) {
+                try { preview.click(); } catch (_ignored) {}
+            }
+        }
         const radioReady = launchPreview || (
             document.body.classList.contains('spc-radio-enabled') &&
             playerInterface && playerInterface.classList.contains('shown')
         );
-        if (!player || (launchPreview && !preview) || !radioReady) {
+        if (!player ||
+            (launchPreview && (!preview || !previewLoaded)) || !radioReady) {
             if (attempts >= 120) status.textContent = text.unavailable;
             return false;
         }
@@ -111802,34 +118612,25 @@ def _smwcentral_legacy_spc_player_javascript(
         if (loop) loop.title = text.loop;
         if (volume) volume.title = text.volume;
         if (upNext) upNext.textContent = text.up_next + ' ';
-        Array.from(player.querySelectorAll('a, button, label, span')).forEach(
-            (candidate) => {
-                if (candidate.id === 'smw-tracker-spc-close' ||
-                        candidate.id === 'smw-tracker-spc-minimize' ||
-                        candidate === toggle) {
-                    return;
-                }
-                const marker = String([
-                    candidate.textContent,
-                    candidate.id,
-                    candidate.className,
-                    candidate.getAttribute('aria-label'),
-                    candidate.getAttribute('title'),
-                ].filter(Boolean).join(' ')).trim();
-                if (/(^|\s)(close|dismiss)(\s|$)/i.test(marker) ||
-                        /^[×✕✖]$/.test(String(candidate.textContent || '').trim())) {
-                    candidate.style.setProperty('display', 'none', 'important');
-                }
-            }
-        );
-        let closeButton = document.getElementById('smw-tracker-spc-close');
-        if (!closeButton) {
-            closeButton = document.createElement('button');
-            closeButton.id = 'smw-tracker-spc-close';
-            closeButton.type = 'button';
-            closeButton.textContent = '×';
-            closeButton.setAttribute('aria-label', 'Close');
-            closeButton.addEventListener('click', () => {
+        const closeButton = Array.from(
+            player.querySelectorAll('a, button, label, span')
+        ).find((candidate) => {
+            if (candidate === toggle) return false;
+            const marker = String([
+                candidate.textContent,
+                candidate.id,
+                candidate.className,
+                candidate.getAttribute('aria-label'),
+                candidate.getAttribute('title'),
+            ].filter(Boolean).join(' ')).trim();
+            return /(^|\s)(close|dismiss)(\s|$)/i.test(marker) ||
+                /^[×✕✖]$/.test(String(candidate.textContent || '').trim());
+        });
+        if (closeButton && !closeButton.dataset.smwTrackerWindowClose) {
+            closeButton.dataset.smwTrackerWindowClose = 'true';
+            closeButton.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopImmediatePropagation();
                 try {
                     const closing = window.pywebview?.api?.close_spc_player?.();
                     if (closing?.catch) closing.catch(() => window.close());
@@ -111837,44 +118638,88 @@ def _smwcentral_legacy_spc_player_javascript(
                 } catch (_error) {
                     window.close();
                 }
-            });
-            (playerHeader || player).appendChild(closeButton);
+            }, true);
         }
-        let minimizeButton = document.getElementById('smw-tracker-spc-minimize');
-        if (!minimizeButton) {
-            minimizeButton = document.createElement('button');
-            minimizeButton.id = 'smw-tracker-spc-minimize';
-            minimizeButton.type = 'button';
-            minimizeButton.textContent = '—';
-            minimizeButton.setAttribute('aria-label', text.minimize);
-            minimizeButton.title = text.minimize;
-            minimizeButton.addEventListener('click', () => {
+        const sizeTarget = playerInterface || player;
+        if (!sizeTarget.dataset.smwTrackerCollapseWired) {
+            sizeTarget.dataset.smwTrackerCollapseWired = 'true';
+            let trackerCollapsed = false;
+            toggle?.addEventListener('click', () => {
+                trackerCollapsed = !trackerCollapsed;
+                sizeTarget.classList.toggle(
+                    'smw-tracker-collapsed',
+                    trackerCollapsed
+                );
+                const targetHeight = trackerCollapsed ? 42 : 220;
+                const resizePanel = () => {
+                    try {
+                        window.pywebview?.api?.resize_embedded_spc_player?.(
+                            targetHeight
+                        );
+                    } catch (_error) {}
+                };
+                resizePanel();
+                window.setTimeout(resizePanel, 120);
+            });
+        }
+        if (playerHeader && !playerHeader.dataset.smwTrackerDragHandle) {
+            playerHeader.dataset.smwTrackerDragHandle = 'true';
+            let dragging = false;
+            const interactiveSelector = [
+                'a', 'button', 'input', 'label', 'select', 'textarea'
+            ].join(',');
+            playerHeader.addEventListener('pointerdown', (event) => {
+                if (event.button !== 0 || event.target.closest(interactiveSelector)) {
+                    return;
+                }
+                dragging = true;
+                try { playerHeader.setPointerCapture(event.pointerId); } catch (_error) {}
                 try {
-                    const minimizing = (
-                        window.pywebview?.api?.minimize_spc_player?.()
+                    window.pywebview?.api?.begin_embedded_spc_player_drag?.(
+                        event.screenX,
+                        event.screenY
                     );
-                    if (minimizing?.catch) minimizing.catch(() => {});
                 } catch (_error) {}
+                event.preventDefault();
             });
-            (playerHeader || player).appendChild(minimizeButton);
+            playerHeader.addEventListener('pointermove', (event) => {
+                if (!dragging) return;
+                try {
+                    window.pywebview?.api?.move_embedded_spc_player_drag?.(
+                        event.screenX,
+                        event.screenY
+                    );
+                } catch (_error) {}
+                event.preventDefault();
+            });
+            const finishDrag = (event) => {
+                if (!dragging) return;
+                dragging = false;
+                try { playerHeader.releasePointerCapture(event.pointerId); } catch (_error) {}
+                try {
+                    window.pywebview?.api?.finish_embedded_spc_player_drag?.();
+                } catch (_error) {}
+            };
+            playerHeader.addEventListener('pointerup', finishDrag);
+            playerHeader.addEventListener('pointercancel', finishDrag);
         }
+        installState.running = false;
+        installState.ready = true;
+        document.documentElement.dataset.smwTrackerSpcReady = 'true';
         status.remove();
-        if (launchPreview) window.setTimeout(() => {
-            try {
-                preview.dispatchEvent(new window.MouseEvent('click', {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                }));
-            } catch (_error) {
-                try { preview.click(); } catch (_ignored) {}
-            }
-        }, 120);
         return true;
     };
     if (!prepare()) {
         const timer = window.setInterval(() => {
-            if (prepare() || attempts >= 120) window.clearInterval(timer);
+            if (prepare()) {
+                window.clearInterval(timer);
+                return;
+            }
+            if (attempts >= 120) {
+                window.clearInterval(timer);
+                installState.running = false;
+                status.textContent = text.unavailable;
+            }
         }, 250);
     }
     return true;
@@ -111882,7 +118727,7 @@ def _smwcentral_legacy_spc_player_javascript(
 """
 
 
-def _smwcentral_spc_player_javascript(
+def _smwcentral_custom_spc_player_javascript(
     language: object = "en",
     background_color: object = "#0F1B2D",
     launch_preview: object = True,
@@ -112001,6 +118846,11 @@ def _smwcentral_spc_player_javascript(
     const trackerBackground = """ + background_json + r""";
     const launchPreview = """ + launch_preview_json + r""";
     const radioMode = """ + radio_mode_json + r""";
+    // The official-control installer may have timed out before this fallback
+    // was selected. Remove only its tracker-added presentation layer so it
+    // cannot keep this player hidden; the site's audio engine stays intact.
+    document.getElementById('smw-stream-tracker-spc-style')?.remove();
+    document.getElementById('smw-tracker-spc-status')?.remove();
     if (window.__smwTrackerOwnedPlayer &&
             document.getElementById('smw-tracker-owned-player')) return true;
     window.__smwTrackerOwnedPlayer = true;
@@ -112590,6 +119440,8 @@ def _smwcentral_spc_player_javascript(
     };
     let draggingSeek = false;
     let launched = false;
+    let launchAttempts = 0;
+    let lastLaunchAttempt = 0;
     let attempts = 0;
     let lastGoodTitle = '';
 
@@ -112599,15 +119451,6 @@ def _smwcentral_spc_player_javascript(
         if (!player) {
             if (attempts > 120) title.textContent = text.unavailable;
             return;
-        }
-        if (launchPreview && !launched) {
-            const preview = document.getElementById('file-preview-button');
-            if (preview) {
-                launched = true;
-                window.setTimeout(() => {
-                    try { preview.click(); } catch (_error) {}
-                }, 80);
-            }
         }
         const currentTitle = engineText([
             '.track-info h2.title',
@@ -112619,6 +119462,36 @@ def _smwcentral_spc_player_javascript(
         const currentDetails = engineText(['.track-info .details']);
         const elapsedValue = engineElement('.track-time-elapsed')?.textContent?.trim() || '0:00';
         const durationValue = engineElement('.track-duration')?.textContent?.trim() || '0:00';
+        const trackLoaded = Boolean(currentTitle) && timeSeconds(durationValue) > 0;
+        if (trackLoaded) launched = true;
+        // SMW Central can draw the detail page before its SPC click handler
+        // has attached. A one-shot click at that moment is lost and leaves
+        // the player at 0:00. Retry until real metadata proves it loaded.
+        const now = Date.now();
+        if (
+            launchPreview && !trackLoaded && launchAttempts < 30 &&
+            now - lastLaunchAttempt >= 900
+        ) {
+            const preview = document.querySelector(
+                '#file-preview-button[data-spc], '
+                + '[data-spc="section"][data-spc-file]'
+            );
+            if (preview) {
+                launchAttempts += 1;
+                lastLaunchAttempt = now;
+                try {
+                    preview.click();
+                } catch (_error) {
+                    try {
+                        preview.dispatchEvent(new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                        }));
+                    } catch (_dispatchError) {}
+                }
+            }
+        }
         if (currentTitle && currentTitle !== text.loading) {
             lastGoodTitle = currentTitle;
         }
@@ -112906,25 +119779,696 @@ def _smwcentral_spc_player_javascript(
 """
 
 
-class _SpcPlayerWebviewApi:
-    """Bridge for the frameless SPC popup's native window controls."""
+def _smwcentral_native_spc_state_javascript() -> str:
+    """Read the hidden SMW Central audio engine for the tracker-owned UI."""
+    return r"""
+(() => {
+    const players = Array.from(document.querySelectorAll('#spc-player-interface'));
+    const player = players.find((candidate) => {
+        const info = candidate.querySelector('.track-info');
+        return Boolean(info && info.textContent?.trim());
+    }) || players[0] || null;
+    const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const firstText = (selectors) => {
+        if (!player) return '';
+        for (const selector of selectors) {
+            for (const candidate of player.querySelectorAll(selector)) {
+                const value = clean(candidate.textContent);
+                if (value && value !== 'Song Title' && value !== 'Loading music...') {
+                    return value;
+                }
+            }
+        }
+        return '';
+    };
+    const timeSeconds = (value) => {
+        const pieces = String(value || '').trim().split(':').map(Number);
+        if (!pieces.length || pieces.some((part) => !Number.isFinite(part))) return 0;
+        return pieces.reduce((total, part) => total * 60 + part, 0);
+    };
+    const engineElement = (selector) => player?.querySelector(selector) || null;
+    const elapsed = clean(engineElement('.track-time-elapsed')?.textContent) || '0:00';
+    const duration = clean(engineElement('.track-duration')?.textContent) || '0:00';
+    const elapsedSeconds = timeSeconds(elapsed);
+    const durationSeconds = timeSeconds(duration);
+    const pause = engineElement('.pause');
+    const seek = engineElement('.seek');
+    const seekPercentages = Array.from(
+        String(seek?.style?.backgroundImage || '').matchAll(
+            /([0-9]+(?:\.[0-9]+)?)%/g
+        )
+    ).map((match) => Number(match[1])).filter(Number.isFinite);
+    const officialProgress = seekPercentages.length
+        ? Math.max(...seekPercentages) / 100
+        : NaN;
+    const controlIsVisible = (element) => {
+        if (!element || element.classList.contains('hidden')) return false;
+        const style = window.getComputedStyle(element);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const volumeControl = engineElement('#volume-slider');
+    const volumeNumber = Number(volumeControl?.value || 1);
+    const title = firstText([
+            '.track-info h2.title',
+            '.track-info .title a',
+            '.track-info .title',
+            '.title',
+        ]);
+    const trackReady = Boolean(player && title && durationSeconds > 0);
+    // WebView2 can continue playing WebAudio while throttling the hidden
+    // page's one-second DOM timer. Keep a monotonic playback clock beside the
+    // official seek value so the visible Tk bar still advances smoothly.
+    const now = performance.now();
+    const clock = window.__smwTrackerNativePlaybackClock || {
+        title: '',
+        baseSeconds: 0,
+        startedAt: now,
+        playing: false,
+        lastDomSeconds: 0,
+    };
+    if (trackReady && clock.title !== title) {
+        clock.title = title;
+        clock.baseSeconds = elapsedSeconds;
+        clock.startedAt = now;
+        clock.playing = true;
+        clock.lastDomSeconds = elapsedSeconds;
+    } else if (trackReady && elapsedSeconds !== clock.lastDomSeconds) {
+        clock.baseSeconds = elapsedSeconds;
+        clock.startedAt = now;
+        clock.lastDomSeconds = elapsedSeconds;
+        clock.playing = Boolean(
+            pause && !pause.classList.contains('hidden')
+        ) || clock.playing;
+    }
+    let clockSeconds = clock.baseSeconds;
+    if (trackReady && clock.playing) {
+        clockSeconds += Math.max(0, now - clock.startedAt) / 1000;
+    }
+    const loopControl = engineElement('#spc-player-loop')
+        || document.getElementById('spc-player-loop');
+    const loopEnabled = Boolean(loopControl?.checked);
+    if (durationSeconds > 0 && clockSeconds >= durationSeconds) {
+        if (loopEnabled) {
+            clockSeconds %= durationSeconds;
+            clock.baseSeconds = clockSeconds;
+            clock.startedAt = now;
+        } else {
+            clockSeconds = durationSeconds;
+            clock.baseSeconds = durationSeconds;
+            clock.startedAt = now;
+            clock.playing = false;
+        }
+    }
+    window.__smwTrackerNativePlaybackClock = clock;
+    const clockProgress = durationSeconds > 0
+        ? Math.max(0, Math.min(1, clockSeconds / durationSeconds))
+        : 0;
+    const resolvedProgress = Number.isFinite(officialProgress)
+        ? Math.max(
+            Math.max(0, Math.min(1, officialProgress)),
+            clockProgress
+        )
+        : clockProgress;
+    const resolvedElapsedSeconds = Math.max(
+        elapsedSeconds,
+        Math.min(durationSeconds || clockSeconds, clockSeconds)
+    );
+    const formatPlayerTime = (seconds) => {
+        const wholeSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+        const hours = Math.floor(wholeSeconds / 3600);
+        const minutes = Math.floor((wholeSeconds % 3600) / 60);
+        const remainder = wholeSeconds % 60;
+        return hours > 0
+            ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+            : `${minutes}:${String(remainder).padStart(2, '0')}`;
+    };
+    return {
+        engine_ready: Boolean(player),
+        ready: trackReady,
+        title,
+        subtitle: firstText(['.track-info .subtitle']),
+        details: firstText(['.track-info .details']),
+        elapsed: trackReady ? formatPlayerTime(resolvedElapsedSeconds) : elapsed,
+        duration,
+        progress: resolvedProgress,
+        playing: Boolean(
+            trackReady && (
+                clock.playing
+                || (pause && !pause.classList.contains('hidden'))
+            )
+        ),
+        can_skip: controlIsVisible(engineElement('#spc-player-skip')),
+        can_restart: controlIsVisible(engineElement('.restart')),
+        can_loop: controlIsVisible(
+            engineElement('label[for="spc-player-loop"]')
+                || document.querySelector('label[for="spc-player-loop"]')
+        ),
+        looping: loopEnabled,
+        volume: Number.isFinite(volumeNumber)
+            ? Math.max(0, Math.min(150, volumeNumber * 100))
+            : 100,
+        up_next: clean(engineElement('#spc-player-up-next-link')?.textContent),
+    };
+})()
+"""
 
-    def __init__(self) -> None:
-        self.window: Any | None = None
+
+def _smwcentral_native_spc_command_javascript(command: object) -> str:
+    """Translate one native-player command into a site audio-engine action."""
+    command_payload = command if isinstance(command, dict) else {}
+    command_json = json.dumps(command_payload, ensure_ascii=True)
+    return r"""
+(() => {
+    const command = """ + command_json + r""";
+    const players = Array.from(document.querySelectorAll('#spc-player-interface'));
+    const player = players.find((candidate) => {
+        const info = candidate.querySelector('.track-info');
+        return Boolean(info && info.textContent?.trim());
+    }) || players[0] || null;
+    if (!player) return false;
+    const engineElement = (selector) => player.querySelector(selector);
+    const click = (selector) => {
+        const control = engineElement(selector);
+        if (!control) return false;
+        try { control.click(); return true; } catch (_error) { return false; }
+    };
+    const action = String(command.action || '').trim().toLowerCase();
+    const clock = window.__smwTrackerNativePlaybackClock || null;
+    const now = performance.now();
+    const freezeClock = () => {
+        if (!clock || !clock.playing) return;
+        clock.baseSeconds += Math.max(0, now - clock.startedAt) / 1000;
+        clock.startedAt = now;
+    };
+    if (action === 'toggle') {
+        const pause = engineElement('.pause');
+        const playing = clock
+            ? Boolean(clock.playing)
+            : Boolean(pause && !pause.classList.contains('hidden'));
+        freezeClock();
+        const changed = click(playing ? '.pause' : '.play');
+        if (changed && clock) {
+            clock.playing = !playing;
+            clock.startedAt = now;
+        }
+        return changed;
+    }
+    if (action === 'restart') {
+        const changed = click('.restart');
+        if (changed && clock) {
+            clock.baseSeconds = 0;
+            clock.lastDomSeconds = 0;
+            clock.startedAt = now;
+            clock.playing = true;
+        }
+        return changed;
+    }
+    if (action === 'next') {
+        const changed = click('#spc-player-skip');
+        if (changed && clock) {
+            clock.title = '';
+            clock.baseSeconds = 0;
+            clock.lastDomSeconds = 0;
+            clock.startedAt = now;
+            clock.playing = true;
+        }
+        return changed;
+    }
+    if (action === 'loop') {
+        const checkbox = engineElement('#spc-player-loop')
+            || document.getElementById('spc-player-loop');
+        const desiredLooping = typeof command.value === 'boolean'
+            ? command.value
+            : !Boolean(checkbox?.checked);
+        if (checkbox) {
+            if (Boolean(checkbox.checked) === desiredLooping) return true;
+            try { checkbox.click(); } catch (_error) {}
+            if (Boolean(checkbox.checked) !== desiredLooping) {
+                checkbox.checked = desiredLooping;
+                checkbox.dispatchEvent(new Event('input', { bubbles: true }));
+                checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            return Boolean(checkbox.checked) === desiredLooping;
+        }
+        const label = engineElement('label[for="spc-player-loop"]')
+            || document.querySelector('label[for="spc-player-loop"]');
+        if (!label) return false;
+        try { label.click(); return true; } catch (_error) { return false; }
+    }
+    if (action === 'volume') {
+        const control = engineElement('#volume-slider');
+        const percentage = Math.max(0, Math.min(150, Number(command.value || 0)));
+        if (!control || !Number.isFinite(percentage)) return false;
+        control.value = String(percentage / 100);
+        control.dispatchEvent(new Event('input', { bubbles: true }));
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+    }
+    if (action === 'seek') {
+        const seek = engineElement('.seek');
+        const ratio = Math.max(0, Math.min(1, Number(command.value)));
+        if (!seek || !Number.isFinite(ratio)) return false;
+        const bounds = seek.getBoundingClientRect();
+        try {
+            const seekWidth = Math.max(1, seek.clientWidth || bounds.width);
+            const requestedOffsetX = seekWidth * ratio;
+            const pointerOptions = {
+                bubbles: true,
+                cancelable: true,
+                clientX: bounds.left + requestedOffsetX,
+                clientY: bounds.top + Math.max(1, bounds.height) / 2,
+                button: 0,
+                buttons: 0,
+                view: window,
+            };
+            // SMW Central commits a seek on mouseup (not click) and reads the
+            // event's offsetX.  Sending the official hover/release sequence
+            // lets the site calculate and load the requested SPC timestamp.
+            const movement = new MouseEvent('mousemove', pointerOptions);
+            const release = new MouseEvent('mouseup', pointerOptions);
+            for (const event of [movement, release]) {
+                try {
+                    Object.defineProperty(event, 'offsetX', {
+                        configurable: true,
+                        value: requestedOffsetX,
+                    });
+                } catch (_offsetError) {}
+                seek.dispatchEvent(event);
+            }
+        } catch (_error) {
+            return false;
+        }
+        if (clock) {
+            const timeSeconds = (value) => {
+                const pieces = String(value || '').trim().split(':').map(Number);
+                if (!pieces.length || pieces.some((part) => !Number.isFinite(part))) {
+                    return 0;
+                }
+                return pieces.reduce((total, part) => total * 60 + part, 0);
+            };
+            const duration = timeSeconds(
+                engineElement('.track-duration')?.textContent
+            );
+            clock.baseSeconds = duration * ratio;
+            clock.lastDomSeconds = clock.baseSeconds;
+            clock.startedAt = now;
+        }
+        return true;
+    }
+    return false;
+})()
+"""
+
+
+class _SpcPlayerWebviewApi:
+    """Bridge for the SPC player's in-app native child window controls."""
+
+    def __init__(
+        self,
+        *,
+        embed_parent_hwnd: object = 0,
+        embed_root_hwnd: object = 0,
+        embed_width: object = 400,
+        embed_height: object = 220,
+    ) -> None:
+        # Keep the native pywebview object private.  Public js_api attributes
+        # are recursively inspected by pywebview; exposing the Window object
+        # there is slow and can walk the entire WinForms/WebView2 object graph.
+        self._window: Any | None = None
         self._gesture_lock = threading.RLock()
+        try:
+            self.embed_parent_hwnd = max(0, int(embed_parent_hwnd))
+        except (TypeError, ValueError):
+            self.embed_parent_hwnd = 0
+        try:
+            self.embed_root_hwnd = max(0, int(embed_root_hwnd))
+        except (TypeError, ValueError):
+            self.embed_root_hwnd = 0
+        try:
+            self.embed_width = max(1, int(embed_width))
+        except (TypeError, ValueError):
+            self.embed_width = 400
+        try:
+            self.embed_height = max(1, int(embed_height))
+        except (TypeError, ValueError):
+            self.embed_height = 220
+        self._embedded_child_hwnd = 0
+        self._embedded_drag_origin: tuple[int, int, int, int] | None = None
+
+    @property
+    def is_embedded(self) -> bool:
+        return bool(IS_WINDOWS and self.embed_parent_hwnd > 0)
+
+    @staticmethod
+    def _embedded_user32() -> Any:
+        user32 = ctypes.windll.user32
+        user32.GetParent.argtypes = [wintypes.HWND]
+        user32.GetParent.restype = wintypes.HWND
+        user32.GetWindowRect.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(wintypes.RECT),
+        ]
+        user32.GetWindowRect.restype = wintypes.BOOL
+        user32.ScreenToClient.argtypes = [
+            wintypes.HWND,
+            ctypes.POINTER(wintypes.POINT),
+        ]
+        user32.ScreenToClient.restype = wintypes.BOOL
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND,
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        return user32
+
+    def attach_embedded_spc_player(self) -> bool:
+        """Attach the SPC panel to the tracker as an owned Windows tool panel."""
+        if not self.is_embedded or self._window is None:
+            return False
+        try:
+            # A hidden pywebview window can report its page as ready before
+            # WinForms publishes the native handle. Showing it first lets the
+            # next lines reliably turn it into a tracker-owned tool panel.
+            try:
+                self._window.show()
+            except Exception:
+                pass
+            native_window = getattr(self._window, "native", None)
+            if native_window is None:
+                return False
+            native_handle = native_window.Handle
+            try:
+                panel = int(native_handle.ToInt64())
+            except AttributeError:
+                panel = int(native_handle)
+            if panel <= 0:
+                return False
+
+            user32 = self._embedded_user32()
+            get_window_long = user32.GetWindowLongPtrW
+            set_window_long = user32.SetWindowLongPtrW
+            get_window_long.argtypes = [wintypes.HWND, ctypes.c_int]
+            get_window_long.restype = ctypes.c_ssize_t
+            set_window_long.argtypes = [
+                wintypes.HWND,
+                ctypes.c_int,
+                ctypes.c_ssize_t,
+            ]
+            set_window_long.restype = ctypes.c_ssize_t
+
+            user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            user32.GetAncestor.restype = wintypes.HWND
+            user32.IsWindowVisible.argtypes = [wintypes.HWND]
+            user32.IsWindowVisible.restype = wintypes.BOOL
+            user32.BringWindowToTop.argtypes = [wintypes.HWND]
+            user32.BringWindowToTop.restype = wintypes.BOOL
+
+            # GWLP_HWNDPARENT sets an owner for top-level windows.  This keeps
+            # the panel out of the taskbar and Alt-Tab, minimizes it with the
+            # tracker, and avoids WebView2's unsupported cross-process child
+            # compositor path.
+            root_owner = int(
+                user32.GetAncestor(
+                    self.embed_root_hwnd,
+                    2,  # GA_ROOT
+                )
+                or self.embed_root_hwnd
+            )
+            if root_owner > 0:
+                set_window_long(panel, -8, root_owner)
+            current_exstyle = int(get_window_long(panel, -20))
+            set_window_long(
+                panel,
+                -20,
+                (current_exstyle & ~0x00040000) | 0x00000080,
+                # Remove WS_EX_APPWINDOW and add WS_EX_TOOLWINDOW.
+            )
+            try:
+                native_window.ShowInTaskbar = False
+                native_window.TopMost = False
+            except Exception:
+                pass
+
+            panel_rect = wintypes.RECT()
+            if not user32.GetWindowRect(panel, ctypes.byref(panel_rect)):
+                return False
+            try:
+                dpi = max(96, int(user32.GetDpiForWindow(panel)))
+            except Exception:
+                dpi = 96
+            dpi_scale = dpi / 96.0
+            width = max(1, int(round(self.embed_width * dpi_scale)))
+            height = max(1, int(round(self.embed_height * dpi_scale)))
+            bounds = self._embedded_root_bounds()
+            if bounds is None:
+                left = int(panel_rect.left)
+                top = int(panel_rect.top)
+            else:
+                root_left, root_top, root_right, root_bottom = bounds
+                margin = 14
+                left = max(root_left + margin, root_right - width - margin)
+                top = max(root_top + margin, root_bottom - height - margin)
+
+            shown = bool(
+                user32.SetWindowPos(
+                    panel,
+                    0,
+                    left,
+                    top,
+                    width,
+                    height,
+                    0x0020 | 0x0010 | 0x0040,
+                    # SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW
+                )
+            )
+            # Some WebView2/WinForms combinations report SetWindowPos failure
+            # even though the window was successfully shown.  Confirm the
+            # actual Windows visibility state instead of leaving the Tk
+            # loading cover up forever because of that unreliable return
+            # value.  A second explicit show also handles runtimes that defer
+            # the first show until after the loaded callback returns.
+            user32.ShowWindow(panel, 5)  # SW_SHOW
+            user32.BringWindowToTop(panel)
+            visible = bool(user32.IsWindowVisible(panel))
+            if not visible and not shown:
+                append_error_log(
+                    "SPC player panel attachment failed",
+                    "Windows created the SPC audio window but did not make "
+                    "the player visible.",
+                )
+                return False
+            self._embedded_child_hwnd = panel
+            # The Tk placeholder provided instant first-click feedback. Hide
+            # it only after Windows confirms that the real player is visible.
+            user32.ShowWindow(self.embed_parent_hwnd, 0)  # SW_HIDE
+            return True
+        except Exception as error:
+            append_error_log(
+                "SPC player panel attachment failed",
+                "".join(
+                    traceback.format_exception(
+                        type(error),
+                        error,
+                        error.__traceback__,
+                    )
+                ),
+            )
+            return False
+
+    def _embedded_parent_owner(self) -> int:
+        if not self.is_embedded:
+            return 0
+        try:
+            return int(self._embedded_user32().GetParent(self.embed_parent_hwnd))
+        except Exception:
+            return 0
+
+    def _set_embedded_host_rect(
+        self,
+        screen_x: int,
+        screen_y: int,
+        width: int,
+        height: int,
+    ) -> bool:
+        if not self.is_embedded or self._embedded_child_hwnd <= 0:
+            return False
+        try:
+            user32 = self._embedded_user32()
+            return bool(
+                user32.SetWindowPos(
+                    self._embedded_child_hwnd,
+                    0,
+                    int(screen_x),
+                    int(screen_y),
+                    int(width),
+                    int(height),
+                    0x0004 | 0x0010 | 0x0040,
+                    # SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW
+                )
+            )
+        except Exception:
+            return False
+
+    def resize_embedded_spc_player(self, height: object) -> bool:
+        """Resize the in-app host when SMW Central collapses or expands."""
+        if not self.is_embedded:
+            return False
+        try:
+            with self._gesture_lock:
+                safe_height = max(
+                    38,
+                    min(self.embed_height, int(round(float(height)))),
+                )
+                rect = wintypes.RECT()
+                user32 = self._embedded_user32()
+                if not user32.GetWindowRect(
+                    self._embedded_child_hwnd,
+                    ctypes.byref(rect),
+                ):
+                    return False
+                scale = self._embedded_dpi_scale()
+                physical_height = max(1, int(round(safe_height * scale)))
+                physical_width = max(1, int(rect.right - rect.left))
+                return self._set_embedded_host_rect(
+                    int(rect.left),
+                    int(rect.bottom) - physical_height,
+                    physical_width,
+                    physical_height,
+                )
+        except Exception:
+            return False
+
+    def _embedded_root_bounds(self) -> tuple[int, int, int, int] | None:
+        if self.embed_root_hwnd <= 0:
+            return None
+        try:
+            rect = wintypes.RECT()
+            user32 = self._embedded_user32()
+            user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            user32.GetAncestor.restype = wintypes.HWND
+            root_handle = int(
+                user32.GetAncestor(
+                    self.embed_root_hwnd,
+                    2,  # GA_ROOT
+                )
+                or self.embed_root_hwnd
+            )
+            if not user32.GetWindowRect(
+                root_handle,
+                ctypes.byref(rect),
+            ):
+                return None
+            return (
+                int(rect.left),
+                int(rect.top),
+                int(rect.right),
+                int(rect.bottom),
+            )
+        except Exception:
+            return None
+
+    def _embedded_dpi_scale(self) -> float:
+        if self._embedded_child_hwnd <= 0:
+            return 1.0
+        try:
+            user32 = self._embedded_user32()
+            user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+            user32.GetDpiForWindow.restype = wintypes.UINT
+            return max(
+                1.0,
+                float(user32.GetDpiForWindow(self._embedded_child_hwnd)) / 96.0,
+            )
+        except Exception:
+            return 1.0
+
+    def begin_embedded_spc_player_drag(
+        self,
+        screen_x: object,
+        screen_y: object,
+    ) -> bool:
+        if not self.is_embedded:
+            return False
+        try:
+            with self._gesture_lock:
+                rect = wintypes.RECT()
+                if not self._embedded_user32().GetWindowRect(
+                    self._embedded_child_hwnd,
+                    ctypes.byref(rect),
+                ):
+                    return False
+                self._embedded_drag_origin = (
+                    int(round(float(screen_x))),
+                    int(round(float(screen_y))),
+                    int(rect.left),
+                    int(rect.top),
+                )
+                return True
+        except Exception:
+            self._embedded_drag_origin = None
+            return False
+
+    def move_embedded_spc_player_drag(
+        self,
+        screen_x: object,
+        screen_y: object,
+    ) -> bool:
+        try:
+            with self._gesture_lock:
+                origin = self._embedded_drag_origin
+                if not self.is_embedded or origin is None:
+                    return False
+                pointer_x = int(round(float(screen_x)))
+                pointer_y = int(round(float(screen_y)))
+                start_x, start_y, host_x, host_y = origin
+                scale = self._embedded_dpi_scale()
+                new_x = host_x + int(round((pointer_x - start_x) * scale))
+                new_y = host_y + int(round((pointer_y - start_y) * scale))
+                rect = wintypes.RECT()
+                if not self._embedded_user32().GetWindowRect(
+                    self._embedded_child_hwnd,
+                    ctypes.byref(rect),
+                ):
+                    return False
+                width = max(1, int(rect.right - rect.left))
+                height = max(1, int(rect.bottom - rect.top))
+                bounds = self._embedded_root_bounds()
+                if bounds is not None:
+                    left, top, right, bottom = bounds
+                    inset = 8
+                    new_x = min(max(left + inset, new_x), right - width - inset)
+                    new_y = min(max(top + inset, new_y), bottom - height - inset)
+                return self._set_embedded_host_rect(
+                    new_x,
+                    new_y,
+                    width,
+                    height,
+                )
+        except Exception:
+            return False
+
+    def finish_embedded_spc_player_drag(self) -> bool:
+        with self._gesture_lock:
+            was_dragging = self._embedded_drag_origin is not None
+            self._embedded_drag_origin = None
+            return was_dragging
 
     def close_spc_player(self) -> bool:
         try:
-            if self.window is not None:
-                self.window.destroy()
+            if self._window is not None:
+                self._window.destroy()
             return True
         except Exception:
             return False
 
     def minimize_spc_player(self) -> bool:
         try:
-            if self.window is not None:
-                self.window.minimize()
+            if self._window is not None:
+                self._window.minimize()
             return True
         except Exception:
             return False
@@ -112932,11 +120476,11 @@ class _SpcPlayerWebviewApi:
     def resize_spc_player(self, width: object, height: object) -> bool:
         try:
             with self._gesture_lock:
-                if self.window is None:
+                if self._window is None:
                     return False
                 safe_width = max(400, min(4000, int(float(width))))
                 safe_height = max(220, min(2400, int(float(height))))
-                self.window.resize(safe_width, safe_height)
+                self._window.resize(safe_width, safe_height)
             return True
         except Exception:
             return False
@@ -112948,13 +120492,13 @@ class _SpcPlayerWebviewApi:
     ) -> bool:
         try:
             with self._gesture_lock:
-                if self.window is None:
+                if self._window is None:
                     return False
                 from webview.window import FixPoint
 
                 safe_width = max(400, min(4000, int(float(width))))
                 safe_height = max(220, min(2400, int(float(height))))
-                self.window.resize(
+                self._window.resize(
                     safe_width,
                     safe_height,
                     FixPoint.EAST | FixPoint.SOUTH,
@@ -112972,7 +120516,7 @@ class _SpcPlayerWebviewApi:
         """Resize from any edge while pinning the opposite side."""
         try:
             with self._gesture_lock:
-                if self.window is None:
+                if self._window is None:
                     return False
                 from webview.window import FixPoint
 
@@ -112989,7 +120533,7 @@ class _SpcPlayerWebviewApi:
                     "w": FixPoint.NORTH | FixPoint.EAST,
                     "nw": FixPoint.SOUTH | FixPoint.EAST,
                 }
-                self.window.resize(
+                self._window.resize(
                     safe_width,
                     safe_height,
                     fixed_points.get(
@@ -113005,11 +120549,11 @@ class _SpcPlayerWebviewApi:
         """Move the player directly so every empty surface can be draggable."""
         try:
             with self._gesture_lock:
-                if self.window is None:
+                if self._window is None:
                     return False
                 safe_x = max(-100000, min(100000, int(float(x))))
                 safe_y = max(-100000, min(100000, int(float(y))))
-                native_window = getattr(self.window, "native", None)
+                native_window = getattr(self._window, "native", None)
                 if IS_WINDOWS and native_window is not None:
                     native_handle = native_window.Handle
                     try:
@@ -113038,7 +120582,7 @@ class _SpcPlayerWebviewApi:
                         # SWP_SHOWWINDOW
                     )
                     return bool(moved)
-                self.window.move(safe_x, safe_y)
+                self._window.move(safe_x, safe_y)
             return True
         except Exception:
             return False
@@ -113049,9 +120593,9 @@ class _SpcPlayerWebviewApi:
             return False
         try:
             with self._gesture_lock:
-                if self.window is None:
+                if self._window is None:
                     return False
-                native_handle = self.window.native.Handle
+                native_handle = self._window.native.Handle
                 try:
                     handle = int(native_handle.ToInt64())
                 except AttributeError:
@@ -113080,10 +120624,10 @@ class _SpcPlayerWebviewApi:
         """Reapply the native rounded region and keep the player on-screen."""
         try:
             with self._gesture_lock:
-                if self.window is None:
+                if self._window is None:
                     return False
                 if IS_WINDOWS:
-                    _configure_windows_spc_player_window(self.window)
+                    _configure_windows_spc_player_window(self._window)
             return True
         except Exception:
             return False
@@ -113148,8 +120692,8 @@ def _install_windows_spc_player_hit_test(
         comctl32.RemoveWindowSubclass.restype = wintypes.BOOL
         safe_dpi = max(96, int(dpi or 96))
         border_size = max(7, int(round(8 * safe_dpi / 96)))
-        header_height = max(48, int(round(72 * safe_dpi / 96)))
-        action_width = max(96, int(round(116 * safe_dpi / 96)))
+        header_height = max(40, int(round(42 * safe_dpi / 96)))
+        action_width = max(48, int(round(52 * safe_dpi / 96)))
 
         @callback_type
         def player_window_proc(
@@ -113233,7 +120777,7 @@ def _install_windows_spc_player_hit_test(
 
 def _configure_windows_spc_player_window(
     window: Any,
-    corner_radius: int = 26,
+    corner_radius: int = 12,
     popup_x: int | None = None,
     popup_y: int | None = None,
     popup_width: int | None = None,
@@ -113448,14 +120992,8 @@ def _spc_player_popup_geometry(
 ) -> tuple[int, int, int | None, int | None]:
     """Return a taskbar-safe embedded-player size and screen position."""
     settings = dict(payload or {})
-    try:
-        width = max(520, min(1200, int(settings.get("embed_width", 820))))
-    except (TypeError, ValueError):
-        width = 820
-    try:
-        height = max(400, min(700, int(settings.get("embed_height", 420))))
-    except (TypeError, ValueError):
-        height = 500
+    width = 400
+    height = 220
     try:
         fallback_x = int(settings["popup_x"])
         fallback_y = int(settings["popup_y"])
@@ -113504,9 +121042,18 @@ def _embed_windows_webview_window(
         native_window = window.native
         native_handle = native_window.Handle
         try:
-            child = int(native_handle.ToInt64())
+            form_handle = int(native_handle.ToInt64())
         except AttributeError:
-            child = int(native_handle)
+            form_handle = int(native_handle)
+        child = form_handle
+        try:
+            webview_handle = native_window.browser.webview.Handle
+            try:
+                child = int(webview_handle.ToInt64())
+            except AttributeError:
+                child = int(webview_handle)
+        except Exception:
+            child = form_handle
         if parent <= 0 or child <= 0:
             return False
 
@@ -113527,6 +121074,7 @@ def _embed_windows_webview_window(
         user32.IsChild.restype = wintypes.BOOL
 
         gwl_style = -16
+        gwl_exstyle = -20
         ws_child = 0x40000000
         ws_visible = 0x10000000
         ws_clip_siblings = 0x04000000
@@ -113546,6 +121094,19 @@ def _embed_windows_webview_window(
             | ws_visible
             | ws_clip_siblings
             | ws_clip_children
+        )
+        # Keep pywebview's now-empty WinForms shell hidden.  Embedding the
+        # actual WebView2 control avoids the blank DWM surface produced by
+        # reparenting the outer form across processes.
+        user32.ShowWindow(form_handle, 0)  # SW_HIDE
+        user32.ShowWindow(child, 0)  # SW_HIDE
+        current_exstyle = int(get_window_long(child, gwl_exstyle))
+        ws_ex_appwindow = 0x00040000
+        ws_ex_toolwindow = 0x00000080
+        set_window_long(
+            child,
+            gwl_exstyle,
+            (current_exstyle & ~ws_ex_appwindow) | ws_ex_toolwindow,
         )
         user32.SetParent(child, parent)
         set_window_long(child, gwl_style, child_style)
@@ -113590,6 +121151,31 @@ def _run_smwcentral_webview(
         return 1
 
     try:
+        if normalized_mode in {"spc_player", "radio"} and IS_WINDOWS:
+            # The visible controls live in Tk while WebView2 supplies the
+            # official SMW Central audio engine in a hidden child. A Tk click
+            # cannot become a WebView user gesture, so WebView2 otherwise
+            # accepts the command but leaves the song paused at 0:00.
+            required_browser_flags = (
+                "--autoplay-policy=no-user-gesture-required",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+            )
+            browser_arguments = os.environ.get(
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "",
+            ).strip()
+            existing_browser_flags = browser_arguments.split()
+            missing_browser_flags = [
+                flag
+                for flag in required_browser_flags
+                if flag not in existing_browser_flags
+            ]
+            if missing_browser_flags:
+                os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = " ".join(
+                    [*existing_browser_flags, *missing_browser_flags]
+                ).strip()
         import webview
 
         SMWC_WEBVIEW_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -113606,14 +121192,51 @@ def _run_smwcentral_webview(
         }:
             normalized_mode = "browse"
         submission = dict(payload or {})
+        temp_root = Path(tempfile.gettempdir()).resolve()
+
+        def validated_player_bridge_path(
+            value: object,
+            kind: str,
+        ) -> Path | None:
+            raw_path = str(value or "").strip()
+            if not raw_path:
+                return None
+            try:
+                bridge_path = Path(raw_path).resolve()
+            except (OSError, RuntimeError, ValueError):
+                return None
+            if bridge_path.parent != temp_root:
+                return None
+            if not re.fullmatch(
+                rf"smw_tracker_spc_[A-Za-z0-9_]+_{kind}\.json",
+                bridge_path.name,
+            ):
+                return None
+            return bridge_path
+
+        player_state_path = validated_player_bridge_path(
+            submission.get("player_state_path"),
+            "state",
+        )
+        player_command_path = validated_player_bridge_path(
+            submission.get("player_command_path"),
+            "command",
+        )
+        native_panel_requested = bool(submission.get("native_panel")) and bool(
+            player_state_path is not None and player_command_path is not None
+        )
+        preload_requested = bool(submission.get("preload"))
         review_target = _smwcentral_comments_url(
             submission.get("target_url", "")
         )
-        spc_api = (
-            _SpcPlayerWebviewApi()
-            if normalized_mode in {"spc_player", "radio"}
-            else None
-        )
+        spc_api = None
+        if normalized_mode in {"spc_player", "radio"}:
+            spc_api = _SpcPlayerWebviewApi(
+                embed_parent_hwnd=submission.get("embed_parent_hwnd", 0),
+                embed_root_hwnd=submission.get("embed_root_hwnd", 0),
+                embed_width=submission.get("embed_width", 400),
+                embed_height=submission.get("embed_height", 220),
+            )
         window_options: dict[str, Any] = {
             "width": 1180,
             "height": 880,
@@ -113642,15 +121265,18 @@ def _run_smwcentral_webview(
                     "height": popup_height,
                     "x": popup_x,
                     "y": popup_y,
-                    "min_size": (400, 220),
-                    "resizable": True,
+                    "min_size": (
+                        400,
+                        38 if spc_api and spc_api.is_embedded else 220,
+                    ),
+                    "resizable": not bool(spc_api and spc_api.is_embedded),
                     "maximized": False,
                     "hidden": True,
                     "focus": False,
                     "frameless": True,
                     "easy_drag": False,
                     "shadow": False,
-                    "on_top": True,
+                    "on_top": not bool(spc_api and spc_api.is_embedded),
                     "background_color": embed_background,
                     "js_api": spc_api,
                 }
@@ -113670,26 +121296,32 @@ def _run_smwcentral_webview(
             **window_options,
         )
         if spc_api is not None:
-            spc_api.window = window
+            spc_api._window = window
 
         if normalized_mode in {"spc_player", "radio"} and IS_WINDOWS:
-            def configure_native_spc_player() -> bool:
-                return _configure_windows_spc_player_window(
-                    window,
-                    popup_x=popup_x,
-                    popup_y=popup_y,
-                    popup_width=popup_width,
-                    popup_height=popup_height,
-                )
+            if spc_api is not None and spc_api.is_embedded:
+                # The tracker-owned loading placeholder stays visible until
+                # the official controls report ready. reveal_player then
+                # establishes the Windows owner and displays the tool panel.
+                pass
+            else:
+                def configure_native_spc_player() -> bool:
+                    return _configure_windows_spc_player_window(
+                        window,
+                        popup_x=popup_x,
+                        popup_y=popup_y,
+                        popup_width=popup_width,
+                        popup_height=popup_height,
+                    )
 
-            # before_show establishes the taskbar identity and rounded frame;
-            # shown reapplies the requested bottom-right position after the
-            # WebView host has finished its own placement pass.
-            window.events.before_show += configure_native_spc_player
-            window.events.shown += configure_native_spc_player
+                # Fall back to the compact top-level player if no tracker host
+                # was supplied (for example, a direct command-line launch).
+                window.events.before_show += configure_native_spc_player
+                window.events.shown += configure_native_spc_player
 
         player_watchdog_stop = threading.Event()
         player_watchdog_started = False
+        player_revealed = False
 
         def stop_player_watchdog(*_args: object) -> None:
             player_watchdog_stop.set()
@@ -113701,17 +121333,136 @@ def _run_smwcentral_webview(
             except Exception:
                 pass
 
+        def reveal_player() -> bool:
+            """Show either the in-app WebView child or the popup fallback."""
+            nonlocal player_revealed
+            if player_revealed:
+                return True
+            if native_panel_requested:
+                # The WebView remains a hidden audio engine.  The parent Tk
+                # process renders the visible, draggable player controls.
+                player_revealed = True
+            elif spc_api is not None and spc_api.is_embedded:
+                player_revealed = bool(spc_api.attach_embedded_spc_player())
+                if not player_revealed:
+                    # Audio can already be running even when a particular
+                    # WebView2 runtime refuses the cross-process owner setup.
+                    # Show the same compact player at its requested in-app
+                    # corner instead of trapping the user behind the loading
+                    # placeholder.
+                    try:
+                        window.show()
+                        player_revealed = bool(
+                            _configure_windows_spc_player_window(
+                                window,
+                                popup_x=popup_x,
+                                popup_y=popup_y,
+                                popup_width=popup_width,
+                                popup_height=popup_height,
+                            )
+                        )
+                    except Exception as fallback_error:
+                        append_error_log(
+                            "SPC player visible fallback failed",
+                            f"{type(fallback_error).__name__}: "
+                            f"{fallback_error}",
+                        )
+            else:
+                window.show()
+                player_revealed = True
+            if player_revealed and not native_panel_requested:
+                ready_signal_value = str(
+                    submission.get("ready_signal_path", "")
+                ).strip()
+                if ready_signal_value:
+                    try:
+                        ready_signal_path = Path(ready_signal_value)
+                        temp_root = Path(tempfile.gettempdir()).resolve()
+                        if (
+                            ready_signal_path.parent.resolve() == temp_root
+                            and re.fullmatch(
+                                r"smw_tracker_spc_ready_[A-Za-z0-9_]+\.flag",
+                                ready_signal_path.name,
+                            )
+                        ):
+                            ready_signal_path.write_text(
+                                "ready",
+                                encoding="ascii",
+                            )
+                    except OSError:
+                        pass
+            return player_revealed
+
+        last_native_command_id = ""
+        radio_activation_requested = bool(
+            normalized_mode == "radio" and not preload_requested
+        )
+
+        def sync_native_player_bridge() -> None:
+            """Exchange playback state and controls with the parent Tk UI."""
+            nonlocal last_native_command_id, radio_activation_requested
+            if (
+                not native_panel_requested
+                or player_state_path is None
+                or player_command_path is None
+            ):
+                return
+            if player_command_path.is_file():
+                try:
+                    command = json.loads(
+                        player_command_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    command = {}
+                if isinstance(command, dict):
+                    command_id = str(command.get("id", "") or "")
+                    if command_id and command_id != last_native_command_id:
+                        if command.get("action") == "start_radio":
+                            radio_activation_requested = True
+                            window.evaluate_js(
+                                _smwcentral_radio_javascript()
+                            )
+                        else:
+                            window.evaluate_js(
+                                _smwcentral_native_spc_command_javascript(command)
+                            )
+                        last_native_command_id = command_id
+            state = window.evaluate_js(
+                _smwcentral_native_spc_state_javascript()
+            )
+            if isinstance(state, str):
+                try:
+                    state = json.loads(state)
+                except json.JSONDecodeError:
+                    state = {}
+            if not isinstance(state, dict):
+                return
+            # The site keeps hidden controls in the DOM, and the player's
+            # injected presentation CSS can make computed visibility
+            # ambiguous. The launch mode is authoritative: radio has Skip;
+            # an individual submission has Restart and Loop.
+            state["player_mode"] = (
+                "radio" if normalized_mode == "radio" else "song"
+            )
+            state["updated_at"] = time.time()
+            temporary_state_path = player_state_path.with_suffix(".tmp")
+            temporary_state_path.write_text(
+                json.dumps(state, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(temporary_state_path, player_state_path)
+
         def install_player_layer(
             player_script: str,
             *,
             activate_radio: bool = False,
         ) -> bool:
-            """Install and verify the tracker-owned UI in the active document."""
+            """Install and verify SMW Central's official player layer."""
             window.evaluate_js(player_script)
             layer_ready = bool(
                 window.evaluate_js(
-                    "Boolean(document.getElementById("
-                    "'smw-tracker-owned-player'))"
+                    "document.documentElement?.dataset?."
+                    "smwTrackerSpcReady === 'true'"
                 )
             )
             if activate_radio:
@@ -113722,6 +121473,7 @@ def _run_smwcentral_webview(
             player_script: str,
             *,
             activate_radio: bool = False,
+            fallback_script: str = "",
         ) -> None:
             """Restore the custom shell after site navigation or DOM rebuilds."""
             nonlocal player_watchdog_started
@@ -113730,20 +121482,54 @@ def _run_smwcentral_webview(
             player_watchdog_started = True
 
             def worker() -> None:
-                consecutive_failures = 0
-                while not player_watchdog_stop.wait(0.35):
+                readiness_attempts = 0
+                fallback_active = False
+                while not player_watchdog_stop.wait(0.18):
                     try:
-                        install_player_layer(
-                            player_script,
-                            activate_radio=activate_radio,
+                        activate_now = bool(
+                            activate_radio or radio_activation_requested
                         )
-                        consecutive_failures = 0
-                    except Exception:
+                        if fallback_active and fallback_script:
+                            if activate_now:
+                                window.evaluate_js(
+                                    _smwcentral_radio_javascript()
+                                )
+                            fallback_ready = bool(
+                                window.evaluate_js(fallback_script)
+                            )
+                            if fallback_ready:
+                                reveal_player()
+                        else:
+                            layer_ready = install_player_layer(
+                                player_script,
+                                activate_radio=activate_now,
+                            )
+                            if layer_ready:
+                                reveal_player()
+                                readiness_attempts = 0
+                            else:
+                                readiness_attempts += 1
+                    except Exception as error:
                         # Navigation briefly makes evaluate_js unavailable.
-                        # Keep trying, but stop once the window is truly gone.
-                        consecutive_failures += 1
-                        if consecutive_failures >= 80:
-                            break
+                        readiness_attempts += 1
+                        if readiness_attempts == 16:
+                            append_error_log(
+                                "SMW Central SPC controls did not become ready",
+                                f"{type(error).__name__}: {error}",
+                            )
+                    # SMW Central occasionally changes the structure around
+                    # its official player controls. After a short grace
+                    # period, keep the same site audio engine but render the
+                    # tracker-owned controls so the user is never trapped on
+                    # the loading placeholder.
+                    if readiness_attempts >= 16 and fallback_script:
+                        fallback_active = True
+                    try:
+                        sync_native_player_bridge()
+                    except Exception:
+                        # The page can be between navigations for a few ticks.
+                        # The next watchdog pass will refresh the native panel.
+                        pass
 
             threading.Thread(
                 target=worker,
@@ -113763,11 +121549,21 @@ def _run_smwcentral_webview(
                         language,
                         submission.get("embed_background", "#0F1B2D"),
                         True,
-                        False,
+                    )
+                    fallback_script = (
+                        _smwcentral_custom_spc_player_javascript(
+                            language,
+                            submission.get("embed_background", "#0F1B2D"),
+                            True,
+                            False,
+                        )
                     )
                     if install_player_layer(player_script):
-                        window.show()
-                    start_player_watchdog(player_script)
+                        reveal_player()
+                    start_player_watchdog(
+                        player_script,
+                        fallback_script=fallback_script,
+                    )
                     return
                 if normalized_mode == "radio":
                     conceal_player_page()
@@ -113775,16 +121571,24 @@ def _run_smwcentral_webview(
                         language,
                         submission.get("embed_background", "#0F1B2D"),
                         False,
-                        True,
+                    )
+                    fallback_script = (
+                        _smwcentral_custom_spc_player_javascript(
+                            language,
+                            submission.get("embed_background", "#0F1B2D"),
+                            False,
+                            True,
+                        )
                     )
                     if install_player_layer(
                         player_script,
-                        activate_radio=True,
+                        activate_radio=not preload_requested,
                     ):
-                        window.show()
+                        reveal_player()
                     start_player_watchdog(
                         player_script,
-                        activate_radio=True,
+                        activate_radio=not preload_requested,
+                        fallback_script=fallback_script,
                     )
                     return
                 if normalized_mode == "home_feed":
@@ -113866,9 +121670,11 @@ def _run_smwcentral_webview(
         automatic_login = bool(submission.get("automatic_login", True))
         storage_path = SMWC_WEBVIEW_STORAGE_DIR
         if normalized_mode in {"spc_player", "radio"}:
-            # A dedicated WebView2 profile keeps the music renderer and its
-            # Windows audio session separate from other embedded pages.
-            storage_path = SMWC_WEBVIEW_STORAGE_DIR / "SPCPlayer"
+            # Keep the site resources between sessions. The prior one-time
+            # profile made every click a cold 40+ second page load. The parent
+            # now closes the helper process tree before replacing it, so this
+            # persistent WebView2 cache can be reused safely.
+            storage_path = SMWC_WEBVIEW_STORAGE_DIR / "SPCPlayerCache"
             storage_path.mkdir(parents=True, exist_ok=True)
         start_options: dict[str, Any] = {
             "private_mode": (

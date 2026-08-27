@@ -668,23 +668,30 @@ class MisterSupportTests(unittest.TestCase):
         self.assertNotIn("🐸", filename)
         self.assertNotIn("🍜", filename)
 
-    def test_mgl_targets_snes_core_and_relative_rom(self):
+    def test_mgl_targets_snes_core_and_full_rom_path(self):
         text = self.tracker.mister_mgl_text(
-            "SMW Stream Tracker/My Hack.sfc"
+            "/media/fat/games/SNES/SMW Stream Tracker/My Hack.sfc"
         )
         self.assertIn("_Console/SNES", text)
         self.assertNotIn("RA_SNES", text)
         self.assertIn('index="0"', text)
-        self.assertIn('path="SMW Stream Tracker/My Hack.sfc"', text)
+        self.assertIn(
+            'path="/media/fat/games/SNES/SMW Stream Tracker/My Hack.sfc"',
+            text,
+        )
 
     def test_mgl_can_target_the_official_retroachievements_snes_core(self):
         text = self.tracker.mister_mgl_text(
-            "SMW Stream Tracker/My Hack.sfc",
+            "/media/fat/games/SNES/SMW Stream Tracker/My Hack.sfc",
             retroachievements=True,
         )
         self.assertIn("_RA_Cores/Cores/SNES", text)
         self.assertIn('<setname same_dir="1">RA_SNES</setname>', text)
-        self.assertIn('path="SMW Stream Tracker/My Hack.sfc"', text)
+        self.assertIn('index="0"', text)
+        self.assertIn(
+            'path="/media/fat/games/SNES/SMW Stream Tracker/My Hack.sfc"',
+            text,
+        )
 
     def test_mister_setup_strings_exist_in_every_language(self):
         for language in ("au", "es", "fr", "de", "pt-BR"):

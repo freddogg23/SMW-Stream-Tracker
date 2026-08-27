@@ -4,6 +4,15 @@ __pycache__/
 .mypy_cache/
 .pyinstaller-build/
 .build-packages/
+.music-build-packages/
+.music-build-packages313/
+.music-index-pilot/
+.music-index-startup-profile*/
+.music-index-build/
+.music-index-dist*/
+.music-index-exe-profile/
+.music-index-full/
+.music-match-test*/
 build/
 dist/
 *.log
@@ -11,6 +20,9 @@ dist/
 *.bak
 *.db
 *.sqlite*
+!music_index/
+!music_index/bundled/
+!music_index/bundled/manifest.json
 tracker_config.json
 current_hack.txt
 game_time.txt

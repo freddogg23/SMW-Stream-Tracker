@@ -215,6 +215,48 @@ class ConnectionServiceTests(unittest.TestCase):
             (self.tracker.PLAYER_STATE_ADDRESS, 1),
         )
 
+    def test_game_state_rejects_unstarted_mister_wram_pattern(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        base = int(self.tracker.LIVE_STATE_BASE_ADDRESS, 16)
+
+        def initial_wram_chunk(_ws, address, size):
+            start = int(address, 16) - base
+            return bytes(
+                0x66 if (((start + index) >> 8) ^ ((start + index) >> 2)) & 1
+                else 0x99
+                for index in range(size)
+            )
+
+        worker.read_memory = initial_wram_chunk
+
+        with self.assertRaisesRegex(RuntimeError, "ROM did not start"):
+            worker.read_game_state(object())
+
+    def test_normal_worker_stop_preserves_clean_shutdown_marker(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        worker.cancel_streamerbot_level_session = mock.MagicMock()
+
+        worker.stop(clean_shutdown=True)
+
+        self.assertTrue(worker.clean_shutdown_requested)
+        self.assertTrue(worker.stop_event.is_set())
+
+    def test_checkpoint_exit_count_keeps_a_real_zero(self):
+        worker = self.tracker.TrackerWorker(
+            dict(self.tracker.DEFAULT_CONFIG),
+            queue.Queue(),
+        )
+        worker.displayed_exit_count = 0
+        worker.authoritative_exit_count = 153
+
+        self.assertEqual(worker.confirmed_completed_exit_count(), 0)
+
     def test_live_state_waits_for_a_coherent_initial_sample(self):
         worker = self.tracker.TrackerWorker(
             dict(self.tracker.DEFAULT_CONFIG),

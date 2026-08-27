@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 2.1.0**
+**Version 2.2.0**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -9,6 +9,30 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
+
+## What’s new in v2.2.0
+
+- Adds **Music Identifier & Radio** with private local SMW Central audio
+  matching. It can listen through a capture card, microphone, or Windows
+  system-audio source, returns confident matches early, stops immediately when
+  cancelled, and checks for new or changed music every 30 minutes while open.
+- Adds a polished in-app **SPC Player** with play/pause, replay, highlighted
+  looping, next track, progress seeking, volume, collapse, scrolling track
+  text, anti-aliased controls, and smoother dragging.
+- Adds an **SMW Central Radio OBS Browser Source** controlled by the in-app SPC
+  player, with live title, artist, time, equalizer, and progress information.
+- Adds one-click Streamer.bot setup for a configurable **What Song Is Playing?**
+  channel-point reward. The reward can be restricted to a chosen OBS scene and
+  posts the current level's song title and SMW Central listening link to chat.
+- Adds reward cost and cooldown controls, an in-app Streamer.bot installer, and
+  compatibility with existing rewards and current Streamer.bot navigation.
+- Caches live ROM, level, room, and music state for fast repeat redemptions while
+  ensuring a changed level or song receives a fresh result.
+- Improves normal shutdown and tracker recovery so closing the app intentionally
+  does not cause a false crash-recovery warning.
+
+This is a Windows-only release. No macOS artifacts are published because the
+macOS build has not been tested.
 
 ## What’s new in v2.1.0
 
@@ -198,7 +222,7 @@ macOS build has not been tested.
 ### Main dashboard
 
 <p align="center">
-  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v2.1.0 Stream Desk dashboard with live-session controls, timeline, counters, and playlist">
+  <img src="docs/screenshots/main-dashboard.png" alt="SMW Stream Tracker v2.2.0 Stream Desk dashboard with live-session controls, timeline, counters, and playlist">
 </p>
 
 The current Stream Desk dashboard keeps the active hack, session timeline,

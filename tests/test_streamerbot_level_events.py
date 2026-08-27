@@ -5,6 +5,7 @@ import queue
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 
 
 MODULE_PATH = (
@@ -95,6 +96,31 @@ class StreamerBotLevelEventTests(unittest.TestCase):
         self.worker.start_streamerbot_level_session(7)
         self.assertFalse(
             (self.output_folder / "streamerbot_level_events.txt").exists()
+        )
+
+    def test_playable_level_start_notifies_app_for_song_prefetch(self):
+        self.worker.current_rom_key = "sample-rom"
+        self.worker.get_saved_level_progress = MagicMock(return_value=(0.0, 0))
+        self.worker.load_level_time_into_livesplit = MagicMock()
+        self.worker.update_death_file = MagicMock()
+        self.worker.update_timer_files = MagicMock()
+        self.worker.start_streamerbot_level_session = MagicMock(
+            side_effect=lambda _level: setattr(
+                self.worker,
+                "streamerbot_level_session_id",
+                "level-session",
+            )
+        )
+        self.worker.send_event = MagicMock()
+        self.worker.log = MagicMock()
+
+        self.worker.start_fresh_level_tracking(0x23)
+
+        self.worker.send_event.assert_called_once_with(
+            "level_started",
+            level_id=0x23,
+            rom_key="sample-rom",
+            session_id="level-session",
         )
 
 

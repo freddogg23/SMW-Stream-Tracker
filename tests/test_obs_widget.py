@@ -60,6 +60,16 @@ class ObsWidgetTests(unittest.TestCase):
                     }
                 ],
             },
+            radio={
+                "ready": True,
+                "playing": True,
+                "title": "Dancing Mad",
+                "subtitle": "Nobuo Uematsu, ported by musicalman",
+                "elapsed": "1:15",
+                "duration": "4:00",
+                "progress": 0.3125,
+                "can_skip": True,
+            },
         )
         self.assertEqual(state["hack"], "A Plumber For All Seasons")
         self.assertEqual(state["creator"], "Maddy Thorson")
@@ -73,6 +83,10 @@ class ObsWidgetTests(unittest.TestCase):
             "https://retroachievements.org/Badge/12345.png",
         )
         self.assertNotIn("web_api_key", json.dumps(state).casefold())
+        self.assertEqual(state["radio"]["title"], "Dancing Mad")
+        self.assertEqual(state["radio"]["elapsed_seconds"], 75.0)
+        self.assertEqual(state["radio"]["duration_seconds"], 240.0)
+        self.assertTrue(state["radio"]["playing"])
 
     def test_widget_exit_denominator_uses_authoritative_values(self):
         state = self.tracker.build_obs_widget_state(
@@ -92,6 +106,11 @@ class ObsWidgetTests(unittest.TestCase):
             (assets / "index.html").write_text("<h1>Widget</h1>", encoding="utf-8")
             (assets / "widget.css").write_text("body{}", encoding="utf-8")
             (assets / "widget.js").write_text("void 0;", encoding="utf-8")
+            (assets / "radio.html").write_text(
+                "<h1>Radio Widget</h1>", encoding="utf-8"
+            )
+            (assets / "radio.css").write_text("body{}", encoding="utf-8")
+            (assets / "radio.js").write_text("void 0;", encoding="utf-8")
             expected = self.tracker.build_obs_widget_state(hack="Test Hack")
             received_commands = []
 
@@ -123,6 +142,11 @@ class ObsWidgetTests(unittest.TestCase):
                     timeout=3,
                 ) as response:
                     self.assertIn(b"Widget", response.read())
+                with urlopen(
+                    f"http://127.0.0.1:{port}/obs-radio/",
+                    timeout=3,
+                ) as response:
+                    self.assertIn(b"Radio Widget", response.read())
                 with self.assertRaises(
                     self.tracker.websocket.WebSocketBadStatusException
                 ):
@@ -218,12 +242,33 @@ class ObsWidgetTests(unittest.TestCase):
         setup_source = inspect.getsource(
             self.tracker.TrackerApp.open_obs_widget_setup
         )
-        self.assertIn('"Open OBS Widget Setup..."', settings_source)
+        self.assertIn('"Open OBS Widget & Radio Setup..."', settings_source)
         self.assertIn("self.open_obs_widget_setup", settings_source)
         self.assertIn("self._stop_obs_widget_server()", shutdown_source)
         self.assertIn("Custom Browser Dock URL", setup_source)
         self.assertIn("connected directly", setup_source)
-        self.assertNotIn("Browser Source", setup_source)
+        self.assertIn("SMW Central Radio Browser Source URL", setup_source)
+        self.assertIn("1000 × 260", setup_source)
+
+    def test_radio_browser_source_uses_live_websocket_state(self):
+        html = (PROJECT_ROOT / "obs_widget" / "radio.html").read_text(
+            encoding="utf-8"
+        )
+        script = (PROJECT_ROOT / "obs_widget" / "radio.js").read_text(
+            encoding="utf-8"
+        )
+        stylesheet = (PROJECT_ROOT / "obs_widget" / "radio.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("SMW Central Radio", html)
+        self.assertIn('id="progressFill"', html)
+        self.assertIn('class="equalizer"', html)
+        self.assertIn("new WebSocket", script)
+        self.assertIn("document.radio", script)
+        self.assertIn('sendCommand("radio_start")', script)
+        self.assertNotIn("fetch(", script)
+        self.assertIn("background: transparent", stylesheet)
+        self.assertIn("spin-record", stylesheet)
 
     def test_widget_commands_use_existing_library_filters_and_launch_path(self):
         handler_source = inspect.getsource(
@@ -238,6 +283,8 @@ class ObsWidgetTests(unittest.TestCase):
         self.assertIn('command == "search_hacks"', handler_source)
         self.assertIn('command == "play_hack"', handler_source)
         self.assertIn('command == "play_random_hack"', handler_source)
+        self.assertIn('"radio_start"', handler_source)
+        self.assertIn('"radio_next"', handler_source)
         self.assertIn("self._launch_catalog_game(game)", handler_source)
         self.assertIn("self._game_matches_library_filters", candidate_source)
         self.assertIn("self._catalog_game_has_downloaded_rom", candidate_source)

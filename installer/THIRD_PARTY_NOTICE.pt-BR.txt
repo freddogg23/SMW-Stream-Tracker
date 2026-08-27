@@ -24,6 +24,9 @@ Informações dos projetos e licenças:
 * websocket-client: https://github.com/websocket-client/websocket-client
 * pystray: https://github.com/moses-palmer/pystray
 * pywebview: https://pywebview.flowrl.com/
+* PyAudioWPatch (captura de áudio do Windows): https://github.com/s0d3s/PyAudioWPatch
+* NumPy (impressões digitais locais de músicas do SMW Central): https://numpy.org/
+* Chromaprint/fpcalc (impressões digitais locais de áudio): https://acoustid.org/chromaprint
 * pyobjc (Mac): https://pyobjc.readthedocs.io/
 * pythonnet e Microsoft Edge WebView2 (Windows): https://pythonnet.github.io/
 

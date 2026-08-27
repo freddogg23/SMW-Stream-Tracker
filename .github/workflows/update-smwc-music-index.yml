@@ -1,0 +1,141 @@
+name: Update SMW Central music index
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 23 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: smwc-music-index
+  cancel-in-progress: false
+
+jobs:
+  update-index:
+    runs-on: windows-latest
+    steps:
+      - name: Check out the Windows project
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the fingerprint builder
+        shell: pwsh
+        run: python -m pip install "numpy==2.5.2"
+
+      - name: Restore the resumable SMW Central cache
+        uses: actions/cache@v4
+        with:
+          path: .music-index-cache
+          key: smwc-music-Windows-${{ github.run_id }}
+          restore-keys: |
+            smwc-music-Windows-
+
+      - name: Download the current published index
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path .music-index-work | Out-Null
+          gh release download music-index-latest `
+            --repo "${{ github.repository }}" `
+            --pattern "SMWCentralMusicIndex.sqlite3" `
+            --dir .music-index-work `
+            --clobber
+          if ($LASTEXITCODE -ne 0) {
+            if (Test-Path -LiteralPath ".\music_index\bundled\SMWCentralMusicIndex.sqlite3") {
+              Copy-Item -LiteralPath `
+                ".\music_index\bundled\SMWCentralMusicIndex.sqlite3" `
+                -Destination ".music-index-work\SMWCentralMusicIndex.sqlite3" `
+                -Force
+            }
+          }
+          gh release download music-index-latest `
+            --repo "${{ github.repository }}" `
+            --pattern "SMWCentralMusicBase.sqlite3" `
+            --dir .music-index-work `
+            --clobber
+          if ($LASTEXITCODE -ne 0 -and (Test-Path -LiteralPath ".\music_index\bundled\SMWCentralMusicIndex.sqlite3")) {
+            Copy-Item -LiteralPath `
+              ".\music_index\bundled\SMWCentralMusicIndex.sqlite3" `
+              -Destination ".music-index-work\SMWCentralMusicBase.sqlite3" `
+              -Force
+          }
+          $global:LASTEXITCODE = 0
+
+      - name: Add new and changed SMW Central music
+        shell: pwsh
+        run: |
+          $current = ".music-index-work\SMWCentralMusicIndex.sqlite3"
+          $base = ".music-index-work\SMWCentralMusicBase.sqlite3"
+          $incremental = ".music-index-work\SMWCentralMusicUpdate.sqlite3"
+          $builderArgs = @(
+            ".\release_tools\build_smwc_music_index.py",
+            "--output", $current,
+            "--manifest", ".\release\music_index_manifest.json",
+            "--cache-dir", ".music-index-cache",
+            "--workers", "4",
+            "--download-url",
+            "https://github.com/${{ github.repository }}/releases/download/music-index-latest/SMWCentralMusicIndex.sqlite3"
+          )
+          if (Test-Path -LiteralPath $base) {
+            $builderArgs += @(
+              "--base-index", $base,
+              "--incremental-output", $incremental,
+              "--incremental-download-url",
+              "https://github.com/${{ github.repository }}/releases/download/music-index-latest/SMWCentralMusicUpdate.sqlite3"
+            )
+          }
+          python @builderArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "The SMW Central music index builder failed."
+          }
+          if (-not (Test-Path -LiteralPath $base)) {
+            Copy-Item -LiteralPath $current -Destination $base -Force
+          }
+
+      - name: Publish the verified index and manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = "${{ github.repository }}"
+          gh release view music-index-latest --repo $repo *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create music-index-latest `
+              --repo $repo `
+              --target main `
+              --title "SMW Central Music Index" `
+              --notes "Automatically maintained local-audio fingerprint index for SMW Stream Tracker."
+          }
+          $assets = @(
+            ".music-index-work\SMWCentralMusicIndex.sqlite3",
+            ".music-index-work\SMWCentralMusicBase.sqlite3"
+          )
+          if (Test-Path -LiteralPath ".music-index-work\SMWCentralMusicUpdate.sqlite3") {
+            $assets += ".music-index-work\SMWCentralMusicUpdate.sqlite3"
+          }
+          foreach ($asset in $assets) {
+            gh release upload music-index-latest $asset `
+              --repo $repo `
+              --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not publish $asset"
+            }
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- ".\release\music_index_manifest.json"
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "Update SMW Central music index manifest"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          }

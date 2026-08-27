@@ -234,6 +234,7 @@ class InAppNavigationTests(unittest.TestCase):
         )
         self.assertIn('self._create_recovery_backup("exit")', source)
         self.assertIn("shutdown_in_progress", source)
+        self.assertIn("self.worker.stop(clean_shutdown=True)", source)
 
     def test_related_catalog_and_downloader_actions_are_on_their_pages(self):
         method = self.methods["open_hack_downloader"]
@@ -566,6 +567,9 @@ class InAppNavigationTests(unittest.TestCase):
         self.assertIn("settings_action_groups", source)
         self.assertIn("settings_content_scrollbar", source)
         self.assertIn("sync_settings_content_width", source)
+        self.assertIn("settings_widget_content_height", source)
+        self.assertIn("child.winfo_y()", source)
+        self.assertIn("refresh_streamerbot_scroll_extent", source)
         self.assertIn("scroll_settings_content", source)
         self.assertIn("self.root.winfo_width()", source)
         self.assertIn('"auto_connect_on_startup": bool(', source)
@@ -813,7 +817,7 @@ class InAppNavigationTests(unittest.TestCase):
         self.assertIn('panel_bg=palette["panel"]', source)
         self.assertIn('bg=palette["panel"]', source)
         self.assertIn('"SMW Central Updates"', source)
-        self.assertIn('"SMW Central Radio"', source)
+        self.assertNotIn('"SMW Central Radio"', source)
         self.assertIn('"Log In to SMW Central..."', source)
         self.assertNotIn('"Refresh Moderated Hacks from SMW Central…"', source)
         self.assertNotIn('"SMW Central Catalog"', source)
@@ -1016,6 +1020,7 @@ class InAppNavigationTests(unittest.TestCase):
                 ("modes", "super_famicom_controller", "Game Modes"),
                 ("smwcentral", "smw_central", "SMW Central"),
                 ("language", "language", "Language"),
+                ("music_identifier", "music_note", "Music Identifier & Radio"),
                 ("settings", "settings", "Settings"),
             ),
         )
@@ -1033,6 +1038,7 @@ class InAppNavigationTests(unittest.TestCase):
             "overview",
             "tracker",
             "library",
+            "music_note",
             "settings",
         ):
             with self.subTest(icon=icon_key):

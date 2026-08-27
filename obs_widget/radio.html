@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SMW Central Radio — SMW Stream Tracker</title>
+  <link rel="stylesheet" href="/obs-radio/radio.css">
+</head>
+<body>
+  <main id="radioWidget" class="radio-widget is-waiting" aria-live="polite">
+    <section class="cover-shell" aria-hidden="true">
+      <div class="cover-glow"></div>
+      <div class="record">
+        <div class="record-grooves"></div>
+        <div class="record-label">
+          <span class="music-note note-one">♪</span>
+          <span class="music-note note-two">♫</span>
+        </div>
+      </div>
+      <div class="source-chip">SMW CENTRAL</div>
+    </section>
+
+    <section class="information-shell">
+      <div class="track-card">
+        <div class="status-row">
+          <span id="liveDot" class="live-dot"></span>
+          <span id="statusLabel" class="status-label">CONNECTING</span>
+        </div>
+        <div class="marquee-viewport">
+          <div id="title" class="track-title">SMW Central Radio</div>
+        </div>
+        <div class="marquee-viewport artist-viewport">
+          <div id="artist" class="track-artist">Waiting for the tracker…</div>
+        </div>
+      </div>
+
+      <div class="timing-card">
+        <span id="elapsed" class="time-value">0:00</span>
+        <div class="equalizer" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i><i></i>
+        </div>
+        <span id="duration" class="time-value">0:00</span>
+      </div>
+
+      <div class="progress-rail" aria-hidden="true">
+        <div id="progressFill" class="progress-fill"></div>
+        <div id="progressKnob" class="progress-knob"></div>
+      </div>
+    </section>
+  </main>
+  <script src="/obs-radio/radio.js"></script>
+</body>
+</html>

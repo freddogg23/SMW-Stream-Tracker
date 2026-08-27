@@ -281,14 +281,62 @@ class SmwCentralCommentsTests(unittest.TestCase):
         webview_opener_source = inspect.getsource(
             self.tracker.TrackerApp._open_smwcentral_webview
         )
+        webview_stop_source = inspect.getsource(
+            self.tracker.TrackerApp._stop_smwcentral_webview_process
+        )
         popup_source = inspect.getsource(
             self.tracker.TrackerApp._create_smwcentral_spc_popup_payload
         )
         player_javascript = (
             self.tracker._smwcentral_spc_player_javascript("de")
         )
+        native_state_javascript = (
+            self.tracker._smwcentral_native_spc_state_javascript()
+        )
+        native_command_javascript = (
+            self.tracker._smwcentral_native_spc_command_javascript(
+                {"action": "toggle", "id": "test"}
+            )
+        )
+        loop_command_javascript = (
+            self.tracker._smwcentral_native_spc_command_javascript(
+                {"action": "loop", "value": True, "id": "loop-test"}
+            )
+        )
+        seek_command_javascript = (
+            self.tracker._smwcentral_native_spc_command_javascript(
+                {"action": "seek", "value": 0.5, "id": "seek-test"}
+            )
+        )
         runner_source = inspect.getsource(
             self.tracker._run_smwcentral_webview
+        )
+        watcher_source = inspect.getsource(
+            self.tracker.TrackerApp._watch_smwcentral_spc_player_process
+        )
+        native_player_source = inspect.getsource(
+            self.tracker.TrackerApp._render_smwcentral_native_spc_player
+        )
+        native_player_draw_source = inspect.getsource(
+            self.tracker.TrackerApp._draw_smwcentral_native_spc_player
+        )
+        native_player_toggle_source = inspect.getsource(
+            self.tracker.TrackerApp._toggle_smwcentral_native_spc_player
+        )
+        native_player_update_source = inspect.getsource(
+            self.tracker.TrackerApp._update_smwcentral_native_spc_player
+        )
+        native_player_begin_drag_source = inspect.getsource(
+            self.tracker.TrackerApp._begin_smwcentral_native_spc_drag
+        )
+        native_player_move_drag_source = inspect.getsource(
+            self.tracker.TrackerApp._move_smwcentral_native_spc_drag
+        )
+        native_player_apply_drag_source = inspect.getsource(
+            self.tracker.TrackerApp._apply_smwcentral_native_spc_drag_position
+        )
+        native_player_finish_drag_source = inspect.getsource(
+            self.tracker.TrackerApp._finish_smwcentral_native_spc_drag
         )
         native_window_source = inspect.getsource(
             self.tracker._configure_windows_spc_player_window
@@ -313,81 +361,105 @@ class SmwCentralCommentsTests(unittest.TestCase):
             "_watch_smwcentral_spc_player_process",
             webview_opener_source,
         )
-        self.assertNotIn("overlay_host", popup_source)
+        self.assertIn("overlay_host = tk.Frame", popup_source)
+        self.assertIn("Loading SPC Player", popup_source)
+        self.assertIn("Retry SPC Player", watcher_source)
+        self.assertIn("time.monotonic", watcher_source)
+        self.assertIn("embed_parent_hwnd", popup_source)
+        self.assertIn("embed_root_hwnd", popup_source)
+        self.assertIn('"preload": bool(preload)', popup_source)
+        self.assertIn('"native_panel": True', popup_source)
+        self.assertIn('"player_state_path"', popup_source)
+        self.assertIn('"player_command_path"', popup_source)
+        self.assertIn("self._ui_px(460)", popup_source)
+        self.assertIn("self._ui_px(220)", popup_source)
+        self.assertIn("_render_smwcentral_native_spc_player", popup_source)
         self.assertIn("root_x + root_width", popup_source)
         self.assertIn("root_y + root_height", popup_source)
         self.assertIn("file-preview-button", player_javascript)
+        self.assertIn("previewLaunched", player_javascript)
+        self.assertIn("previewAttempts < 30", player_javascript)
+        self.assertIn("const previewLoaded", player_javascript)
+        self.assertLess(
+            player_javascript.index("preview.dispatchEvent"),
+            player_javascript.index("if (!player ||"),
+        )
         self.assertIn("spc-player-interface", player_javascript)
-        self.assertIn("smw-tracker-owned-player", player_javascript)
+        self.assertIn("spc-player-header", player_javascript)
         self.assertIn(
-            "body > *:not(#smw-tracker-owned-player)",
+            "body > *:not(#spc-player-container):not(#spc-player-interface)",
             player_javascript,
         )
-        self.assertIn("visibility: hidden !important", player_javascript)
-        self.assertIn("smw-tracker-player-title", player_javascript)
-        self.assertIn("smw-tracker-player-play", player_javascript)
-        self.assertIn("smw-tracker-player-next", player_javascript)
-        self.assertIn("smw-tracker-player-restart", player_javascript)
-        self.assertIn("smw-tracker-player-loop", player_javascript)
-        self.assertIn("smw-tracker-player-volume", player_javascript)
-        self.assertIn("enginePlayer", player_javascript)
-        self.assertIn("clickEngine", player_javascript)
-        self.assertIn("smw-tracker-player-close", player_javascript)
+        self.assertIn("document.body.appendChild(player)", player_javascript)
+        self.assertIn("spc-player-toggle", player_javascript)
+        self.assertIn("spc-player-loop", player_javascript)
+        self.assertIn("volume-slider", player_javascript)
+        self.assertIn("track-info", player_javascript)
+        self.assertIn("spc-player-interface", native_state_javascript)
+        self.assertIn("track-time-elapsed", native_state_javascript)
+        self.assertIn("engine_ready", native_state_javascript)
+        self.assertIn("const trackReady", native_state_javascript)
+        self.assertIn("const officialProgress", native_state_javascript)
+        self.assertIn("matchAll", native_state_javascript)
+        self.assertIn("can_skip", native_state_javascript)
+        self.assertIn("can_restart", native_state_javascript)
+        self.assertIn("can_loop", native_state_javascript)
+        self.assertIn("__smwTrackerNativePlaybackClock", native_state_javascript)
+        self.assertIn("const clockProgress", native_state_javascript)
+        self.assertIn("formatPlayerTime", native_state_javascript)
+        self.assertIn("const loopControl", native_state_javascript)
+        self.assertIn("spc-player-up-next-link", native_state_javascript)
+        self.assertIn("command.action", native_command_javascript)
+        self.assertIn("volume-slider", native_command_javascript)
+        self.assertIn("desiredLooping", loop_command_javascript)
+        self.assertIn("checkbox.click()", loop_command_javascript)
+        self.assertIn("checkbox.checked = desiredLooping", loop_command_javascript)
+        self.assertIn(
+            "new Event('change', { bubbles: true })",
+            loop_command_javascript,
+        )
+        self.assertIn("action === 'seek'", seek_command_javascript)
+        self.assertIn("getBoundingClientRect", seek_command_javascript)
+        self.assertIn("new MouseEvent('mousemove'", seek_command_javascript)
+        self.assertIn("new MouseEvent('mouseup'", seek_command_javascript)
+        self.assertIn("commits a seek on mouseup", seek_command_javascript)
+        self.assertIn("Object.defineProperty(event, 'offsetX'", seek_command_javascript)
+        self.assertIn("clock.baseSeconds = duration * ratio", seek_command_javascript)
+        self.assertNotIn("smw-tracker-owned-player", player_javascript)
+        self.assertNotIn("smw-tracker-player-title", player_javascript)
         self.assertIn("close_spc_player", player_javascript)
         self.assertIn("background: transparent !important", player_javascript)
         self.assertIn("height: 100% !important", player_javascript)
-        self.assertIn("border-radius: 26px !important", player_javascript)
-        self.assertIn("smw-tracker-player-minimize", player_javascript)
-        self.assertNotIn("pywebview-drag-region", player_javascript)
-        self.assertIn("cursor: grab !important", player_javascript)
-        self.assertIn("header.setPointerCapture", player_javascript)
+        self.assertIn("smw-tracker-collapsed", player_javascript)
+        self.assertIn("width: 100% !important", player_javascript)
+        self.assertIn("border-radius: 12px !important", player_javascript)
+        self.assertIn("fallback_script", runner_source)
         self.assertIn(
-            "event.screenX - windowGesture.offsetX",
-            player_javascript,
+            "_smwcentral_custom_spc_player_javascript",
+            runner_source,
         )
-        self.assertIn("smw-tracker-player-resize", player_javascript)
-        self.assertIn("smw-tracker-player-resize-top-left", player_javascript)
-        self.assertIn("smw-tracker-player-resize-top-right", player_javascript)
-        self.assertIn("smw-tracker-player-resize-bottom-left", player_javascript)
-        self.assertIn("smw-tracker-player-resize-left", player_javascript)
-        self.assertIn("smw-tracker-player-resize-right", player_javascript)
-        self.assertIn("smw-tracker-player-resize-top", player_javascript)
-        self.assertIn("smw-tracker-player-resize-bottom", player_javascript)
-        self.assertIn("@media (max-height: 360px)", player_javascript)
-        self.assertIn("height: Math.max(220", player_javascript)
-        self.assertIn("width: Math.max(400", player_javascript)
-        self.assertIn("#smw-tracker-player-track-info {", player_javascript)
-        self.assertIn("#smw-tracker-player-up-next {", player_javascript)
-        self.assertNotIn(
-            "#smw-tracker-player-track-info,\n"
-            "            #smw-tracker-player-up-next {\n"
-            "                display: none",
-            player_javascript,
-        )
-        self.assertNotIn("smw-tracker-minimized", player_javascript)
-        self.assertIn("minimize_spc_player", player_javascript)
-        self.assertIn("resize_spc_player", player_javascript)
-        self.assertIn("resize_spc_player_from_top_left", player_javascript)
-        self.assertIn("resize_spc_player_from_edges", player_javascript)
-        self.assertIn("move_spc_player", player_javascript)
-        self.assertIn("finish_spc_player_gesture", player_javascript)
-        self.assertIn("handle.setPointerCapture", player_javascript)
-        self.assertIn("lastGoodTitle", player_javascript)
-        self.assertIn("repairText", player_javascript)
-        self.assertIn("TextDecoder('utf-8'", player_javascript)
-        self.assertIn(".track-info h2.title", player_javascript)
         self.assertIn("-webkit-line-clamp: 2", player_javascript)
         self.assertIn("MouseEvent", player_javascript)
-        self.assertNotIn("document.body.appendChild(player)", player_javascript)
+        self.assertIn("event.stopImmediatePropagation()", player_javascript)
+        self.assertIn("resize_embedded_spc_player", player_javascript)
+        self.assertIn("targetHeight = trackerCollapsed ? 42 : 220", player_javascript)
+        self.assertIn("begin_embedded_spc_player_drag", player_javascript)
+        self.assertIn("move_embedded_spc_player_drag", player_javascript)
+        self.assertIn("finish_embedded_spc_player_drag", player_javascript)
+        self.assertIn("previousInstall?.running", player_javascript)
+        self.assertIn("installState.running = false", player_javascript)
+        self.assertIn('status.textContent = text.unavailable', player_javascript)
         self.assertIn('normalized_mode == "spc_player"', runner_source)
         self.assertIn("_smwcentral_spc_player_javascript", runner_source)
+        self.assertIn("smwTrackerSpcReady", runner_source)
         self.assertIn("_configure_windows_spc_player_identity", runner_source)
         self.assertIn("_spc_player_popup_geometry", runner_source)
         self.assertIn("window.events.before_show", runner_source)
         self.assertIn("window.events.shown", runner_source)
         self.assertIn("_configure_windows_spc_player_window", runner_source)
+        self.assertIn("attach_embedded_spc_player", runner_source)
         self.assertIn('"frameless": True', runner_source)
-        self.assertIn('"on_top": True', runner_source)
+        self.assertIn('"on_top": not bool', runner_source)
         self.assertIn('"shadow": False', runner_source)
         self.assertNotIn('"transparent": True', runner_source)
         self.assertIn('window_options["transparent"] = True', runner_source)
@@ -395,23 +467,128 @@ class SmwCentralCommentsTests(unittest.TestCase):
         self.assertIn('"focus": False', runner_source)
         self.assertIn("install_player_layer", runner_source)
         self.assertIn("start_player_watchdog", runner_source)
+        self.assertIn("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", runner_source)
+        self.assertIn("--autoplay-policy=no-user-gesture-required", runner_source)
+        self.assertIn("--disable-background-timer-throttling", runner_source)
+        self.assertIn("--disable-backgrounding-occluded-windows", runner_source)
+        self.assertIn("--disable-renderer-backgrounding", runner_source)
+        self.assertIn("player_watchdog_stop.wait(0.18)", runner_source)
+        self.assertIn("native_panel_requested", runner_source)
+        self.assertIn("sync_native_player_bridge", runner_source)
+        self.assertIn('state["player_mode"]', runner_source)
+        self.assertIn("_smwcentral_native_spc_state_javascript", runner_source)
+        self.assertIn("_smwcentral_native_spc_command_javascript", runner_source)
+        self.assertIn("_read_smwcentral_spc_state", watcher_source)
+        self.assertIn("self.root.after(\n            180,", watcher_source)
+        self.assertIn("_render_smwcentral_native_spc_player", watcher_source)
+        self.assertIn("_update_smwcentral_native_spc_player", watcher_source)
+        self.assertIn("canvas = tk.Canvas", native_player_source)
+        self.assertIn(
+            "_draw_smwcentral_native_spc_player",
+            native_player_source,
+        )
+        self.assertIn('header = "#29271F"', native_player_draw_source)
+        self.assertIn('background = "#29271F"', native_player_draw_source)
+        self.assertIn('button = "#494640"', native_player_draw_source)
+        self.assertIn('button_active = "#3F5A63"', native_player_draw_source)
+        self.assertIn('progress_fill = "#16BC10"', native_player_draw_source)
+        self.assertIn('volume_fill = "#2498D2"', native_player_draw_source)
+        self.assertIn("button_size = px(34)", native_player_draw_source)
+        self.assertIn("supersample = 4", native_player_draw_source)
+        self.assertIn("render_supersample = 2", native_player_draw_source)
+        self.assertIn("Image.Resampling.LANCZOS", native_player_draw_source)
+        self.assertIn("hit_bounds", native_player_draw_source)
+        control_box_source = native_player_draw_source.split(
+            "def control_box", 1
+        )[1]
+        self.assertLess(
+            control_box_source.index("coordinate_scale ="),
+            control_box_source.index("surface_draw.rounded_rectangle"),
+        )
+        self.assertIn('player_mode == "radio"', native_player_draw_source)
+        self.assertIn('player_mode == "song"', native_player_draw_source)
+        self.assertIn(
+            "can_skip, can_restart, can_loop = True, True, True",
+            native_player_draw_source,
+        )
+        self.assertIn("can_skip", native_player_draw_source)
+        self.assertIn("can_restart", native_player_draw_source)
+        self.assertIn("can_loop", native_player_draw_source)
+        self.assertIn('icon="restart"', native_player_draw_source)
+        self.assertIn('icon="loop"', native_player_draw_source)
+        self.assertIn('sync_glyph = "\\uE895"', native_player_draw_source)
+        self.assertIn('"segmdl2.ttf"', native_player_draw_source)
+        self.assertIn('"#B9E9F7" if active', native_player_draw_source)
+        self.assertIn("ImageFilter.MaxFilter", native_player_draw_source)
+        self.assertIn("thicken_radius", native_player_draw_source)
+        self.assertIn('icon="skip"', native_player_draw_source)
+        self.assertIn('"restart": "Replay Track"', native_player_draw_source)
+        self.assertIn('"loop": "Toggle Looping"', native_player_draw_source)
+        self.assertIn('outline="#8DD5EA" if active else None', native_player_draw_source)
+        self.assertIn("marquee_surface = Image.new", native_player_draw_source)
+        self.assertIn("marquee_started_at", native_player_draw_source)
+        self.assertIn("compact_progress_left", native_player_draw_source)
+        self.assertIn("compact_knob_x", native_player_draw_source)
+        self.assertIn("progress_knob_x", native_player_draw_source)
+        self.assertIn('regions["progress"]', native_player_draw_source)
+        self.assertIn("local_point(16, 6)", native_player_draw_source)
+        self.assertIn("local_point(8, 18)", native_player_draw_source)
+        self.assertIn("self._ui_px(64)", native_player_toggle_source)
+        self.assertIn("start_marquee", native_player_toggle_source)
+        self.assertIn("current_title != previous_title", native_player_update_source)
+        self.assertIn("pending_looping", native_player_source)
+        self.assertIn("pending_looping", native_player_update_source)
+        self.assertIn('"progress_drag": False', native_player_source)
+        self.assertIn("set_progress_from_pointer", native_player_source)
+        self.assertIn('"seek", seek_ratio', native_player_source)
+        self.assertIn("pending_seek", native_player_update_source)
+        self.assertIn('widgets.get("volume_drag")', native_player_update_source)
+        self.assertIn('cursor_name = "fleur"', native_player_source)
+        self.assertIn("winfo_width", native_player_begin_drag_source)
+        self.assertNotIn("winfo_width", native_player_move_drag_source)
+        self.assertIn('widgets["drag_pending_position"]', native_player_move_drag_source)
+        self.assertIn("self.root.after(\n                    8,", native_player_move_drag_source)
+        self.assertIn("place_configure", native_player_apply_drag_source)
+        self.assertIn("_apply_smwcentral_native_spc_drag_position", native_player_finish_drag_source)
+        self.assertIn("redraw_after_drag", native_player_update_source)
+        self.assertNotIn("draw_play_pause(", native_player_draw_source)
+        self.assertNotIn("draw_restart(", native_player_draw_source)
+        self.assertNotIn("draw_loop(", native_player_draw_source)
+        self.assertNotIn("draw_skip(", native_player_draw_source)
+        self.assertIn('"SPC Player"', native_player_draw_source)
+        self.assertIn("_retain_smooth_canvas_photo", native_player_draw_source)
+        self.assertIn('environment.pop("PYINSTALLER_RESET_ENVIRONMENT"', webview_opener_source)
+        self.assertNotIn('variable_name.startswith("_PYI_")', webview_opener_source)
         self.assertIn("window.events.before_load", runner_source)
         self.assertIn("window.events.closed", runner_source)
         self.assertIn("SMWCentralPlayerLayerWatchdog", runner_source)
         self.assertIn("window.hide()", runner_source)
         self.assertIn("window.show()", runner_source)
         self.assertIn("window.evaluate_js(player_script)", runner_source)
-        self.assertIn("if (!root.isConnected && document.body)", player_javascript)
         self.assertIn('"js_api": spc_api', runner_source)
-        self.assertIn('"min_size": (400, 220)', runner_source)
-        self.assertIn('"resizable": True', runner_source)
+        self.assertIn("38 if spc_api and spc_api.is_embedded else 220", runner_source)
+        self.assertIn('"resizable": not bool', runner_source)
         self.assertIn('"easy_drag": False', runner_source)
-        self.assertNotIn("begin_spc_player_drag", player_javascript)
-        self.assertIn("event.stopPropagation()", player_javascript)
         self.assertIn("ShowInTaskbar = True", native_window_source)
         self.assertIn("SetWindowPos", native_window_source)
         self.assertIn("SetWindowPos", player_api_source)
+        self.assertIn("attach_embedded_spc_player", player_api_source)
+        self.assertIn("IsWindowVisible", player_api_source)
+        self.assertIn("BringWindowToTop", player_api_source)
+        self.assertIn("GetAncestor", player_api_source)
+        self.assertIn("resize_embedded_spc_player", player_api_source)
+        self.assertIn("ScreenToClient", player_api_source)
+        self.assertIn("GWLP_HWNDPARENT", player_api_source)
+        self.assertIn("self._window", player_api_source)
+        self.assertNotIn("self.window", player_api_source)
         self.assertIn("GetDpiForWindow", player_api_source)
+        self.assertIn("self._window.show()", player_api_source)
+        self.assertIn("SPC player panel attachment failed", player_api_source)
+        self.assertIn("SPC player visible fallback failed", runner_source)
+        self.assertGreaterEqual(
+            runner_source.count("_configure_windows_spc_player_window"),
+            2,
+        )
         self.assertIn("SWP_NOSIZE", player_api_source)
         self.assertIn("HWND_TOPMOST", native_window_source)
         self.assertIn("CreateRoundRectRgn", native_window_source)
@@ -419,6 +596,13 @@ class SmwCentralCommentsTests(unittest.TestCase):
         self.assertIn("GetDpiForWindow", native_window_source)
         self.assertIn("dpi_scale", native_window_source)
         self.assertIn("_windows_monitor_work_area_for_point", native_window_source)
+        self.assertIn('"taskkill"', webview_stop_source)
+        self.assertIn('"/T"', webview_stop_source)
+        self.assertIn("shutil.rmtree", webview_stop_source)
+        self.assertIn('SMWC_WEBVIEW_STORAGE_DIR / "SPCPlayerCache"', runner_source)
+        self.assertIn("preload_requested", runner_source)
+        self.assertIn("radio_activation_requested", runner_source)
+        self.assertIn("activate_now", runner_source)
 
         class FakeWindow:
             def __init__(self):
@@ -439,7 +623,7 @@ class SmwCentralCommentsTests(unittest.TestCase):
 
         fake_window = FakeWindow()
         api = self.tracker._SpcPlayerWebviewApi()
-        api.window = fake_window
+        api._window = fake_window
         self.assertTrue(api.minimize_spc_player())
         self.assertTrue(fake_window.minimized)
         with mock.patch.object(
@@ -466,7 +650,7 @@ class SmwCentralCommentsTests(unittest.TestCase):
         self.assertEqual(fake_window.moved_to, (125, 80))
 
         width, height, x, y = self.tracker._spc_player_popup_geometry()
-        self.assertEqual((width, height), (820, 420))
+        self.assertEqual((width, height), (400, 220))
         if self.tracker.IS_WINDOWS:
             self.assertIsInstance(x, int)
             self.assertIsInstance(y, int)
@@ -484,7 +668,7 @@ class SmwCentralCommentsTests(unittest.TestCase):
                         "popup_y": 860,
                     }
                 ),
-                (820, 420, 1084, 604),
+                (400, 220, 1504, 804),
             )
 
     def test_smwcentral_radio_and_updates_are_available_from_the_top_menu(self):
@@ -523,7 +707,7 @@ class SmwCentralCommentsTests(unittest.TestCase):
         self.assertNotIn('"SMW Central Radio"', home_source)
         self.assertNotIn('"SMW Central Radio"', dashboard_source)
         self.assertNotIn('"SMW Central Updates"', dashboard_source)
-        self.assertIn('"SMW Central Radio"', menu_source)
+        self.assertNotIn('"SMW Central Radio"', menu_source)
         self.assertIn('"SMW Central Updates"', menu_source)
         self.assertIn("self.open_smwcentral_home", menu_source)
         self.assertIn(
@@ -533,16 +717,12 @@ class SmwCentralCommentsTests(unittest.TestCase):
         self.assertIn('normalized_mode == "radio"', runner_source)
         self.assertIn("_smwcentral_radio_javascript", runner_source)
         self.assertIn("_smwcentral_spc_player_javascript", runner_source)
-        self.assertIn("smw-tracker-owned-player", (
-            self.tracker._smwcentral_spc_player_javascript(
-                "fr", radio_mode=True
-            )
-        ))
-        self.assertIn("const radioMode = true", (
-            self.tracker._smwcentral_spc_player_javascript(
-                "fr", radio_mode=True
-            )
-        ))
+        radio_player = self.tracker._smwcentral_spc_player_javascript(
+            "fr", launch_preview=False
+        )
+        self.assertIn("spc-player-interface", radio_player)
+        self.assertIn("const launchPreview = false", radio_player)
+        self.assertNotIn("smw-tracker-owned-player", radio_player)
         self.assertIn("smwTrackerRadioActivated", radio_javascript)
         self.assertIn('data-spc-radio="enable-button"', radio_javascript)
         self.assertIn("spc-radio-enabled", radio_javascript)
@@ -588,7 +768,8 @@ class SmwCentralCommentsTests(unittest.TestCase):
         source = inspect.getsource(self.tracker._run_smwcentral_webview)
         self.assertIn('"private_mode": (', source)
         self.assertIn('"storage_path": str(storage_path)', source)
-        self.assertIn('SMWC_WEBVIEW_STORAGE_DIR / "SPCPlayer"', source)
+        self.assertIn('SMWC_WEBVIEW_STORAGE_DIR / "SPCPlayerCache"', source)
+        self.assertNotIn('storage_session_token', source)
         self.assertNotIn("get_cookies", source)
         self.assertIn('"js_api": spc_api', source)
 
@@ -730,7 +911,7 @@ class SmwCentralCommentsTests(unittest.TestCase):
         )
         self.assertIn('create_menu_button(\n                "SMW Central"', source)
         self.assertIn("SMW Central Updates", source)
-        self.assertIn("SMW Central Radio", source)
+        self.assertNotIn("SMW Central Radio", source)
         self.assertIn("Log In to SMW Central...", source)
         self.assertIn("Visit SMW Central", source)
         self.assertNotIn("Automatic SMW Central Login", source)
