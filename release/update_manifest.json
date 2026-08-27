@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "version": "2.2.0",
-  "release_date": "2026-08-26",
+  "release_date": "2026-08-27",
   "notes": [
     "Adds Music Identifier & Radio with private local SMW Central audio matching, early-match results, responsive cancellation, and automatic index checks every 30 minutes while the app is open.",
     "Adds a polished in-app SPC player with play/pause, replay, looping, next track, seeking, volume, collapse, scrolling track text, and smooth dragging.",
@@ -15,6 +15,6 @@
   ],
   "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v2.2.0/SMWStreamTracker_Update_2.2.0.exe",
   "verification": "sha256",
-  "sha256": "79ce767271a09fbb482cd09fe9a1f6c2b00381ffea1b9e24ef96a63cad53a340",
-  "size": 170129356
+  "sha256": "8b634d2082db498ffae72a117ff26c5998e68f556f111a1a90a174eea87ce805",
+  "size": 171178181
 }
