@@ -28,6 +28,10 @@ Version 2.2.0 is a Windows-only music, Streamer.bot, and OBS radio release.
   reusing the previous level's song.
 - Adds an in-app Streamer.bot installer, reuses existing rewards when present,
   and improves setup compatibility with current Streamer.bot navigation.
+- Adds a dedicated **Elgato** settings page with one-click installation of the
+  bundled SMW Stream Tracker Stream Deck plugin. Stream Deck buttons can
+  start or close SMW Central Radio and control play/pause, replay, next track,
+  looping, seeking, and volume through the tracker.
 - Smooths notification dots and anti-aliases music artwork, player controls,
   scrubbers, progress indicators, and other custom-drawn Windows UI elements.
 - Improves clean shutdown and tracker recovery so closing the app normally does

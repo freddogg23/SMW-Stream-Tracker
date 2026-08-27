@@ -140,6 +140,10 @@ a = Analysis(
         ('app_assets', 'app_assets'),
         ('game_mode_assets', 'game_mode_assets'),
         ('obs_widget', 'obs_widget'),
+        (
+            'streamdeck\\dist\\SMWStreamTracker-SPC-Controls.streamDeckPlugin',
+            'streamdeck',
+        ),
         ('tools\\streamerbot_reward_setup.ps1', 'tools'),
         ('music_index\\bundled', 'music_index\\bundled'),
         (

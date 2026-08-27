@@ -28133,6 +28133,10 @@ def obs_radio_widget_state(state: object) -> dict[str, Any]:
         progress = float(source.get("progress", 0.0) or 0.0)
     except (TypeError, ValueError, OverflowError):
         progress = 0.0
+    try:
+        volume = float(source.get("volume", 100.0) or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        volume = 100.0
     if duration_seconds > 0.0:
         progress = max(progress, elapsed_seconds / duration_seconds)
     progress = max(0.0, min(1.0, progress))
@@ -28150,6 +28154,9 @@ def obs_radio_widget_state(state: object) -> dict[str, Any]:
         "duration_seconds": round(duration_seconds, 3),
         "progress": round(progress, 6),
         "can_skip": bool(source.get("can_skip")),
+        "can_loop": bool(source.get("can_loop")),
+        "looping": bool(source.get("looping")),
+        "volume": round(max(0.0, min(150.0, volume)), 2),
         "up_next": str(source.get("up_next", "") or "").strip()[:240],
     }
 
@@ -39397,6 +39404,65 @@ class TrackerApp:
                 return
             except (OSError, ValueError, AttributeError, tk.TclError):
                 pass
+        if key == "elgato" and Image is not None and ImageTk is not None:
+            try:
+                cached_elgato_logo = getattr(
+                    self,
+                    "_elgato_logo_source_image",
+                    None,
+                )
+                if cached_elgato_logo is None:
+                    elgato_logo_path = bundled_resource_path(
+                        "app_assets",
+                        "elgato_logo.png",
+                    )
+                    with Image.open(elgato_logo_path) as elgato_logo_source:
+                        elgato_logo = elgato_logo_source.convert("RGBA")
+                    # Remove the final near-white antialias specks as well as
+                    # the original white canvas so the Settings icon blends
+                    # cleanly into every app theme.
+                    elgato_logo.putdata(
+                        [
+                            (red, green, blue, 0)
+                            if min(red, green, blue) >= 248
+                            else (red, green, blue, alpha)
+                            for red, green, blue, alpha in elgato_logo.getdata()
+                        ]
+                    )
+                    alpha_bounds = elgato_logo.getchannel("A").getbbox()
+                    if alpha_bounds is not None:
+                        elgato_logo = elgato_logo.crop(alpha_bounds)
+                    self._elgato_logo_source_image = elgato_logo.copy()
+                else:
+                    elgato_logo = cached_elgato_logo.copy()
+                target_size = max(1, int(size))
+                elgato_logo.thumbnail(
+                    (target_size, target_size),
+                    Image.Resampling.LANCZOS,
+                )
+                composed = Image.new(
+                    "RGBA",
+                    (target_size, target_size),
+                    (0, 0, 0, 0),
+                )
+                composed.alpha_composite(
+                    elgato_logo,
+                    (
+                        (target_size - elgato_logo.width) // 2,
+                        (target_size - elgato_logo.height) // 2,
+                    ),
+                )
+                icon_photo = ImageTk.PhotoImage(composed, master=canvas)
+                canvas.create_image(
+                    origin_x,
+                    origin_y,
+                    anchor="nw",
+                    image=icon_photo,
+                )
+                canvas._stream_desk_icon_photo = icon_photo
+                return
+            except (OSError, ValueError, AttributeError, tk.TclError):
+                pass
         key = GAME_MODE_ICON_FALLBACK_KEYS.get(key, key)
         reference_icon_keys = {
             "dashboard",
@@ -39426,6 +39492,7 @@ class TrackerApp:
             "smw_central",
             "mario_hat",
             "streamerbot",
+            "elgato",
             "music_note",
         }
         if (
@@ -39940,6 +40007,17 @@ class TrackerApp:
                     ((23, 39), (9, 25), (18, 16), (27, 25), (22, 30), (17, 25)),
                     width=brand_stroke,
                     line_color=brand_cyan,
+                )
+            elif key == "elgato":
+                # Full-color fallback for the bundled Elgato mark.
+                brand_blue = "#2870F6"
+                brand_purple = "#A824F4"
+                aa_curve((38, 12), (20, 3), (6, 15), (8, 31), line_color=brand_blue)
+                aa_curve((8, 31), (10, 46), (31, 48), (39, 34), line_color=brand_purple)
+                aa_line(
+                    ((20, 17), (20, 34), (30, 27), (20, 20)),
+                    width=max(6, round(4.0 * unit)),
+                    line_color=brand_purple,
                 )
             elif key == "mario_hat":
                 # Mario's cap: rounded crown, long brim, and the centered M
@@ -51108,6 +51186,105 @@ class TrackerApp:
             except tk.TclError:
                 self.music_index_next_check_after_id = None
 
+    @staticmethod
+    def _streamdeck_application_path() -> Path | None:
+        """Return the installed Elgato Stream Deck application on Windows."""
+        if not IS_WINDOWS:
+            return None
+        candidates: list[Path] = []
+        for environment_name in (
+            "PROGRAMFILES",
+            "PROGRAMFILES(X86)",
+            "LOCALAPPDATA",
+        ):
+            root_text = str(os.environ.get(environment_name, "")).strip()
+            if not root_text:
+                continue
+            root_path = Path(root_text)
+            candidates.extend(
+                (
+                    root_path / "Elgato" / "StreamDeck" / "StreamDeck.exe",
+                    root_path / "Elgato" / "Stream Deck" / "StreamDeck.exe",
+                )
+            )
+        return next((path for path in candidates if path.is_file()), None)
+
+    @staticmethod
+    def _streamdeck_plugin_installed() -> bool:
+        """Return whether this app's Stream Deck plugin is installed."""
+        app_data = str(os.environ.get("APPDATA", "")).strip()
+        if not app_data:
+            return False
+        plugin_folder = (
+            Path(app_data)
+            / "Elgato"
+            / "StreamDeck"
+            / "Plugins"
+            / "com.freddogg23.smwstreamtracker.sdPlugin"
+        )
+        return plugin_folder.is_dir()
+
+    def _open_streamdeck_application(self, *, parent=None) -> None:
+        """Open Elgato Stream Deck when it is installed on Windows."""
+        dialog_parent = parent or self.root
+        application_path = self._streamdeck_application_path()
+        if application_path is None:
+            self._show_localized_error(
+                "Elgato Stream Deck",
+                (
+                    "The Elgato Stream Deck application was not found. "
+                    "Install Stream Deck, then return here to install the "
+                    "SMW Stream Tracker plugin."
+                ),
+                parent=dialog_parent,
+            )
+            return
+        try:
+            open_local_path(application_path)
+        except OSError as error:
+            self._show_localized_error(
+                "Elgato Stream Deck",
+                f"Stream Deck could not be opened.\n\n{error}",
+                parent=dialog_parent,
+            )
+
+    def _install_streamdeck_spc_controls(self, *, parent=None) -> None:
+        """Open the bundled Windows Stream Deck plugin installer."""
+        dialog_parent = parent or self.root
+        installer_path = bundled_resource_path(
+            "streamdeck",
+            "SMWStreamTracker-SPC-Controls.streamDeckPlugin",
+        )
+        if not installer_path.is_file():
+            self._show_localized_error(
+                "Stream Deck Controls",
+                (
+                    "The Stream Deck plugin installer is missing from this "
+                    "build. Install the latest SMW Stream Tracker update and "
+                    "try again."
+                ),
+                parent=dialog_parent,
+            )
+            return
+        try:
+            open_local_path(installer_path)
+        except OSError as error:
+            self._show_localized_error(
+                "Stream Deck Controls",
+                f"The Stream Deck plugin installer could not be opened.\n\n{error}",
+                parent=dialog_parent,
+            )
+            return
+        self._show_localized_info(
+            "Stream Deck Controls",
+            (
+                "The Stream Deck installer is open. Approve the installation, "
+                "then drag the SPC controls from the SMW Stream Tracker "
+                "category onto your Stream Deck."
+            ),
+            parent=dialog_parent,
+        )
+
     def _open_music_identifier_page(self) -> None:
         """Open the Windows audio recorder and music-identification page."""
         palette = self._library_palette()
@@ -51250,7 +51427,6 @@ class TrackerApp:
             sticky="e",
             pady=(self._ui_px(8), 0),
         )
-
         listening_card = tk.Frame(
             panel,
             bg=palette["panel_alt"],
@@ -53511,6 +53687,7 @@ class TrackerApp:
             "File Locations",
             "Storage",
             "Streamer.bot",
+            "Elgato",
             "OBS",
             "Timers",
             "About & Updates",
@@ -53599,6 +53776,7 @@ class TrackerApp:
             "File Locations",
             "Storage",
             "Streamer.bot",
+            "Elgato",
             "OBS",
             "Timers",
             "Help",
@@ -53609,6 +53787,7 @@ class TrackerApp:
             "File Locations",
             "Storage",
             "Streamer.bot",
+            "Elgato",
             "OBS",
             "Timers",
             "Help",
@@ -53619,6 +53798,7 @@ class TrackerApp:
             "File Locations": "windows_file",
             "Storage": "nvme",
             "Streamer.bot": "streamerbot",
+            "Elgato": "elgato",
             "OBS": "obs",
             "Timers": "stopwatch",
             "About & Updates": "bell",
@@ -55941,6 +56121,246 @@ class TrackerApp:
         settings_section_builders[
             "Streamer.bot"
         ] = build_streamerbot_settings_page
+
+        def build_elgato_settings_page() -> None:
+            elgato_body = self._create_centered_page_panel(
+                settings_panels["Elgato"],
+                outer_bg=STREAM_DESK["window"],
+                panel_bg=STREAM_DESK["surface"],
+                border=STREAM_DESK["border"],
+                max_width=1500,
+                padx=30,
+                pady=24,
+                outer_pad=0,
+            )
+            elgato_body.columnconfigure(0, weight=1)
+            settings_section_bodies["Elgato"] = elgato_body
+
+            heading_row = tk.Frame(
+                elgato_body,
+                bg=STREAM_DESK["surface"],
+                bd=0,
+            )
+            heading_row.grid(row=0, column=0, sticky="ew")
+            heading_row.columnconfigure(0, weight=1)
+            tk.Label(
+                heading_row,
+                text="Elgato",
+                font=("Segoe UI", 20, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            brand_icon = tk.Canvas(
+                heading_row,
+                width=self._ui_px(52),
+                height=self._ui_px(52),
+                bg=STREAM_DESK["surface"],
+                bd=0,
+                highlightthickness=0,
+            )
+            brand_icon.grid(row=0, column=1, sticky="e")
+            self._draw_stream_desk_icon(
+                brand_icon,
+                "elgato",
+                STREAM_DESK["text_strong"],
+                size=self._ui_px(46),
+                origin_x=self._ui_px(3),
+                origin_y=self._ui_px(3),
+                full_color=True,
+            )
+            tk.Label(
+                elgato_body,
+                text=(
+                    "Install and manage the SMW Stream Tracker controls for "
+                    "Elgato Stream Deck."
+                ),
+                font=("Segoe UI", 11),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(1050),
+            ).grid(
+                row=1,
+                column=0,
+                sticky="ew",
+                pady=(self._ui_px(5), self._ui_px(16)),
+            )
+
+            streamdeck_application = self._streamdeck_application_path()
+            plugin_installed = self._streamdeck_plugin_installed()
+            install_card = tk.Frame(
+                elgato_body,
+                bg=STREAM_DESK["surface_alt"],
+                padx=self._ui_px(20),
+                pady=self._ui_px(17),
+                highlightbackground=STREAM_DESK["border"],
+                highlightthickness=1,
+                bd=0,
+            )
+            install_card.grid(row=2, column=0, sticky="ew")
+            install_card.columnconfigure(0, weight=1)
+            tk.Label(
+                install_card,
+                text="Stream Deck Plugin",
+                font=("Segoe UI", 14, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+            ).grid(row=0, column=0, columnspan=2, sticky="ew")
+            status_parts = [
+                (
+                    "Stream Deck detected"
+                    if streamdeck_application is not None
+                    else "Stream Deck application not detected"
+                ),
+                (
+                    "Tracker plugin installed"
+                    if plugin_installed
+                    else "Tracker plugin is ready to install"
+                ),
+            ]
+            tk.Label(
+                install_card,
+                text="  •  ".join(status_parts),
+                font=("Segoe UI", 10, "bold"),
+                fg=(
+                    STREAM_DESK["green"]
+                    if streamdeck_application is not None and plugin_installed
+                    else STREAM_DESK["yellow"]
+                ),
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+                justify="left",
+            ).grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(self._ui_px(4), 0),
+            )
+            tk.Label(
+                install_card,
+                text=(
+                    "The bundled installer adds or updates the plugin with one "
+                    "click. Approve the Stream Deck prompt, then place any SPC "
+                    "Player actions onto your keys."
+                ),
+                font=("Segoe UI", 10),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(980),
+            ).grid(
+                row=2,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                pady=(self._ui_px(5), self._ui_px(14)),
+            )
+            install_plugin_button = self._make_action_button(
+                install_card,
+                text="✦  Install / Update Stream Deck Plugin",
+                command=lambda: self._install_streamdeck_spc_controls(
+                    parent=dialog
+                ),
+                bg=STREAM_DESK["green"],
+                active_bg=STREAM_DESK["green_dark"],
+                width=34,
+                pad_y=8,
+                font_size=11,
+            )
+            install_plugin_button.grid(
+                row=3,
+                column=0,
+                sticky="w",
+                padx=(0, self._ui_px(10)),
+            )
+            open_streamdeck_button = self._make_action_button(
+                install_card,
+                text="▶  Open Stream Deck",
+                command=lambda: self._open_streamdeck_application(
+                    parent=dialog
+                ),
+                bg=STREAM_DESK["surface_deep"],
+                active_bg=STREAM_DESK["selected"],
+                width=22,
+                pad_y=8,
+                font_size=11,
+            )
+            open_streamdeck_button.grid(row=3, column=1, sticky="e")
+            self.settings_action_buttons[
+                ("Elgato", "Install / Update Stream Deck Plugin")
+            ] = install_plugin_button
+            self.settings_action_buttons[
+                ("Elgato", "Open Stream Deck")
+            ] = open_streamdeck_button
+
+            controls_card = tk.Frame(
+                elgato_body,
+                bg=STREAM_DESK["surface_alt"],
+                padx=self._ui_px(20),
+                pady=self._ui_px(17),
+                highlightbackground=STREAM_DESK["border"],
+                highlightthickness=1,
+                bd=0,
+            )
+            controls_card.grid(
+                row=3,
+                column=0,
+                sticky="ew",
+                pady=(self._ui_px(12), 0),
+            )
+            controls_card.columnconfigure(0, weight=1)
+            tk.Label(
+                controls_card,
+                text="Included SPC Player Controls",
+                font=("Segoe UI", 14, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="ew")
+            tk.Label(
+                controls_card,
+                text=(
+                    "Play / Pause   •   Replay Track   •   Next Track   •   "
+                    "Toggle Looping\nStart Radio   •   Close Radio   •   "
+                    "Seek Back / Forward   •   Volume Down / Up"
+                ),
+                font=("Segoe UI", 11, "bold"),
+                fg=STREAM_DESK["text_strong"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+                justify="left",
+            ).grid(
+                row=1,
+                column=0,
+                sticky="ew",
+                pady=(self._ui_px(7), 0),
+            )
+            tk.Label(
+                controls_card,
+                text=(
+                    "Keep SMW Stream Tracker open while using the keys. The "
+                    "local player-control connection starts automatically."
+                ),
+                font=("Segoe UI", 10),
+                fg=STREAM_DESK["muted"],
+                bg=STREAM_DESK["surface_alt"],
+                anchor="w",
+                justify="left",
+                wraplength=self._ui_px(1000),
+            ).grid(
+                row=2,
+                column=0,
+                sticky="ew",
+                pady=(self._ui_px(5), 0),
+            )
+            elgato_body.rowconfigure(4, weight=1)
+
+        settings_section_builders["Elgato"] = build_elgato_settings_page
 
         settings_section_builders["Storage"] = lambda: build_action_settings_page(
             "Storage",
@@ -106258,9 +106678,13 @@ class TrackerApp:
             "play_hack",
             "play_random_hack",
             "radio_start",
+            "radio_close",
             "radio_toggle",
             "radio_next",
             "radio_restart",
+            "radio_loop",
+            "radio_seek",
+            "radio_volume",
         }:
             return
         copied_document = dict(document)
@@ -106379,25 +106803,127 @@ class TrackerApp:
         request_id = self._obs_widget_request_id(document)
         if command in {
             "radio_start",
+            "radio_close",
             "radio_toggle",
             "radio_next",
             "radio_restart",
+            "radio_loop",
+            "radio_seek",
+            "radio_volume",
         }:
             if command == "radio_start":
                 self._open_smwcentral_radio()
                 message = "SMW Central Radio is starting."
+            elif command == "radio_close":
+                self._stop_smwcentral_webview_process()
+                message = "SMW Central Radio is closed."
             else:
-                action = {
-                    "radio_toggle": "toggle",
-                    "radio_next": "next",
-                    "radio_restart": "restart",
-                }[command]
-                self._send_smwcentral_spc_command(action)
-                message = {
-                    "radio_toggle": "Radio playback toggled.",
-                    "radio_next": "Loading the next radio track.",
-                    "radio_restart": "Radio track restarted.",
-                }[command]
+                if self.smwcentral_spc_command_path is None:
+                    self._open_smwcentral_radio()
+                    message = "SMW Central Radio is starting."
+                elif command == "radio_loop":
+                    current_looping = bool(
+                        self.smwcentral_spc_native_state.get("looping")
+                    )
+                    requested_value = document.get("value")
+                    desired_looping = (
+                        bool(requested_value)
+                        if isinstance(requested_value, bool)
+                        else not current_looping
+                    )
+                    self._send_smwcentral_spc_command(
+                        "loop",
+                        desired_looping,
+                    )
+                    message = (
+                        "Radio looping enabled."
+                        if desired_looping
+                        else "Radio looping disabled."
+                    )
+                elif command == "radio_seek":
+                    state = self.smwcentral_spc_native_state
+                    duration_seconds = _obs_radio_time_seconds(
+                        state.get("duration", "0:00")
+                    )
+                    elapsed_seconds = _obs_radio_time_seconds(
+                        state.get("elapsed", "0:00")
+                    )
+                    try:
+                        delta_seconds = max(
+                            -60.0,
+                            min(
+                                60.0,
+                                float(document.get("delta_seconds", 0.0)),
+                            ),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        delta_seconds = 0.0
+                    if duration_seconds <= 0.0 or delta_seconds == 0.0:
+                        self._publish_obs_widget_event(
+                            {
+                                "event": "command_result",
+                                "request_id": request_id,
+                                "ok": False,
+                                "message": "The current radio track is not ready to seek.",
+                            }
+                        )
+                        return
+                    requested_seconds = max(
+                        0.0,
+                        min(duration_seconds, elapsed_seconds + delta_seconds),
+                    )
+                    self._send_smwcentral_spc_command(
+                        "seek",
+                        requested_seconds / duration_seconds,
+                    )
+                    message = (
+                        f"Radio moved {'forward' if delta_seconds > 0 else 'back'} "
+                        f"{abs(int(delta_seconds))} seconds."
+                    )
+                elif command == "radio_volume":
+                    try:
+                        current_volume = float(
+                            self.smwcentral_spc_native_state.get(
+                                "volume",
+                                100.0,
+                            )
+                            or 0.0
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        current_volume = 100.0
+                    try:
+                        delta = max(
+                            -50.0,
+                            min(50.0, float(document.get("delta", 0.0))),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        delta = 0.0
+                    requested_value = document.get("value")
+                    if requested_value is not None:
+                        try:
+                            target_volume = float(requested_value)
+                        except (TypeError, ValueError, OverflowError):
+                            target_volume = current_volume
+                    else:
+                        target_volume = current_volume + delta
+                    target_volume = max(0.0, min(150.0, target_volume))
+                    self._send_smwcentral_spc_command(
+                        "volume",
+                        target_volume,
+                    )
+                    message = f"Radio volume set to {int(round(target_volume))}%."
+                else:
+                    action = {
+                        "radio_toggle": "toggle",
+                        "radio_next": "next",
+                        "radio_restart": "restart",
+                    }[command]
+                    self._send_smwcentral_spc_command(action)
+                    message = {
+                        "radio_toggle": "Radio playback toggled.",
+                        "radio_next": "Loading the next radio track.",
+                        "radio_restart": "Radio track restarted.",
+                    }[command]
             self._publish_obs_widget_event(
                 {
                     "event": "command_result",

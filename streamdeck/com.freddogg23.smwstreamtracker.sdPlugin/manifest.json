@@ -1,0 +1,173 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "UUID": "com.freddogg23.smwstreamtracker",
+  "Name": "SMW Stream Tracker",
+  "Version": "1.1.0.0",
+  "Author": "SMW Stream Tracker",
+  "Description": "Control the SMW Central SPC player in SMW Stream Tracker from Stream Deck.",
+  "Category": "SMW Stream Tracker",
+  "CategoryIcon": "imgs/category-icon",
+  "Icon": "imgs/plugin-icon",
+  "CodePath": "bin/plugin.js",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.6"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Nodejs": {
+    "Version": "20"
+  },
+  "Actions": [
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-start",
+      "Name": "Start SMW Central Radio",
+      "Tooltip": "Open the SMW Central radio and begin loading a track.",
+      "Icon": "imgs/actions/radio-start/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/radio-start/key"
+        }
+      ]
+    },
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-close",
+      "Name": "Close SMW Central Radio",
+      "Tooltip": "Close the SMW Central radio player and stop its audio.",
+      "Icon": "imgs/actions/radio-close/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/radio-close/key"
+        }
+      ]
+    },
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-toggle",
+      "Name": "Play / Pause",
+      "Tooltip": "Start the SMW Central radio or toggle SPC playback.",
+      "Icon": "imgs/actions/play-pause/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/play-pause/play"
+        },
+        {
+          "Image": "imgs/actions/play-pause/pause"
+        }
+      ]
+    },
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-restart",
+      "Name": "Replay Track",
+      "Tooltip": "Replay the current SPC track from the beginning.",
+      "Icon": "imgs/actions/restart/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/restart/key"
+        }
+      ]
+    },
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-next",
+      "Name": "Next Track",
+      "Tooltip": "Skip to the next SMW Central radio track.",
+      "Icon": "imgs/actions/next/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/next/key"
+        }
+      ]
+    },
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-loop",
+      "Name": "Toggle Looping",
+      "Tooltip": "Turn looping on or off for the current SPC track.",
+      "Icon": "imgs/actions/loop/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/loop/off"
+        },
+        {
+          "Image": "imgs/actions/loop/on"
+        }
+      ]
+    },
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-seek-back",
+      "Name": "Seek Back 10 Seconds",
+      "Tooltip": "Move the current SPC track back ten seconds.",
+      "Icon": "imgs/actions/seek-back/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/seek-back/key"
+        }
+      ]
+    },
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-seek-forward",
+      "Name": "Seek Forward 10 Seconds",
+      "Tooltip": "Move the current SPC track forward ten seconds.",
+      "Icon": "imgs/actions/seek-forward/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/seek-forward/key"
+        }
+      ]
+    },
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-volume-down",
+      "Name": "Volume Down",
+      "Tooltip": "Lower SPC player volume by ten percent.",
+      "Icon": "imgs/actions/volume-down/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/volume-down/key"
+        }
+      ]
+    },
+    {
+      "UUID": "com.freddogg23.smwstreamtracker.radio-volume-up",
+      "Name": "Volume Up",
+      "Tooltip": "Raise SPC player volume by ten percent.",
+      "Icon": "imgs/actions/volume-up/action-icon",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/volume-up/key"
+        }
+      ]
+    }
+  ]
+}

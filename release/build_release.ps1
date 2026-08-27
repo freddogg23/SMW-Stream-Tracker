@@ -161,6 +161,11 @@ if (-not (Test-Path -LiteralPath $desktopReleaseNotesPath -PathType Leaf)) {
     throw "Desktop release notes were not found: $desktopReleaseNotesPath"
 }
 
+& (Join-Path $projectRoot 'streamdeck\package_streamdeck_plugin.ps1')
+if ($LASTEXITCODE -ne 0) {
+    throw 'The Windows Stream Deck plugin could not be packaged.'
+}
+
 if (-not $SkipAppBuild) {
     $pythonPath = Resolve-BuildPython
     Stage-TclTkRuntime $pythonPath
@@ -293,6 +298,7 @@ $sourceItems = @(
     'release',
     'release_tools',
     'render_banner_qa.py',
+    'streamdeck',
     'tests',
     'tools',
     'version_info.txt'
@@ -335,6 +341,10 @@ foreach ($relativePath in $nonWindowsBuildMaterial) {
     if (Test-Path -LiteralPath $stagedPath) {
         Remove-Item -LiteralPath $stagedPath -Force
     }
+}
+$streamDeckBuildTools = Join-Path $sourceStaging 'streamdeck\.build-tools'
+if (Test-Path -LiteralPath $streamDeckBuildTools) {
+    Remove-Item -LiteralPath $streamDeckBuildTools -Recurse -Force
 }
 Get-ChildItem -LiteralPath $sourceStaging -Directory -Recurse -Force |
     Where-Object { $_.Name -eq '__pycache__' } |

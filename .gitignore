@@ -69,3 +69,6 @@ SMWStreamTracker.exit-details-test.spec
 .debug_wrapper_init.tcl
 _fxpak_popup_context.txt
 _inspect_catalog_counts.py
+# Local Stream Deck packaging tools and generated installer artifacts.
+streamdeck/.build-tools/
+streamdeck/dist/
