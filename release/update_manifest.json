@@ -1,23 +1,20 @@
 {
   "schema": 1,
-  "version": "2.1.0",
-  "release_date": "2026-08-25",
+  "version": "2.2.0",
+  "release_date": "2026-08-27",
   "notes": [
-    "Adds a dedicated SNES ROMs tab with cleaned names, folder-wide importing, matching search and filters, bulk selection and deletion, and MiSTer SD-card support.",
-    "Extends RetroAchievements identification to imported SNES games with trophy markers and complete official badge, requirement, point, and unlock details.",
-    "Adds dated new-content tracking and notification dots for moderated and waiting SMW Central hacks.",
-    "Adds named MiSTer profiles, automatic online-console failover, and automatic Ethernet/Wi-Fi address discovery.",
-    "Speeds up verified bulk MiSTer transfers and makes Find & Set Up MiSTer install virtual save-state slots 5-11 automatically.",
-    "Adds approved Streamer.bot tracker controls, suggested one-click mappings, and loop prevention alongside the existing outbound events.",
-    "Adds adaptive polling, crash recovery, automatic backups, library maintenance, post-stream summaries, completion detection, and automatic statistic reconciliation.",
-    "Adds Always Ask to Confirm Final Exit and only suggests completion when the final exit and completion state agree.",
-    "Hides SMW-only creator and exit information for ordinary SNES games while retaining names, deaths, and timers.",
-    "Rejects suspicious deaths during pipes, doors, transitions, loading, and save-state restoration, including RA-SNES/SNI sessions.",
-    "Fits MiSTer and RetroArch Platform settings on single pages and modernizes the remaining setup and detail dialogs.",
+    "Adds Music Identifier & Radio with private local SMW Central audio matching, early-match results, responsive cancellation, and automatic index checks every 30 minutes while the app is open.",
+    "Adds a polished in-app SPC player with play/pause, replay, looping, next track, seeking, volume, collapse, scrolling track text, and smooth dragging.",
+    "Adds an SMW Central Radio browser source for OBS that shows the current title, artist, elapsed time, duration, equalizer, and progress while following the in-app SPC player.",
+    "Adds one-click Streamer.bot setup for the What Song Is Playing? channel-point reward, including scene restriction, reward cost, cooldown, current-level song lookup, and chat links.",
+    "Adds an in-app Streamer.bot installer and improves compatibility with existing rewards and current Streamer.bot navigation.",
+    "Caches the live ROM, level, room, and music context so repeat redemptions answer quickly while a changed level or song receives a fresh result.",
+    "Adds smoother anti-aliased controls, notification dots, music artwork, progress scrubbers, and SPC-player movement throughout the Windows interface.",
+    "Improves clean shutdown and live tracker recovery so intentionally closing the app does not trigger a false crash-recovery prompt.",
     "Publishes Windows application, installer, updater, source, and checksums only. macOS remains untested and is not included."
   ],
-  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v2.1.0/SMWStreamTracker_Update_2.1.0.exe",
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v2.2.0/SMWStreamTracker_Update_2.2.0.exe",
   "verification": "sha256",
-  "sha256": "98d26a0ea08f840ce2ddc2c996d04061ec2a0ffbf7dadbd98060bf2b80c05273",
-  "size": 80350380
+  "sha256": "e44810c81b4a3e3722c48f64f5d7a329d6d0f1ecbb667a121696b4829a04f3b9",
+  "size": 92967437
 }
