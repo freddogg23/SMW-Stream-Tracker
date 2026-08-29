@@ -2,14 +2,25 @@
   "schema_version": 2,
   "fingerprint_algorithm": "smwc-chromaprint-v1",
   "chromaprint_version": "1.6.1",
-  "index_version": "20260828070238",
-  "catalog_updated_at": "1787844994",
+  "index_version": "20260829040944",
+  "catalog_updated_at": "1787945418",
   "catalog_complete": true,
-  "track_count": 12338,
+  "track_count": 12340,
   "fingerprint_count": 37466,
-  "chromaprint_track_count": 12338,
-  "chromaprint_token_count": 4064252,
-  "size_bytes": 196399104,
-  "sha256": "4ddac1fd7fedd2a0aac118bf0a14cc279f9130a1ffa08922bbe96b084a42ec01",
-  "download_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/music-index-latest/SMWCentralMusicIndex.sqlite3"
+  "chromaprint_track_count": 12340,
+  "chromaprint_token_count": 4064893,
+  "size_bytes": 196435968,
+  "sha256": "d71a404027358184fb596c86f71de8abcdfa5af11caf2fe65d4c62fc8f8dca12",
+  "download_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/music-index-latest/SMWCentralMusicIndex.sqlite3",
+  "incremental_update": {
+    "base_index_version": "20260828070238",
+    "index_version": "20260829040944",
+    "catalog_updated_at": "1787945418",
+    "submission_count": 2,
+    "deleted_submission_count": 0,
+    "track_count": 2,
+    "size_bytes": 90112,
+    "sha256": "f7e75706a97165490e0d2cde79b60e0e2ad42c5037b67b3fab33a04ca747dd5b",
+    "download_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/music-index-latest/SMWCentralMusicUpdate.sqlite3"
+  }
 }
