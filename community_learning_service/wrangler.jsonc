@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "smw-stream-tracker-community-learning",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-27",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "smw-stream-tracker-community-learning",
+      "database_id": "3dbf8e88-06db-4196-91ae-034f2b48192d"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "LEARNING_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '2.2.0',
+    [string]$Version = '2.2.1',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
@@ -184,6 +184,22 @@ if (-not $SkipAppBuild) {
     & $pythonPath -c "from importlib.metadata import version; import pyaudiowpatch; print('PyAudioWPatch ' + version('PyAudioWPatch'))"
     if ($LASTEXITCODE -ne 0) {
         throw 'The selected Python environment cannot load PyAudioWPatch. Install the Windows release requirements before packaging music identification.'
+    }
+    & $pythonPath -c "from importlib.metadata import version; from process_audio_capture import ProcessAudioCapture; print('ProcessAudioCapture ' + version('process-audio-capture'))"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The selected Python environment cannot load ProcessAudioCapture. Install the Windows release requirements before packaging per-application music identification.'
+    }
+    & $pythonPath -c "from importlib.metadata import version; import comtypes; from pycaw.pycaw import AudioUtilities; print('Pycaw ' + version('pycaw') + ' with Comtypes ' + version('comtypes'))"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The selected Python environment cannot load Pycaw and Comtypes. Install the Windows release requirements before packaging Volume Mixer app discovery.'
+    }
+    & $pythonPath -c "from importlib.metadata import version; import onnxruntime; print('ONNX Runtime ' + version('onnxruntime'))"
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The selected Python environment cannot load ONNX Runtime. Install the Windows release requirements before packaging offline voice detection.'
+    }
+    $voiceModel = Join-Path $projectRoot 'app_assets\voice_detection\silero_vad_16k.onnx'
+    if (-not (Test-Path -LiteralPath $voiceModel -PathType Leaf)) {
+        throw 'The offline Silero voice-detection model is missing. The release was stopped before packaging.'
     }
     & $pythonPath -c "from importlib.metadata import version; import numpy; print('NumPy ' + version('numpy'))"
     if ($LASTEXITCODE -ne 0) {

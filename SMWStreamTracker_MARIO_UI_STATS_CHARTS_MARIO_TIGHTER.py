@@ -31,6 +31,7 @@ import tempfile
 import tarfile
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import threading
@@ -891,8 +892,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "2.2.0"
-APP_BUILD_DATE = "2026-08-26"
+APP_VERSION = "2.2.1"
+APP_BUILD_DATE = "2026-08-29"
 
 GAME_MODE_STAGE_IMAGE_FILES = {
     "play_random_hack": "stage_scene_yoshis_island_2.png",
@@ -1002,6 +1003,13 @@ IS_MACOS = sys.platform == "darwin"
 APP_RELEASE_REPOSITORY = "https://github.com/freddogg23/SMW-Stream-Tracker"
 SMW_CENTRAL_WEBSITE_URL = "https://www.smwcentral.net/"
 MUSIC_IDENTIFIER_RECORD_SECONDS = 18
+MUSIC_IDENTIFIER_APPLICATION_RECORD_SECONDS = 8
+MUSIC_IDENTIFIER_APPLICATION_MAX_WALL_SECONDS = 30
+MUSIC_IDENTIFIER_APPLICATION_VOICE_BLOCK_SECONDS = 1.25
+MUSIC_IDENTIFIER_APPLICATION_MINIMUM_CLEAN_SECONDS = 5.0
+MUSIC_IDENTIFIER_VOICE_START_PROBABILITY = 0.56
+MUSIC_IDENTIFIER_VOICE_END_PROBABILITY = 0.30
+MUSIC_IDENTIFIER_VOICE_PADDING_SECONDS = 0.30
 MUSIC_IDENTIFIER_CHUNK_FRAMES = 1024
 # Channel-point requests should not sit silent through most of the capture.
 # A five-second landmark sample is normally enough for an early confident
@@ -1009,7 +1017,33 @@ MUSIC_IDENTIFIER_CHUNK_FRAMES = 1024
 MUSIC_IDENTIFIER_EARLY_MATCH_SECONDS = (5, 8, 12)
 MUSIC_IDENTIFIER_EARLY_MATCH_CONFIDENCE = 78.0
 MUSIC_IDENTIFIER_LISTEN_PROGRESS_WEIGHT = 0.85
+MUSIC_IDENTIFIER_RECENT_CACHE_SECONDS = 30 * 60
+MUSIC_IDENTIFIER_RECENT_CACHE_LIMIT = 96
+MUSIC_IDENTIFIER_CONFIRMED_LEVEL_LIMIT = 2000
+# While the song reward is enabled, keep a very small level-scoped monitor
+# alive. It does no audio work while a fresh answer is cached; it only starts
+# another local listen when the level/music identity changes, a previous
+# sample failed, or the cached answer is old enough to verify again.
+MUSIC_IDENTIFIER_BACKGROUND_MONITOR_MS = 5 * 1000
+MUSIC_IDENTIFIER_BACKGROUND_RETRY_SECONDS = 12
+MUSIC_IDENTIFIER_BACKGROUND_REFRESH_SECONDS = 45
 SMWC_MUSIC_INDEX_CHECK_INTERVAL_MS = 30 * 60 * 1000
+SMWC_COMMUNITY_LEARNING_SYNC_INTERVAL_MS = 30 * 60 * 1000
+# Developers can exercise a staging Worker without changing a release build by
+# setting this environment variable before launching.
+SMWC_COMMUNITY_LEARNING_API_URL = str(
+    os.environ.get(
+        "SMW_STREAM_TRACKER_COMMUNITY_AI_URL",
+        "https://smw-stream-tracker-community-learning."
+        "smw-stream-tracker-community-learning.workers.dev",
+    )
+).strip()
+SMWC_MUSIC_RECOGNITION_API_URL = str(
+    os.environ.get(
+        "SMW_STREAM_TRACKER_MUSIC_RECOGNITION_URL",
+        SMWC_COMMUNITY_LEARNING_API_URL,
+    )
+).strip()
 SMWC_MUSIC_INDEX_MANIFEST_URL = (
     "https://raw.githubusercontent.com/freddogg23/SMW-Stream-Tracker/"
     "main/release/music_index_manifest.json"
@@ -1034,8 +1068,10 @@ def music_identifier_source_token(device_info: object) -> str:
 
 def enumerate_windows_music_audio_sources(
     audio_module=None,
+    *,
+    include_inputs: bool = False,
 ) -> list[dict[str, Any]]:
-    """List capture-card, microphone, and WASAPI loopback inputs."""
+    """List Windows playback-loopback sources, optionally including inputs."""
     if audio_module is None:
         if not IS_WINDOWS:
             return []
@@ -1074,6 +1110,8 @@ def enumerate_windows_music_audio_sources(
                 str(raw_info.get("name", f"Audio source {device_index + 1}")).split()
             )
             is_loopback = bool(raw_info.get("isLoopbackDevice", False))
+            if not is_loopback and not include_inputs:
+                continue
             source = {
                 "index": device_index,
                 "name": name,
@@ -1127,6 +1165,1095 @@ def enumerate_windows_music_audio_sources(
     return sources
 
 
+def _process_audio_capture_class():
+    """Load the optional packaged Windows per-application audio helper."""
+
+    try:
+        from process_audio_capture import ProcessAudioCapture
+
+        return ProcessAudioCapture
+    except (ImportError, OSError):
+        # Source checkouts keep release-only packages isolated from the rest of
+        # the developer's Python installation. PyInstaller imports the package
+        # normally, while a source run can use this deterministic local copy.
+        local_packages = Path(__file__).resolve().parent / ".app-audio-deps"
+        local_packages_text = str(local_packages)
+        if local_packages.is_dir() and local_packages_text not in sys.path:
+            sys.path.insert(0, local_packages_text)
+        try:
+            from process_audio_capture import ProcessAudioCapture
+
+            return ProcessAudioCapture
+        except (ImportError, OSError):
+            return None
+
+
+def _windows_volume_mixer_runtime():
+    """Load the Windows Core Audio session API used by Volume Mixer."""
+
+    local_packages = Path(__file__).resolve().parent / ".volume-mixer-deps"
+    local_packages_text = str(local_packages)
+    if local_packages.is_dir() and local_packages_text not in sys.path:
+        sys.path.insert(0, local_packages_text)
+    try:
+        import comtypes
+        from pycaw.api.audiopolicy import IAudioSessionControl2
+        from pycaw.constants import DEVICE_STATE, EDataFlow
+        from pycaw.pycaw import AudioSession, AudioUtilities
+    except (ImportError, OSError):
+        return None
+    return (
+        comtypes,
+        AudioUtilities,
+        AudioSession,
+        IAudioSessionControl2,
+        EDataFlow,
+        DEVICE_STATE,
+    )
+
+
+def _windows_volume_mixer_application_processes(
+    runtime=None,
+) -> list[dict[str, Any]]:
+    """Return app sessions shown by Volume Mixer on every playback device."""
+
+    if not IS_WINDOWS and runtime is None:
+        return []
+    selected_runtime = runtime or _windows_volume_mixer_runtime()
+    if selected_runtime is None:
+        return []
+    (
+        comtypes_module,
+        audio_utilities,
+        audio_session_class,
+        session_control_interface,
+        data_flow,
+        device_state,
+    ) = selected_runtime
+    sessions: list[dict[str, Any]] = []
+    com_initialized = False
+    try:
+        comtypes_module.CoInitialize()
+        com_initialized = True
+        devices = audio_utilities.GetAllDevices(
+            data_flow.eRender.value,
+            device_state.ACTIVE.value,
+        )
+        for device in devices:
+            try:
+                manager = device.AudioSessionManager
+                enumerator = manager.GetSessionEnumerator()
+                session_count = int(enumerator.GetCount())
+            except Exception:
+                continue
+            device_name = " ".join(
+                str(getattr(device, "FriendlyName", "") or "").split()
+            )
+            for session_index in range(session_count):
+                try:
+                    control = enumerator.GetSession(session_index)
+                    control2 = control.QueryInterface(session_control_interface)
+                    session = audio_session_class(control2)
+                    process_id = max(0, int(session.ProcessId or 0))
+                    process = session.Process
+                    process_name = " ".join(
+                        str(process.name() if process is not None else "").split()
+                    )
+                    session_state = int(session.State)
+                except Exception:
+                    continue
+                if process_id <= 0 or not process_name:
+                    continue
+                sessions.append(
+                    {
+                        "pid": process_id,
+                        "name": process_name,
+                        "window_title": "",
+                        "is_visible": False,
+                        "is_active": session_state == 1,
+                        "mixer_state": session_state,
+                        "audio_device": device_name,
+                    }
+                )
+    except Exception:
+        return []
+    finally:
+        if com_initialized:
+            try:
+                comtypes_module.CoUninitialize()
+            except Exception:
+                pass
+    return sessions
+
+
+def _voice_activity_runtime():
+    """Load the packaged offline Silero voice detector and model."""
+
+    local_packages = Path(__file__).resolve().parent / ".voice-vad-deps"
+    local_packages_text = str(local_packages)
+    if local_packages.is_dir() and local_packages_text not in sys.path:
+        sys.path.insert(0, local_packages_text)
+    try:
+        import onnxruntime
+    except (ImportError, OSError):
+        return None
+    model_path = bundled_resource_path(
+        "app_assets",
+        "voice_detection",
+        "silero_vad_16k.onnx",
+    )
+    if not model_path.is_file():
+        return None
+    return onnxruntime, model_path
+
+
+class _OfflineVoiceAnalyzer:
+    """Run a stateful, local voice model over growing PCM audio."""
+
+    sample_rate = 16000
+    frame_samples = 512
+
+    def __init__(self, *, session=None) -> None:
+        np = smwc_music_index._numpy()
+        if session is None:
+            runtime = _voice_activity_runtime()
+            if runtime is None:
+                raise RuntimeError(
+                    "Offline voice detection support is missing from this build."
+                )
+            onnxruntime, model_path = runtime
+            options = onnxruntime.SessionOptions()
+            options.intra_op_num_threads = 1
+            options.inter_op_num_threads = 1
+            options.log_severity_level = 3
+            session = onnxruntime.InferenceSession(
+                str(model_path),
+                sess_options=options,
+                providers=["CPUExecutionProvider"],
+            )
+        self.session = session
+        self.state = np.zeros((2, 1, 128), dtype=np.float32)
+        self.context = np.zeros((1, 64), dtype=np.float32)
+        self.processed_samples = 0
+        self.probabilities: list[float] = []
+
+    @staticmethod
+    def _mono_16k(
+        pcm_samples: array,
+        channels: int,
+        sample_rate: int,
+    ):
+        np = smwc_music_index._numpy()
+        channel_count = max(1, int(channels))
+        source_rate = max(1, int(sample_rate))
+        values = np.asarray(pcm_samples, dtype=np.float32)
+        complete_values = values.size - (values.size % channel_count)
+        values = values[:complete_values]
+        if not values.size:
+            return np.asarray([], dtype=np.float32)
+        if channel_count > 1:
+            values = values.reshape(-1, channel_count).mean(axis=1)
+        values = values / 32768.0
+        if source_rate == _OfflineVoiceAnalyzer.sample_rate:
+            return values.astype(np.float32, copy=False)
+        output_size = max(
+            1,
+            round(values.size * _OfflineVoiceAnalyzer.sample_rate / source_rate),
+        )
+        source_positions = np.arange(values.size, dtype=np.float64)
+        output_positions = (
+            np.arange(output_size, dtype=np.float64)
+            * source_rate
+            / _OfflineVoiceAnalyzer.sample_rate
+        )
+        return np.interp(
+            output_positions,
+            source_positions,
+            values,
+        ).astype(np.float32)
+
+    def analyze(
+        self,
+        pcm_samples: array,
+        channels: int,
+        sample_rate: int,
+    ) -> list[float]:
+        np = smwc_music_index._numpy()
+        mono = self._mono_16k(pcm_samples, channels, sample_rate)
+        if mono.size < self.processed_samples:
+            self.state = np.zeros((2, 1, 128), dtype=np.float32)
+            self.context = np.zeros((1, 64), dtype=np.float32)
+            self.processed_samples = 0
+            self.probabilities = []
+        new_probabilities: list[float] = []
+        while self.processed_samples + self.frame_samples <= mono.size:
+            frame = mono[
+                self.processed_samples : self.processed_samples + self.frame_samples
+            ]
+            model_input = np.concatenate(
+                (self.context, frame.reshape(1, -1)),
+                axis=1,
+            ).astype(np.float32)
+            output, self.state = self.session.run(
+                None,
+                {
+                    "input": model_input,
+                    "state": self.state,
+                    "sr": np.asarray(self.sample_rate, dtype=np.int64),
+                },
+            )
+            self.context = model_input[:, -64:]
+            probability = max(0.0, min(1.0, float(output[0][0])))
+            self.probabilities.append(probability)
+            new_probabilities.append(probability)
+            self.processed_samples += self.frame_samples
+        return new_probabilities
+
+    def voice_is_present(self) -> bool:
+        recent = self.probabilities[-12:]
+        if not recent:
+            return False
+        strong_frames = sum(
+            probability >= MUSIC_IDENTIFIER_VOICE_START_PROBABILITY
+            for probability in recent
+        )
+        return (
+            max(recent) >= 0.78
+            or strong_frames >= 2
+            or sum(recent[-6:]) / min(6, len(recent)) >= 0.52
+        )
+
+
+def _voice_probabilities_have_speech(probabilities: Sequence[float]) -> bool:
+    """Classify one completed capture block without relying on a live file."""
+
+    values = [max(0.0, min(1.0, float(value))) for value in probabilities]
+    if not values:
+        return False
+    strong_frames = sum(
+        value >= MUSIC_IDENTIFIER_VOICE_START_PROBABILITY for value in values
+    )
+    # Quiet commentary mixed under game music often produces many sustained
+    # 0.20-0.40 frames instead of a single high-confidence peak. Clean SPC
+    # music can create one or two onset spikes, so require six moderate frames.
+    moderate_frames = sum(value >= 0.20 for value in values)
+    return max(values) >= 0.82 or strong_frames >= 2 or moderate_frames >= 6
+
+
+def music_identifier_application_source_token(source: object) -> str:
+    if not isinstance(source, dict):
+        return ""
+    process_name = " ".join(
+        str(source.get("process_name", "")).split()
+    ).casefold()
+    return f"application|{process_name}" if process_name else ""
+
+
+def _windows_process_parent_snapshot() -> dict[int, tuple[int, str]]:
+    """Return pid -> (parent pid, executable name) without another dependency."""
+
+    if not IS_WINDOWS:
+        return {}
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = (
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        )
+
+    snapshot: dict[int, tuple[int, str]] = {}
+    handle = None
+    close_handle = None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_snapshot = kernel32.CreateToolhelp32Snapshot
+        create_snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+        create_snapshot.restype = wintypes.HANDLE
+        process_first = kernel32.Process32FirstW
+        process_first.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(PROCESSENTRY32W),
+        )
+        process_first.restype = wintypes.BOOL
+        process_next = kernel32.Process32NextW
+        process_next.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(PROCESSENTRY32W),
+        )
+        process_next.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+
+        handle = create_snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+        invalid_handle = ctypes.c_void_p(-1).value
+        handle_value = (
+            int(handle)
+            if isinstance(handle, int)
+            else ctypes.cast(handle, ctypes.c_void_p).value
+        )
+        if not handle_value or handle_value == invalid_handle:
+            return {}
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        available = bool(process_first(handle, ctypes.byref(entry)))
+        while available:
+            process_id = int(entry.th32ProcessID)
+            if process_id > 0:
+                snapshot[process_id] = (
+                    int(entry.th32ParentProcessID),
+                    str(entry.szExeFile or ""),
+                )
+            available = bool(process_next(handle, ctypes.byref(entry)))
+    except Exception:
+        return {}
+    finally:
+        if handle and close_handle is not None:
+            try:
+                close_handle(handle)
+            except Exception:
+                pass
+    return snapshot
+
+
+def _windows_visible_application_processes(
+    *,
+    process_snapshot: dict[int, tuple[int, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Return visible Windows apps even when their audio session is idle."""
+
+    if not IS_WINDOWS:
+        return []
+    snapshot = (
+        process_snapshot
+        if process_snapshot is not None
+        else _windows_process_parent_snapshot()
+    )
+    if not snapshot:
+        return []
+    applications: list[dict[str, Any]] = []
+    seen_pids: set[int] = set()
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        enum_windows = user32.EnumWindows
+        is_window_visible = user32.IsWindowVisible
+        get_window_text_length = user32.GetWindowTextLengthW
+        get_window_text = user32.GetWindowTextW
+        get_window_process = user32.GetWindowThreadProcessId
+        callback_type = ctypes.WINFUNCTYPE(
+            wintypes.BOOL,
+            wintypes.HWND,
+            wintypes.LPARAM,
+        )
+
+        @callback_type
+        def collect_window(window_handle, _parameter):
+            if not bool(is_window_visible(window_handle)):
+                return True
+            title_length = int(get_window_text_length(window_handle) or 0)
+            if title_length <= 0:
+                return True
+            title_buffer = ctypes.create_unicode_buffer(title_length + 1)
+            if not get_window_text(
+                window_handle,
+                title_buffer,
+                title_length + 1,
+            ):
+                return True
+            process_id = wintypes.DWORD(0)
+            get_window_process(window_handle, ctypes.byref(process_id))
+            pid = int(process_id.value or 0)
+            if pid <= 0 or pid == os.getpid() or pid in seen_pids:
+                return True
+            _parent_pid, process_name = snapshot.get(pid, (0, ""))
+            process_name = " ".join(str(process_name or "").split())
+            window_title = " ".join(str(title_buffer.value or "").split())
+            if not process_name or not window_title:
+                return True
+            seen_pids.add(pid)
+            applications.append(
+                {
+                    "pid": pid,
+                    "name": process_name,
+                    "window_title": window_title,
+                    "is_visible": True,
+                }
+            )
+            return True
+
+        enum_windows(collect_window, 0)
+    except Exception:
+        return []
+    return applications
+
+
+def _music_audio_process_fields(process: object) -> tuple[int, str, str, bool]:
+    """Normalize one DLL or visible-window process record."""
+
+    if isinstance(process, dict):
+        raw_pid = process.get("pid", 0)
+        raw_name = process.get("name", "")
+        raw_title = process.get("window_title", "")
+        visible = bool(process.get("is_visible", False))
+    else:
+        raw_pid = getattr(process, "pid", 0)
+        raw_name = getattr(process, "name", "")
+        raw_title = getattr(process, "window_title", "")
+        visible = bool(getattr(process, "is_visible", False))
+    try:
+        process_id = max(0, int(raw_pid or 0))
+    except (TypeError, ValueError):
+        process_id = 0
+    return (
+        process_id,
+        " ".join(str(raw_name or "").split()),
+        " ".join(str(raw_title or "").split()),
+        visible,
+    )
+
+
+def _resolve_windows_music_application_capture_pid(
+    source: dict[str, Any],
+    current_processes: Sequence[object],
+    *,
+    process_snapshot: dict[int, tuple[int, str]] | None = None,
+) -> int:
+    """Resolve a fresh audio session and its stable same-app parent process."""
+
+    requested_pid = max(0, int(source.get("pid", 0) or 0))
+    requested_name = str(source.get("process_name", "") or "").strip().casefold()
+    requested_title = str(source.get("window_title", "") or "").strip().casefold()
+    candidates = []
+    for process in current_processes:
+        process_id, process_name, process_title, _visible = (
+            _music_audio_process_fields(process)
+        )
+        if requested_name and process_name.casefold() != requested_name:
+            continue
+        if process_id <= 0:
+            continue
+        score = 0
+        if requested_title and process_title.casefold() == requested_title:
+            score += 8
+        if process_id == requested_pid:
+            score += 4
+        if process_title:
+            score += 1
+        candidates.append((score, process_id, process_name))
+
+    if candidates:
+        _score, session_pid, session_name = max(
+            candidates,
+            key=lambda candidate: (candidate[0], candidate[1]),
+        )
+    else:
+        session_pid = requested_pid
+        session_name = requested_name
+    if session_pid <= 0:
+        return 0
+
+    # Windows process-loopback includes all descendants of the selected PID.
+    # Browser audio renderers are routinely replaced between samples, while
+    # the top-level browser process remains stable. Capturing that ancestor
+    # keeps Identify What's Playing working on the second and later runs.
+    snapshot = (
+        process_snapshot
+        if process_snapshot is not None
+        else _windows_process_parent_snapshot()
+    )
+    capture_pid = session_pid
+    expected_name = str(session_name or requested_name).strip().casefold()
+    visited = {capture_pid}
+    for _depth in range(16):
+        parent_id, _current_name = snapshot.get(capture_pid, (0, ""))
+        _grandparent_id, parent_name = snapshot.get(parent_id, (0, ""))
+        if (
+            parent_id <= 0
+            or parent_id in visited
+            or str(parent_name).strip().casefold() != expected_name
+        ):
+            break
+        capture_pid = parent_id
+        visited.add(capture_pid)
+    return capture_pid
+
+
+def refresh_windows_music_application_source(
+    source: dict[str, Any],
+    process_capture_class=None,
+) -> dict[str, Any]:
+    """Refresh a saved per-app source before each new recording."""
+
+    refreshed = dict(source)
+    if process_capture_class is None:
+        current_processes = _windows_volume_mixer_application_processes()
+    else:
+        try:
+            current_processes = list(
+                process_capture_class.enumerate_audio_processes()
+            )
+        except Exception:
+            return refreshed
+    if not current_processes:
+        return refreshed
+    requested_name = str(
+        refreshed.get("process_name", "") or ""
+    ).strip().casefold()
+    requested_title = str(
+        refreshed.get("window_title", "") or ""
+    ).strip().casefold()
+    candidates = []
+    for process in current_processes:
+        process_id, process_name, process_title, _visible = (
+            _music_audio_process_fields(process)
+        )
+        if requested_name and process_name.casefold() != requested_name:
+            continue
+        if process_id <= 0:
+            continue
+        score = 0
+        if requested_title and process_title.casefold() == requested_title:
+            score += 8
+        if process_id == int(refreshed.get("pid", 0) or 0):
+            score += 4
+        if process_title:
+            score += 1
+        candidates.append((score, process_id, process_name, process_title))
+    if candidates:
+        _score, process_id, process_name, process_title = max(
+            candidates,
+            key=lambda candidate: (candidate[0], candidate[1]),
+        )
+        refreshed["pid"] = process_id
+        refreshed["process_name"] = process_name
+        refreshed["window_title"] = process_title
+        refreshed["capture_pid"] = _resolve_windows_music_application_capture_pid(
+            refreshed,
+            current_processes,
+        )
+    return refreshed
+
+
+def enumerate_windows_music_application_sources(
+    process_capture_class=None,
+    *,
+    volume_mixer_processes: Sequence[object] | None = None,
+    running_processes: Sequence[object] | None = None,
+    process_snapshot: dict[int, tuple[int, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """List running apps that Windows can capture independently."""
+
+    if not IS_WINDOWS and process_capture_class is None:
+        return []
+    capture_class = process_capture_class or _process_audio_capture_class()
+    if capture_class is None:
+        return []
+    try:
+        if not bool(capture_class.is_supported()):
+            return []
+    except Exception:
+        return []
+    if volume_mixer_processes is not None:
+        audio_processes = list(volume_mixer_processes)
+    elif process_capture_class is None:
+        audio_processes = _windows_volume_mixer_application_processes()
+    else:
+        try:
+            audio_processes = list(capture_class.enumerate_audio_processes())
+        except Exception:
+            audio_processes = []
+    snapshot = (
+        process_snapshot
+        if process_snapshot is not None
+        else _windows_process_parent_snapshot()
+    )
+    if running_processes is None:
+        running_processes = _windows_visible_application_processes(
+            process_snapshot=snapshot
+        )
+    processes = list(audio_processes) + list(running_processes)
+
+    friendly_names = {
+        "chrome.exe": "Google Chrome",
+        "firefox.exe": "Mozilla Firefox",
+        "msedge.exe": "Microsoft Edge",
+        "opera.exe": "Opera",
+        "opera_gx.exe": "Opera GX",
+        "brave.exe": "Brave",
+        "vivaldi.exe": "Vivaldi",
+        "obs64.exe": "OBS Studio",
+    }
+    browser_process_names = {
+        "brave.exe",
+        "chrome.exe",
+        "firefox.exe",
+        "msedge.exe",
+        "opera.exe",
+        "opera_gx.exe",
+        "vivaldi.exe",
+    }
+    visible_by_name: dict[str, tuple[int, str, str, bool]] = {}
+    for process in running_processes:
+        visible_fields = _music_audio_process_fields(process)
+        _visible_pid, visible_name, visible_title, is_visible = visible_fields
+        if visible_name and visible_title and is_visible:
+            visible_by_name[visible_name.casefold()] = visible_fields
+    candidates_by_name: dict[str, tuple[int, int, str, str]] = {}
+    for process in audio_processes:
+        process_id, process_name, window_title, visible = (
+            _music_audio_process_fields(process)
+        )
+        if process_id <= 0 or not process_name:
+            continue
+        process_key = process_name.casefold()
+        is_active = bool(
+            process.get("is_active", False)
+            if isinstance(process, dict)
+            else getattr(process, "is_active", False)
+        )
+        candidate_score = (
+            (8 if is_active else 0)
+            + (4 if visible else 0)
+            + (2 if window_title else 0)
+        )
+        previous = candidates_by_name.get(process_key)
+        candidate = (
+            candidate_score,
+            process_id,
+            process_name,
+            window_title,
+        )
+        if previous is None or candidate[:2] > previous[:2]:
+            candidates_by_name[process_key] = candidate
+
+    sources: list[dict[str, Any]] = []
+    for _score, process_id, process_name, window_title in (
+        candidates_by_name.values()
+    ):
+        visible_fields = visible_by_name.get(process_name.casefold())
+        if visible_fields is not None:
+            _visible_pid, _visible_name, visible_title, _is_visible = (
+                visible_fields
+            )
+            window_title = visible_title or window_title
+        display_name = friendly_names.get(
+            process_name.casefold(),
+            Path(process_name).stem or process_name,
+        )
+        label = f"{display_name} — Application audio"
+        if window_title and window_title.casefold() != display_name.casefold():
+            label += f" — {window_title[:72]}"
+        source = {
+            "capture_type": "process",
+            "pid": process_id,
+            "process_name": process_name,
+            "window_title": window_title,
+            "name": display_name,
+            "label": label,
+            "is_loopback": True,
+            "max_input_channels": 2,
+            "default_sample_rate": 48000,
+            "is_browser": process_name.casefold() in browser_process_names,
+        }
+        source["capture_pid"] = _resolve_windows_music_application_capture_pid(
+            source,
+            processes,
+            process_snapshot=snapshot,
+        )
+        source["token"] = music_identifier_application_source_token(source)
+        sources.append(source)
+
+    sources.sort(
+        key=lambda source: (
+            str(source.get("name", "")).casefold(),
+            str(source.get("window_title", "")).casefold(),
+            int(source.get("pid", 0)),
+        )
+    )
+    duplicate_counts: dict[str, int] = {}
+    for source in sources:
+        base_label = str(source["label"])
+        duplicate_counts[base_label] = duplicate_counts.get(base_label, 0) + 1
+        duplicate_number = duplicate_counts[base_label]
+        if duplicate_number > 1:
+            source["label"] = f"{base_label} ({duplicate_number})"
+    return sources
+
+
+def _crossfade_pcm_sections(
+    sections: Sequence[Any],
+    sample_rate: int,
+) -> Any:
+    """Join PCM sections without inserting fingerprint-breaking silence."""
+
+    np = smwc_music_index._numpy()
+    prepared = [
+        np.asarray(section, dtype=np.float32)
+        for section in sections
+        if getattr(section, "shape", (0,))[0] > 0
+    ]
+    if not prepared:
+        return np.zeros((0, 1), dtype=np.float32)
+    joined = prepared[0].copy()
+    requested_overlap = max(1, round(0.018 * max(1, int(sample_rate))))
+    for section in prepared[1:]:
+        overlap = min(
+            requested_overlap,
+            max(1, joined.shape[0] // 4),
+            max(1, section.shape[0] // 4),
+        )
+        blend = np.linspace(
+            0.0,
+            1.0,
+            overlap,
+            dtype=np.float32,
+        )[:, None]
+        mixed = joined[-overlap:] * (1.0 - blend) + section[:overlap] * blend
+        joined = np.concatenate(
+            (joined[:-overlap], mixed, section[overlap:]),
+            axis=0,
+        )
+    return joined
+
+
+def _decode_application_capture_wav(
+    source_path: Path,
+    *,
+    allow_partial: bool = False,
+) -> tuple[array, int, int]:
+    """Decode a complete or growing process-loopback WAV into PCM16."""
+
+    document = Path(source_path).read_bytes()
+    if len(document) < 44 or document[:4] != b"RIFF" or document[8:12] != b"WAVE":
+        raise RuntimeError("The selected application returned invalid audio.")
+    chunks: dict[bytes, bytes] = {}
+    cursor = 12
+    while cursor + 8 <= len(document):
+        chunk_name = document[cursor : cursor + 4]
+        chunk_size = int.from_bytes(
+            document[cursor + 4 : cursor + 8],
+            "little",
+        )
+        start = cursor + 8
+        stop = min(len(document), start + chunk_size)
+        if stop - start != chunk_size:
+            if not allow_partial or chunk_name != b"data":
+                raise RuntimeError("The application audio sample was incomplete.")
+            stop = len(document)
+        if chunk_name == b"data" and allow_partial and stop <= start:
+            stop = len(document)
+        chunks.setdefault(chunk_name, document[start:stop])
+        cursor = stop + (chunk_size & 1)
+    format_chunk = chunks.get(b"fmt ", b"")
+    audio_data = chunks.get(b"data", b"")
+    if len(format_chunk) < 16 or not audio_data:
+        raise RuntimeError("No usable audio was heard from that application.")
+    format_tag, channels, sample_rate, _byte_rate, block_align, bits = (
+        struct.unpack_from("<HHIIHH", format_chunk, 0)
+    )
+    subformat_tag = format_tag
+    if format_tag == 0xFFFE and len(format_chunk) >= 40:
+        subformat_tag = int.from_bytes(format_chunk[24:28], "little")
+    if channels <= 0 or sample_rate <= 0 or block_align <= 0:
+        raise RuntimeError("The application audio format was invalid.")
+
+    pcm_samples = array("h")
+    if subformat_tag == 3 and bits == 32:
+        float_samples = array("f")
+        float_samples.frombytes(audio_data[: len(audio_data) - len(audio_data) % 4])
+        if sys.byteorder != "little":
+            float_samples.byteswap()
+        pcm_samples.extend(
+            max(
+                -32768,
+                min(
+                    32767,
+                    int(round(max(-1.0, min(1.0, float(value))) * 32767.0)),
+                ),
+            )
+            if math.isfinite(float(value))
+            else 0
+            for value in float_samples
+        )
+    elif subformat_tag == 1 and bits == 16:
+        pcm_samples.frombytes(audio_data[: len(audio_data) - len(audio_data) % 2])
+        if sys.byteorder != "little":
+            pcm_samples.byteswap()
+    else:
+        raise RuntimeError(
+            "This application's Windows audio format is not supported."
+        )
+    if not pcm_samples:
+        raise RuntimeError("No usable audio was heard from that application.")
+    return pcm_samples, int(channels), int(sample_rate)
+
+
+def _convert_application_capture_wav_to_pcm16(
+    source_path: Path,
+    destination: Path,
+) -> dict[str, Any]:
+    """Convert the Windows process-loopback float WAV to matcher PCM16."""
+
+    pcm_samples, channels, sample_rate = _decode_application_capture_wav(
+        source_path
+    )
+    peak_amplitude = max(abs(int(value)) for value in pcm_samples)
+    if peak_amplitude < 48:
+        raise RuntimeError(
+            "No usable audio was heard from that application. Start the "
+            "stream or video, then try again."
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(destination), "wb") as audio_file:
+        audio_file.setnchannels(int(channels))
+        audio_file.setsampwidth(2)
+        audio_file.setframerate(int(sample_rate))
+        audio_file.writeframes(pcm_samples.tobytes())
+    frame_count = len(pcm_samples) // max(1, int(channels))
+    return {
+        "channels": int(channels),
+        "sample_rate": int(sample_rate),
+        "peak_amplitude": int(peak_amplitude),
+        "seconds": frame_count / max(1, int(sample_rate)),
+    }
+
+
+def _compile_voice_free_pcm16_wav(
+    source_path: Path,
+    destination: Path,
+    *,
+    analyzer: _OfflineVoiceAnalyzer | None = None,
+) -> dict[str, Any]:
+    """Remove voice-marked regions and stitch the remaining music together."""
+
+    np = smwc_music_index._numpy()
+    with wave.open(str(source_path), "rb") as audio_file:
+        channels = int(audio_file.getnchannels())
+        sample_width = int(audio_file.getsampwidth())
+        sample_rate = int(audio_file.getframerate())
+        frame_count = int(audio_file.getnframes())
+        frame_bytes = audio_file.readframes(frame_count)
+    if sample_width != 2 or channels <= 0 or sample_rate <= 0:
+        raise RuntimeError("The application audio format was invalid.")
+    pcm_samples = array("h")
+    pcm_samples.frombytes(frame_bytes[: len(frame_bytes) - len(frame_bytes) % 2])
+    if sys.byteorder != "little":
+        pcm_samples.byteswap()
+    if analyzer is None:
+        analyzer = _OfflineVoiceAnalyzer()
+    analyzer.analyze(pcm_samples, channels, sample_rate)
+    probabilities = list(analyzer.probabilities)
+    if not probabilities:
+        raise RuntimeError("Not enough audio was heard to check for voices.")
+
+    total_frames = len(pcm_samples) // channels
+    voice_mask = np.zeros(total_frames, dtype=bool)
+    frame_seconds = analyzer.frame_samples / analyzer.sample_rate
+    active_voice = False
+    detected_frames = 0
+    for index, probability in enumerate(probabilities):
+        if active_voice:
+            active_voice = probability >= MUSIC_IDENTIFIER_VOICE_END_PROBABILITY
+        else:
+            active_voice = probability >= MUSIC_IDENTIFIER_VOICE_START_PROBABILITY
+        if not active_voice:
+            continue
+        detected_frames += 1
+        start_seconds = index * frame_seconds
+        stop_seconds = (index + 1) * frame_seconds
+        start_frame = max(
+            0,
+            round(
+                (start_seconds - MUSIC_IDENTIFIER_VOICE_PADDING_SECONDS)
+                * sample_rate
+            ),
+        )
+        stop_frame = min(
+            total_frames,
+            round(
+                (stop_seconds + MUSIC_IDENTIFIER_VOICE_PADDING_SECONDS)
+                * sample_rate
+            ),
+        )
+        voice_mask[start_frame:stop_frame] = True
+
+    minimum_run_frames = max(1, round(0.42 * sample_rate))
+    clean_runs: list[tuple[int, int]] = []
+    run_start: int | None = None
+    for frame_index, voice_present in enumerate(voice_mask):
+        if not voice_present and run_start is None:
+            run_start = frame_index
+        elif voice_present and run_start is not None:
+            if frame_index - run_start >= minimum_run_frames:
+                clean_runs.append((run_start, frame_index))
+            run_start = None
+    if run_start is not None and total_frames - run_start >= minimum_run_frames:
+        clean_runs.append((run_start, total_frames))
+
+    original = np.asarray(pcm_samples, dtype=np.int16).reshape(-1, channels)
+    clean_sections = []
+    for start_frame, stop_frame in clean_runs:
+        section = original[start_frame:stop_frame].astype(np.float32)
+        clean_sections.append(section)
+    if clean_sections:
+        compiled = _crossfade_pcm_sections(clean_sections, sample_rate)
+    else:
+        compiled = np.zeros((0, channels), dtype=np.float32)
+    clean_seconds = compiled.shape[0] / sample_rate
+    if clean_seconds < MUSIC_IDENTIFIER_APPLICATION_MINIMUM_CLEAN_SECONDS:
+        raise RuntimeError(
+            "Voices covered too much of the music. Keep the stream playing "
+            "and try again during a quieter section."
+        )
+    compiled_pcm = np.clip(
+        np.rint(compiled),
+        -32768,
+        32767,
+    ).astype("<i2")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(destination), "wb") as audio_file:
+        audio_file.setnchannels(channels)
+        audio_file.setsampwidth(2)
+        audio_file.setframerate(sample_rate)
+        audio_file.writeframes(compiled_pcm.tobytes())
+    voice_seconds = float(voice_mask.sum()) / sample_rate
+    return {
+        "channels": channels,
+        "sample_rate": sample_rate,
+        "seconds": total_frames / sample_rate,
+        "clean_seconds": clean_seconds,
+        "voice_seconds": voice_seconds,
+        "voice_frames": detected_frames,
+        "voice_gated": True,
+    }
+
+
+def record_windows_application_music_sample(
+    source: dict[str, Any],
+    destination: Path,
+    *,
+    seconds: int = MUSIC_IDENTIFIER_APPLICATION_RECORD_SECONDS,
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[float, int], None] | None = None,
+    level_callback: Callable[[float], None] | None = None,
+    voice_state_callback: Callable[[str, float, float], None] | None = None,
+    process_capture_class=None,
+    voice_analyzer: _OfflineVoiceAnalyzer | None = None,
+) -> dict[str, Any]:
+    """Capture one application's audio on one uninterrupted timeline.
+
+    Audio landmark recognition depends on the relative time between spectral
+    events.  Stopping the Windows process capture for voice detection and then
+    stitching the surviving blocks together destroyed that relationship and
+    made later attempts much less reliable.  Keep the stream continuous here;
+    the matcher is deliberately tolerant of speech and game sound effects.
+    """
+
+    capture_class = process_capture_class or _process_audio_capture_class()
+    if capture_class is None:
+        raise RuntimeError(
+            "Application audio capture support is missing from this build."
+        )
+    try:
+        current_processes = list(capture_class.enumerate_audio_processes())
+    except Exception:
+        current_processes = []
+    process_id = _resolve_windows_music_application_capture_pid(
+        source,
+        current_processes,
+    )
+    if process_id <= 0:
+        raise ValueError("Refresh Sources and select a running application.")
+    duration = max(3, min(30, int(seconds)))
+    raw_descriptor, raw_name = tempfile.mkstemp(
+        prefix="smw-stream-tracker-app-audio-",
+        suffix=".wav",
+    )
+    os.close(raw_descriptor)
+    raw_path = Path(raw_name)
+    raw_path.unlink(missing_ok=True)
+    def report_level(level_db: float) -> None:
+        if level_callback is not None:
+            level_callback(
+                max(0.0, min(1.0, (float(level_db) + 60.0) / 60.0))
+            )
+
+    capture = capture_class(
+        pid=process_id,
+        output_path=str(raw_path),
+        level_callback=report_level,
+    )
+    started_at = time.monotonic()
+    capture_error: BaseException | None = None
+    try:
+        capture.start()
+        if voice_state_callback is not None:
+            voice_state_callback("continuous", 0.0, float(duration))
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise MusicIdentifierCancelled()
+            elapsed = max(0.0, time.monotonic() - started_at)
+            if progress_callback is not None:
+                progress_callback(
+                    min(1.0, elapsed / duration),
+                    max(0, int(math.ceil(duration - elapsed))),
+                )
+            if elapsed >= duration:
+                break
+            time.sleep(0.05)
+    except BaseException as error:
+        capture_error = error
+    finally:
+        try:
+            capture.stop()
+        except Exception:
+            pass
+    if capture_error is not None:
+        raw_path.unlink(missing_ok=True)
+        raise capture_error
+    try:
+        pcm, output_channels, output_rate = _decode_application_capture_wav(
+            raw_path
+        )
+        frame_count = len(pcm) // max(1, output_channels)
+        captured_elapsed = frame_count / max(1, output_rate)
+        if captured_elapsed < 2.5:
+            raise RuntimeError(
+                "The selected application did not provide enough audio. "
+                "Keep it playing and try again."
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(destination), "wb") as audio_file:
+            audio_file.setnchannels(output_channels)
+            audio_file.setsampwidth(2)
+            audio_file.setframerate(output_rate)
+            audio_file.writeframes(pcm.tobytes())
+    finally:
+        raw_path.unlink(missing_ok=True)
+    if progress_callback is not None:
+        progress_callback(1.0, 0)
+    return {
+        "channels": output_channels,
+        "sample_rate": output_rate,
+        "seconds": captured_elapsed,
+        "clean_seconds": captured_elapsed,
+        "voice_seconds": 0.0,
+        "voice_blocks": 0,
+        "voice_gated": False,
+        "continuous_timeline": True,
+        "stopped_early": captured_elapsed + 0.25 < duration,
+        "clean_target_seconds": float(duration),
+    }
+
+
 def record_windows_music_sample(
     source: dict[str, Any],
     destination: Path,
@@ -1134,6 +2261,7 @@ def record_windows_music_sample(
     seconds: int = MUSIC_IDENTIFIER_RECORD_SECONDS,
     cancel_event: threading.Event | None = None,
     progress_callback: Callable[[float, int], None] | None = None,
+    level_callback: Callable[[float], None] | None = None,
     checkpoint_seconds: Sequence[int] = (),
     checkpoint_callback: Callable[[Path, int], bool] | None = None,
     audio_module=None,
@@ -1212,10 +2340,21 @@ def record_windows_music_sample(
             if sys.byteorder != "little":
                 samples.byteswap()
             if samples:
+                chunk_peak = max(abs(sample) for sample in samples)
                 peak_amplitude = max(
                     peak_amplitude,
-                    max(abs(sample) for sample in samples),
+                    chunk_peak,
                 )
+                if level_callback is not None:
+                    # A dB-scaled RMS value looks responsive for quiet capture
+                    # cards without pinning the meter at 100% on one click or
+                    # Mario sound effect. Zero is silence and one is full scale.
+                    rms = math.sqrt(
+                        sum(float(sample) * float(sample) for sample in samples)
+                        / len(samples)
+                    )
+                    dbfs = 20.0 * math.log10(max(1.0, rms) / 32768.0)
+                    level_callback(max(0.0, min(1.0, (dbfs + 60.0) / 60.0)))
             if progress_callback is not None:
                 progress = (chunk_index + 1) / total_chunks
                 remaining = max(0, math.ceil(duration * (1.0 - progress)))
@@ -2002,11 +3141,21 @@ def _run_tk_startup_check() -> int:
         try:
             import numpy as packaged_numpy
             import pyaudiowpatch as packaged_audio_capture
+            packaged_process_capture = _process_audio_capture_class()
+            packaged_volume_mixer_runtime = _windows_volume_mixer_runtime()
+            packaged_voice_runtime = _voice_activity_runtime()
 
             if not hasattr(packaged_numpy, "ndarray"):
                 raise ImportError("NumPy is incomplete")
             if not hasattr(packaged_audio_capture, "PyAudio"):
                 raise ImportError("PyAudioWPatch is incomplete")
+            if packaged_process_capture is None:
+                raise ImportError("ProcessAudioCapture is incomplete")
+            if packaged_volume_mixer_runtime is None:
+                raise ImportError("Windows Volume Mixer discovery is incomplete")
+            if packaged_voice_runtime is None:
+                raise ImportError("Offline voice detection is incomplete")
+            _OfflineVoiceAnalyzer()
         except Exception as error:
             append_error_log(
                 "Packaged dependency check failed",
@@ -14468,6 +15617,10 @@ def rom_builder_write_reports(
 APP_DATA_DIR = platform_application_data_directory()
 SMWC_MUSIC_INDEX_DIR = APP_DATA_DIR / "MusicIndex"
 SMWC_MUSIC_INDEX_FILE = SMWC_MUSIC_INDEX_DIR / "SMWCentralMusicIndex.sqlite3"
+SMWC_MUSIC_LEARNING_FILE = SMWC_MUSIC_INDEX_DIR / "MusicLearning.sqlite3"
+SMWC_COMMUNITY_MUSIC_LEARNING_FILE = (
+    SMWC_MUSIC_INDEX_DIR / "CommunityMusicLearning.sqlite3"
+)
 SMWC_BUNDLED_MUSIC_INDEX_FILE = bundled_resource_path(
     "music_index",
     "bundled",
@@ -24401,6 +25554,121 @@ for (
     UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
 
 
+_MUSIC_CLOUD_AND_STREAM_DECK_LOCALIZATION_ROWS = (
+    (
+        "Music identification starts only after the online SMW Central catalog is connected. Check the cloud catalog and try again.",
+        "Music identification starts once the online SMW Central catalogue is connected, mate. Check the cloud catalogue and have another go.",
+        "La identificación de música solo comienza cuando el catálogo en línea de SMW Central está conectado. Comprueba el catálogo en la nube e inténtalo de nuevo.",
+        "L’identification musicale ne démarre qu’une fois le catalogue SMW Central en ligne connecté. Vérifiez le catalogue cloud et réessayez.",
+        "Die Musikerkennung startet erst, wenn der Online-Katalog von SMW Central verbunden ist. Prüfen Sie den Cloud-Katalog und versuchen Sie es erneut.",
+        "A identificação de músicas só começa após a conexão com o catálogo online do SMW Central. Verifique o catálogo na nuvem e tente novamente.",
+    ),
+    (
+        "Online SMW Central catalog — checking connection…",
+        "Online SMW Central catalogue — checking the connection, mate…",
+        "Catálogo en línea de SMW Central — comprobando conexión…",
+        "Catalogue SMW Central en ligne — vérification de la connexion…",
+        "Online-SMW-Central-Katalog — Verbindung wird geprüft…",
+        "Catálogo online do SMW Central — verificando conexão…",
+    ),
+    ("Checking for a match", "Checking for a match, mate", "Buscando una coincidencia", "Recherche d’une correspondance", "Übereinstimmung wird gesucht", "Procurando uma correspondência"),
+    (
+        "Keeping the song timeline intact while filtering speech and game sounds during matching.",
+        "Keeping the song timeline intact while filtering voices and game sounds, mate.",
+        "Se mantiene intacta la línea de tiempo de la canción mientras se filtran las voces y los sonidos del juego.",
+        "La chronologie du morceau reste intacte pendant le filtrage des voix et des sons du jeu.",
+        "Die Zeitleiste des Songs bleibt erhalten, während Sprache und Spielgeräusche gefiltert werden.",
+        "A linha do tempo da música é mantida enquanto vozes e sons do jogo são filtrados.",
+    ),
+    (
+        "Checking online music fingerprints — pass {current} of {total}.",
+        "Checking online music fingerprints — pass {current} of {total}, mate.",
+        "Comprobando huellas musicales en línea — pasada {current} de {total}.",
+        "Vérification des empreintes musicales en ligne — passage {current} sur {total}.",
+        "Online-Musikfingerabdrücke werden geprüft — Durchgang {current} von {total}.",
+        "Verificando impressões digitais musicais online — etapa {current} de {total}.",
+    ),
+    (
+        "Identification sends only a compact, non-reconstructive fingerprint to the shared SMW Central catalog. Confirmed matches are contributed only when Community Song Results is enabled. No recordings, usernames, Twitch data, or account details are uploaded.",
+        "Identification sends only a compact fingerprint to the shared SMW Central catalogue, mate. Confirmed matches are shared only when Community Song Results is on. No recordings or account details are uploaded.",
+        "La identificación solo envía una huella compacta y no reconstruible al catálogo compartido de SMW Central. Las coincidencias confirmadas solo se aportan si Resultados musicales de la comunidad está activado. No se suben grabaciones, nombres de usuario, datos de Twitch ni datos de cuentas.",
+        "L’identification envoie uniquement une empreinte compacte et non reconstructible au catalogue SMW Central partagé. Les correspondances confirmées ne sont partagées que si Résultats musicaux de la communauté est activé. Aucun enregistrement, nom d’utilisateur, donnée Twitch ou donnée de compte n’est envoyé.",
+        "Die Erkennung sendet nur einen kompakten, nicht rekonstruierbaren Fingerabdruck an den gemeinsamen SMW-Central-Katalog. Bestätigte Treffer werden nur bei aktivierten Community-Songergebnissen beigetragen. Es werden keine Aufnahmen, Benutzernamen, Twitch- oder Kontodaten hochgeladen.",
+        "A identificação envia apenas uma impressão digital compacta e não reconstruível ao catálogo compartilhado do SMW Central. Correspondências confirmadas só são compartilhadas quando Resultados de músicas da comunidade está ativado. Nenhuma gravação, nome de usuário, dado da Twitch ou da conta é enviado.",
+    ),
+    (
+        "Checking the first {seconds} seconds now. A confident result will appear immediately.",
+        "Checking the first {seconds} seconds now, mate. A solid result will pop up straight away.",
+        "Comprobando ahora los primeros {seconds} segundos. Un resultado fiable aparecerá de inmediato.",
+        "Vérification des {seconds} premières secondes. Un résultat fiable s’affichera immédiatement.",
+        "Die ersten {seconds} Sekunden werden jetzt geprüft. Ein sicherer Treffer wird sofort angezeigt.",
+        "Verificando agora os primeiros {seconds} segundos. Um resultado confiável aparecerá imediatamente.",
+    ),
+    ("COMMUNITY SONG RESULTS: online confirmations available", "COMMUNITY SONG RESULTS: online confirmations ready, mate", "RESULTADOS MUSICALES DE LA COMUNIDAD: confirmaciones en línea disponibles", "RÉSULTATS MUSICAUX DE LA COMMUNAUTÉ : confirmations en ligne disponibles", "COMMUNITY-SONGERGEBNISSE: Online-Bestätigungen verfügbar", "RESULTADOS DE MÚSICAS DA COMUNIDADE: confirmações online disponíveis"),
+    (
+        "Start the music, then select Identify What's Playing. The temporary sample stays on this computer and is deleted immediately afterward; only its compact acoustic fingerprint is checked against the shared SMW Central catalog.",
+        "Start the music, then pick Identify What's Playing, mate. The temporary sample stays here and is deleted straight after; only its compact fingerprint is checked online.",
+        "Inicia la música y selecciona Identificar qué está sonando. La muestra temporal permanece en este equipo y se elimina inmediatamente después; solo se comprueba su huella acústica compacta en el catálogo compartido de SMW Central.",
+        "Lancez la musique, puis sélectionnez Identifier le morceau en cours. L’échantillon temporaire reste sur cet ordinateur et est supprimé immédiatement ; seule son empreinte acoustique compacte est vérifiée dans le catalogue SMW Central partagé.",
+        "Starten Sie die Musik und wählen Sie Was läuft gerade? Die temporäre Probe bleibt auf diesem Computer und wird sofort danach gelöscht; nur ihr kompakter akustischer Fingerabdruck wird im gemeinsamen SMW-Central-Katalog geprüft.",
+        "Inicie a música e selecione Identificar o que está tocando. A amostra temporária fica neste computador e é apagada logo depois; apenas sua impressão acústica compacta é verificada no catálogo compartilhado do SMW Central.",
+    ),
+    ("ONLINE MATCHING: results come from the shared cloud catalog", "ONLINE MATCHING: results come from the shared cloud catalogue, mate", "COINCIDENCIA EN LÍNEA: los resultados provienen del catálogo compartido en la nube", "CORRESPONDANCE EN LIGNE : les résultats proviennent du catalogue cloud partagé", "ONLINE-ABGLEICH: Ergebnisse stammen aus dem gemeinsamen Cloud-Katalog", "CORRESPONDÊNCIA ONLINE: os resultados vêm do catálogo compartilhado na nuvem"),
+    (
+        "Listening only to {application}. Speech and game sounds can continue; timing-aware fingerprints find the music underneath them.",
+        "Listening only to {application}, mate. Voices and game sounds can carry on while the fingerprints find the music underneath.",
+        "Escuchando solo {application}. Las voces y los sonidos del juego pueden continuar; las huellas con información temporal encuentran la música debajo.",
+        "Écoute de {application} uniquement. Les voix et les sons du jeu peuvent continuer ; les empreintes temporelles retrouvent la musique en dessous.",
+        "Es wird nur {application} abgehört. Sprache und Spielgeräusche dürfen weiterlaufen; zeitbasierte Fingerabdrücke erkennen die Musik darunter.",
+        "Ouvindo apenas {application}. Vozes e sons do jogo podem continuar; as impressões com referência de tempo encontram a música por baixo.",
+    ),
+    ("The sample is recorded. Sending its compact audio landmarks to the online SMW Central catalog.", "Sample recorded. Sending its compact audio landmarks to the online SMW Central catalogue, mate.", "La muestra está grabada. Enviando sus marcas de audio compactas al catálogo en línea de SMW Central.", "L’échantillon est enregistré. Envoi de ses repères audio compacts au catalogue SMW Central en ligne.", "Die Probe wurde aufgenommen. Ihre kompakten Audiomerkmale werden an den Online-SMW-Central-Katalog gesendet.", "A amostra foi gravada. Enviando seus marcos de áudio compactos ao catálogo online do SMW Central."),
+    ("The temporary local sample was deleted without being checked.", "The temporary sample was deleted without being checked, mate.", "La muestra local temporal se eliminó sin comprobarse.", "L’échantillon local temporaire a été supprimé sans être vérifié.", "Die temporäre lokale Probe wurde ungeprüft gelöscht.", "A amostra local temporária foi apagada sem ser verificada."),
+    ("The SPC Player could not finish loading.", "The SPC Player couldn't finish loading, mate.", "El reproductor SPC no pudo terminar de cargar.", "Le lecteur SPC n’a pas pu terminer son chargement.", "Der SPC-Player konnte nicht vollständig geladen werden.", "O reprodutor SPC não conseguiu terminar de carregar."),
+    ("Wrong match rejected", "Wrong match knocked back, mate", "Coincidencia incorrecta rechazada", "Mauvaise correspondance rejetée", "Falscher Treffer verworfen", "Correspondência incorreta rejeitada"),
+    (
+        "Listening for up to {seconds} seconds and checking for an early match after {early} seconds. Keep the music playing.",
+        "Listening for up to {seconds} seconds and checking after {early} seconds, mate. Keep the music rolling.",
+        "Escuchando hasta {seconds} segundos y buscando una coincidencia temprana después de {early} segundos. Mantén la música sonando.",
+        "Écoute pendant jusqu’à {seconds} secondes avec une première vérification après {early} secondes. Laissez la musique jouer.",
+        "Es wird bis zu {seconds} Sekunden lang zugehört; nach {early} Sekunden erfolgt eine erste Prüfung. Lassen Sie die Musik weiterlaufen.",
+        "Ouvindo por até {seconds} segundos e verificando uma correspondência inicial após {early} segundos. Mantenha a música tocando.",
+    ),
+    ("Loading SPC Player…", "Loading the SPC Player, mate…", "Cargando reproductor SPC…", "Chargement du lecteur SPC…", "SPC-Player wird geladen…", "Carregando o reprodutor SPC…"),
+    ("Confirmed — Community Song Results updated", "Confirmed — Community Song Results updated, mate", "Confirmado — Resultados musicales de la comunidad actualizados", "Confirmé — Résultats musicaux de la communauté mis à jour", "Bestätigt — Community-Songergebnisse aktualisiert", "Confirmado — Resultados de músicas da comunidade atualizados"),
+    ("Use & Contribute to Community Song Results", "Use and contribute to Community Song Results, mate", "Usar y contribuir a Resultados musicales de la comunidad", "Utiliser et contribuer aux Résultats musicaux de la communauté", "Community-Songergebnisse verwenden und beitragen", "Usar e contribuir para Resultados de músicas da comunidade"),
+    ("Ready for another sample", "Ready for another sample, mate", "Listo para otra muestra", "Prêt pour un nouvel échantillon", "Bereit für eine weitere Probe", "Pronto para outra amostra"),
+    ("The audio capture stopped. Temporary sample cleanup is finishing in the background.", "Audio capture stopped. The temporary sample cleanup is finishing up, mate.", "La captura de audio se detuvo. La limpieza de la muestra temporal está terminando en segundo plano.", "La capture audio est arrêtée. Le nettoyage de l’échantillon temporaire se termine en arrière-plan.", "Die Audioaufnahme wurde beendet. Die temporäre Probe wird im Hintergrund bereinigt.", "A captura de áudio foi interrompida. A limpeza da amostra temporária está terminando em segundo plano."),
+    ("Listening continuously", "Listening continuously, mate", "Escuchando continuamente", "Écoute continue", "Kontinuierliches Zuhören", "Ouvindo continuamente"),
+    ("No confident match yet. Listening a little longer for a clearer result.", "No solid match yet, mate. Listening a bit longer for a clearer result.", "Aún no hay una coincidencia fiable. Escuchando un poco más para obtener un resultado más claro.", "Pas encore de correspondance fiable. L’écoute continue pour obtenir un résultat plus clair.", "Noch kein sicherer Treffer. Für ein klareres Ergebnis wird etwas länger zugehört.", "Ainda não há uma correspondência confiável. Ouvindo um pouco mais para obter um resultado mais claro."),
+    ("Listen again during a clearer part of the song. This result will not be contributed to Community Song Results.", "Listen again during a clearer bit of the song, mate. This result won't be shared with Community Song Results.", "Vuelve a escuchar durante una parte más clara de la canción. Este resultado no se aportará a Resultados musicales de la comunidad.", "Réécoutez pendant un passage plus clair du morceau. Ce résultat ne sera pas ajouté aux Résultats musicaux de la communauté.", "Hören Sie während einer klareren Stelle des Songs erneut zu. Dieses Ergebnis wird nicht zu den Community-Songergebnissen beigetragen.", "Ouça novamente durante uma parte mais clara da música. Este resultado não será enviado aos Resultados de músicas da comunidade."),
+    ("Online catalog required", "Online catalogue required, mate", "Se requiere el catálogo en línea", "Catalogue en ligne requis", "Online-Katalog erforderlich", "Catálogo online obrigatório"),
+    ("Keep SMW Stream Tracker open while using the keys. The local player-control connection starts automatically.", "Keep SMW Stream Tracker open while using the keys, mate. The player controls hook up automatically.", "Mantén SMW Stream Tracker abierto mientras usas las teclas. La conexión de control del reproductor se inicia automáticamente.", "Gardez SMW Stream Tracker ouvert pendant l’utilisation des touches. La connexion de contrôle du lecteur démarre automatiquement.", "Lassen Sie SMW Stream Tracker bei Verwendung der Tasten geöffnet. Die lokale Player-Steuerung startet automatisch.", "Mantenha o SMW Stream Tracker aberto ao usar as teclas. A conexão de controle do reprodutor inicia automaticamente."),
+    ("✦  Install / Update Stream Deck Plugin", "✦  Install or update the Stream Deck plugin, mate", "✦  Instalar / actualizar complemento de Stream Deck", "✦  Installer / mettre à jour le plugin Stream Deck", "✦  Stream-Deck-Plugin installieren / aktualisieren", "✦  Instalar / atualizar plugin do Stream Deck"),
+    ("Correct Match — Share Result", "Correct match — share the result, mate", "Coincidencia correcta — compartir resultado", "Bonne correspondance — partager le résultat", "Richtiger Treffer — Ergebnis teilen", "Correspondência correta — compartilhar resultado"),
+    ("✓ Song Reward + Actions Installed", "✓ Song reward and actions installed, mate", "✓ Recompensa musical y acciones instaladas", "✓ Récompense musicale et actions installées", "✓ Song-Belohnung und Aktionen installiert", "✓ Recompensa de música e ações instaladas"),
+    ("Install and manage the SMW Stream Tracker controls for Elgato Stream Deck.", "Install and manage the SMW Stream Tracker controls for Elgato Stream Deck, mate.", "Instala y administra los controles de SMW Stream Tracker para Elgato Stream Deck.", "Installez et gérez les commandes SMW Stream Tracker pour Elgato Stream Deck.", "Installieren und verwalten Sie die SMW-Stream-Tracker-Steuerung für Elgato Stream Deck.", "Instale e gerencie os controles do SMW Stream Tracker para Elgato Stream Deck."),
+    ("Stream Deck Plugin", "Stream Deck plugin, mate", "Complemento de Stream Deck", "Plugin Stream Deck", "Stream-Deck-Plugin", "Plugin do Stream Deck"),
+    ("Elgato", "Elgato, mate", "Integración Elgato", "Intégration Elgato", "Elgato-Integration", "Integração Elgato"),
+    ("Wrong Match", "Wrong match, mate", "Coincidencia incorrecta", "Mauvaise correspondance", "Falscher Treffer", "Correspondência incorreta"),
+    ("Check Cloud Catalog", "Check the cloud catalogue, mate", "Comprobar catálogo en la nube", "Vérifier le catalogue cloud", "Cloud-Katalog prüfen", "Verificar catálogo na nuvem"),
+    ("Installing Streamer.bot Reward + Actions…", "Installing the Streamer.bot reward and actions, mate…", "Instalando recompensa y acciones de Streamer.bot…", "Installation de la récompense et des actions Streamer.bot…", "Streamer.bot-Belohnung und Aktionen werden installiert…", "Instalando recompensa e ações do Streamer.bot…"),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _MUSIC_CLOUD_AND_STREAM_DECK_LOCALIZATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
+
 SETUP_GUIDE_TRANSLATIONS = {
     "en": {
         "setup_menu": "Setup",
@@ -25720,6 +26988,62 @@ for (
 
 _MUSIC_IDENTIFIER_TRANSLATION_ROWS = (
     (
+        "INPUT LEVEL: waiting to listen",
+        "INPUT LEVEL: waiting to listen",
+        "NIVEL DE ENTRADA: esperando para escuchar",
+        "NIVEAU D’ENTRÉE : en attente d’écoute",
+        "EINGANGSPEGEL: wartet auf Wiedergabe",
+        "NÍVEL DE ENTRADA: aguardando para ouvir",
+    ),
+    (
+        "INPUT LEVEL: listening for source",
+        "INPUT LEVEL: listening for source",
+        "NIVEL DE ENTRADA: escuchando la fuente",
+        "NIVEAU D’ENTRÉE : écoute de la source",
+        "EINGANGSPEGEL: Quelle wird abgehört",
+        "NÍVEL DE ENTRADA: ouvindo a fonte",
+    ),
+    (
+        "INPUT LEVEL: listening stopped",
+        "INPUT LEVEL: listening stopped",
+        "NIVEL DE ENTRADA: escucha detenida",
+        "NIVEAU D’ENTRÉE : écoute arrêtée",
+        "EINGANGSPEGEL: Zuhören beendet",
+        "NÍVEL DE ENTRADA: escuta interrompida",
+    ),
+    (
+        "INPUT LEVEL: source heard",
+        "INPUT LEVEL: source heard",
+        "NIVEL DE ENTRADA: fuente detectada",
+        "NIVEAU D’ENTRÉE : source détectée",
+        "EINGANGSPEGEL: Quelle erkannt",
+        "NÍVEL DE ENTRADA: fonte detectada",
+    ),
+    (
+        "INPUT LEVEL: very quiet",
+        "INPUT LEVEL: very quiet",
+        "NIVEL DE ENTRADA: muy bajo",
+        "NIVEAU D’ENTRÉE : très faible",
+        "EINGANGSPEGEL: sehr leise",
+        "NÍVEL DE ENTRADA: muito baixo",
+    ),
+    (
+        "INPUT LEVEL: no signal",
+        "INPUT LEVEL: no signal",
+        "NIVEL DE ENTRADA: sin señal",
+        "NIVEAU D’ENTRÉE : aucun signal",
+        "EINGANGSPEGEL: kein Signal",
+        "NÍVEL DE ENTRADA: sem sinal",
+    ),
+    (
+        "INPUT LEVEL: check source",
+        "INPUT LEVEL: check source",
+        "NIVEL DE ENTRADA: comprueba la fuente",
+        "NIVEAU D’ENTRÉE : vérifiez la source",
+        "EINGANGSPEGEL: Quelle prüfen",
+        "NÍVEL DE ENTRADA: verifique a fonte",
+    ),
+    (
         "Music Identifier & Radio",
         "Music Identifier & Radio",
         "Identificador de música y radio",
@@ -25798,6 +27122,134 @@ _MUSIC_IDENTIFIER_TRANSLATION_ROWS = (
         "Choisissez une carte d’acquisition, un microphone ou une source audio système pour le son de MiSTer et RetroArch.",
         "Wähle eine Capture-Karte, ein Mikrofon oder eine Systemaudioquelle für den Ton von MiSTer und RetroArch.",
         "Escolha uma placa de captura, microfone ou fonte de áudio do sistema para o som do MiSTer e RetroArch.",
+    ),
+    (
+        "Choose a running app for Twitch, browser, emulator, or game audio.",
+        "Choose a running app for Twitch, browser, emulator, or game audio.",
+        "Elige una aplicación en ejecución para el audio de Twitch, navegador, emulador o juego.",
+        "Choisissez une application en cours pour l’audio Twitch, du navigateur, de l’émulateur ou du jeu.",
+        "Wähle eine laufende App für Twitch-, Browser-, Emulator- oder Spielaudio.",
+        "Escolha um aplicativo em execução para áudio da Twitch, navegador, emulador ou jogo.",
+    ),
+    (
+        "Start audio in the app you want to identify, then select Refresh Sources.",
+        "Start audio in the app you want to identify, then select Refresh Sources.",
+        "Inicia el audio en la aplicación que quieres identificar y selecciona Actualizar fuentes.",
+        "Lancez l’audio dans l’application à identifier, puis sélectionnez Actualiser les sources.",
+        "Starte Audio in der gewünschten App und wähle dann Quellen aktualisieren.",
+        "Inicie o áudio no aplicativo que deseja identificar e selecione Atualizar fontes.",
+    ),
+    (
+        "Refreshing audio sources…",
+        "Refreshing audio sources…",
+        "Actualizando fuentes de audio…",
+        "Actualisation des sources audio…",
+        "Audioquellen werden aktualisiert…",
+        "Atualizando fontes de áudio…",
+    ),
+    (
+        "Checking Windows Volume Mixer for apps playing audio.",
+        "Checking Windows Volume Mixer for apps playing audio.",
+        "Comprobando en el Mezclador de volumen de Windows las aplicaciones que reproducen audio.",
+        "Recherche dans le mélangeur de volume Windows des applications diffusant du son.",
+        "Der Windows-Lautstärkemixer wird nach Apps mit Audiowiedergabe durchsucht.",
+        "Verificando no Mixer de Volume do Windows os aplicativos que reproduzem áudio.",
+    ),
+    (
+        "Sources refreshed — {count} apps found",
+        "Sources refreshed — {count} apps found",
+        "Fuentes actualizadas — {count} aplicaciones encontradas",
+        "Sources actualisées — {count} applications trouvées",
+        "Quellen aktualisiert — {count} Apps gefunden",
+        "Fontes atualizadas — {count} aplicativos encontrados",
+    ),
+    (
+        "Sources refreshed — 1 app found",
+        "Sources refreshed — 1 app found",
+        "Fuentes actualizadas — 1 aplicación encontrada",
+        "Sources actualisées — 1 application trouvée",
+        "Quellen aktualisiert — 1 App gefunden",
+        "Fontes atualizadas — 1 aplicativo encontrado",
+    ),
+    (
+        "Sources refreshed — {count} apps found ({new} new)",
+        "Sources refreshed — {count} apps found ({new} new)",
+        "Fuentes actualizadas — {count} aplicaciones encontradas ({new} nuevas)",
+        "Sources actualisées — {count} applications trouvées ({new} nouvelles)",
+        "Quellen aktualisiert — {count} Apps gefunden ({new} neu)",
+        "Fontes atualizadas — {count} aplicativos encontrados ({new} novos)",
+    ),
+    (
+        "Sources refreshed — 1 app found (1 new)",
+        "Sources refreshed — 1 app found (1 new)",
+        "Fuentes actualizadas — 1 aplicación encontrada (1 nueva)",
+        "Sources actualisées — 1 application trouvée (1 nouvelle)",
+        "Quellen aktualisiert — 1 App gefunden (1 neu)",
+        "Fontes atualizadas — 1 aplicativo encontrado (1 novo)",
+    ),
+    (
+        "Listening only to {application} for up to {seconds} seconds. Other apps and microphones are excluded.",
+        "Listening only to {application} for up to {seconds} seconds. Other apps and microphones are excluded.",
+        "Escuchando solo {application} durante un máximo de {seconds} segundos. Se excluyen otras aplicaciones y micrófonos.",
+        "Écoute de {application} uniquement pendant {seconds} secondes maximum. Les autres applications et microphones sont exclus.",
+        "Es wird bis zu {seconds} Sekunden nur {application} abgehört. Andere Apps und Mikrofone sind ausgeschlossen.",
+        "Ouvindo apenas {application} por até {seconds} segundos. Outros aplicativos e microfones são excluídos.",
+    ),
+    (
+        "Listening only to {application}. Voice detection pauses collection during speech and resumes when the voice clears.",
+        "Listening only to {application}. Voice detection pauses collection during speech and resumes when the voice clears.",
+        "Escuchando solo {application}. La detección de voz pausa la recopilación durante el habla y la reanuda cuando la voz desaparece.",
+        "Écoute de {application} uniquement. La détection vocale suspend la collecte pendant la parole et la reprend lorsque la voix disparaît.",
+        "Es wird nur {application} abgehört. Die Spracherkennung pausiert die Aufnahme bei Sprache und setzt sie fort, sobald die Stimme verstummt.",
+        "Ouvindo apenas {application}. A detecção de voz pausa a coleta durante a fala e retoma quando a voz termina.",
+    ),
+    (
+        "Voice detected — listening paused",
+        "Voice detected — listening paused",
+        "Voz detectada — escucha pausada",
+        "Voix détectée — écoute suspendue",
+        "Stimme erkannt — Zuhören pausiert",
+        "Voz detectada — escuta pausada",
+    ),
+    (
+        "Waiting for the voice to clear. {seconds:.1f} seconds of clean music are already saved.",
+        "Waiting for the voice to clear. {seconds:.1f} seconds of clean music are already saved.",
+        "Esperando a que termine la voz. Ya se guardaron {seconds:.1f} segundos de música limpia.",
+        "En attente de la fin de la voix. {seconds:.1f} secondes de musique propre sont déjà enregistrées.",
+        "Warten, bis die Stimme verstummt. {seconds:.1f} Sekunden sauberer Musik sind bereits gespeichert.",
+        "Aguardando a voz terminar. {seconds:.1f} segundos de música limpa já foram salvos.",
+    ),
+    (
+        "Voice clear — collecting music",
+        "Voice clear — collecting music",
+        "Voz ausente — recopilando música",
+        "Voix absente — collecte de la musique",
+        "Stimme verstummt — Musik wird gesammelt",
+        "Voz ausente — coletando música",
+    ),
+    (
+        "Only voice-free music is being added to the sample.",
+        "Only voice-free music is being added to the sample.",
+        "Solo se añade a la muestra música sin voz.",
+        "Seule la musique sans voix est ajoutée à l’échantillon.",
+        "Der Aufnahme wird nur Musik ohne Stimme hinzugefügt.",
+        "Somente música sem voz é adicionada à amostra.",
+    ),
+    (
+        "Waiting for the voice to clear. {seconds} clean seconds are still needed.",
+        "Waiting for the voice to clear. {seconds} clean seconds are still needed.",
+        "Esperando a que termine la voz. Aún se necesitan {seconds} segundos limpios.",
+        "En attente de la fin de la voix. Il faut encore {seconds} secondes propres.",
+        "Warten, bis die Stimme verstummt. Es werden noch {seconds} saubere Sekunden benötigt.",
+        "Aguardando a voz terminar. Ainda são necessários {seconds} segundos limpos.",
+    ),
+    (
+        "Collecting voice-free music — {seconds} seconds remaining.",
+        "Collecting voice-free music — {seconds} seconds remaining.",
+        "Recopilando música sin voz — quedan {seconds} segundos.",
+        "Collecte de musique sans voix — {seconds} secondes restantes.",
+        "Musik ohne Stimme wird gesammelt — noch {seconds} Sekunden.",
+        "Coletando música sem voz — faltam {seconds} segundos.",
     ),
     (
         "Refresh Sources",
@@ -27143,7 +28595,14 @@ DEFAULT_CONFIG = {
         STREAMERBOT_DEFAULT_SONG_REWARD_COOLDOWN
     ),
     "music_identifier_audio_source": "",
+    # ``music_identifier_level_songs`` is retained only so old settings files
+    # load cleanly. New builds persist only explicitly confirmed associations.
     "music_identifier_level_songs": {},
+    "music_identifier_confirmed_level_songs": {},
+    "music_community_learning_enabled": False,
+    "music_community_learning_client_secret": "",
+    "music_community_learning_revision": 0,
+    "music_community_learning_last_sync": "",
     # Keep tracker-owned dialogs inside the main window so a single OBS
     # Window Capture source can include them.  Native OS and third-party
     # windows (browsers, installers, file pickers) intentionally stay native.
@@ -35502,28 +36961,43 @@ finally {
         # observed, accept several clean player-state samples instead; this
         # still supports hacks that never update the standard lives byte.
         if self.death_detection_latched:
-            if lives_decreased:
-                self.death_latch_saw_lives_drop = True
-                self.death_alive_samples = 0
-                if player_lives is not None:
-                    self.last_level_player_lives = player_lives
-                return False
-
-            if player_state == 0x09:
-                self.death_alive_samples = 0
-                return False
-
-            self.death_alive_samples += 1
-            recovery_samples_required = (
-                1
-                if self.death_latch_saw_lives_drop
-                else DEATH_RECOVERY_STABLE_SAMPLES
+            # A coherent clean sample followed by a fresh $71 = $09 edge is
+            # a new death cycle even when an instant-retry hack respawns and
+            # kills Mario faster than the normal three-sample recovery wait.
+            # The separate delayed-lives path below remains latched, so the
+            # first death's late $0DBE decrement still cannot double count.
+            rapid_new_death_cycle = (
+                entered_death_state
+                and self.death_alive_samples >= 1
+                and death_context
             )
-            if self.death_alive_samples >= recovery_samples_required:
+            if rapid_new_death_cycle:
                 self.death_detection_latched = False
                 self.death_alive_samples = 0
                 self.death_latch_saw_lives_drop = False
-            return False
+            else:
+                if lives_decreased:
+                    self.death_latch_saw_lives_drop = True
+                    self.death_alive_samples = 0
+                    if player_lives is not None:
+                        self.last_level_player_lives = player_lives
+                    return False
+
+                if player_state == 0x09:
+                    self.death_alive_samples = 0
+                    return False
+
+                self.death_alive_samples += 1
+                recovery_samples_required = (
+                    1
+                    if self.death_latch_saw_lives_drop
+                    else DEATH_RECOVERY_STABLE_SAMPLES
+                )
+                if self.death_alive_samples >= recovery_samples_required:
+                    self.death_detection_latched = False
+                    self.death_alive_samples = 0
+                    self.death_latch_saw_lives_drop = False
+                return False
 
         if (
             not death_context
@@ -37611,7 +39085,43 @@ class TrackerApp:
         )
         self.music_identifier_artist_var = tk.StringVar(value="")
         self.music_identifier_confidence_var = tk.StringVar(value="")
+        self.music_identifier_learning_var = tk.StringVar(
+            value=self._translate_ui_text(
+                "ONLINE MATCHING: results come from the shared cloud catalog"
+            )
+        )
+        community_secret = str(
+            self.config.get("music_community_learning_client_secret", "") or ""
+        ).strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", community_secret):
+            community_secret = secrets.token_hex(32)
+            self.config["music_community_learning_client_secret"] = community_secret
+            try:
+                save_config(self.config)
+            except OSError:
+                pass
+        self.music_community_learning_client_hash = hashlib.sha256(
+            community_secret.encode("ascii")
+        ).hexdigest()
+        self.music_community_learning_enabled_var = tk.BooleanVar(
+            value=bool(
+                self.config.get("music_community_learning_enabled", False)
+            )
+        )
+        self.music_community_learning_status_var = tk.StringVar(
+            value=self._translate_ui_text(
+                "COMMUNITY SONG RESULTS: online confirmations available"
+            )
+        )
+        self.music_community_learning_events: queue.Queue = queue.Queue()
+        self.music_community_learning_thread: threading.Thread | None = None
+        self.music_community_learning_poll_after_id: str | None = None
+        self.music_community_learning_next_sync_after_id: str | None = None
         self.music_identifier_progress_var = tk.DoubleVar(value=0.0)
+        self.music_identifier_input_status_var = tk.StringVar(
+            value=self._translate_ui_text("INPUT LEVEL: waiting to listen")
+        )
+        self.music_identifier_input_level = 0.0
         self.music_identifier_sources: dict[str, dict[str, Any]] = {}
         self.music_identifier_widgets: dict[str, Any] = {}
         self.music_identifier_events: queue.Queue = queue.Queue()
@@ -37622,45 +39132,69 @@ class TrackerApp:
         self.music_identifier_animation_frame = 0
         self.music_identifier_state = "ready"
         self.music_identifier_last_result: dict[str, Any] = {}
-        # Channel-point redemptions use a remembered level-scoped result when
-        # available. If this level has not been identified yet, the tracker can
-        # now start a local live-audio lookup and reply when it finishes.
-        stored_level_songs = self.config.get("music_identifier_level_songs", {})
-        self.music_identifier_context_results: dict[str, dict[str, Any]] = {
+        self.music_identifier_pending_learning_values: list[int] = []
+        self.music_identifier_pending_learning_source = ""
+        # A recent recognition cache answers repeated rewards in the live level
+        # immediately. It deliberately stays in memory and expires quickly.
+        self.music_identifier_context_results: dict[str, dict[str, Any]] = {}
+        # Durable associations are separate and are written only when the user
+        # confirms a cloud result. Their keys omit the one-time level
+        # session token, so the same ROM/level can be recognized after restart.
+        stored_confirmed_songs = self.config.get(
+            "music_identifier_confirmed_level_songs",
+            {},
+        )
+        self.music_identifier_confirmed_level_songs: dict[
+            str, dict[str, Any]
+        ] = {
             str(context_key): dict(song)
             for context_key, song in (
-                stored_level_songs.items()
-                if isinstance(stored_level_songs, dict)
+                stored_confirmed_songs.items()
+                if isinstance(stored_confirmed_songs, dict)
                 else ()
             )
-            if str(context_key).strip() and isinstance(song, dict)
+            if str(context_key).strip()
+            and isinstance(song, dict)
+            and bool(song.get("_confirmed_by_user", False))
         }
+        self.music_identifier_rom_hash_cache: dict[
+            str, tuple[int, int, str]
+        ] = {}
         self.music_identifier_streamerbot_request: dict[str, Any] | None = None
         self.music_identifier_queued_streamerbot_request: (
             dict[str, Any] | None
         ) = None
         self.music_identifier_lookup_context_key = ""
+        self.music_identifier_lookup_is_external = False
         self.music_identifier_prefetch_after_id: str | None = None
         self.music_identifier_prefetch_session_id = ""
+        self.music_identifier_prefetch_attempts: dict[str, float] = {}
         self.music_index_details: dict[str, Any] = {}
         self.music_index_events: queue.Queue = queue.Queue()
         self.music_index_update_thread: threading.Thread | None = None
         self.music_index_poll_after_id: str | None = None
         self.music_index_next_check_after_id: str | None = None
-        try:
-            self.music_index_details = (
-                smwc_music_index.ensure_bundled_music_index(
-                    SMWC_BUNDLED_MUSIC_INDEX_FILE,
-                    SMWC_MUSIC_INDEX_FILE,
-                )
+        # Music recognition is cloud-only. Remove generated databases left by
+        # older versions so updates neither ship nor retain an offline catalog.
+        for legacy_music_database in (
+            SMWC_MUSIC_INDEX_FILE,
+            SMWC_MUSIC_LEARNING_FILE,
+            SMWC_COMMUNITY_MUSIC_LEARNING_FILE,
+        ):
+            for legacy_path in (
+                legacy_music_database,
+                Path(str(legacy_music_database) + "-wal"),
+                Path(str(legacy_music_database) + "-shm"),
+            ):
+                try:
+                    legacy_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        self.music_index_status_var = tk.StringVar(
+            value=self._translate_ui_text(
+                "Online SMW Central catalog — checking connection…"
             )
-            music_index_status = (
-                "SMW Central index ready — "
-                f"{int(self.music_index_details.get('track_count', 0)):,} songs"
-            )
-        except Exception:
-            music_index_status = "SMW Central music index is not installed"
-        self.music_index_status_var = tk.StringVar(value=music_index_status)
+        )
         self.obs_settings_dialog: tk.Toplevel | None = None
         self.obs_widget_dialog: tk.Toplevel | None = None
         self.obs_widget_server: ObsWidgetHTTPServer | None = None
@@ -51045,25 +52579,21 @@ class TrackerApp:
 
     def _music_index_ready_text(self, details: dict[str, Any] | None = None) -> str:
         selected = details or self.music_index_details
-        if str(selected.get("catalog_complete", "0")) != "1":
-            return (
-                "Starter index only — "
-                f"{int(selected.get('track_count', 0) or 0):,} songs; "
-                "complete catalog required"
-            )
         return (
-            "SMW Central index ready — "
+            "Online SMW Central catalog ready — "
             f"{int(selected.get('track_count', 0) or 0):,} songs"
         )
 
     def _start_music_index_update_check(self, *, manual: bool = False) -> None:
-        """Quietly install new SMW Central fingerprints without blocking the UI."""
+        """Check the cloud catalog without downloading an offline copy."""
         if (
             self.music_index_update_thread is not None
             and self.music_index_update_thread.is_alive()
         ):
             if manual:
-                self.music_index_status_var.set("Music index update already in progress…")
+                self.music_index_status_var.set(
+                    "Cloud catalog connection check already in progress…"
+                )
             return
         if self.music_index_next_check_after_id is not None:
             try:
@@ -51072,46 +52602,18 @@ class TrackerApp:
                 pass
             self.music_index_next_check_after_id = None
         if manual:
-            self.music_index_status_var.set("Checking for new SMW Central music…")
+            self.music_index_status_var.set(
+                "Checking the online SMW Central catalog…"
+            )
 
         def run_update() -> None:
             try:
-                try:
-                    current = smwc_music_index.validate_music_index(
-                        SMWC_MUSIC_INDEX_FILE,
-                        require_tracks=True,
-                    )
-                except smwc_music_index.MusicIndexError:
-                    current = {}
-                manifest = smwc_music_index.fetch_music_index_manifest(
-                    SMWC_MUSIC_INDEX_MANIFEST_URL
+                details = smwc_music_index.fetch_cloud_music_catalog_status(
+                    SMWC_MUSIC_RECOGNITION_API_URL
                 )
-                if smwc_music_index.music_index_update_needed(manifest, current):
-                    incremental = (
-                        smwc_music_index.validate_incremental_update_manifest(
-                            manifest
-                        )
-                    )
-                    self.music_index_events.put(
-                        (
-                            "downloading",
-                            int(incremental.get("submission_count", 0) or 0),
-                        )
-                    )
-                    details = smwc_music_index.download_incremental_music_update(
-                        manifest,
-                        SMWC_MUSIC_INDEX_FILE,
-                        progress_callback=lambda downloaded, total: (
-                            self.music_index_events.put(
-                                ("download_progress", int(downloaded), int(total))
-                            )
-                        ),
-                    )
-                    self.music_index_events.put(("ready", details, True))
-                else:
-                    self.music_index_events.put(("ready", current, False))
+                self.music_index_events.put(("ready", details))
             except Exception as error:
-                self.music_index_events.put(("update_error", str(error), manual))
+                self.music_index_events.put(("update_error", str(error)))
             finally:
                 self.music_index_events.put(("update_finished",))
 
@@ -51143,31 +52645,16 @@ class TrackerApp:
             except queue.Empty:
                 break
             event_name = str(event[0])
-            if event_name == "downloading":
-                changed_songs = max(0, int(event[1]))
-                self.music_index_status_var.set(
-                    "New SMW Central music found — downloading "
-                    f"{changed_songs:,} changed submission"
-                    f"{'s' if changed_songs != 1 else ''} in the background…"
-                )
-            elif event_name == "download_progress":
-                downloaded = max(0, int(event[1]))
-                total = max(1, int(event[2]))
-                self.music_index_status_var.set(
-                    "Adding new and changed SMW Central music — "
-                    f"{min(100, round(downloaded * 100 / total))}%"
-                )
-            elif event_name == "ready":
+            if event_name == "ready":
                 self.music_index_details = dict(event[1])
-                suffix = " — new music added" if bool(event[2]) else ""
                 self.music_index_status_var.set(
-                    self._music_index_ready_text() + suffix
+                    self._music_index_ready_text()
                 )
             elif event_name == "update_error":
-                if bool(event[2]) or not self.music_index_details:
-                    self.music_index_status_var.set(
-                        "Music index update will retry later — " + str(event[1])
-                    )
+                self.music_index_details = {}
+                self.music_index_status_var.set(
+                    "Online music catalog unavailable — Internet connection required"
+                )
             elif event_name == "update_finished":
                 finished = True
 
@@ -51185,6 +52672,177 @@ class TrackerApp:
                 )
             except tk.TclError:
                 self.music_index_next_check_after_id = None
+
+    def _refresh_community_music_learning_status(self, note: str = "") -> None:
+        status = self._translate_ui_text(
+            "COMMUNITY SONG RESULTS: online confirmations available"
+        )
+        if str(note).strip():
+            status += " — " + self._translate_ui_text(str(note).strip())
+        self.music_community_learning_status_var.set(status)
+
+    def _on_community_music_learning_toggled(self) -> None:
+        enabled = bool(self.music_community_learning_enabled_var.get())
+        self.config["music_community_learning_enabled"] = enabled
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        if enabled:
+            self._refresh_community_music_learning_status(
+                "Enabled. Confirmed fingerprints can help other users."
+            )
+        else:
+            if self.music_community_learning_next_sync_after_id is not None:
+                try:
+                    self.root.after_cancel(
+                        self.music_community_learning_next_sync_after_id
+                    )
+                except tk.TclError:
+                    pass
+                self.music_community_learning_next_sync_after_id = None
+            self._refresh_community_music_learning_status(
+                "Off. Identification still uses the online SMW Central catalog."
+            )
+
+    def _start_community_music_learning_sync(
+        self,
+        *,
+        manual: bool = False,
+    ) -> None:
+        """Keep the legacy callback harmless; cloud results need no download."""
+        self._refresh_community_music_learning_status(
+            "Cloud confirmations are used directly; nothing is downloaded."
+        )
+
+    def _queue_community_music_learning_poll(self) -> None:
+        if self.music_community_learning_poll_after_id is not None:
+            return
+        try:
+            self.music_community_learning_poll_after_id = self.root.after(
+                150,
+                self._poll_community_music_learning_events,
+            )
+        except tk.TclError:
+            self.music_community_learning_poll_after_id = None
+
+    def _poll_community_music_learning_events(self) -> None:
+        self.music_community_learning_poll_after_id = None
+        sync_finished = False
+        while True:
+            try:
+                event = self.music_community_learning_events.get_nowait()
+            except queue.Empty:
+                break
+            event_name = str(event[0])
+            if event_name == "sync_ready":
+                details = dict(event[1])
+                self.config["music_community_learning_revision"] = int(
+                    details.get("model_revision", 0) or 0
+                )
+                self.config["music_community_learning_last_sync"] = (
+                    datetime.now().astimezone().isoformat(timespec="seconds")
+                )
+                try:
+                    save_config(self.config)
+                except OSError:
+                    pass
+                self._refresh_community_music_learning_status(
+                    "New examples added in the background."
+                    if bool(details.get("updated"))
+                    else "Up to date."
+                )
+            elif event_name == "sync_error":
+                self._refresh_community_music_learning_status(
+                    "Sync will retry later; local matching is still available."
+                )
+            elif event_name == "contribution_ready":
+                response = dict(event[1])
+                confirmers = max(0, int(response.get("confirmers", 0) or 0))
+                required = max(1, int(response.get("required_confirmers", 3) or 3))
+                if bool(response.get("promoted")):
+                    note = "Confirmed and approved for the shared model."
+                else:
+                    note = (
+                        "Anonymous confirmation received "
+                        f"({confirmers}/{required} needed before sharing)."
+                    )
+                self._refresh_community_music_learning_status(note)
+            elif event_name == "contribution_error":
+                self._refresh_community_music_learning_status(
+                    "The confirmation could not reach the cloud; nothing was stored offline."
+                )
+            elif event_name == "sync_finished":
+                sync_finished = True
+
+        sync_running = (
+            self.music_community_learning_thread is not None
+            and self.music_community_learning_thread.is_alive()
+        )
+        if sync_running or not self.music_community_learning_events.empty():
+            self._queue_community_music_learning_poll()
+        elif sync_finished and bool(
+            self.music_community_learning_enabled_var.get()
+        ):
+            try:
+                self.music_community_learning_next_sync_after_id = self.root.after(
+                    SMWC_COMMUNITY_LEARNING_SYNC_INTERVAL_MS,
+                    self._start_community_music_learning_sync,
+                )
+            except tk.TclError:
+                self.music_community_learning_next_sync_after_id = None
+
+    def _share_confirmed_music_learning(
+        self,
+        result: dict[str, Any],
+        fingerprint_values: list[int],
+    ) -> None:
+        if not bool(self.music_community_learning_enabled_var.get()):
+            return
+        if not SMWC_COMMUNITY_LEARNING_API_URL:
+            self._refresh_community_music_learning_status(
+                "The cloud service is not connected; nothing was stored offline."
+            )
+            return
+        try:
+            contribution = smwc_music_index.community_learning_contribution(
+                result,
+                fingerprint_values,
+                client_id_hash=self.music_community_learning_client_hash,
+                catalog_version=(
+                    self.music_index_details.get("index_version")
+                    or self.music_index_details.get("catalog_updated_at")
+                    or ""
+                ),
+                app_version=APP_VERSION,
+            )
+        except smwc_music_index.MusicIndexError as error:
+            self._refresh_community_music_learning_status(str(error))
+            return
+
+        def submit_confirmation() -> None:
+            try:
+                response = smwc_music_index.submit_community_learning_contribution(
+                    SMWC_COMMUNITY_LEARNING_API_URL,
+                    contribution,
+                )
+                self.music_community_learning_events.put(
+                    ("contribution_ready", response)
+                )
+            except Exception as error:
+                self.music_community_learning_events.put(
+                    ("contribution_error", str(error))
+                )
+
+        threading.Thread(
+            target=submit_confirmation,
+            name="CommunityMusicLearningContribution",
+            daemon=True,
+        ).start()
+        self._refresh_community_music_learning_status(
+            "Sending an anonymous confirmed fingerprint in the background…"
+        )
+        self._queue_community_music_learning_poll()
 
     @staticmethod
     def _streamdeck_application_path() -> Path | None:
@@ -51335,7 +52993,7 @@ class TrackerApp:
         tk.Label(
             source_card,
             text=self._translate_ui_text(
-                "Choose a capture card, microphone, or a System audio source for MiSTer and RetroArch sound."
+                "Choose a running app for Twitch, browser, emulator, or game audio."
             ),
             font=("Segoe UI", 10),
             fg=palette["muted"],
@@ -51364,7 +53022,7 @@ class TrackerApp:
         refresh_button = self._make_action_button(
             source_card,
             text="Refresh Sources",
-            command=self._refresh_music_identifier_sources,
+            command=lambda: self._refresh_music_identifier_sources(manual=True),
             bg=STREAM_DESK["surface_alt"] if dark else THEME["blue"],
             active_bg=STREAM_DESK["selected"] if dark else THEME["sky_dark"],
             width=17,
@@ -51386,7 +53044,7 @@ class TrackerApp:
         )
         index_button = self._make_action_button(
             source_card,
-            text="Check Music Index",
+            text="Check Cloud Catalog",
             command=lambda: self._start_music_index_update_check(manual=True),
             bg=STREAM_DESK["surface_alt"] if dark else THEME["blue"],
             active_bg=STREAM_DESK["selected"] if dark else THEME["sky_dark"],
@@ -51427,6 +53085,57 @@ class TrackerApp:
             sticky="e",
             pady=(self._ui_px(8), 0),
         )
+        tk.Label(
+            source_card,
+            textvariable=self.music_community_learning_status_var,
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["purple"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(
+            row=5,
+            column=0,
+            sticky="ew",
+            pady=(self._ui_px(9), 0),
+        )
+        community_toggle = MarioCheckbutton(
+            source_card,
+            text=self._translate_ui_text("Use & Contribute to Community Song Results"),
+            variable=self.music_community_learning_enabled_var,
+            command=self._on_community_music_learning_toggled,
+            onvalue=True,
+            offvalue=False,
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["text"],
+            bg=palette["panel_alt"],
+            activeforeground=palette["text"],
+            activebackground=palette["panel_alt"],
+            selectcolor=STREAM_DESK["green"],
+        )
+        community_toggle.grid(
+            row=5,
+            column=1,
+            sticky="e",
+            pady=(self._ui_px(8), 0),
+        )
+        tk.Label(
+            source_card,
+            text=self._translate_ui_text(
+                "Identification sends only a compact, non-reconstructive fingerprint to the shared SMW Central catalog. Confirmed matches are contributed only when Community Song Results is enabled. No recordings, usernames, Twitch data, or account details are uploaded."
+            ),
+            font=("Segoe UI", 8),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+            justify="left",
+            wraplength=self._ui_px(980),
+        ).grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(self._ui_px(3), 0),
+        )
         listening_card = tk.Frame(
             panel,
             bg=palette["panel_alt"],
@@ -51454,7 +53163,7 @@ class TrackerApp:
         listening_canvas.grid(
             row=0,
             column=0,
-            rowspan=4,
+            rowspan=5,
             sticky="n",
             padx=(0, self._ui_px(20)),
         )
@@ -51481,6 +53190,32 @@ class TrackerApp:
             sticky="new",
             pady=(self._ui_px(4), self._ui_px(10)),
         )
+        input_level_row = tk.Frame(listening_card, bg=palette["panel_alt"])
+        input_level_row.grid(
+            row=2,
+            column=1,
+            sticky="ew",
+            pady=(0, self._ui_px(8)),
+        )
+        input_level_row.columnconfigure(1, weight=1)
+        tk.Label(
+            input_level_row,
+            textvariable=self.music_identifier_input_status_var,
+            font=("Segoe UI", 8, "bold"),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=(0, self._ui_px(10)))
+        level_canvas = tk.Canvas(
+            input_level_row,
+            height=self._ui_px(10),
+            bg=palette["entry"],
+            bd=0,
+            highlightbackground=palette["border"],
+            highlightthickness=1,
+        )
+        level_canvas.grid(row=0, column=1, sticky="ew")
+
         progress_canvas = tk.Canvas(
             listening_card,
             height=self._ui_px(14),
@@ -51489,10 +53224,10 @@ class TrackerApp:
             highlightbackground=palette["border"],
             highlightthickness=1,
         )
-        progress_canvas.grid(row=2, column=1, sticky="ew")
+        progress_canvas.grid(row=3, column=1, sticky="ew")
         action_row = tk.Frame(listening_card, bg=palette["panel_alt"])
         action_row.grid(
-            row=3,
+            row=4,
             column=1,
             sticky="ew",
             pady=(self._ui_px(12), 0),
@@ -51561,6 +53296,14 @@ class TrackerApp:
             bg=palette["panel_alt"],
             anchor="w",
         ).grid(row=3, column=0, sticky="ew", pady=(self._ui_px(3), 0))
+        tk.Label(
+            result_card,
+            textvariable=self.music_identifier_learning_var,
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["purple"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=4, column=0, sticky="ew", pady=(self._ui_px(5), 0))
         result_actions = tk.Frame(result_card, bg=palette["panel_alt"])
         result_actions.grid(
             row=0,
@@ -51600,6 +53343,37 @@ class TrackerApp:
         )
         track_button.pack(side="top", fill="x", pady=(self._ui_px(6), 0))
 
+        learning_actions = tk.Frame(result_card, bg=palette["panel_alt"])
+        learning_actions.grid(
+            row=5,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(self._ui_px(9), 0),
+        )
+        teach_button = self._make_action_button(
+            learning_actions,
+            text="Correct Match — Share Result",
+            command=self._teach_music_identifier_match,
+            bg=STREAM_DESK["green"],
+            active_bg=STREAM_DESK["green_dark"],
+            width=25,
+            pad_y=6,
+        )
+        teach_button.pack(side="left")
+        reject_button = self._make_action_button(
+            learning_actions,
+            text="Wrong Match",
+            command=self._reject_music_identifier_match,
+            bg=STREAM_DESK["surface_alt"],
+            active_bg=STREAM_DESK["selected"],
+            width=17,
+            pad_y=6,
+        )
+        reject_button.pack(side="left", padx=(self._ui_px(8), 0))
+        teach_button.configure(state="disabled")
+        reject_button.configure(state="disabled")
+
         self.music_identifier_widgets = {
             "page": dialog,
             "source_box": source_box,
@@ -51607,6 +53381,7 @@ class TrackerApp:
             "index_button": index_button,
             "radio_button": radio_button,
             "listening_canvas": listening_canvas,
+            "level_canvas": level_canvas,
             "progress_canvas": progress_canvas,
             "identify_button": identify_button,
             "cancel_button": cancel_button,
@@ -51614,6 +53389,9 @@ class TrackerApp:
             "play_button": play_button,
             "smwc_button": smwc_button,
             "track_button": track_button,
+            "teach_button": teach_button,
+            "reject_button": reject_button,
+            "community_toggle": community_toggle,
         }
         source_box.bind(
             "<<ComboboxSelected>>",
@@ -51621,12 +53399,13 @@ class TrackerApp:
             add="+",
         )
         dialog.protocol("WM_DELETE_WINDOW", self._close_music_identifier_page)
-        self._refresh_music_identifier_sources()
+        self._refresh_music_identifier_sources(manual=True)
         self._set_music_identifier_running_ui(
             self.music_identifier_thread is not None
             and self.music_identifier_thread.is_alive()
         )
         self._draw_music_identifier_listening_art()
+        self._draw_music_identifier_input_level()
         self._draw_music_identifier_progress()
         if self.music_identifier_state in {"listening", "identifying"}:
             self._queue_music_identifier_poll()
@@ -51635,6 +53414,8 @@ class TrackerApp:
             self.root.after(75, self._preload_smwcentral_radio_player)
         except tk.TclError:
             pass
+        if bool(self.music_community_learning_enabled_var.get()):
+            self._start_community_music_learning_sync()
 
     def _music_identifier_page_is_open(self) -> bool:
         page = self.music_identifier_widgets.get("page")
@@ -51661,16 +53442,38 @@ class TrackerApp:
                 except tk.TclError:
                     pass
 
-    def _refresh_music_identifier_sources(self) -> None:
-        source_box = self.music_identifier_widgets.get("source_box")
+    def _scan_music_identifier_sources(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Read the current Windows app-audio sessions off the Tk thread."""
+
+        sources: list[dict[str, Any]] = []
+        source_errors: list[str] = []
         try:
-            sources = enumerate_windows_music_audio_sources()
+            sources.extend(enumerate_windows_music_application_sources())
         except Exception as error:
-            sources = []
+            source_errors.append(str(error))
+        return sources, source_errors
+
+    def _apply_music_identifier_source_scan(
+        self,
+        sources: Sequence[dict[str, Any]],
+        source_errors: Sequence[str],
+        *,
+        saved_token: str,
+        previous_tokens: set[str],
+        announce: bool,
+    ) -> None:
+        """Apply one completed app-audio scan to the picker."""
+
+        source_box = self.music_identifier_widgets.get("source_box")
+        refresh_button = self.music_identifier_widgets.get("refresh_button")
+
+        if not sources and source_errors:
             self.music_identifier_status_var.set(
                 self._translate_ui_text("Audio sources unavailable")
             )
-            self.music_identifier_detail_var.set(str(error))
+            self.music_identifier_detail_var.set("\n".join(source_errors))
         self.music_identifier_sources = {
             str(source["label"]): source for source in sources
         }
@@ -51680,9 +53483,6 @@ class TrackerApp:
                 source_box.configure(values=labels)
             except tk.TclError:
                 pass
-        saved_token = str(
-            self.config.get("music_identifier_audio_source", "") or ""
-        )
         selected_label = next(
             (
                 label
@@ -51694,24 +53494,154 @@ class TrackerApp:
         if not selected_label and labels:
             selected_label = labels[0]
         self.music_identifier_source_var.set(selected_label)
+        if selected_label:
+            selected_source = self.music_identifier_sources[selected_label]
+            self.config["music_identifier_audio_source"] = str(
+                selected_source.get("token", "")
+            )
+            try:
+                save_config(self.config)
+            except OSError:
+                pass
         if not labels:
-            self.music_identifier_status_var.set(
-                self._translate_ui_text("No audio sources found")
-            )
-            self.music_identifier_detail_var.set(
-                self._translate_ui_text(
-                    "Connect or enable a Windows recording source, then select Refresh Sources."
+            if not source_errors:
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("No audio sources found")
                 )
-            )
+                self.music_identifier_detail_var.set(
+                    self._translate_ui_text(
+                        "Start audio in the app you want to identify, then select Refresh Sources."
+                    )
+                )
         elif self.music_identifier_state not in {"listening", "identifying"}:
-            self.music_identifier_status_var.set(
-                self._translate_ui_text("Ready to listen")
-            )
+            if announce:
+                current_tokens = {
+                    str(source.get("token", ""))
+                    for source in self.music_identifier_sources.values()
+                    if str(source.get("token", ""))
+                }
+                new_count = len(current_tokens - previous_tokens)
+                if len(labels) == 1:
+                    status_template = (
+                        "Sources refreshed — 1 app found (1 new)"
+                        if new_count
+                        else "Sources refreshed — 1 app found"
+                    )
+                else:
+                    status_template = (
+                        "Sources refreshed — {count} apps found ({new} new)"
+                        if new_count
+                        else "Sources refreshed — {count} apps found"
+                    )
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text(status_template).format(
+                        count=len(labels),
+                        new=new_count,
+                    )
+                )
+            else:
+                self.music_identifier_status_var.set(
+                    self._translate_ui_text("Ready to listen")
+                )
             self.music_identifier_detail_var.set(
                 self._translate_ui_text(
-                    "Start the music, then select Identify What's Playing. The temporary sample stays on this computer, is checked against the SMW Central index, and is deleted immediately afterward."
+                    "Start the music, then select Identify What's Playing. The temporary sample stays on this computer and is deleted immediately afterward; only its compact acoustic fingerprint is checked against the shared SMW Central catalog."
                 )
             )
+        for widget, state in (
+            (source_box, "readonly"),
+            (refresh_button, "normal"),
+        ):
+            if widget is not None:
+                try:
+                    widget.configure(state=state)
+                except tk.TclError:
+                    pass
+
+    def _refresh_music_identifier_sources(self, *, manual: bool = False) -> None:
+        selected_source = self.music_identifier_sources.get(
+            self.music_identifier_source_var.get(),
+            {},
+        )
+        saved_token = str(
+            selected_source.get("token", "")
+            or self.config.get("music_identifier_audio_source", "")
+            or ""
+        )
+        previous_tokens = {
+            str(source.get("token", ""))
+            for source in self.music_identifier_sources.values()
+            if str(source.get("token", ""))
+        }
+        if not manual:
+            sources, source_errors = self._scan_music_identifier_sources()
+            self._apply_music_identifier_source_scan(
+                sources,
+                source_errors,
+                saved_token=saved_token,
+                previous_tokens=previous_tokens,
+                announce=False,
+            )
+            return
+
+        running_thread = getattr(
+            self,
+            "music_identifier_source_refresh_thread",
+            None,
+        )
+        if running_thread is not None and running_thread.is_alive():
+            return
+        source_box = self.music_identifier_widgets.get("source_box")
+        refresh_button = self.music_identifier_widgets.get("refresh_button")
+        self.music_identifier_status_var.set(
+            self._translate_ui_text("Refreshing audio sources…")
+        )
+        self.music_identifier_detail_var.set(
+            self._translate_ui_text(
+                "Checking Windows Volume Mixer for apps playing audio."
+            )
+        )
+        for widget in (source_box, refresh_button):
+            if widget is not None:
+                try:
+                    widget.configure(state="disabled")
+                except tk.TclError:
+                    pass
+
+        refresh_generation = int(
+            getattr(self, "music_identifier_source_refresh_generation", 0)
+        ) + 1
+        self.music_identifier_source_refresh_generation = refresh_generation
+
+        def scan_worker() -> None:
+            sources, source_errors = self._scan_music_identifier_sources()
+
+            def finish_scan() -> None:
+                if refresh_generation != getattr(
+                    self,
+                    "music_identifier_source_refresh_generation",
+                    0,
+                ):
+                    return
+                self.music_identifier_source_refresh_thread = None
+                self._apply_music_identifier_source_scan(
+                    sources,
+                    source_errors,
+                    saved_token=saved_token,
+                    previous_tokens=previous_tokens,
+                    announce=True,
+                )
+
+            try:
+                self.root.after(0, finish_scan)
+            except tk.TclError:
+                pass
+
+        self.music_identifier_source_refresh_thread = threading.Thread(
+            target=scan_worker,
+            daemon=True,
+        )
+        self.music_identifier_source_refresh_thread.start()
 
     def _on_music_identifier_source_selected(self, _event=None) -> None:
         source = self.music_identifier_sources.get(
@@ -51727,20 +53657,88 @@ class TrackerApp:
         except OSError:
             pass
 
+    def _set_music_identifier_learning_buttons(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for widget_name in ("teach_button", "reject_button"):
+            widget = self.music_identifier_widgets.get(widget_name)
+            if widget is not None:
+                try:
+                    widget.configure(state=state)
+                except tk.TclError:
+                    pass
+
+    def _refresh_music_identifier_learning_status(self, note: str = "") -> None:
+        status = self._translate_ui_text(
+            "ONLINE MATCHING: results come from the shared cloud catalog"
+        )
+        if str(note).strip():
+            status += " — " + self._translate_ui_text(str(note).strip())
+        self.music_identifier_learning_var.set(status)
+
+    def _teach_music_identifier_match(self) -> None:
+        result = dict(self.music_identifier_last_result)
+        values = list(self.music_identifier_pending_learning_values)
+        if not result or not values:
+            return
+        confirmed_result = self._remember_confirmed_level_song(result)
+        self.music_identifier_last_result = dict(confirmed_result)
+        self._share_confirmed_music_learning(result, values)
+        self.music_identifier_pending_learning_values = []
+        self.music_identifier_pending_learning_source = ""
+        self._set_music_identifier_learning_buttons(False)
+        self._refresh_music_identifier_learning_status(
+            "Match confirmed. This ROM and level can now answer instantly while the app is online."
+        )
+        self.music_identifier_confidence_var.set(
+            self._translate_ui_text("Confirmed — Community Song Results updated")
+        )
+
+    def _reject_music_identifier_match(self) -> None:
+        rejected_context = str(
+            self.music_identifier_last_result.get("_tracker_context_key", "")
+        ).strip()
+        context_results = getattr(
+            self,
+            "music_identifier_context_results",
+            None,
+        )
+        if isinstance(context_results, dict) and rejected_context:
+            context_results.pop(rejected_context, None)
+        self.music_identifier_pending_learning_values = []
+        self.music_identifier_pending_learning_source = ""
+        self.music_identifier_last_result = {}
+        self._set_music_identifier_learning_buttons(False)
+        self._refresh_music_identifier_learning_status(
+            "Wrong match rejected; nothing was learned."
+        )
+        self.music_identifier_state = "no_match"
+        self.music_identifier_status_var.set(
+            self._translate_ui_text("Wrong match rejected")
+        )
+        self.music_identifier_detail_var.set(
+            self._translate_ui_text(
+                "Listen again during a clearer part of the song. This result will not be contributed to Community Song Results."
+            )
+        )
+        self.music_identifier_title_var.set(
+            self._translate_ui_text("Ready for another sample")
+        )
+        self.music_identifier_artist_var.set("")
+        self.music_identifier_confidence_var.set("")
+
     def _start_music_identifier(self) -> bool:
         if self.music_identifier_thread is not None and self.music_identifier_thread.is_alive():
             return False
-        try:
-            self.music_index_details = smwc_music_index.validate_music_index(
-                SMWC_MUSIC_INDEX_FILE,
-                require_tracks=True,
-                require_complete=True,
-            )
-        except smwc_music_index.MusicIndexError as error:
+        if not bool(self.music_index_details.get("cloud_only", False)):
             self.music_identifier_status_var.set(
-                self._translate_ui_text("Music index unavailable")
+                self._translate_ui_text("Online catalog required")
             )
-            self.music_identifier_detail_var.set(str(error))
+            self.music_identifier_detail_var.set(
+                self._translate_ui_text(
+                    "Music identification starts only after the online SMW Central catalog is connected. Check the cloud catalog and try again."
+                )
+            )
+            self._start_music_index_update_check(manual=True)
             return False
         source = self.music_identifier_sources.get(
             self.music_identifier_source_var.get()
@@ -51755,6 +53753,20 @@ class TrackerApp:
                 )
             )
             return False
+        application_capture = str(source.get("capture_type", "")) == "process"
+        if application_capture:
+            # Browser renderer PIDs can change after any capture. Resolve the
+            # current audio session and stable parent process for every click,
+            # while keeping the user's application selection unchanged.
+            source = refresh_windows_music_application_source(dict(source))
+            selected_label = self.music_identifier_source_var.get()
+            if selected_label in self.music_identifier_sources:
+                self.music_identifier_sources[selected_label] = source
+        record_seconds = (
+            MUSIC_IDENTIFIER_APPLICATION_RECORD_SECONDS
+            if application_capture
+            else MUSIC_IDENTIFIER_RECORD_SECONDS
+        )
         self.config["music_identifier_audio_source"] = str(
             source.get("token", "")
         )
@@ -51771,38 +53783,71 @@ class TrackerApp:
         self.music_identifier_state = "listening"
         self.music_identifier_animation_frame = 0
         self.music_identifier_progress_var.set(0.0)
+        self.music_identifier_input_level = 0.0
+        self.music_identifier_voice_state = "music" if application_capture else ""
+        self.music_identifier_input_status_var.set(
+            self._translate_ui_text("INPUT LEVEL: listening for source")
+        )
         self.music_identifier_status_var.set(
             self._translate_ui_text("Listening") + "…"
         )
-        self.music_identifier_detail_var.set(
-            self._format_ui_text(
-                "Listening for up to {seconds} seconds and checking for an early match after {early} seconds. Keep the music playing.",
-                seconds=MUSIC_IDENTIFIER_RECORD_SECONDS,
-                early=MUSIC_IDENTIFIER_EARLY_MATCH_SECONDS[0],
+        if application_capture:
+            self.music_identifier_detail_var.set(
+                self._format_ui_text(
+                    "Listening only to {application}. Speech and game sounds can continue; timing-aware fingerprints find the music underneath them.",
+                    application=str(source.get("name", "the selected app")),
+                )
             )
-        )
+        else:
+            self.music_identifier_detail_var.set(
+                self._format_ui_text(
+                    "Listening for up to {seconds} seconds and checking for an early match after {early} seconds. Keep the music playing.",
+                    seconds=record_seconds,
+                    early=MUSIC_IDENTIFIER_EARLY_MATCH_SECONDS[0],
+                )
+            )
         self.music_identifier_title_var.set(
             self._translate_ui_text("Listening for a clear match…")
         )
         self.music_identifier_artist_var.set("")
         self.music_identifier_confidence_var.set("")
         self.music_identifier_last_result = {}
+        self.music_identifier_pending_learning_values = []
+        self.music_identifier_pending_learning_source = ""
+        self._set_music_identifier_learning_buttons(False)
         # Pin this recording to the exact live level/session that started it.
         # A room transition can happen before fingerprinting finishes.
         self.music_identifier_lookup_context_key = (
-            self._current_tracker_music_context_key()
+            ""
+            if bool(source.get("is_browser", False))
+            else self._current_tracker_music_context_key()
+        )
+        self.music_identifier_lookup_is_external = bool(
+            source.get("is_browser", False)
         )
         self._set_music_identifier_running_ui(True)
         self._draw_music_identifier_progress()
+        self._draw_music_identifier_input_level()
         self._draw_music_identifier_listening_art()
 
         def prepare_result(raw_result: dict[str, Any]) -> dict[str, Any]:
             result = dict(raw_result)
             confidence = float(result.get("confidence", 0.0) or 0.0)
             result["confidence_value"] = confidence
+            match_strategy = str(result.get("match_strategy", ""))
+            local_learned_match = match_strategy.startswith("AI learning")
+            community_learned_match = match_strategy.startswith("Community Song Results")
+            cloud_landmark_match = match_strategy.startswith("Cloud landmark")
             result["confidence"] = (
-                f"{confidence:.0f}% local SMW Central match"
+                f"{confidence:.0f}% community song result"
+                if community_learned_match
+                else f"{confidence:.0f}% AI learned match"
+                if local_learned_match
+                else f"{confidence:.0f}% SMW Central cloud landmark match"
+                if cloud_landmark_match
+                else f"{confidence:.0f}% local SMW Central match"
             )
+            result["_learning_source_token"] = str(source.get("token", ""))
             result["track_url"] = str(result.get("download_url", ""))
             result["smwcentral_url"] = str(
                 result.get("submission_url", "")
@@ -51845,9 +53890,13 @@ class TrackerApp:
                         limit=2,
                         chromaprint_only=True,
                         progress_callback=report_match_progress,
+                        recognition_api_url=SMWC_MUSIC_RECOGNITION_API_URL,
+                        source_token=str(source.get("token", "")),
+                        include_learning_fingerprint=True,
+                        cloud_only=True,
                     )
                 except smwc_music_index.MusicIndexError:
-                    matches = []
+                    raise
                 if matches:
                     candidate = dict(matches[0])
                     confidence = float(
@@ -51865,19 +53914,47 @@ class TrackerApp:
                 return False
 
             try:
-                record_windows_music_sample(
-                    dict(source),
-                    sample_path,
-                    seconds=MUSIC_IDENTIFIER_RECORD_SECONDS,
-                    cancel_event=self.music_identifier_cancel_event,
-                    progress_callback=lambda progress, remaining: (
-                        self.music_identifier_events.put(
-                            ("progress", float(progress), int(remaining))
-                        )
-                    ),
-                    checkpoint_seconds=MUSIC_IDENTIFIER_EARLY_MATCH_SECONDS,
-                    checkpoint_callback=check_early_match,
+                progress_reporter = lambda progress, remaining: (
+                    self.music_identifier_events.put(
+                        ("progress", float(progress), int(remaining))
+                    )
                 )
+                level_reporter = lambda level: (
+                    self.music_identifier_events.put(
+                        ("input_level", float(level))
+                    )
+                )
+                voice_state_reporter = lambda state, clean, target: (
+                    self.music_identifier_events.put(
+                        (
+                            "voice_state",
+                            str(state),
+                            float(clean),
+                            float(target),
+                        )
+                    )
+                )
+                if application_capture:
+                    record_windows_application_music_sample(
+                        dict(source),
+                        sample_path,
+                        seconds=record_seconds,
+                        cancel_event=self.music_identifier_cancel_event,
+                        progress_callback=progress_reporter,
+                        level_callback=level_reporter,
+                        voice_state_callback=voice_state_reporter,
+                    )
+                else:
+                    record_windows_music_sample(
+                        dict(source),
+                        sample_path,
+                        seconds=record_seconds,
+                        cancel_event=self.music_identifier_cancel_event,
+                        progress_callback=progress_reporter,
+                        level_callback=level_reporter,
+                        checkpoint_seconds=MUSIC_IDENTIFIER_EARLY_MATCH_SECONDS,
+                        checkpoint_callback=check_early_match,
+                    )
                 if self.music_identifier_cancel_event.is_set():
                     raise MusicIdentifierCancelled()
                 if early_result:
@@ -51890,6 +53967,10 @@ class TrackerApp:
                     sample_path,
                     limit=3,
                     progress_callback=report_match_progress,
+                    recognition_api_url=SMWC_MUSIC_RECOGNITION_API_URL,
+                    source_token=str(source.get("token", "")),
+                    include_learning_fingerprint=True,
+                    cloud_only=True,
                 )
                 result = prepare_result(dict(matches[0])) if matches else {}
                 if result:
@@ -51941,6 +54022,10 @@ class TrackerApp:
 
         if not silent:
             self.music_identifier_progress_var.set(0.0)
+            self.music_identifier_input_level = 0.0
+            self.music_identifier_input_status_var.set(
+                self._translate_ui_text("INPUT LEVEL: listening stopped")
+            )
             self.music_identifier_status_var.set(
                 self._translate_ui_text("Listening stopped")
             )
@@ -51954,6 +54039,7 @@ class TrackerApp:
                 cleanup_pending=True,
             )
             self._draw_music_identifier_listening_art()
+            self._draw_music_identifier_input_level()
             self._draw_music_identifier_progress()
 
         # Keep the lightweight event poll alive only long enough to observe the
@@ -51989,19 +54075,86 @@ class TrackerApp:
                 # pulse, progress bar, or a late result back after Stop was
                 # clicked.
                 continue
-            if event_name == "progress":
+            if event_name == "input_level":
+                measured_level = max(0.0, min(1.0, float(event[1])))
+                self.music_identifier_input_level = max(
+                    measured_level,
+                    self.music_identifier_input_level * 0.72,
+                )
+                if measured_level >= 0.18:
+                    input_status = "INPUT LEVEL: source heard"
+                elif measured_level >= 0.04:
+                    input_status = "INPUT LEVEL: very quiet"
+                else:
+                    input_status = "INPUT LEVEL: no signal"
+                self.music_identifier_input_status_var.set(
+                    self._translate_ui_text(input_status)
+                )
+                self._draw_music_identifier_input_level()
+            elif event_name == "voice_state":
+                state = str(event[1])
+                clean_seconds = max(0.0, float(event[2]))
+                self.music_identifier_voice_state = state
+                if state == "continuous":
+                    self.music_identifier_status_var.set(
+                        self._translate_ui_text("Listening continuously") + "..."
+                    )
+                    self.music_identifier_detail_var.set(
+                        self._translate_ui_text(
+                            "Keeping the song timeline intact while filtering speech and game sounds during matching."
+                        )
+                    )
+                elif state == "voice":
+                    self.music_identifier_status_var.set(
+                        self._translate_ui_text(
+                            "Voice detected — listening paused"
+                        )
+                    )
+                    self.music_identifier_detail_var.set(
+                        self._format_ui_text(
+                            "Waiting for the voice to clear. {seconds:.1f} seconds of clean music are already saved.",
+                            seconds=clean_seconds,
+                        )
+                    )
+                else:
+                    self.music_identifier_status_var.set(
+                        self._translate_ui_text(
+                            "Voice clear — collecting music"
+                        )
+                    )
+                    self.music_identifier_detail_var.set(
+                        self._translate_ui_text(
+                            "Only voice-free music is being added to the sample."
+                        )
+                    )
+            elif event_name == "progress":
                 self.music_identifier_progress_var.set(
                     MUSIC_IDENTIFIER_LISTEN_PROGRESS_WEIGHT
                     * float(event[1])
                 )
                 remaining = int(event[2])
-                self.music_identifier_detail_var.set(
-                    self._translate_ui_text("Listening to the selected source")
-                    + f" — {remaining} "
-                    + self._translate_ui_text(
-                        "second remaining" if remaining == 1 else "seconds remaining"
+                if self.music_identifier_voice_state == "voice":
+                    self.music_identifier_detail_var.set(
+                        self._format_ui_text(
+                            "Waiting for the voice to clear. {seconds} clean seconds are still needed.",
+                            seconds=remaining,
+                        )
                     )
-                )
+                elif self.music_identifier_voice_state == "music":
+                    self.music_identifier_detail_var.set(
+                        self._format_ui_text(
+                            "Collecting voice-free music — {seconds} seconds remaining.",
+                            seconds=remaining,
+                        )
+                    )
+                else:
+                    self.music_identifier_detail_var.set(
+                        self._translate_ui_text("Listening to the selected source")
+                        + f" — {remaining} "
+                        + self._translate_ui_text(
+                            "second remaining" if remaining == 1 else "seconds remaining"
+                        )
+                    )
                 self._draw_music_identifier_progress()
             elif event_name == "early_check":
                 self.music_identifier_state = "identifying"
@@ -52036,7 +54189,7 @@ class TrackerApp:
                 )
                 self.music_identifier_detail_var.set(
                     self._translate_ui_text(
-                        "The sample is recorded. Comparing its audio landmarks with the local SMW Central music index."
+                        "The sample is recorded. Sending its compact audio landmarks to the online SMW Central catalog."
                     )
                 )
                 self._draw_music_identifier_progress()
@@ -52053,7 +54206,7 @@ class TrackerApp:
                 )
                 self.music_identifier_detail_var.set(
                     self._format_ui_text(
-                        "Checking local music fingerprints — pass {current} of {total}.",
+                        "Checking online music fingerprints — pass {current} of {total}.",
                         current=current,
                         total=total,
                     )
@@ -52061,6 +54214,15 @@ class TrackerApp:
                 self._draw_music_identifier_progress()
             elif event_name == "result":
                 result = dict(event[1])
+                learning_values = result.pop("_learning_fingerprint", [])
+                learning_source = str(
+                    result.pop("_learning_source_token", "") or ""
+                )
+                self.music_identifier_pending_learning_values = [
+                    int(value) & 0xFFFFFFFF
+                    for value in learning_values
+                ]
+                self.music_identifier_pending_learning_source = learning_source
                 pending_song_request = getattr(
                     self,
                     "music_identifier_streamerbot_request",
@@ -52087,22 +54249,31 @@ class TrackerApp:
                 # A lookup can finish while Mario is already entering another
                 # room. Associate it with the context captured when recording
                 # began, never whichever room happens to be active at finish.
-                result = self._remember_current_level_song(
-                    result,
-                    context_key=(
-                        lookup_context_key or requested_context_key
-                    ),
-                )
+                if not bool(
+                    getattr(
+                        self,
+                        "music_identifier_lookup_is_external",
+                        False,
+                    )
+                ):
+                    result = self._remember_current_level_song(
+                        result,
+                        context_key=(
+                            lookup_context_key or requested_context_key
+                        ),
+                    )
                 self.music_identifier_last_result = result
                 self.music_identifier_state = "success"
                 self.music_identifier_progress_var.set(1.0)
                 self.music_identifier_status_var.set(
                     self._translate_ui_text("Match found")
                 )
+                result_strategy = str(result.get("match_strategy", ""))
+                match_detail = (
+                    "The online landmark catalog found the matching SMW Central submission below. Only a non-reconstructive fingerprint was sent; the temporary recording was deleted."
+                )
                 self.music_identifier_detail_var.set(
-                    self._translate_ui_text(
-                        "The local fingerprint index found the matching SMW Central submission below. No recording left this computer."
-                    )
+                    self._translate_ui_text(match_detail)
                 )
                 self.music_identifier_title_var.set(
                     str(result.get("title", ""))
@@ -52117,6 +54288,12 @@ class TrackerApp:
                     self._translate_ui_text(
                         str(result.get("confidence", "Possible match"))
                     )
+                )
+                self._set_music_identifier_learning_buttons(
+                    bool(self.music_identifier_pending_learning_values)
+                )
+                self._refresh_music_identifier_learning_status(
+                    "Confirm the result to contribute to Community Song Results."
                 )
                 self._draw_music_identifier_progress()
                 self._complete_streamerbot_song_request(result=result)
@@ -52179,11 +54356,23 @@ class TrackerApp:
             and self.music_identifier_thread.is_alive()
         )
         if finished or not thread_running:
+            self.music_identifier_input_level = 0.0
+            if self.music_identifier_state == "success":
+                input_status = "INPUT LEVEL: source heard"
+            elif self.music_identifier_state == "error":
+                input_status = "INPUT LEVEL: check source"
+            else:
+                input_status = "INPUT LEVEL: waiting to listen"
+            self.music_identifier_input_status_var.set(
+                self._translate_ui_text(input_status)
+            )
             self._set_music_identifier_running_ui(False)
             self._draw_music_identifier_listening_art()
+            self._draw_music_identifier_input_level()
             self._draw_music_identifier_progress()
         if not thread_running:
             self.music_identifier_lookup_context_key = ""
+            self.music_identifier_lookup_is_external = False
         if (
             (finished or not thread_running)
             and isinstance(
@@ -52297,6 +54486,55 @@ class TrackerApp:
                         if self.music_identifier_state == "identifying"
                         else STREAM_DESK["green"]
                     ),
+                    outline="",
+                )
+        except (tk.TclError, TypeError, ValueError):
+            pass
+
+    def _draw_music_identifier_input_level(self) -> None:
+        """Draw a segmented live meter for the selected capture source."""
+        canvas = self.music_identifier_widgets.get("level_canvas")
+        if canvas is None:
+            return
+        try:
+            width = max(1, int(canvas.winfo_width()))
+            height = max(1, int(canvas.winfo_height()))
+            level = max(
+                0.0,
+                min(1.0, float(self.music_identifier_input_level)),
+            )
+            canvas.delete("all")
+            canvas.create_rectangle(
+                0,
+                0,
+                width,
+                height,
+                fill=STREAM_DESK["surface_deep"],
+                outline="",
+            )
+            segment_count = 28
+            gap = max(1, self._ui_px(1))
+            segment_width = max(
+                1.0,
+                (width - gap * (segment_count - 1)) / segment_count,
+            )
+            active_segments = round(level * segment_count)
+            for segment in range(active_segments):
+                ratio = (segment + 1) / segment_count
+                if ratio > 0.88:
+                    color = STREAM_DESK["red"]
+                elif ratio > 0.70:
+                    color = STREAM_DESK["yellow"]
+                else:
+                    color = STREAM_DESK["green"]
+                left = round(segment * (segment_width + gap))
+                right = min(width, round(left + segment_width))
+                canvas.create_rectangle(
+                    left,
+                    0,
+                    right,
+                    height,
+                    fill=color,
                     outline="",
                 )
         except (tk.TclError, TypeError, ValueError):
@@ -107071,16 +109309,74 @@ class TrackerApp:
             if isinstance(raw_level_session_id, str):
                 level_session_id = raw_level_session_id.strip()
 
+        game = getattr(self, "current_hack_record", {})
+        game = game if isinstance(game, dict) else {}
+        explicit_digest = ""
+        for digest_name in ("rom_sha256", "sha256", "file_sha256"):
+            candidate_digest = str(game.get(digest_name, "")).strip().casefold()
+            if len(candidate_digest) == 64 and all(
+                character in "0123456789abcdef"
+                for character in candidate_digest
+            ):
+                explicit_digest = candidate_digest
+                break
+
+        # Prefer a content identity when the local ROM is available. A small
+        # stat-based cache prevents repeatedly hashing the same SNES ROM while
+        # Streamer.bot polls the active level.
+        if explicit_digest:
+            game_key = f"sha256:{explicit_digest}"
+        else:
+            path_candidates = (
+                game.get("local_rom_path"),
+                game.get("rom_path"),
+                getattr(worker, "previous_rom_path", "")
+                if worker is not None
+                else "",
+            )
+            hash_cache = getattr(self, "music_identifier_rom_hash_cache", None)
+            if not isinstance(hash_cache, dict):
+                hash_cache = {}
+                self.music_identifier_rom_hash_cache = hash_cache
+            for path_value in path_candidates:
+                path_text = str(path_value or "").strip()
+                if not path_text:
+                    continue
+                candidate_path = Path(path_text).expanduser()
+                try:
+                    if not candidate_path.is_file():
+                        continue
+                    resolved_path = candidate_path.resolve()
+                    stat = resolved_path.stat()
+                    cache_key = os.path.normcase(str(resolved_path))
+                    cached = hash_cache.get(cache_key)
+                    if (
+                        isinstance(cached, tuple)
+                        and len(cached) == 3
+                        and int(cached[0]) == int(stat.st_size)
+                        and int(cached[1]) == int(stat.st_mtime_ns)
+                    ):
+                        digest = str(cached[2])
+                    else:
+                        digest = file_sha256(resolved_path).casefold()
+                        hash_cache[cache_key] = (
+                            int(stat.st_size),
+                            int(stat.st_mtime_ns),
+                            digest,
+                        )
+                    game_key = f"sha256:{digest}"
+                    break
+                except OSError:
+                    continue
+
         if not game_key:
-            game = getattr(self, "current_hack_record", {})
-            if isinstance(game, dict):
-                game_key = str(
-                    game.get("catalog_key")
-                    or game.get("id")
-                    or game.get("local_rom_path")
-                    or game.get("title")
-                    or ""
-                ).strip()
+            game_key = str(
+                game.get("catalog_key")
+                or game.get("id")
+                or game.get("local_rom_path")
+                or game.get("title")
+                or ""
+            ).strip()
         if not game_key:
             return ""
 
@@ -107103,6 +109399,35 @@ class TrackerApp:
             context_key += f"|session:{level_session_id}"
         return context_key
 
+    @staticmethod
+    def _stable_tracker_music_context_key(context_key: object) -> str:
+        """Remove the one-time session token from a ROM/level music key."""
+
+        clean_key = str(context_key or "").strip()
+        if not clean_key:
+            return ""
+        return clean_key.split("|session:", 1)[0]
+
+    def _prune_recent_music_results(self) -> None:
+        context_results = getattr(
+            self,
+            "music_identifier_context_results",
+            None,
+        )
+        if not isinstance(context_results, dict):
+            self.music_identifier_context_results = {}
+            return
+        cutoff = time.time() - MUSIC_IDENTIFIER_RECENT_CACHE_SECONDS
+        for context_key, song in tuple(context_results.items()):
+            if not isinstance(song, dict):
+                context_results.pop(context_key, None)
+                continue
+            recognized_at = float(song.get("_recognized_at_epoch", 0.0) or 0.0)
+            if recognized_at and recognized_at < cutoff:
+                context_results.pop(context_key, None)
+        while len(context_results) > MUSIC_IDENTIFIER_RECENT_CACHE_LIMIT:
+            context_results.pop(next(iter(context_results)), None)
+
     def _remember_current_level_song(
         self,
         result: dict[str, Any],
@@ -107118,6 +109443,7 @@ class TrackerApp:
         if not context_key:
             return stored_result
         stored_result["_tracker_context_key"] = context_key
+        stored_result["_recognized_at_epoch"] = time.time()
         context_results = getattr(
             self,
             "music_identifier_context_results",
@@ -107127,26 +109453,54 @@ class TrackerApp:
             context_results = {}
             self.music_identifier_context_results = context_results
         context_results[context_key] = dict(stored_result)
+        self._prune_recent_music_results()
+        return stored_result
 
-        # Keep the useful level association across restarts without retaining
-        # any captured audio. Limit the cache so a very large ROM collection
-        # cannot make the settings file grow forever.
-        if len(context_results) > 500:
-            oldest_keys = tuple(context_results)[: len(context_results) - 500]
-            for oldest_key in oldest_keys:
-                context_results.pop(oldest_key, None)
+    def _remember_confirmed_level_song(
+        self,
+        result: dict[str, Any],
+        *,
+        context_key: str = "",
+    ) -> dict[str, Any]:
+        """Persist an explicitly confirmed ROM/level/song association."""
+
+        confirmed_result = dict(result)
+        live_context = str(context_key).strip() or str(
+            confirmed_result.get("_tracker_context_key", "")
+        ).strip() or self._current_tracker_music_context_key()
+        stable_context = self._stable_tracker_music_context_key(live_context)
+        if not stable_context or not str(
+            confirmed_result.get("title", "")
+        ).strip():
+            return confirmed_result
+        confirmed_result.pop("_recognized_at_epoch", None)
+        confirmed_result["_tracker_context_key"] = stable_context
+        confirmed_result["_confirmed_by_user"] = True
+        confirmed_result["_confirmed_at_epoch"] = time.time()
+        confirmed_songs = getattr(
+            self,
+            "music_identifier_confirmed_level_songs",
+            None,
+        )
+        if not isinstance(confirmed_songs, dict):
+            confirmed_songs = {}
+            self.music_identifier_confirmed_level_songs = confirmed_songs
+        confirmed_songs[stable_context] = dict(confirmed_result)
+        while len(confirmed_songs) > MUSIC_IDENTIFIER_CONFIRMED_LEVEL_LIMIT:
+            confirmed_songs.pop(next(iter(confirmed_songs)), None)
         config = getattr(self, "config", None)
         if isinstance(config, dict):
-            config["music_identifier_level_songs"] = {
+            config["music_identifier_confirmed_level_songs"] = {
                 key: dict(song)
-                for key, song in context_results.items()
+                for key, song in confirmed_songs.items()
                 if isinstance(song, dict)
+                and bool(song.get("_confirmed_by_user", False))
             }
             try:
                 save_config(config)
             except OSError:
                 pass
-        return stored_result
+        return confirmed_result
 
     def _current_level_song_result(self) -> dict[str, Any]:
         """Return only song data belonging to the level currently in play."""
@@ -107154,6 +109508,7 @@ class TrackerApp:
         context_key = self._current_tracker_music_context_key()
         if not context_key:
             return {}
+        self._prune_recent_music_results()
         context_results = getattr(
             self,
             "music_identifier_context_results",
@@ -107170,6 +109525,32 @@ class TrackerApp:
             and str(last_result.get("title", "")).strip()
         ):
             return dict(last_result)
+        stable_context = self._stable_tracker_music_context_key(context_key)
+        confirmed_songs = getattr(
+            self,
+            "music_identifier_confirmed_level_songs",
+            {},
+        )
+        if isinstance(confirmed_songs, dict):
+            confirmed = confirmed_songs.get(stable_context, {})
+            if (
+                isinstance(confirmed, dict)
+                and bool(confirmed.get("_confirmed_by_user", False))
+                and str(confirmed.get("title", "")).strip()
+            ):
+                remembered = dict(confirmed)
+                remembered["_tracker_context_key"] = context_key
+                remembered["_recognized_at_epoch"] = time.time()
+                remembered["_from_confirmed_level_memory"] = True
+                context_results = getattr(
+                    self,
+                    "music_identifier_context_results",
+                    None,
+                )
+                if isinstance(context_results, dict):
+                    context_results[context_key] = dict(remembered)
+                    self._prune_recent_music_results()
+                return remembered
         return {}
 
     def _configured_streamerbot_song_scene_name(self) -> str:
@@ -107218,6 +109599,34 @@ class TrackerApp:
             return False
         return True
 
+    def _keep_streamerbot_song_prefetch_monitoring(
+        self,
+        session_id: object,
+    ) -> bool:
+        """Check the live song again without overlapping audio work."""
+
+        clean_session_id = str(session_id or "").strip()
+        if not clean_session_id:
+            return False
+        return self._schedule_streamerbot_song_prefetch(
+            clean_session_id,
+            delay_ms=MUSIC_IDENTIFIER_BACKGROUND_MONITOR_MS,
+        )
+
+    @staticmethod
+    def _music_identifier_result_age(result: object) -> float | None:
+        if not isinstance(result, dict):
+            return None
+        try:
+            recognized_at = float(
+                result.get("_recognized_at_epoch", 0.0) or 0.0
+            )
+        except (TypeError, ValueError):
+            return None
+        if recognized_at <= 0.0:
+            return None
+        return max(0.0, time.time() - recognized_at)
+
     def _prefetch_streamerbot_current_level_song(self) -> bool:
         """Start a silent level-scoped lookup for instant reward replies."""
 
@@ -107235,7 +109644,17 @@ class TrackerApp:
             f"|session:{expected_session}"
         ):
             return False
-        if self._current_level_song_result():
+        # Keep watching this session even after a successful match. Most calls
+        # are a cheap context/cache check. A new music byte is picked up on the
+        # next pass, and long levels are verified occasionally in case a hack
+        # changes songs without updating the normal SMW music register.
+        self._keep_streamerbot_song_prefetch_monitoring(expected_session)
+        current_song = self._current_level_song_result()
+        song_age = self._music_identifier_result_age(current_song)
+        if current_song and (
+            song_age is None
+            or song_age < MUSIC_IDENTIFIER_BACKGROUND_REFRESH_SECONDS
+        ):
             return True
         if isinstance(
             getattr(self, "music_identifier_streamerbot_request", None),
@@ -107251,10 +109670,24 @@ class TrackerApp:
                 return True
             # Let the old level's result finish under its own key, then prepare
             # the new level without ever mixing their songs.
-            return self._schedule_streamerbot_song_prefetch(
-                expected_session,
-                delay_ms=700,
-            )
+            return True
+
+        attempts = getattr(
+            self,
+            "music_identifier_prefetch_attempts",
+            None,
+        )
+        if not isinstance(attempts, dict):
+            attempts = {}
+            self.music_identifier_prefetch_attempts = attempts
+        now = time.time()
+        previous_attempt = float(attempts.get(current_context, 0.0) or 0.0)
+        if now - previous_attempt < MUSIC_IDENTIFIER_BACKGROUND_RETRY_SECONDS:
+            return True
+        attempts[current_context] = now
+        if len(attempts) > MUSIC_IDENTIFIER_RECENT_CACHE_LIMIT:
+            oldest_context = min(attempts, key=attempts.get)
+            attempts.pop(oldest_context, None)
 
         sources = getattr(self, "music_identifier_sources", {})
         selected_label = ""
@@ -107267,8 +109700,8 @@ class TrackerApp:
         started = self._start_music_identifier()
         if started:
             self._set_streamerbot_control_status(
-                "Preparing the current level song for fast channel-point "
-                "reward replies."
+                "Listening quietly for the current level song so the "
+                "channel-point reward can reply immediately."
             )
         return bool(started)
 

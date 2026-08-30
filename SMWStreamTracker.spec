@@ -38,6 +38,9 @@ for _pillow_folder_name in (
 # site-packages.
 for _package_folder_name in (
     ".build-packages",
+    ".app-audio-deps",
+    ".volume-mixer-deps",
+    ".voice-vad-deps",
 ):
     _build_packages = Path(SPECPATH) / _package_folder_name
     if _build_packages.is_dir():
@@ -100,16 +103,29 @@ except Exception as error:
 # could not compare fingerprints. Stop the build instead.
 try:
     import numpy
+    import onnxruntime
     import pyaudiowpatch
+    import process_audio_capture
+    import comtypes
+    from pycaw.pycaw import AudioUtilities
 
     if not hasattr(numpy, 'ndarray'):
         raise ImportError('NumPy is incomplete')
+    if not hasattr(onnxruntime, 'InferenceSession'):
+        raise ImportError('ONNX Runtime is incomplete')
     if not hasattr(pyaudiowpatch, 'PyAudio'):
         raise ImportError('PyAudioWPatch is incomplete')
+    if not hasattr(process_audio_capture, 'ProcessAudioCapture'):
+        raise ImportError('ProcessAudioCapture is incomplete')
+    if not hasattr(comtypes, 'CoInitialize'):
+        raise ImportError('Comtypes is incomplete')
+    if not hasattr(AudioUtilities, 'GetAllDevices'):
+        raise ImportError('Pycaw is incomplete')
 except Exception as error:
     raise SystemExit(
         'SMW Stream Tracker cannot be packaged without Windows music '
-        'identification support. Install NumPy and PyAudioWPatch for this '
+        'identification support. Install NumPy, ONNX Runtime, '
+        'PyAudioWPatch, ProcessAudioCapture, Pycaw, and Comtypes for this '
         'Python runtime '
         f'({type(error).__name__}: {error}).'
     ) from error
@@ -118,6 +134,14 @@ except Exception as error:
 webview_datas, webview_binaries, webview_hiddenimports = collect_all('webview')
 paramiko_datas, paramiko_binaries, paramiko_hiddenimports = collect_all('paramiko')
 pyaudio_datas, pyaudio_binaries, pyaudio_hiddenimports = collect_all('pyaudiowpatch')
+process_audio_datas, process_audio_binaries, process_audio_hiddenimports = collect_all(
+    'process_audio_capture'
+)
+onnxruntime_datas, onnxruntime_binaries, onnxruntime_hiddenimports = collect_all(
+    'onnxruntime'
+)
+pycaw_datas, pycaw_binaries, pycaw_hiddenimports = collect_all('pycaw')
+comtypes_datas, comtypes_binaries, comtypes_hiddenimports = collect_all('comtypes')
 
 
 a = Analysis(
@@ -127,6 +151,10 @@ a = Analysis(
         webview_binaries
         + paramiko_binaries
         + pyaudio_binaries
+        + process_audio_binaries
+        + onnxruntime_binaries
+        + pycaw_binaries
+        + comtypes_binaries
         + [('tools\\chromaprint\\fpcalc.exe', 'chromaprint')]
     ),
     datas=[
@@ -145,7 +173,6 @@ a = Analysis(
             'streamdeck',
         ),
         ('tools\\streamerbot_reward_setup.ps1', 'tools'),
-        ('music_index\\bundled', 'music_index\\bundled'),
         (
             'experiments\\mister_instant_states\\Main_MiSTer_20260707'
             '\\bin_experimental\\MiSTer-SMW-Virtual-States',
@@ -182,11 +209,15 @@ a = Analysis(
         ('installer\\THIRD_PARTY_NOTICE.fr.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.de.txt', 'installer'),
         ('installer\\THIRD_PARTY_NOTICE.pt-BR.txt', 'installer'),
-    ] + webview_datas + paramiko_datas + pyaudio_datas,
+    ] + webview_datas + paramiko_datas + pyaudio_datas + process_audio_datas + onnxruntime_datas + pycaw_datas + comtypes_datas,
     hiddenimports=(
         webview_hiddenimports
         + paramiko_hiddenimports
         + pyaudio_hiddenimports
+        + process_audio_hiddenimports
+        + onnxruntime_hiddenimports
+        + pycaw_hiddenimports
+        + comtypes_hiddenimports
         + ['numpy']
     ),
     hookspath=[],

@@ -137,6 +137,91 @@ class SmwcMusicIndexTests(unittest.TestCase):
             self.assertGreaterEqual(matches[0]["confidence"], 55.0)
             self.assertAlmostEqual(matches[0]["offset_seconds"], 8.0, delta=0.5)
 
+    def test_music_focus_filter_suppresses_short_voice_and_effect_bursts(self):
+        np = music_index._numpy()
+        sample_rate = music_index.TARGET_SAMPLE_RATE
+        seconds = 6.0
+        times = np.arange(round(seconds * sample_rate), dtype=np.float32) / sample_rate
+        music = (
+            0.28 * np.sin(2.0 * np.pi * 220.0 * times)
+            + 0.17 * np.sin(2.0 * np.pi * 330.0 * times)
+        ).astype(np.float32)
+        contaminated = music.copy()
+        rng = np.random.default_rng(712)
+        burst_ranges = []
+        for start_seconds in (1.25, 2.85, 4.45):
+            start = round(start_seconds * sample_rate)
+            stop = start + round(0.16 * sample_rate)
+            burst_ranges.append((start, stop))
+            envelope = np.hanning((stop - start) * 2)[: stop - start]
+            # A loud broadband burst plus a short voice-like formant stack.
+            local_times = times[start:stop]
+            effect = (
+                0.72 * rng.uniform(-1.0, 1.0, stop - start)
+                + 0.40 * np.sin(2.0 * np.pi * 720.0 * local_times)
+                + 0.30 * np.sin(2.0 * np.pi * 1180.0 * local_times)
+            )
+            contaminated[start:stop] += effect * envelope
+
+        focused = music_index._music_focused_samples(contaminated, sample_rate)
+
+        clean_mask = np.ones(contaminated.size, dtype=bool)
+        burst_mask = np.zeros(contaminated.size, dtype=bool)
+        for start, stop in burst_ranges:
+            burst_mask[start:stop] = True
+            clean_mask[max(0, start - 200): min(clean_mask.size, stop + 200)] = False
+        input_burst_ratio = np.sqrt(np.mean(contaminated[burst_mask] ** 2)) / np.sqrt(
+            np.mean(contaminated[clean_mask] ** 2)
+        )
+        focused_burst_ratio = np.sqrt(np.mean(focused[burst_mask] ** 2)) / np.sqrt(
+            np.mean(focused[clean_mask] ** 2)
+        )
+        self.assertLess(focused_burst_ratio, input_burst_ratio * 0.78)
+        self.assertGreater(np.sqrt(np.mean(focused[clean_mask] ** 2)), 0.08)
+
+    def test_music_heavy_windows_skip_speech_noise_and_silence(self):
+        np = music_index._numpy()
+        sample_rate = music_index.TARGET_SAMPLE_RATE
+        seconds = 18.0
+        times = np.arange(round(seconds * sample_rate), dtype=np.float32) / sample_rate
+        recording = np.zeros(times.size, dtype=np.float32)
+
+        noisy_stop = round(5.0 * sample_rate)
+        rng = np.random.default_rng(83)
+        recording[:noisy_stop] = (
+            0.28 * np.sin(2.0 * np.pi * 160.0 * times[:noisy_stop])
+            + 0.24 * np.sin(2.0 * np.pi * 840.0 * times[:noisy_stop])
+            + 0.18 * rng.uniform(-1.0, 1.0, noisy_stop)
+        )
+        # Speech-like syllable envelopes create abrupt voice-dominant bursts.
+        recording[:noisy_stop] *= (
+            0.15
+            + 0.85
+            * (np.sin(2.0 * np.pi * 3.7 * times[:noisy_stop]) > 0).astype(
+                np.float32
+            )
+        )
+
+        music_start = noisy_stop
+        music_stop = round(13.5 * sample_rate)
+        music_times = times[music_start:music_stop]
+        recording[music_start:music_stop] = (
+            0.31 * np.sin(2.0 * np.pi * 220.0 * music_times)
+            + 0.20 * np.sin(2.0 * np.pi * 330.0 * music_times)
+            + 0.12 * np.sin(2.0 * np.pi * 440.0 * music_times)
+        )
+
+        ranges = music_index._music_heavy_ranges(recording, sample_rate)
+
+        self.assertGreaterEqual(len(ranges), 1)
+        strongest = max(ranges, key=lambda item: item["score"])
+        strongest_center_seconds = (
+            strongest["start_sample"] + strongest["stop_sample"]
+        ) / (2.0 * sample_rate)
+        self.assertGreater(strongest_center_seconds, 5.0)
+        self.assertLess(strongest_center_seconds, 13.8)
+        self.assertLess(strongest["speech_penalty"], 0.35)
+
     def test_manifest_and_validation_report_index_contents(self):
         with tempfile.TemporaryDirectory() as temp_folder:
             folder = Path(temp_folder)
@@ -437,6 +522,360 @@ class SmwcMusicIndexTests(unittest.TestCase):
             self.assertGreaterEqual(matches[0]["confidence"], 75.0)
             self.assertLess(matches[0]["confidence"], 90.0)
 
+    def test_confirmed_capture_teaches_the_local_adaptive_model(self):
+        with tempfile.TemporaryDirectory() as temp_folder:
+            folder = Path(temp_folder)
+            database = folder / "catalog.sqlite3"
+            learned_model = folder / "learned.sqlite3"
+            music_index.initialize_music_index(database, index_version="complete")
+            reference = [
+                ((position * 2_654_435_761) ^ (position << 9)) & 0xFFFFFFFF
+                for position in range(650)
+            ]
+            track_key = music_index.stable_track_key("learned", "learned.spc")
+            music_index.add_track_fingerprints(
+                database,
+                {
+                    "track_key": track_key,
+                    "submission_id": "learned",
+                    "spc_filename": "learned.spc",
+                    "title": "Learned Song",
+                    "author": "Adaptive Composer",
+                },
+                [(64_000, 0)],
+                reference,
+            )
+            confirmed_capture = [
+                value ^ (0x7 if position % 9 == 0 else 0)
+                for position, value in enumerate(reference[140:360])
+            ]
+            stats = music_index.learn_confirmed_music_match(
+                learned_model,
+                {
+                    "track_key": track_key,
+                    "submission_id": "learned",
+                    "title": "Learned Song",
+                    "artist": "Adaptive Composer",
+                },
+                confirmed_capture,
+                source_token="capture-card-1",
+            )
+            query = [
+                value ^ (0x3 if position % 7 == 0 else 0)
+                for position, value in enumerate(reference[175:335])
+            ]
+
+            matches = music_index.match_learned_chromaprint_values(
+                learned_model,
+                database,
+                query,
+                source_token="capture-card-1",
+            )
+
+            self.assertEqual(stats, {"sample_count": 1, "track_count": 1})
+            self.assertTrue(matches)
+            self.assertEqual(matches[0]["submission_id"], "learned")
+            self.assertIn("AI learning", matches[0]["match_strategy"])
+            self.assertGreater(matches[0]["confidence"], 85.0)
+
+    def test_unrelated_audio_is_not_forced_into_a_learned_match(self):
+        with tempfile.TemporaryDirectory() as temp_folder:
+            folder = Path(temp_folder)
+            database = folder / "catalog.sqlite3"
+            learned_model = folder / "learned.sqlite3"
+            music_index.initialize_music_index(database, index_version="complete")
+            reference = [
+                ((position * 2_654_435_761) ^ (position << 9)) & 0xFFFFFFFF
+                for position in range(500)
+            ]
+            track_key = music_index.stable_track_key("one", "one.spc")
+            music_index.add_track_fingerprints(
+                database,
+                {
+                    "track_key": track_key,
+                    "submission_id": "one",
+                    "spc_filename": "one.spc",
+                    "title": "One Song",
+                },
+                [(64_000, 0)],
+                reference,
+            )
+            music_index.learn_confirmed_music_match(
+                learned_model,
+                {"track_key": track_key, "submission_id": "one"},
+                reference[100:300],
+                source_token="capture-card-1",
+            )
+            unrelated = [
+                ((position * 2_246_822_519) ^ 0xA5A55A5A) & 0xFFFFFFFF
+                for position in range(180)
+            ]
+
+            self.assertEqual(
+                music_index.match_learned_chromaprint_values(
+                    learned_model,
+                    database,
+                    unrelated,
+                    source_token="capture-card-1",
+                ),
+                [],
+            )
+
+    def test_community_contribution_contains_only_anonymous_fingerprints(self):
+        track_key = music_index.stable_track_key("shared", "shared.spc")
+        values = [
+            ((position * 2_654_435_761) ^ (position << 9)) & 0xFFFFFFFF
+            for position in range(180)
+        ]
+        contribution = music_index.community_learning_contribution(
+            {
+                "track_key": track_key,
+                "submission_id": "shared",
+                "confidence_value": 94.0,
+                "title": "Must Not Be Uploaded",
+                "artist": "Must Not Be Uploaded",
+            },
+            values,
+            client_id_hash="a" * 64,
+            catalog_version="2026-08-27",
+            app_version="2.2.0",
+        )
+
+        self.assertTrue(contribution["user_confirmed"])
+        self.assertEqual(contribution["track_key"], track_key)
+        self.assertEqual(contribution["value_count"], len(values))
+        self.assertNotIn("title", contribution)
+        self.assertNotIn("artist", contribution)
+        self.assertNotIn("audio", contribution)
+        self.assertNotIn("username", contribution)
+        with self.assertRaises(music_index.MusicIndexError):
+            music_index.community_learning_contribution(
+                {
+                    "track_key": track_key,
+                    "submission_id": "shared",
+                    "confidence_value": 60.0,
+                },
+                values,
+                client_id_hash="a" * 64,
+                catalog_version="test",
+                app_version="test",
+            )
+
+    def test_cloud_landmark_lookup_sends_fingerprints_and_normalizes_result(self):
+        values = [
+            ((position * 2_654_435_761) ^ (position << 9)) & 0xFFFFFFFF
+            for position in range(160)
+        ]
+        requests = []
+
+        def fake_api(endpoint, route, **options):
+            requests.append((endpoint, route, options))
+            return {
+                "ok": True,
+                "matches": [
+                    {
+                        "track_id": 77,
+                        "track_key": "a" * 64,
+                        "submission_id": "9911",
+                        "spc_filename": "song.spc",
+                        "title": "  Cloud   Song  ",
+                        "artist": "Porter",
+                        "submission_url": "https://www.smwcentral.net/?p=section&id=9911",
+                        "download_url": "https://www.smwcentral.net/download/9911",
+                        "confidence": 96.35,
+                        "audio_distance": 0.07123,
+                        "matching_frames": 103,
+                        "offset_seconds": 4.875,
+                    }
+                ],
+            }
+
+        with mock.patch.object(
+            music_index,
+            "_community_api_json",
+            side_effect=fake_api,
+        ):
+            matches = music_index.match_cloud_chromaprint_values(
+                "https://recognition.example.test",
+                values,
+                limit=2,
+            )
+
+        self.assertEqual(matches[0]["title"], "Cloud Song")
+        self.assertEqual(
+            matches[0]["match_strategy"],
+            "Cloud landmark fingerprints with time alignment",
+        )
+        self.assertEqual(requests[0][1], "v1/music/match")
+        payload = requests[0][2]["payload"]
+        self.assertEqual(payload["catalog"], "smwcentral")
+        self.assertEqual(payload["fingerprint_values"], values)
+        self.assertNotIn("audio", payload)
+
+    def test_cloud_catalog_status_is_validated_without_downloading_an_index(self):
+        with mock.patch.object(
+            music_index,
+            "_community_api_json",
+            return_value={
+                "ok": True,
+                "catalog": "smwcentral",
+                "index_version": "20260829212637",
+                "catalog_updated_at": "2026-08-29T21:26:37Z",
+                "track_count": "12353",
+                "fingerprints_only": True,
+                "raw_audio_collected": False,
+            },
+        ) as api:
+            status = music_index.fetch_cloud_music_catalog_status(
+                "https://recognition.example.test"
+            )
+
+        self.assertTrue(status["cloud_only"])
+        self.assertEqual(status["track_count"], 12353)
+        self.assertFalse(status["raw_audio_collected"])
+        self.assertEqual(api.call_args.args[1], "v1/music/catalog")
+
+    def test_cloud_only_match_does_not_require_or_fall_back_to_local_index(self):
+        values = [position * 17 for position in range(180)]
+        cloud_result = {
+            "track_id": 1,
+            "track_key": "b" * 64,
+            "submission_id": "9911",
+            "spc_filename": "cloud.spc",
+            "title": "Cloud Only Song",
+            "artist": "Porter",
+            "submission_url": "https://www.smwcentral.net/?p=section&id=9911",
+            "download_url": "https://www.smwcentral.net/download/9911",
+            "confidence": 98.0,
+            "match_strategy": "Cloud landmark fingerprints with time alignment",
+        }
+        samples = [0.0] * 4096
+        with (
+            mock.patch.object(
+                music_index,
+                "_pcm16_channel_variants",
+                return_value=([("mono", samples)], 22050),
+            ),
+            mock.patch.object(
+                music_index,
+                "_music_focused_samples",
+                return_value=samples,
+            ),
+            mock.patch.object(
+                music_index,
+                "_music_spectral_flatness",
+                return_value=0.1,
+            ),
+            mock.patch.object(
+                music_index,
+                "chromaprint_fingerprint_samples",
+                return_value=values,
+            ),
+            mock.patch.object(
+                music_index,
+                "match_cloud_chromaprint_values",
+                return_value=[cloud_result],
+            ) as cloud_match,
+            mock.patch.object(
+                music_index,
+                "validate_music_index",
+                side_effect=AssertionError("local index must not be opened"),
+            ),
+        ):
+            matches = music_index.match_wav(
+                Path("missing-local-index.sqlite3"),
+                Path("temporary-sample.wav"),
+                recognition_api_url="https://recognition.example.test",
+                cloud_only=True,
+            )
+
+        self.assertEqual(matches[0]["title"], "Cloud Only Song")
+        cloud_match.assert_called_once()
+
+    def test_approved_community_model_syncs_and_matches_locally(self):
+        with tempfile.TemporaryDirectory() as temp_folder:
+            folder = Path(temp_folder)
+            catalog = folder / "catalog.sqlite3"
+            community_model = folder / "community.sqlite3"
+            music_index.initialize_music_index(catalog, index_version="complete")
+            reference = [
+                ((position * 2_654_435_761) ^ (position << 9)) & 0xFFFFFFFF
+                for position in range(520)
+            ]
+            track_key = music_index.stable_track_key("shared", "shared.spc")
+            music_index.add_track_fingerprints(
+                catalog,
+                {
+                    "track_key": track_key,
+                    "submission_id": "shared",
+                    "spc_filename": "shared.spc",
+                    "title": "Community Song",
+                    "author": "Community Composer",
+                },
+                [(64_000, 0)],
+                reference,
+            )
+            confirmed = reference[120:340]
+            contribution = music_index.community_learning_contribution(
+                {
+                    "track_key": track_key,
+                    "submission_id": "shared",
+                    "confidence_value": 96.0,
+                },
+                confirmed,
+                client_id_hash="b" * 64,
+                catalog_version="complete",
+                app_version="test",
+            )
+            approved_example = {
+                "id": 7,
+                "track_key": contribution["track_key"],
+                "submission_id": contribution["submission_id"],
+                "fingerprint_sha256": contribution["fingerprint_sha256"],
+                "fingerprint_base64": contribution["fingerprint_base64"],
+                "value_count": contribution["value_count"],
+            }
+
+            def fake_api(_endpoint, route, **_options):
+                if route == "v1/model/manifest":
+                    return {
+                        "schema_version": 1,
+                        "model_revision": 4,
+                        "total_examples": 1,
+                    }
+                return {
+                    "schema_version": 1,
+                    "examples": [approved_example],
+                    "next_cursor": None,
+                }
+
+            with mock.patch.object(
+                music_index,
+                "_community_api_json",
+                side_effect=fake_api,
+            ):
+                details = music_index.sync_community_learning_model(
+                    "https://community.example.test",
+                    community_model,
+                )
+
+            query = [
+                value ^ (0x3 if position % 11 == 0 else 0)
+                for position, value in enumerate(reference[150:320])
+            ]
+            matches = music_index.match_learned_chromaprint_values(
+                community_model,
+                catalog,
+                query,
+                source_token="different-capture-card",
+            )
+
+            self.assertTrue(details["updated"])
+            self.assertEqual(details["model_revision"], 4)
+            self.assertEqual(details["sample_count"], 1)
+            self.assertTrue(matches)
+            self.assertEqual(matches[0]["submission_id"], "shared")
+
     def test_incremental_update_replaces_only_changed_submissions(self):
         with tempfile.TemporaryDirectory() as temp_folder:
             folder = Path(temp_folder)
@@ -632,6 +1071,56 @@ class SmwcMusicIndexTests(unittest.TestCase):
             self.assertEqual(matches[0]["submission_id"], "correct")
             self.assertEqual(matches[0]["matching_hashes"], 5)
             self.assertEqual(matches[0]["query_hashes"], 5)
+
+    def test_multi_section_chromaprint_requires_two_matching_sections(self):
+        correct = {
+            "submission_id": "correct",
+            "title": "Correct Track",
+            "confidence": 88.0,
+        }
+        wrong = {
+            "submission_id": "wrong",
+            "title": "Wrong Track",
+            "confidence": 92.0,
+        }
+        query = list(range(
+            music_index.CHROMAPRINT_SECTION_MINIMUM_TOTAL_VALUES + 12
+        ))
+        with mock.patch.object(
+            music_index,
+            "match_chromaprint_values",
+            side_effect=[[correct], [wrong], [correct]],
+        ):
+            matches = music_index.match_chromaprint_sections(
+                Path("unused.sqlite3"),
+                query,
+            )
+
+        self.assertTrue(matches)
+        self.assertEqual(matches[0]["submission_id"], "correct")
+        self.assertEqual(matches[0]["matching_sections"], 2)
+        self.assertEqual(matches[0]["checked_sections"], 3)
+        self.assertIn("intro/middle/loop", matches[0]["match_strategy"])
+
+    def test_multi_section_chromaprint_rejects_three_different_songs(self):
+        query = list(range(
+            music_index.CHROMAPRINT_SECTION_MINIMUM_TOTAL_VALUES + 12
+        ))
+        section_results = [
+            [{"submission_id": submission, "confidence": 90.0}]
+            for submission in ("intro", "middle", "loop")
+        ]
+        with mock.patch.object(
+            music_index,
+            "match_chromaprint_values",
+            side_effect=section_results,
+        ):
+            matches = music_index.match_chromaprint_sections(
+                Path("unused.sqlite3"),
+                query,
+            )
+
+        self.assertEqual(matches, [])
 
 
 if __name__ == "__main__":

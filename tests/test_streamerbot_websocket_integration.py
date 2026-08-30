@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -691,6 +693,8 @@ class StreamerBotWebSocketIntegrationTests(unittest.TestCase):
         app.music_identifier_streamerbot_request = None
         app.music_identifier_thread = None
         app.music_identifier_sources = {"Game Audio": {"token": "game"}}
+        app.root = MagicMock()
+        app.root.after.return_value = "monitor-1"
         app.music_identifier_source_var = MagicMock()
         app.music_identifier_source_var.get.return_value = "Game Audio"
         app._current_tracker_music_context_key = MagicMock(
@@ -707,8 +711,40 @@ class StreamerBotWebSocketIntegrationTests(unittest.TestCase):
         self.assertTrue(started)
         app._start_music_identifier.assert_called_once_with()
         self.assertIn(
-            "fast channel-point reward replies",
+            "reply immediately",
             app._set_streamerbot_control_status.call_args.args[0],
+        )
+
+    def test_fresh_background_song_cache_avoids_another_audio_capture(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        app.config = {
+            "streamerbot_enabled": True,
+            "streamerbot_song_reward_enabled": True,
+        }
+        app.root = MagicMock()
+        app.root.after.return_value = "monitor-2"
+        app.music_identifier_prefetch_after_id = "prefetch-1"
+        app.music_identifier_prefetch_session_id = "level-session"
+        app._current_tracker_music_context_key = MagicMock(
+            return_value=(
+                "rom|translevel:1|room:2|music:3|session:level-session"
+            )
+        )
+        app._current_level_song_result = MagicMock(
+            return_value={
+                "title": "A Song",
+                "_recognized_at_epoch": time.time(),
+            }
+        )
+        app._start_music_identifier = MagicMock(return_value=True)
+
+        cached = app._prefetch_streamerbot_current_level_song()
+
+        self.assertTrue(cached)
+        app._start_music_identifier.assert_not_called()
+        app.root.after.assert_called_once_with(
+            self.tracker.MUSIC_IDENTIFIER_BACKGROUND_MONITOR_MS,
+            app._prefetch_streamerbot_current_level_song,
         )
 
     def test_song_match_can_be_saved_to_redemption_memory_context(self):
@@ -736,6 +772,78 @@ class StreamerBotWebSocketIntegrationTests(unittest.TestCase):
             "new-room|translevel:2|room:20|music:8",
             app.music_identifier_context_results,
         )
+
+    def test_confirmed_song_persists_without_the_level_session_token(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        app.config = {}
+        app.music_identifier_confirmed_level_songs = {}
+        app._current_tracker_music_context_key = MagicMock(return_value="")
+        context = (
+            "sha256:abc|translevel:2|room:20|music:8|session:live-123"
+        )
+        result = {
+            "title": "Stickerbrush Symphony",
+            "smwcentral_url": "https://www.smwcentral.net/?id=1",
+            "_tracker_context_key": context,
+        }
+
+        with patch.object(self.tracker, "save_config") as save:
+            confirmed = app._remember_confirmed_level_song(result)
+
+        stable = "sha256:abc|translevel:2|room:20|music:8"
+        self.assertTrue(confirmed["_confirmed_by_user"])
+        self.assertIn(stable, app.music_identifier_confirmed_level_songs)
+        self.assertIn(
+            stable,
+            app.config["music_identifier_confirmed_level_songs"],
+        )
+        save.assert_called_once_with(app.config)
+
+    def test_new_level_session_reuses_a_confirmed_rom_level_song(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        stable = "sha256:abc|translevel:2|room:20|music:8"
+        live = stable + "|session:new-session"
+        app._current_tracker_music_context_key = MagicMock(return_value=live)
+        app.music_identifier_context_results = {}
+        app.music_identifier_last_result = {}
+        app.music_identifier_confirmed_level_songs = {
+            stable: {
+                "title": "Stickerbrush Symphony",
+                "smwcentral_url": "https://www.smwcentral.net/?id=1",
+                "_confirmed_by_user": True,
+            }
+        }
+
+        result = app._current_level_song_result()
+
+        self.assertEqual(result["title"], "Stickerbrush Symphony")
+        self.assertTrue(result["_from_confirmed_level_memory"])
+        self.assertEqual(result["_tracker_context_key"], live)
+        self.assertIn(live, app.music_identifier_context_results)
+
+    def test_music_context_prefers_the_local_rom_sha256(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        app.music_identifier_rom_hash_cache = {}
+        with tempfile.TemporaryDirectory() as temp_folder:
+            rom_path = Path(temp_folder) / "Example.sfc"
+            rom_path.write_bytes(b"SNES ROM CONTENT")
+            expected = self.tracker.file_sha256(rom_path)
+            app.current_hack_record = {"local_rom_path": str(rom_path)}
+            app.worker = MagicMock(
+                current_rom_key="example",
+                current_time_key="",
+                previous_rom_path=str(rom_path),
+                current_translevel=2,
+                level_id=2,
+                last_gameplay_level_number=20,
+                current_music_track=8,
+                streamerbot_level_session_id="live",
+            )
+
+            context = app._current_tracker_music_context_key()
+
+        self.assertTrue(context.startswith(f"sha256:{expected}|"))
+        self.assertTrue(context.endswith("|session:live"))
 
     def test_live_song_lookup_uses_memory_context_and_audio_identifier(self):
         app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)

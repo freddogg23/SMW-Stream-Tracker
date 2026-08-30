@@ -1,11 +1,7 @@
-Release 2.2.0
+Release 2.2.1
 
-* Adds Music Identifier & Radio with private local SMW Central audio matching, early-match results, responsive cancellation, and automatic index checks every 30 minutes while the app is open.
-* Adds a polished in-app SPC player with play/pause, replay, looping, next track, seeking, volume, collapse, scrolling track text, and smooth dragging.
-* Adds an SMW Central Radio browser source for OBS that shows the current title, artist, elapsed time, duration, equalizer, and progress while following the in-app SPC player.
-* Adds one-click Streamer.bot setup for the What Song Is Playing? channel-point reward, including scene restriction, reward cost, cooldown, current-level song lookup, and chat links.
-* Adds an in-app Streamer.bot installer and improves compatibility with existing rewards and current Streamer.bot navigation.
-* Caches the live ROM, level, room, and music context so repeat redemptions answer quickly while a changed level or song receives a fresh result.
-* Adds smoother anti-aliased controls, notification dots, music artwork, progress scrubbers, and SPC-player movement throughout the Windows interface.
-* Improves clean shutdown and live tracker recovery so intentionally closing the app does not trigger a false crash-recovery prompt.
+* Refreshes application-audio sources from the Apps section of Windows Volume Mixer across every active playback output, including applications routed to secondary devices.
+* Performs a fresh source scan on every click, prioritizes active sessions, groups duplicate processes, and keeps the interface responsive while scanning.
+* Uses the online shared SMW Central fingerprint catalog without bundling or maintaining a full offline music index; new and changed submissions refresh in the cloud.
+* Improves repeat song identification, voice-aware listening, community song result wording, and rapid consecutive death counting.
 * Publishes Windows application, installer, updater, source, and checksums only. macOS remains untested and is not included.

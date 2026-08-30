@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 2, 0, 0),
-    prodvers=(2, 2, 0, 0),
+    filevers=(2, 2, 1, 0),
+    prodvers=(2, 2, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -17,12 +17,12 @@ VSVersionInfo(
         [
           StringStruct(u'CompanyName', u'FredDOGG23'),
           StringStruct(u'FileDescription', u'SMW Stream Tracker'),
-          StringStruct(u'FileVersion', u'2.2.0'),
+          StringStruct(u'FileVersion', u'2.2.1'),
           StringStruct(u'InternalName', u'SMWStreamTracker'),
           StringStruct(u'LegalCopyright', u'Copyright (c) 2026 FredDOGG23'),
           StringStruct(u'OriginalFilename', u'SMWStreamTracker.exe'),
           StringStruct(u'ProductName', u'SMW Stream Tracker'),
-          StringStruct(u'ProductVersion', u'2.2.0')
+          StringStruct(u'ProductVersion', u'2.2.1')
         ]
       )
     ]),

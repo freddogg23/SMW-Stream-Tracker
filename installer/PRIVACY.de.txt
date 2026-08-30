@@ -13,6 +13,16 @@ Kommunikation mit diesen Werkzeugen oder MiSTer, den prüfsummengeprüften
 snid-Download, die SSH/SFTP-Einrichtung des MiSTer und das optionale
 Microsoft-Forms-Formular.
 
+Der Music Identifier zeichnet die ausgewählte Quelle nur vorübergehend lokal
+auf und löscht die Datei nach dem Abgleich. Unverarbeitete Audiodaten verlassen
+den Computer nie. An den gemeinsamen Erkennungsdienst wird ausschließlich eine
+kurze Folge nicht rekonstruierbarer akustischer 32-Bit-Fingerabdruckwerte
+gesendet. Der Dienst liefert passende Metadaten aus dem SMW-Central-Katalog
+zurück. ROM-Daten, Benutzernamen, Twitch-Daten und Dateipfade werden nicht
+übermittelt. Der vollständige Musikkatalog wird weder heruntergeladen noch
+offline gespeichert. Die optionalen Community-Songergebnisse übertragen einen
+Fingerabdruck erst, nachdem der Benutzer das richtige Ergebnis bestätigt hat.
+
 Feedback und Vorschläge öffnet ein öffentliches Microsoft-Forms-Formular in
 einem integrierten Webfenster von SMW Stream Tracker. Ist diese Webansicht nicht
 verfügbar, wird dasselbe Formular im Standardbrowser geöffnet. Das Formular

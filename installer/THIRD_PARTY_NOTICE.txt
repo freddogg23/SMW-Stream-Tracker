@@ -25,6 +25,9 @@ Project and license information:
 * pystray: https://github.com/moses-palmer/pystray
 * pywebview: https://pywebview.flowrl.com/
 * PyAudioWPatch (Windows audio capture): https://github.com/s0d3s/PyAudioWPatch
+* ProcessAudioCapture (per-application Windows audio capture): https://github.com/tsubome/ProcessAudioCapture
+* Silero VAD (offline voice detection model): https://github.com/snakers4/silero-vad
+* ONNX Runtime (local machine-learning inference): https://onnxruntime.ai/
 * NumPy (local SMW Central music fingerprints): https://numpy.org/
 * Chromaprint/fpcalc (local audio fingerprinting): https://acoustid.org/chromaprint
 * pyobjc (Mac): https://pyobjc.readthedocs.io/

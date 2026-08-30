@@ -13,6 +13,16 @@ comunicación local con esas herramientas o MiSTer, la descarga verificada de
 snid y la configuración SSH/SFTP de MiSTer, y el formulario opcional de
 Microsoft Forms.
 
+Music Identifier graba temporalmente la fuente seleccionada en un archivo
+local y lo elimina después de la comparación. El audio original nunca sale del
+equipo. La aplicación solo envía al servicio compartido de reconocimiento una
+secuencia corta de valores de huella acústica de 32 bits no reconstruibles. El
+servicio devuelve los metadatos coincidentes del catálogo de SMW Central. No se
+incluyen datos de ROM, nombres de usuario, datos de Twitch ni rutas de archivos.
+El catálogo musical completo no se descarga ni se almacena sin conexión. Los
+Resultados de canciones de la comunidad opcionales solo suben una huella después
+de que el usuario confirme el resultado correcto.
+
 Comentarios y sugerencias abre un formulario público de Microsoft Forms dentro
 de una ventana web integrada de SMW Stream Tracker. Si la vista web integrada
 no está disponible, se abre el mismo formulario en el navegador predeterminado. El formulario no

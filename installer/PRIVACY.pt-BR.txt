@@ -12,6 +12,16 @@ downloads opcionais do SNI, QUsb2Snes, RetroArch e núcleos Libretro, comunicaç
 local com essas ferramentas ou o MiSTer, download verificado do snid,
 configuração SSH/SFTP do MiSTer e o formulário opcional do Microsoft Forms.
 
+O Music Identifier grava temporariamente a fonte selecionada em um arquivo
+local e o exclui após a comparação. O áudio original nunca sai do computador.
+O aplicativo envia ao serviço compartilhado de reconhecimento somente uma
+sequência curta de valores de impressão digital acústica de 32 bits que não
+permitem reconstruir o áudio. O serviço retorna os metadados correspondentes do
+catálogo do SMW Central. Dados de ROM, nomes de usuário, dados da Twitch e
+caminhos de arquivos não são enviados. O catálogo musical completo não é
+baixado nem armazenado offline. Os Resultados de músicas da comunidade opcionais
+enviam uma impressão digital somente após o usuário confirmar o resultado correto.
+
 Comentários e sugestões abre um formulário público do Microsoft Forms em uma
 janela web integrada do SMW Stream Tracker. Se essa visualização web não estiver
 disponível, o mesmo formulário será aberto no navegador padrão. O formulário

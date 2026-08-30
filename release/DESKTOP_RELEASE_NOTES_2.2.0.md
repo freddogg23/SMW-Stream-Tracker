@@ -5,11 +5,13 @@ Version 2.2.0 is a Windows-only music, Streamer.bot, and OBS radio release.
 ## Highlights
 
 - Adds **Music Identifier & Radio**. It listens through a selected Windows
-  audio source and matches the recording privately against the local SMW
-  Central music catalog; recordings never leave the computer. Early matching
-  makes good results appear sooner, Stop Listening responds immediately, and
-  the index checks for new or changed music every 30 minutes while the app is
-  open.
+  audio source and uses a shared, time-aligned fingerprint index covering all
+  12,328 indexed SMW Central tracks. Raw recordings never leave the computer;
+  only a compact non-reconstructive fingerprint is queried, and the full local
+  catalog remains available offline. Stop Listening responds immediately, and
+  the local index checks for new or changed music every 30 minutes while open,
+  and the shared cloud catalog refreshes automatically from the same verified
+  incremental release without uploading SPC files or recorded audio.
 - Adds a polished in-app **SPC Player** with play/pause, replay, highlighted
   looping, next track, smooth progress seeking, volume control, collapse,
   scrolling track text, and smoother dragging. The player follows songs opened

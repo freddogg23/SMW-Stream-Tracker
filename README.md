@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 2.2.0**
+**Version 2.2.1**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -10,12 +10,32 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
 
+## What’s new in v2.2.1
+
+- Refresh Sources now reads the **Apps** section of Windows Volume Mixer across
+  every active playback output. Applications routed to secondary devices—such
+  as Chrome on a RØDECaster Music output—now appear without changing the
+  default Windows output.
+- Refresh Sources performs a new scan every time it is clicked, prioritises
+  active audio sessions, groups duplicate processes into one friendly app
+  entry, and keeps the interface responsive while Windows is scanned.
+- Music matching now uses the online shared SMW Central fingerprint catalog;
+  the desktop release no longer includes or maintains a full offline music
+  index. New and changed submissions are refreshed in the cloud.
+- Improves repeat song identification, voice-aware listening, community song
+  result wording, and rapid consecutive death counting.
+
+This is a Windows-only release. No macOS artifacts are published because the
+macOS build has not been tested.
+
 ## What’s new in v2.2.0
 
-- Adds **Music Identifier & Radio** with private local SMW Central audio
-  matching. It can listen through a capture card, microphone, or Windows
-  system-audio source, returns confident matches early, stops immediately when
-  cancelled, and checks for new or changed music every 30 minutes while open.
+- Adds **Music Identifier & Radio** with a shared, time-aligned fingerprint
+  index for all 12,328 indexed SMW Central tracks. It can listen through a
+  capture card, microphone, or selected Windows application; raw audio never
+  leaves the computer, and the complete local catalog remains available
+  offline. It stops immediately when cancelled and checks locally for new or
+  changed music every 30 minutes while open.
 - Adds a polished in-app **SPC Player** with play/pause, replay, highlighted
   looping, next track, progress seeking, volume, collapse, scrolling track
   text, anti-aliased controls, and smoother dragging.

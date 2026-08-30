@@ -12,6 +12,17 @@ téléchargements facultatifs de SNI, QUsb2Snes, RetroArch et des cœurs Libretr
 communication locale avec ces outils ou MiSTer, téléchargement vérifié de snid,
 configuration SSH/SFTP du MiSTer et formulaire Microsoft Forms facultatif.
 
+Music Identifier enregistre temporairement la source sélectionnée dans un
+fichier local, puis le supprime après la comparaison. L’audio brut ne quitte
+jamais l’ordinateur. L’application envoie uniquement au service de
+reconnaissance partagé une courte suite de valeurs d’empreinte acoustique
+32 bits non reconstructibles. Le service renvoie les métadonnées correspondantes
+du catalogue SMW Central. Aucune donnée de ROM, aucun nom d’utilisateur, aucune
+donnée Twitch et aucun chemin de fichier ne sont transmis. Le catalogue musical
+complet n’est ni téléchargé ni stocké hors connexion. Les Résultats musicaux de
+la communauté facultatifs ne téléversent une empreinte qu’après confirmation
+du bon résultat.
+
 Commentaires et suggestions ouvre un formulaire Microsoft Forms public dans
 une fenêtre web intégrée de SMW Stream Tracker. Si cette vue web est indisponible,
 le même formulaire s’ouvre dans le navigateur par défaut. Le formulaire ne

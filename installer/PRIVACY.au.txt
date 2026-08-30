@@ -13,7 +13,16 @@ The app uses the network only for features you request or enable:
 * Optional installer downloads for SNI, QUsb2Snes, RetroArch, and Libretro cores.
 * Local communication with SNI, QUsb2Snes, FXPAK Pro, RetroArch, or MiSTer.
 * Optional checksum-verified snid download and SSH/SFTP setup on your MiSTer.
+* SMW Central music recognition through the shared fingerprint catalogue.
 * The optional Microsoft Forms feedback page you choose to open.
+
+Music Identifier records the source you pick to a temporary local file and
+deletes it after matching. Raw audio never leaves your computer. The app sends
+only a short sequence of non-reconstructive 32-bit acoustic fingerprint values
+to the shared recognition service, which returns matching SMW Central catalogue
+details. ROM data, usernames, Twitch data, and file paths are not included. The
+full music catalogue is not downloaded or stored offline. Optional Community
+Song Results uploads only a fingerprint after you confirm the result.
 
 Feedback & Suggestions opens a public Microsoft Forms page inside a dedicated
 SMW Stream Tracker web-view window. If the embedded web view is unavailable,

@@ -15,6 +15,8 @@ concurrency:
 jobs:
   update-index:
     runs-on: windows-latest
+    env:
+      MUSIC_CATALOG_UPDATE_TOKEN: ${{ secrets.MUSIC_CATALOG_UPDATE_TOKEN }}
     steps:
       - name: Check out the Windows project
         uses: actions/checkout@v4
@@ -138,4 +140,14 @@ jobs:
             git commit -m "Update SMW Central music index manifest"
             git pull --rebase origin main
             git push origin HEAD:main
+          }
+
+      - name: Refresh the shared recognition catalog
+        if: ${{ env.MUSIC_CATALOG_UPDATE_TOKEN != '' && hashFiles('.music-index-work/SMWCentralMusicUpdate.sqlite3') != '' }}
+        shell: pwsh
+        run: |
+          python .\release_tools\push_cloud_music_update.py `
+            --update .music-index-work\SMWCentralMusicUpdate.sqlite3
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not publish the incremental shared recognition catalog."
           }

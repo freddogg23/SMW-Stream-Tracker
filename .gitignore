@@ -4,6 +4,12 @@ __pycache__/
 .mypy_cache/
 .pyinstaller-build/
 .build-packages/
+.app-audio-deps/
+.volume-mixer-deps/
+.voice-vad-deps/
+.build-packages-313/
+.test-deps-current/
+.test-exe-packages-v200/
 .music-build-packages/
 .music-build-packages313/
 .music-index-pilot/
@@ -72,3 +78,8 @@ _inspect_catalog_counts.py
 # Local Stream Deck packaging tools and generated installer artifacts.
 streamdeck/.build-tools/
 streamdeck/dist/
+community_learning_service/.generated/
+community_learning_service/.wrangler-dry-run/
+.shazam-cloud-build/
+.shazam-cloud-dist/
+.shazam-cloud-startup-profile/
