@@ -66,6 +66,113 @@ class MisterSupportTests(unittest.TestCase):
             self.tracker.DEFAULT_CONFIG["rom_builder_upload_to_mister"]
         )
 
+    def test_completed_levels_request_the_tracker_installed_sram_flush(self):
+        self.assertTrue(
+            self.tracker.DEFAULT_CONFIG["mister_save_sram_after_level"]
+        )
+        flush_source = inspect.getsource(
+            self.tracker.TrackerApp._flush_mister_sram_in_background
+        )
+        schedule_source = inspect.getsource(
+            self.tracker.TrackerApp._schedule_mister_sram_save_after_level
+        )
+        event_source = inspect.getsource(self.tracker.TrackerApp.process_events)
+        worker_source = inspect.getsource(
+            self.tracker.TrackerWorker.send_level_completion_event
+        )
+        self.assertIn("smw_sram_save", flush_source)
+        self.assertIn("/tmp/smw_sram_save_ack", flush_source)
+        self.assertIn('acknowledgement == "requested"', flush_source)
+        self.assertIn('event_data.get("mister_host")', schedule_source)
+        self.assertIn("mister_host=normalize_mister_host", worker_source)
+        self.assertIn('event_type == "level_complete"', event_source)
+        self.assertIn("_schedule_mister_sram_save_after_level", event_source)
+
+        main_source = (
+            MODULE_PATH.parent
+            / "experiments"
+            / "mister_instant_states"
+            / "Main_MiSTer_20260707"
+            / "input.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn('!strcmp(cmd, "smw_sram_save")', main_source)
+        self.assertIn('user_io_status_set("[13]", 1)', main_source)
+        self.assertIn('result = "saved\\n"', main_source)
+
+        user_io_source = (
+            MODULE_PATH.parent
+            / "experiments"
+            / "mister_instant_states"
+            / "Main_MiSTer_20260707"
+            / "user_io.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn("smw_sram_write_generation++", user_io_source)
+
+        binary_path = (
+            MODULE_PATH.parent
+            / "experiments"
+            / "mister_instant_states"
+            / "Main_MiSTer_20260707"
+            / "bin_experimental"
+            / "MiSTer-SMW-Virtual-States"
+        )
+        self.assertEqual(
+            hashlib.sha256(binary_path.read_bytes()).hexdigest(),
+            self.tracker.MISTER_VIRTUAL_STATES_BINARY_SHA256,
+        )
+
+    def test_sram_save_uses_the_console_that_emitted_the_completion(self):
+        class FakeRoot:
+            def __init__(self):
+                self.delay = None
+                self.callback = None
+
+            def after(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                return "save-after"
+
+            def after_cancel(self, _after_id):
+                return None
+
+        app = object.__new__(self.tracker.TrackerApp)
+        app.root = FakeRoot()
+        app.startup_check = False
+        app.config = {
+            "selected_platform": "MiSTer",
+            "mister_save_sram_after_level": True,
+            "mister_host": "192.168.50.116",
+            "mister_ssh_user": "root",
+            "mister_ssh_port": 22,
+            "active_mister_profile": "Saved console",
+        }
+        app.mister_sram_save_after_id = None
+        app.mister_sram_save_thread = None
+        app.mister_sram_save_generation = 0
+        app.mister_sram_save_last_requested_at = 0.0
+        app.mister_sram_save_target = {}
+
+        app._schedule_mister_sram_save_after_level(
+            {
+                "mister_host": "192.168.50.11",
+                "mister_ssh_user": "root",
+                "mister_ssh_port": 22,
+                "mister_profile": "Online console",
+            }
+        )
+
+        self.assertEqual(
+            app.mister_sram_save_target,
+            {
+                "host": "192.168.50.11",
+                "user": "root",
+                "port": 22,
+                "profile": "Online console",
+            },
+        )
+        self.assertEqual(app.mister_sram_save_after_id, "save-after")
+        self.assertIsNotNone(app.root.callback)
+
     def test_mister_rom_root_stays_inside_the_snes_sd_folder(self):
         self.assertEqual(
             self.tracker.normalize_mister_rom_root(

@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 2.2.1**
+**Version 2.2.2**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -9,6 +9,23 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
+
+## What’s new in v2.2.2
+
+- Adds a dedicated **Capture card / audio input** source mode for Music
+  Identifier so USB capture-card audio can be heard directly without requiring
+  an app to appear in Windows Volume Mixer.
+- Refresh Sources now discovers newly active capture devices and can offer OBS
+  as a fallback when capture audio exists only inside an OBS audio session.
+- Automatically saves MiSTer SNES SRAM after a confirmed completed level,
+  without opening the MiSTer menu. The request targets the exact online MiSTer
+  profile that produced the tracking event and verifies that the core actually
+  wrote the save data before reporting success.
+- Improves failure feedback for MiSTer background SRAM saves and keeps the
+  feature enabled by default under Platform settings.
+
+This is a Windows-only release. No macOS artifacts are published because the
+macOS build has not been tested.
 
 ## What’s new in v2.2.1
 

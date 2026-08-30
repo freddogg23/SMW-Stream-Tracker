@@ -46,6 +46,12 @@ static char core_path[1024] = {};
 static char rbf_path[1024] = {};
 
 static fileTYPE sd_image[16] = {};
+static volatile uint32_t smw_sram_write_generation = 0;
+
+uint32_t user_io_smw_sram_write_generation()
+{
+	return smw_sram_write_generation;
+}
 
 #define  SD_TYPE_DEFAULT 0
 #define  SD_TYPE_C64 1
@@ -3546,6 +3552,7 @@ void user_io_poll()
 						if (FileWriteAdv(&sd_image[disk], buffer[disk], sz))
 						{
 							sd_image[disk].size = sz;
+							if (is_snes() && disk == 0) smw_sram_write_generation++;
 						}
 					}
 					else
@@ -3568,7 +3575,10 @@ void user_io_poll()
 								sz = (rem >= sz) ? sz : (int)rem;
 							}
 
-							if (sz) FileWriteAdv(&sd_image[disk], buffer[disk], sz);
+							if (sz && FileWriteAdv(&sd_image[disk], buffer[disk], sz))
+							{
+								if (is_snes() && disk == 0) smw_sram_write_generation++;
+							}
 						}
 					}
 				}

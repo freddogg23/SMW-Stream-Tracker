@@ -1,20 +1,16 @@
 {
   "schema": 1,
-  "version": "2.2.0",
-  "release_date": "2026-08-27",
+  "version": "2.2.2",
+  "release_date": "2026-08-30",
   "notes": [
-    "Adds Music Identifier & Radio with private local SMW Central audio matching, early-match results, responsive cancellation, and automatic index checks every 30 minutes while the app is open.",
-    "Adds a polished in-app SPC player with play/pause, replay, looping, next track, seeking, volume, collapse, scrolling track text, and smooth dragging.",
-    "Adds an SMW Central Radio browser source for OBS that shows the current title, artist, elapsed time, duration, equalizer, and progress while following the in-app SPC player.",
-    "Adds one-click Streamer.bot setup for the What Song Is Playing? channel-point reward, including scene restriction, reward cost, cooldown, current-level song lookup, and chat links.",
-    "Adds an in-app Streamer.bot installer and improves compatibility with existing rewards and current Streamer.bot navigation.",
-    "Caches the live ROM, level, room, and music context so repeat redemptions answer quickly while a changed level or song receives a fresh result.",
-    "Adds smoother anti-aliased controls, notification dots, music artwork, progress scrubbers, and SPC-player movement throughout the Windows interface.",
-    "Improves clean shutdown and live tracker recovery so intentionally closing the app does not trigger a false crash-recovery prompt.",
+    "Adds a dedicated capture-card and audio-input source mode for Music Identifier, including direct USB capture-device discovery and an OBS fallback.",
+    "Refreshes capture sources from Windows each time so newly active devices can be selected without restarting the tracker.",
+    "Automatically saves MiSTer SNES SRAM after a confirmed completed level without opening the MiSTer menu.",
+    "Targets the exact online MiSTer profile that produced the tracking event and verifies that the SNES core actually wrote save data before reporting success.",
     "Publishes Windows application, installer, updater, source, and checksums only. macOS remains untested and is not included."
   ],
-  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v2.2.0/SMWStreamTracker_Update_2.2.0.exe",
+  "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v2.2.2/SMWStreamTracker_Update_2.2.2.exe",
   "verification": "sha256",
-  "sha256": "4f6f7fac04899d82fd850f94c65663fdf470bb00f113ccb4d562c431a4ef30e9",
-  "size": 93993586
+  "sha256": "087289bffa003eaaa38762e0f40d111c00812a90a91973bf7af955fef6d4954d",
+  "size": 111669847
 }

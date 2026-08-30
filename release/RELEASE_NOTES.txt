@@ -1,7 +1,7 @@
-Release 2.2.1
+Release 2.2.2
 
-* Refreshes application-audio sources from the Apps section of Windows Volume Mixer across every active playback output, including applications routed to secondary devices.
-* Performs a fresh source scan on every click, prioritizes active sessions, groups duplicate processes, and keeps the interface responsive while scanning.
-* Uses the online shared SMW Central fingerprint catalog without bundling or maintaining a full offline music index; new and changed submissions refresh in the cloud.
-* Improves repeat song identification, voice-aware listening, community song result wording, and rapid consecutive death counting.
+* Adds a dedicated capture-card and audio-input source mode for Music Identifier, including direct USB capture-device discovery and an OBS fallback.
+* Refreshes capture sources from Windows each time so newly active devices can be selected without restarting the tracker.
+* Automatically saves MiSTer SNES SRAM after a confirmed completed level without opening the MiSTer menu.
+* Targets the exact online MiSTer profile that produced the tracking event and verifies that the SNES core actually wrote save data before reporting success.
 * Publishes Windows application, installer, updater, source, and checksums only. macOS remains untested and is not included.

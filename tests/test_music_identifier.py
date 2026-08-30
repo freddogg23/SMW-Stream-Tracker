@@ -102,6 +102,46 @@ class FakeAudioModule:
     PyAudio = FakeAudio
 
 
+class MixedHostApiAudio(FakeAudio):
+    devices = (
+        {
+            "name": "Speakers (Game Audio)",
+            "maxInputChannels": 2,
+            "defaultSampleRate": 48000,
+            "hostApi": 0,
+            "isLoopbackDevice": True,
+        },
+        {
+            "name": "USB3HDCAP Audio",
+            "maxInputChannels": 2,
+            "defaultSampleRate": 48000,
+            "hostApi": 1,
+        },
+        {
+            "name": "Microphone",
+            "maxInputChannels": 1,
+            "defaultSampleRate": 48000,
+            "hostApi": 0,
+        },
+        {
+            "name": "Microphone",
+            "maxInputChannels": 1,
+            "defaultSampleRate": 48000,
+            "hostApi": 1,
+        },
+    )
+
+    def get_host_api_info_by_index(self, index):
+        return {
+            "name": "Windows WASAPI" if index == 0 else "Windows DirectSound"
+        }
+
+
+class MixedHostApiAudioModule:
+    paInt16 = 8
+    PyAudio = MixedHostApiAudio
+
+
 class FakeAudioProcess:
     def __init__(self, pid, name, window_title):
         self.pid = pid
@@ -303,7 +343,19 @@ class MusicIdentifierTests(unittest.TestCase):
         )
         self.assertEqual(len(all_capture_sources), 2)
         self.assertFalse(all_capture_sources[1]["is_loopback"])
-        self.assertIn("Audio input", all_capture_sources[1]["label"])
+        self.assertIn("Capture device", all_capture_sources[1]["label"])
+
+    def test_unique_directsound_capture_card_is_kept_when_wasapi_exists(self):
+        sources = self.tracker.enumerate_windows_music_audio_sources(
+            MixedHostApiAudioModule,
+            include_inputs=True,
+        )
+
+        labels = [str(source["label"]) for source in sources]
+        self.assertTrue(any("USB3HDCAP Audio" in label for label in labels))
+        self.assertTrue(any("DirectSound" in label for label in labels))
+        self.assertEqual(sum("Microphone" in label for label in labels), 1)
+        self.assertTrue(any(source["is_loopback"] for source in sources))
 
     def test_source_refresh_only_uses_application_audio(self):
         app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
@@ -411,10 +463,66 @@ class MusicIdentifierTests(unittest.TestCase):
         self.assertFalse(refresh_thread.is_alive())
         self.assertEqual(
             app.music_identifier_status_var.get(),
-            "Sources refreshed — 1 app found (1 new)",
+            "Sources refreshed — 1 source found (1 new)",
         )
         self.assertEqual(source_box.configurations[-1]["state"], "readonly")
         self.assertEqual(refresh_button.configurations[-1]["state"], "normal")
+
+    def test_capture_source_mode_lists_recording_devices_without_app_sessions(self):
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        app.music_identifier_source_type_var = FakeVar(
+            "Capture card / audio input"
+        )
+        with (
+            patch.object(
+                self.tracker,
+                "enumerate_windows_music_application_sources",
+                return_value=[
+                    {
+                        "label": "OBS Studio — Application audio",
+                        "token": "application|obs64.exe",
+                        "capture_type": "process",
+                        "process_name": "obs64.exe",
+                        "name": "OBS Studio",
+                    },
+                    {
+                        "label": "Google Chrome — Application audio",
+                        "token": "application|chrome.exe",
+                        "capture_type": "process",
+                        "process_name": "chrome.exe",
+                        "name": "Google Chrome",
+                    },
+                ],
+            ) as application_sources,
+            patch.object(
+                self.tracker,
+                "enumerate_windows_music_audio_sources",
+                return_value=[
+                    {
+                        "label": "Speakers — System audio",
+                        "token": "speakers|wasapi|loopback",
+                        "is_loopback": True,
+                    },
+                    {
+                        "label": "USB Capture — Capture device / audio input",
+                        "token": "usb capture|wasapi|input",
+                        "is_loopback": False,
+                        "index": 4,
+                    },
+                ],
+            ) as device_sources,
+        ):
+            sources, errors = app._scan_music_identifier_sources()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(sources[0]["capture_type"], "device")
+        self.assertIn("USB Capture", sources[0]["label"])
+        self.assertEqual(sources[1]["capture_type"], "process")
+        self.assertTrue(sources[1]["requires_obs_monitoring"])
+        self.assertIn("Capture-card audio", sources[1]["label"])
+        device_sources.assert_called_once_with(include_inputs=True)
+        application_sources.assert_called_once_with()
 
     def test_application_audio_sources_list_the_browser_the_user_can_select(self):
         sources = self.tracker.enumerate_windows_music_application_sources(
@@ -428,6 +536,26 @@ class MusicIdentifierTests(unittest.TestCase):
         self.assertIn("Application audio", sources[0]["label"])
         self.assertIn("chrome.exe", sources[0]["token"])
         self.assertEqual(sources[1]["name"], "Mozilla Firefox")
+
+    def test_running_obs_is_selectable_without_a_volume_mixer_session(self):
+        sources = self.tracker.enumerate_windows_music_application_sources(
+            FakeProcessAudioCapture,
+            volume_mixer_processes=(),
+            running_processes=(
+                {
+                    "pid": 303,
+                    "name": "obs64.exe",
+                    "window_title": "OBS Studio",
+                    "is_visible": True,
+                },
+            ),
+            process_snapshot={303: (0, "obs64.exe")},
+        )
+
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["name"], "OBS Studio")
+        self.assertEqual(sources[0]["capture_type"], "process")
+        self.assertEqual(sources[0]["pid"], 303)
 
     def test_volume_mixer_chrome_session_is_listed_and_enriched(self):
         class NoActiveAudioCapture:

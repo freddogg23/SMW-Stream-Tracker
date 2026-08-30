@@ -91,7 +91,9 @@ class PlatformSpecificMenuVisibilityTests(unittest.TestCase):
         )
         self.assertIn("for platform_name in PLATFORM_OPTIONS", source)
         self.assertIn("platform_setup_pages[platform_name]", source)
-        self.assertIn("platform_setup_pages[platform_name].tkraise()", source)
+        self.assertIn("for setup_name, setup_page in platform_setup_pages.items()", source)
+        self.assertIn("setup_page.tkraise()", source)
+        self.assertIn("setup_page.grid_remove()", source)
         self.assertIn("connection_service_codes_for(platform_name)", source)
         self.assertIn("platform_logo_label.configure(image=selected_logo)", source)
 

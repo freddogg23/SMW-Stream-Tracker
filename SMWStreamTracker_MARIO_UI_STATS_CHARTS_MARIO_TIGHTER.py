@@ -892,7 +892,7 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 APP_BUILD_DATE = "2026-08-29"
 
 GAME_MODE_STAGE_IMAGE_FILES = {
@@ -1092,7 +1092,13 @@ def enumerate_windows_music_audio_sources(
                 continue
             if input_channels <= 0:
                 continue
-            host_api_index = int(raw_info.get("hostApi", -1) or -1)
+            raw_host_api_index = raw_info.get("hostApi", -1)
+            try:
+                host_api_index = int(
+                    -1 if raw_host_api_index is None else raw_host_api_index
+                )
+            except (TypeError, ValueError):
+                host_api_index = -1
             host_api_name = ""
             if host_api_index >= 0:
                 try:
@@ -1126,7 +1132,7 @@ def enumerate_windows_music_audio_sources(
             source["label"] = (
                 f"{name} — System audio"
                 if is_loopback
-                else f"{name} — Audio input"
+                else f"{name} — Capture device / audio input"
             )
             sources.append(source)
     finally:
@@ -1135,16 +1141,42 @@ def enumerate_windows_music_audio_sources(
         except Exception:
             pass
 
-    # Windows exposes the same endpoint through MME, DirectSound, and WASAPI.
-    # Prefer the WASAPI copies whenever they exist so the picker stays useful
-    # instead of showing three nearly identical lists.
-    wasapi_sources = [
-        source
+    # Windows can expose one endpoint through MME, DirectSound, and WASAPI.
+    # Prefer a WASAPI copy of the *same* endpoint, but never discard a unique
+    # legacy-host input. DirectShow capture cards such as the StarTech
+    # USB3HDCAP commonly publish their audio pin through DirectSound or MME
+    # even when unrelated WASAPI devices are also present.
+    wasapi_source_keys = {
+        (
+            " ".join(str(source.get("name", "")).split()).casefold(),
+            bool(source.get("is_loopback", False)),
+        )
         for source in sources
         if "wasapi" in str(source.get("host_api_name", "")).casefold()
-    ]
-    if wasapi_sources:
-        sources = wasapi_sources
+    }
+    if wasapi_source_keys:
+        sources = [
+            source
+            for source in sources
+            if (
+                "wasapi" in str(source.get("host_api_name", "")).casefold()
+                or (
+                    " ".join(str(source.get("name", "")).split()).casefold(),
+                    bool(source.get("is_loopback", False)),
+                )
+                not in wasapi_source_keys
+            )
+        ]
+
+    for source in sources:
+        if bool(source.get("is_loopback", False)):
+            continue
+        host_api_name = str(source.get("host_api_name", "")).strip()
+        if host_api_name and "wasapi" not in host_api_name.casefold():
+            source["label"] = (
+                f"{source['name']} — Capture device / audio input "
+                f"({host_api_name})"
+            )
 
     # Put desktop/capture playback first because it is the most useful source
     # for identifying music coming from MiSTer, RetroArch, or a capture card.
@@ -1833,6 +1865,28 @@ def enumerate_windows_music_application_sources(
         )
         if previous is None or candidate[:2] > previous[:2]:
             candidates_by_name[process_key] = candidate
+
+    # A capture card's embedded audio can exist only inside OBS and therefore
+    # never create its own Windows Volume Mixer session. Keep OBS selectable
+    # while it is open; process-loopback can hear the card once that OBS source
+    # uses Monitor and Output in Advanced Audio Properties.
+    for process in running_processes:
+        process_id, process_name, window_title, visible = (
+            _music_audio_process_fields(process)
+        )
+        process_key = process_name.casefold()
+        if (
+            visible
+            and process_id > 0
+            and process_key in {"obs64.exe", "obs32.exe"}
+            and process_key not in candidates_by_name
+        ):
+            candidates_by_name[process_key] = (
+                1,
+                process_id,
+                process_name,
+                window_title,
+            )
 
     sources: list[dict[str, Any]] = []
     for _score, process_id, process_name, window_title in (
@@ -2635,9 +2689,11 @@ MISTER_UARTMODE_DOWNLOAD_SHA256 = (
 )
 MISTER_UARTMODE_MAX_BYTES = 128 * 1024
 MISTER_VIRTUAL_STATES_BINARY_SHA256 = (
-    "696ce73f548ede2f66acb38781b2bd2962821fc4e1f7b9957d2a2f5c538f011b"
+    "5b374a1742adfa216875cca9b5ed688df6220911cd47f2e63e06419f85e3aa77"
 )
 MISTER_VIRTUAL_STATES_MAX_BYTES = 64 * 1024 * 1024
+MISTER_LEVEL_SRAM_SAVE_DELAY_MS = 2200
+MISTER_LEVEL_SRAM_SAVE_MIN_INTERVAL_SECONDS = 8.0
 MISTER_VIRTUAL_STATES_UPSTREAM_COMMIT = (
     "93d13fb690db4581768389450fb639822ae88333"
 )
@@ -24137,6 +24193,7 @@ for (
 
 _MISTER_LOCALIZATION_ROWS = (
     # English, Australian, Spanish, French, German, Portuguese (Brazil)
+    ("1. Connect MiSTer to your router with Ethernet or Wi-Fi and power it on.\n2. Keep this computer on the same network. The default SSH password is 1.\n3. Select Find & Set Up MiSTer. The tracker will find its address, install live tracking, Virtual Save State Slots 5–11, and background SRAM saving after completed levels, create its game folders, enable automatic login for this app, select MiSTer, and test everything.\n4. The fields and smaller buttons to the right are only needed for manual setup.", "1. Hook MiSTer to your router by Ethernet or Wi-Fi and fire it up, mate.\n2. Keep this computer on the same network. The default SSH password is 1.\n3. Pick Find & Set Up MiSTer. The tracker will hunt it down, sort live tracking, Virtual Save State Slots 5–11, and background SRAM saves after completed levels, make the game folders, set up its own automatic login, pick MiSTer, and test the whole lot.\n4. The fields and little buttons to the right are only for manual setup. Crikey, easy as.", "1. Conecta MiSTer al router por Ethernet o Wi-Fi y enciéndelo.\n2. Mantén este equipo en la misma red. La contraseña SSH predeterminada es 1.\n3. Selecciona Buscar y configurar MiSTer. El tracker encontrará su dirección, instalará el seguimiento en vivo, las ranuras de estados virtuales 5–11 y el guardado de SRAM en segundo plano después de completar niveles, creará las carpetas de juegos, habilitará el acceso automático para esta aplicación, seleccionará MiSTer y probará todo.\n4. Los campos y botones pequeños de la derecha solo son necesarios para la configuración manual.", "1. Connectez le MiSTer au routeur par Ethernet ou Wi-Fi et allumez-le.\n2. Gardez cet ordinateur sur le même réseau. Le mot de passe SSH par défaut est 1.\n3. Choisissez Rechercher et configurer le MiSTer. Le tracker trouvera son adresse, installera le suivi en direct, les emplacements d’état virtuels 5 à 11 et l’enregistrement de la SRAM en arrière-plan après les niveaux terminés, créera les dossiers de jeux, activera la connexion automatique pour cette application, sélectionnera MiSTer et vérifiera l’ensemble.\n4. Les champs et les petits boutons à droite servent uniquement à la configuration manuelle.", "1. Verbinde MiSTer per Ethernet oder WLAN mit dem Router und schalte ihn ein.\n2. Dieser Computer muss im selben Netzwerk sein. Das Standard-SSH-Passwort ist 1.\n3. Wähle MiSTer suchen und einrichten. Der Tracker findet seine Adresse, installiert die Live-Verfolgung, die virtuellen Speicherplätze 5–11 und das SRAM-Speichern im Hintergrund nach abgeschlossenen Levels, erstellt die Spieleordner, aktiviert die automatische Anmeldung für diese App, wählt MiSTer aus und testet alles.\n4. Die Felder und kleineren Schaltflächen auf der rechten Seite werden nur für die manuelle Einrichtung benötigt.", "1. Conecte o MiSTer ao roteador por Ethernet ou Wi-Fi e ligue-o.\n2. Mantenha este computador na mesma rede. A senha SSH padrão é 1.\n3. Selecione Encontrar e configurar o MiSTer. O tracker encontrará o endereço, instalará o rastreamento ao vivo, os slots de estados virtuais 5–11 e o salvamento da SRAM em segundo plano após níveis concluídos, criará as pastas de jogos, ativará o login automático para este aplicativo, selecionará o MiSTer e testará tudo.\n4. Os campos e botões menores à direita são necessários somente para a configuração manual."),
     ("MiSTer", "MiSTer", "MiSTer", "MiSTer", "MiSTer", "MiSTer"),
     ("MiSTer Profile", "MiSTer Profile, mate", "Perfil de MiSTer", "Profil MiSTer", "MiSTer-Profil", "Perfil do MiSTer"),
     ("Add Profile", "Add Profile, mate", "Añadir perfil", "Ajouter un profil", "Profil hinzufügen", "Adicionar perfil"),
@@ -26987,6 +27044,11 @@ for (
 
 
 _MUSIC_IDENTIFIER_TRANSLATION_ROWS = (
+    ("Source type", "Source type", "Tipo de fuente", "Type de source", "Quellentyp", "Tipo de fonte"),
+    ("Choose application audio, or select a capture card/audio input.", "Choose application audio, or select a capture card/audio input.", "Elige el audio de una aplicación o selecciona una capturadora/entrada de audio.", "Choisissez l’audio d’une application ou sélectionnez une carte d’acquisition/entrée audio.", "Wähle App-Audio oder eine Capture-Karte/einen Audioeingang aus.", "Escolha o áudio de um aplicativo ou selecione uma placa de captura/entrada de áudio."),
+    ("Start audio in the app or capture card you want to identify, then select Refresh Sources.", "Start audio in the app or capture card you want to identify, then select Refresh Sources.", "Inicia el audio en la aplicación o capturadora que quieres identificar y selecciona Actualizar fuentes.", "Lancez l’audio dans l’application ou la carte d’acquisition à identifier, puis sélectionnez Actualiser les sources.", "Starte Audio in der gewünschten App oder Capture-Karte und wähle dann Quellen aktualisieren.", "Inicie o áudio no aplicativo ou na placa de captura que deseja identificar e selecione Atualizar fontes."),
+    ("Checking Windows for apps or capture devices playing audio.", "Checking Windows for apps or capture devices playing audio.", "Buscando en Windows aplicaciones o dispositivos de captura que reproducen audio.", "Recherche dans Windows des applications ou périphériques d’acquisition diffusant du son.", "Windows wird nach Apps oder Aufnahmegeräten mit Audiowiedergabe durchsucht.", "Verificando no Windows aplicativos ou dispositivos de captura que reproduzem áudio."),
+    ("Listening to OBS capture-card audio. In OBS Advanced Audio Properties, set the StarTech source to Monitor and Output so the tracker can hear it.", "Listening to OBS capture-card audio. In OBS Advanced Audio Properties, set the StarTech source to Monitor and Output so the tracker can hear it.", "Escuchando el audio de la capturadora en OBS. En Propiedades de audio avanzadas de OBS, establece la fuente StarTech en Monitorizar y emitir para que el tracker pueda oírla.", "Écoute de l’audio de la carte d’acquisition dans OBS. Dans les propriétés audio avancées d’OBS, réglez la source StarTech sur Surveiller et diffuser pour que le tracker puisse l’entendre.", "Audio der Capture-Karte wird über OBS abgehört. Stelle die StarTech-Quelle in den erweiterten Audioeigenschaften von OBS auf Monitor und Ausgabe, damit der Tracker sie hören kann.", "Ouvindo o áudio da placa de captura no OBS. Nas Propriedades avançadas de áudio do OBS, defina a fonte StarTech como Monitorar e enviar para que o tracker possa ouvi-la."),
     (
         "INPUT LEVEL: waiting to listen",
         "INPUT LEVEL: waiting to listen",
@@ -28595,6 +28657,7 @@ DEFAULT_CONFIG = {
         STREAMERBOT_DEFAULT_SONG_REWARD_COOLDOWN
     ),
     "music_identifier_audio_source": "",
+    "music_identifier_source_type": "Application audio",
     # ``music_identifier_level_songs`` is retained only so old settings files
     # load cleanly. New builds persist only explicitly confirmed associations.
     "music_identifier_level_songs": {},
@@ -28667,6 +28730,7 @@ DEFAULT_CONFIG = {
     "mister_menu_root": "/media/fat/_SMW Stream Tracker",
     "mister_profiles": [],
     "active_mister_profile": "",
+    "mister_save_sram_after_level": True,
     "rom_builder_base_rom_path": "",
     "rom_builder_library_folder": "",
     "rom_builder_copy_to_sd": False,
@@ -31270,6 +31334,16 @@ class TrackerWorker:
             level_id=int(self.level_id),
             rom_key=str(self.current_rom_key or ""),
             reason=reason,
+            mister_host=normalize_mister_host(
+                self.config.get("mister_host", "MiSTer")
+            ),
+            mister_ssh_user=(
+                str(self.config.get("mister_ssh_user", "root")).strip() or "root"
+            ),
+            mister_ssh_port=self.config.get("mister_ssh_port", 22),
+            mister_profile=str(
+                self.config.get("active_mister_profile", "MiSTer") or "MiSTer"
+            ),
         )
 
     def log(self, message: str, show_status: bool = True) -> None:
@@ -39071,6 +39145,21 @@ class TrackerApp:
         self.smwcentral_spc_launch_monotonic = 0.0
         self.smwcentral_home_feed_process: subprocess.Popen | None = None
         self.pending_smwcentral_completion: dict[str, Any] | None = None
+        music_identifier_source_type = str(
+            self.config.get(
+                "music_identifier_source_type",
+                "Application audio",
+            )
+            or "Application audio"
+        )
+        if music_identifier_source_type not in {
+            "Application audio",
+            "Capture card / audio input",
+        }:
+            music_identifier_source_type = "Application audio"
+        self.music_identifier_source_type_var = tk.StringVar(
+            value=music_identifier_source_type
+        )
         self.music_identifier_source_var = tk.StringVar(value="")
         self.music_identifier_status_var = tk.StringVar(
             value=self._translate_ui_text("Ready to listen")
@@ -39221,6 +39310,11 @@ class TrackerApp:
         self.livesplit_obs_guide_dialog: tk.Toplevel | None = None
         self.mister_setup_dialog: tk.Toplevel | None = None
         self.mister_setup_automatic_button: tk.Widget | None = None
+        self.mister_sram_save_after_id: str | None = None
+        self.mister_sram_save_thread: threading.Thread | None = None
+        self.mister_sram_save_generation = 0
+        self.mister_sram_save_last_requested_at = 0.0
+        self.mister_sram_save_target: dict[str, Any] = {}
         self.livesplit_install_in_progress: set[str] = set()
         self.livesplit_install_buttons: dict[str, tk.Widget] = {}
         self.livesplit_release_asset_cache: tuple[
@@ -47591,6 +47685,176 @@ class TrackerApp:
             client.close()
             raise
 
+    def _schedule_mister_sram_save_after_level(
+        self,
+        event: dict[str, Any] | None = None,
+    ) -> None:
+        """Debounce a verified MiSTer SRAM flush after a confirmed level exit."""
+
+        if (
+            self.startup_check
+            or normalize_platform_name(self.config.get("selected_platform", ""))
+            != "MiSTer"
+            or not bool(self.config.get("mister_save_sram_after_level", True))
+        ):
+            return
+        event_data = event if isinstance(event, dict) else {}
+        try:
+            target_port = int(
+                event_data.get(
+                    "mister_ssh_port",
+                    self.config.get("mister_ssh_port", 22),
+                )
+                or 22
+            )
+        except (TypeError, ValueError):
+            target_port = 22
+        self.mister_sram_save_target = {
+            "host": normalize_mister_host(
+                event_data.get("mister_host")
+                or self.config.get("mister_host", "MiSTer")
+            ),
+            "user": (
+                str(
+                    event_data.get("mister_ssh_user")
+                    or self.config.get("mister_ssh_user", "root")
+                ).strip()
+                or "root"
+            ),
+            "port": target_port,
+            "profile": str(
+                event_data.get("mister_profile")
+                or self.config.get("active_mister_profile", "MiSTer")
+                or "MiSTer"
+            ),
+        }
+        self.mister_sram_save_generation += 1
+        generation = self.mister_sram_save_generation
+        if self.mister_sram_save_after_id is not None:
+            try:
+                self.root.after_cancel(self.mister_sram_save_after_id)
+            except tk.TclError:
+                pass
+            self.mister_sram_save_after_id = None
+        elapsed = max(
+            0.0,
+            time.monotonic() - self.mister_sram_save_last_requested_at,
+        )
+        interval_delay_ms = max(
+            0,
+            math.ceil(
+                (MISTER_LEVEL_SRAM_SAVE_MIN_INTERVAL_SECONDS - elapsed) * 1000.0
+            ),
+        )
+        delay_ms = max(MISTER_LEVEL_SRAM_SAVE_DELAY_MS, interval_delay_ms)
+
+        def begin_save() -> None:
+            self.mister_sram_save_after_id = None
+            if generation != self.mister_sram_save_generation:
+                return
+            running = self.mister_sram_save_thread
+            if running is not None and running.is_alive():
+                return
+            self.mister_sram_save_last_requested_at = time.monotonic()
+            target = dict(self.mister_sram_save_target)
+            self.mister_sram_save_thread = threading.Thread(
+                target=self._flush_mister_sram_in_background,
+                args=(target,),
+                name="MiSTer SRAM save",
+                daemon=True,
+            )
+            self.mister_sram_save_thread.start()
+
+        try:
+            self.mister_sram_save_after_id = self.root.after(delay_ms, begin_save)
+        except tk.TclError:
+            self.mister_sram_save_after_id = None
+
+    def _flush_mister_sram_in_background(
+        self,
+        target: dict[str, Any] | None = None,
+    ) -> None:
+        """Ask the tracker-installed MiSTer Main to save and verify SNES SRAM."""
+
+        client = None
+        save_target = target if isinstance(target, dict) else {}
+        host = normalize_mister_host(
+            save_target.get("host") or self.config.get("mister_host", "MiSTer")
+        )
+        user = (
+            str(
+                save_target.get("user")
+                or self.config.get("mister_ssh_user", "root")
+            ).strip()
+            or "root"
+        )
+        try:
+            port = int(
+                save_target.get("port")
+                or self.config.get("mister_ssh_port", 22)
+                or 22
+            )
+        except (TypeError, ValueError):
+            port = 22
+        try:
+            client = self._open_mister_ssh_client(
+                host,
+                user,
+                port,
+                self.mister_session_password,
+                timeout=8,
+            )
+            self._verified_mister_peer(client)
+            command = (
+                "rm -f /tmp/smw_sram_save_ack; "
+                "printf 'smw_sram_save\n' > /dev/MiSTer_cmd; "
+                "for n in 1 2 3 4 5 6 7 8 9 10; do "
+                "test -s /tmp/smw_sram_save_ack && break; sleep 1; done; "
+                "ack=$(cat /tmp/smw_sram_save_ack 2>/dev/null); "
+                "printf '%s' \"$ack\"; "
+                "test \"$ack\" = saved -o \"$ack\" = requested"
+            )
+            _stdin, stdout, stderr = client.exec_command(command, timeout=15)
+            exit_status = stdout.channel.recv_exit_status()
+            acknowledgement = stdout.read().decode(
+                "utf-8", errors="replace"
+            ).strip()
+            error_output = stderr.read().decode(
+                "utf-8", errors="replace"
+            ).strip()
+            if exit_status != 0:
+                detail = acknowledgement or error_output or "no acknowledgement"
+                raise RuntimeError(detail)
+            if acknowledgement == "requested":
+                append_error_log(
+                    "MiSTer automatic SRAM save",
+                    "The installed MiSTer support acknowledged the save request "
+                    "but cannot verify disk writes. Run Find & Set Up MiSTer "
+                    "once to install the verified saver.",
+                )
+        except Exception as error:
+            # Never interrupt play with a modal dialog, but preserve an exact
+            # reason and show a short status so setup problems are actionable.
+            append_error_log(
+                "MiSTer automatic SRAM save",
+                f"Could not save SRAM on {host}:{port}: {error}",
+            )
+            try:
+                self.root.after(
+                    0,
+                    lambda: self.status_var.set(
+                        "MiSTer SRAM was not saved. Run Find & Set Up MiSTer "
+                        "again, then load the SNES core."
+                    ),
+                )
+            except tk.TclError:
+                pass
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
     @staticmethod
     def _mister_host_key_fingerprint(client) -> str:
         transport = client.get_transport()
@@ -48220,6 +48484,7 @@ class TrackerApp:
                     "base_sha256": MISTER_VIRTUAL_STATES_BASE_SHA256,
                     "toolchain_version": MISTER_VIRTUAL_STATES_TOOLCHAIN_VERSION,
                     "virtual_state_slots": "5-11",
+                    "background_sram_save": True,
                 }
                 self._mister_sftp_write(
                     sftp,
@@ -49111,8 +49376,9 @@ class TrackerApp:
                 "power it on.\n2. Keep this computer on the same network. "
                 "The default SSH password is 1.\n"
                 "3. Select Find & Set Up MiSTer. The tracker will find its "
-                "address, install live tracking and Virtual Save State Slots "
-                "5–11, create its game folders, enable automatic login for "
+                "address, install live tracking, Virtual Save State Slots "
+                "5–11, and background SRAM saving after completed levels, "
+                "create its game folders, enable automatic login for "
                 "this app, select MiSTer, and test everything.\n4. The fields "
                 "and smaller buttons to the right are only needed for manual "
                 "setup."
@@ -49404,7 +49670,8 @@ class TrackerApp:
                         )
                         finish_task(
                             "MiSTer is fully set up. The tracker found it, "
-                            "installed live tracking and save states 5–11, "
+                            "installed live tracking, save states 5–11, and "
+                            "background SRAM saving after completed levels, "
                             "created the game folders, enabled automatic "
                             "login for this app, selected MiSTer, and verified "
                             "the connection. MiSTer is restarting."
@@ -52993,7 +53260,7 @@ class TrackerApp:
         tk.Label(
             source_card,
             text=self._translate_ui_text(
-                "Choose a running app for Twitch, browser, emulator, or game audio."
+                "Choose application audio, or select a capture card/audio input."
             ),
             font=("Segoe UI", 10),
             fg=palette["muted"],
@@ -53006,6 +53273,31 @@ class TrackerApp:
             sticky="ew",
             pady=(self._ui_px(2), self._ui_px(9)),
         )
+        source_type_row = tk.Frame(source_card, bg=palette["panel_alt"], bd=0)
+        source_type_row.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(0, self._ui_px(9)),
+        )
+        source_type_row.columnconfigure(1, weight=1)
+        tk.Label(
+            source_type_row,
+            text=self._translate_ui_text("Source type"),
+            font=("Segoe UI", 9, "bold"),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=(0, self._ui_px(10)))
+        source_type_box = ttk.Combobox(
+            source_type_row,
+            textvariable=self.music_identifier_source_type_var,
+            values=("Application audio", "Capture card / audio input"),
+            state="readonly",
+            font=("Segoe UI", 10),
+        )
+        source_type_box.grid(row=0, column=1, sticky="ew", ipady=self._ui_px(4))
         source_box = ttk.Combobox(
             source_card,
             textvariable=self.music_identifier_source_var,
@@ -53013,7 +53305,7 @@ class TrackerApp:
             font=("Segoe UI", 10),
         )
         source_box.grid(
-            row=2,
+            row=3,
             column=0,
             sticky="ew",
             padx=(0, self._ui_px(10)),
@@ -53028,7 +53320,7 @@ class TrackerApp:
             width=17,
             pad_y=7,
         )
-        refresh_button.grid(row=2, column=1, sticky="e")
+        refresh_button.grid(row=3, column=1, sticky="e")
         tk.Label(
             source_card,
             textvariable=self.music_index_status_var,
@@ -53037,7 +53329,7 @@ class TrackerApp:
             bg=palette["panel_alt"],
             anchor="w",
         ).grid(
-            row=3,
+            row=4,
             column=0,
             sticky="ew",
             pady=(self._ui_px(9), 0),
@@ -53052,7 +53344,7 @@ class TrackerApp:
             pad_y=6,
         )
         index_button.grid(
-            row=3,
+            row=4,
             column=1,
             sticky="e",
             pady=(self._ui_px(8), 0),
@@ -53065,7 +53357,7 @@ class TrackerApp:
             bg=palette["panel_alt"],
             anchor="w",
         ).grid(
-            row=4,
+            row=5,
             column=0,
             sticky="ew",
             pady=(self._ui_px(8), 0),
@@ -53080,7 +53372,7 @@ class TrackerApp:
             pad_y=6,
         )
         radio_button.grid(
-            row=4,
+            row=5,
             column=1,
             sticky="e",
             pady=(self._ui_px(8), 0),
@@ -53093,7 +53385,7 @@ class TrackerApp:
             bg=palette["panel_alt"],
             anchor="w",
         ).grid(
-            row=5,
+            row=6,
             column=0,
             sticky="ew",
             pady=(self._ui_px(9), 0),
@@ -53113,7 +53405,7 @@ class TrackerApp:
             selectcolor=STREAM_DESK["green"],
         )
         community_toggle.grid(
-            row=5,
+            row=6,
             column=1,
             sticky="e",
             pady=(self._ui_px(8), 0),
@@ -53130,7 +53422,7 @@ class TrackerApp:
             justify="left",
             wraplength=self._ui_px(980),
         ).grid(
-            row=6,
+            row=7,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -53376,6 +53668,7 @@ class TrackerApp:
 
         self.music_identifier_widgets = {
             "page": dialog,
+            "source_type_box": source_type_box,
             "source_box": source_box,
             "refresh_button": refresh_button,
             "index_button": index_button,
@@ -53396,6 +53689,11 @@ class TrackerApp:
         source_box.bind(
             "<<ComboboxSelected>>",
             self._on_music_identifier_source_selected,
+            add="+",
+        )
+        source_type_box.bind(
+            "<<ComboboxSelected>>",
+            self._on_music_identifier_source_type_selected,
             add="+",
         )
         dialog.protocol("WM_DELETE_WINDOW", self._close_music_identifier_page)
@@ -53445,12 +53743,47 @@ class TrackerApp:
     def _scan_music_identifier_sources(
         self,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Read the current Windows app-audio sessions off the Tk thread."""
+        """Read the selected Windows app sessions or recording endpoints."""
 
         sources: list[dict[str, Any]] = []
         source_errors: list[str] = []
         try:
-            sources.extend(enumerate_windows_music_application_sources())
+            source_type_var = getattr(
+                self,
+                "music_identifier_source_type_var",
+                None,
+            )
+            source_type = str(
+                source_type_var.get()
+                if source_type_var is not None
+                else self.config.get(
+                    "music_identifier_source_type",
+                    "Application audio",
+                )
+            ).strip()
+            if source_type == "Capture card / audio input":
+                for source in enumerate_windows_music_audio_sources(
+                    include_inputs=True
+                ):
+                    if bool(source.get("is_loopback", False)):
+                        continue
+                    capture_source = dict(source)
+                    capture_source["capture_type"] = "device"
+                    sources.append(capture_source)
+                for source in enumerate_windows_music_application_sources():
+                    if str(source.get("process_name", "")).casefold() not in {
+                        "obs64.exe",
+                        "obs32.exe",
+                    }:
+                        continue
+                    capture_source = dict(source)
+                    capture_source["label"] = (
+                        "OBS Studio — Capture-card audio (OBS monitoring)"
+                    )
+                    capture_source["requires_obs_monitoring"] = True
+                    sources.append(capture_source)
+            else:
+                sources.extend(enumerate_windows_music_application_sources())
         except Exception as error:
             source_errors.append(str(error))
         return sources, source_errors
@@ -53464,8 +53797,9 @@ class TrackerApp:
         previous_tokens: set[str],
         announce: bool,
     ) -> None:
-        """Apply one completed app-audio scan to the picker."""
+        """Apply one completed audio-source scan to the picker."""
 
+        source_type_box = self.music_identifier_widgets.get("source_type_box")
         source_box = self.music_identifier_widgets.get("source_box")
         refresh_button = self.music_identifier_widgets.get("refresh_button")
 
@@ -53494,6 +53828,19 @@ class TrackerApp:
         if not selected_label and labels:
             selected_label = labels[0]
         self.music_identifier_source_var.set(selected_label)
+        source_type_var = getattr(
+            self,
+            "music_identifier_source_type_var",
+            None,
+        )
+        self.config["music_identifier_source_type"] = str(
+            source_type_var.get()
+            if source_type_var is not None
+            else self.config.get(
+                "music_identifier_source_type",
+                "Application audio",
+            )
+        )
         if selected_label:
             selected_source = self.music_identifier_sources[selected_label]
             self.config["music_identifier_audio_source"] = str(
@@ -53510,7 +53857,7 @@ class TrackerApp:
                 )
                 self.music_identifier_detail_var.set(
                     self._translate_ui_text(
-                        "Start audio in the app you want to identify, then select Refresh Sources."
+                        "Start audio in the app or capture card you want to identify, then select Refresh Sources."
                     )
                 )
         elif self.music_identifier_state not in {"listening", "identifying"}:
@@ -53523,15 +53870,15 @@ class TrackerApp:
                 new_count = len(current_tokens - previous_tokens)
                 if len(labels) == 1:
                     status_template = (
-                        "Sources refreshed — 1 app found (1 new)"
+                        "Sources refreshed — 1 source found (1 new)"
                         if new_count
-                        else "Sources refreshed — 1 app found"
+                        else "Sources refreshed — 1 source found"
                     )
                 else:
                     status_template = (
-                        "Sources refreshed — {count} apps found ({new} new)"
+                        "Sources refreshed — {count} sources found ({new} new)"
                         if new_count
-                        else "Sources refreshed — {count} apps found"
+                        else "Sources refreshed — {count} sources found"
                     )
                 self.music_identifier_status_var.set(
                     self._translate_ui_text(status_template).format(
@@ -53549,6 +53896,7 @@ class TrackerApp:
                 )
             )
         for widget, state in (
+            (source_type_box, "readonly"),
             (source_box, "readonly"),
             (refresh_button, "normal"),
         ):
@@ -53591,6 +53939,7 @@ class TrackerApp:
         )
         if running_thread is not None and running_thread.is_alive():
             return
+        source_type_box = self.music_identifier_widgets.get("source_type_box")
         source_box = self.music_identifier_widgets.get("source_box")
         refresh_button = self.music_identifier_widgets.get("refresh_button")
         self.music_identifier_status_var.set(
@@ -53598,10 +53947,10 @@ class TrackerApp:
         )
         self.music_identifier_detail_var.set(
             self._translate_ui_text(
-                "Checking Windows Volume Mixer for apps playing audio."
+                "Checking Windows for apps or capture devices playing audio."
             )
         )
-        for widget in (source_box, refresh_button):
+        for widget in (source_type_box, source_box, refresh_button):
             if widget is not None:
                 try:
                     widget.configure(state="disabled")
@@ -53643,6 +53992,19 @@ class TrackerApp:
         )
         self.music_identifier_source_refresh_thread.start()
 
+    def _on_music_identifier_source_type_selected(self, _event=None) -> None:
+        self.config["music_identifier_source_type"] = str(
+            self.music_identifier_source_type_var.get()
+        )
+        self.config["music_identifier_audio_source"] = ""
+        self.music_identifier_source_var.set("")
+        self.music_identifier_sources = {}
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        self._refresh_music_identifier_sources(manual=True)
+
     def _on_music_identifier_source_selected(self, _event=None) -> None:
         source = self.music_identifier_sources.get(
             self.music_identifier_source_var.get()
@@ -53651,6 +54013,9 @@ class TrackerApp:
             return
         self.config["music_identifier_audio_source"] = str(
             source.get("token", "")
+        )
+        self.config["music_identifier_source_type"] = str(
+            self.music_identifier_source_type_var.get()
         )
         try:
             save_config(self.config)
@@ -53792,12 +54157,19 @@ class TrackerApp:
             self._translate_ui_text("Listening") + "…"
         )
         if application_capture:
-            self.music_identifier_detail_var.set(
-                self._format_ui_text(
-                    "Listening only to {application}. Speech and game sounds can continue; timing-aware fingerprints find the music underneath them.",
-                    application=str(source.get("name", "the selected app")),
+            if bool(source.get("requires_obs_monitoring", False)):
+                self.music_identifier_detail_var.set(
+                    self._translate_ui_text(
+                        "Listening to OBS capture-card audio. In OBS Advanced Audio Properties, set the StarTech source to Monitor and Output so the tracker can hear it."
+                    )
                 )
-            )
+            else:
+                self.music_identifier_detail_var.set(
+                    self._format_ui_text(
+                        "Listening only to {application}. Speech and game sounds can continue; timing-aware fingerprints find the music underneath them.",
+                        application=str(source.get("name", "the selected app")),
+                    )
+                )
         else:
             self.music_identifier_detail_var.set(
                 self._format_ui_text(
@@ -54401,6 +54773,7 @@ class TrackerApp:
         cleanup_pending: bool = False,
     ) -> None:
         widgets = self.music_identifier_widgets
+        source_type_box = widgets.get("source_type_box")
         source_box = widgets.get("source_box")
         refresh_button = widgets.get("refresh_button")
         radio_button = widgets.get("radio_button")
@@ -54412,6 +54785,10 @@ class TrackerApp:
         track_button = widgets.get("track_button")
         controls_busy = bool(running or cleanup_pending)
         try:
+            if source_type_box is not None:
+                source_type_box.configure(
+                    state="disabled" if controls_busy else "readonly"
+                )
             if source_box is not None:
                 source_box.configure(state="disabled" if controls_busy else "readonly")
             if refresh_button is not None:
@@ -56538,6 +56915,9 @@ class TrackerApp:
         )
         local_auto_save = tk.BooleanVar(
             value=bool(self.config.get("save_tracker_data_automatically", True))
+        )
+        local_mister_save_sram_after_level = tk.BooleanVar(
+            value=bool(self.config.get("mister_save_sram_after_level", True))
         )
         local_reconciliation_mode = tk.StringVar(
             value=str(
@@ -59369,6 +59749,10 @@ class TrackerApp:
                 "Create post-stream summaries",
                 local_post_stream_summary,
             ),
+            (
+                "Save MiSTer SRAM after completed levels",
+                local_mister_save_sram_after_level,
+            ),
         )
         for option_index, (option_text, option_variable) in enumerate(
             automation_options
@@ -59948,6 +60332,9 @@ class TrackerApp:
                     ),
                     "save_tracker_data_automatically": bool(
                         local_auto_save.get()
+                    ),
+                    "mister_save_sram_after_level": bool(
+                        local_mister_save_sram_after_level.get()
                     ),
                     "statistics_reconciliation_mode": reconciliation_mode,
                     "automatic_completion_detection": bool(
@@ -119476,6 +119863,12 @@ class TrackerApp:
                             f'Using MiSTer profile "{profile.get("name", "MiSTer")}" '
                             f'at {profile.get("host", "MiSTer")}.'
                         )
+
+                elif event_type == "level_complete":
+                    # The worker emits this only after the cleared level reaches
+                    # a safe boundary. It also carries the exact MiSTer address
+                    # that produced the live-memory event.
+                    self._schedule_mister_sram_save_after_level(event)
 
                 elif event_type == "level_started":
                     # Identify in the background while the viewer is playing.
