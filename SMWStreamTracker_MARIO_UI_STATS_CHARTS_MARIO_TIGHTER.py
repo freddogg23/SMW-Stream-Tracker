@@ -27750,6 +27750,38 @@ for (
     UI_TRANSLATIONS["de"][_english_text] = _german_text
     UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
 
+_MISTER_SRAM_DASHBOARD_TRANSLATION_ROWS = (
+    (
+        "●  MiSTer SRAM autosave",
+        "●  MiSTer SRAM autosave",
+        "●  Guardado automático de SRAM de MiSTer",
+        "●  Sauvegarde SRAM automatique de MiSTer",
+        "●  Automatische MiSTer-SRAM-Sicherung",
+        "●  Salvamento automático de SRAM do MiSTer",
+    ),
+    (
+        "Every 5 min  ·  level clear  ·  checkpoint  ·  overworld",
+        "Every 5 min  ·  level clear  ·  checkpoint  ·  overworld",
+        "Cada 5 min  ·  nivel completado  ·  punto de control  ·  mapa",
+        "Toutes les 5 min  ·  niveau terminé  ·  point de contrôle  ·  carte",
+        "Alle 5 Min.  ·  Level geschafft  ·  Kontrollpunkt  ·  Oberwelt",
+        "A cada 5 min  ·  fase concluída  ·  checkpoint  ·  mapa",
+    ),
+)
+for (
+    _english_text,
+    _australian_text,
+    _spanish_text,
+    _french_text,
+    _german_text,
+    _portuguese_text,
+) in _MISTER_SRAM_DASHBOARD_TRANSLATION_ROWS:
+    UI_TRANSLATIONS["au"][_english_text] = _australian_text
+    UI_TRANSLATIONS["es"][_english_text] = _spanish_text
+    UI_TRANSLATIONS["fr"][_english_text] = _french_text
+    UI_TRANSLATIONS["de"][_english_text] = _german_text
+    UI_TRANSLATIONS["pt-BR"][_english_text] = _portuguese_text
+
 
 STREAMERBOT_EVENT_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("game_started", "Game launched"),
@@ -28875,6 +28907,10 @@ DEFAULT_CONFIG = {
     "mister_profiles": [],
     "active_mister_profile": "",
     "mister_save_sram_after_level": True,
+    "mister_last_sram_saved_at": "",
+    "mister_last_sram_saved_profile": "",
+    "mister_last_sram_saved_game": "",
+    "mister_last_sram_saved_reason": "",
     "rom_builder_base_rom_path": "",
     "rom_builder_library_folder": "",
     "rom_builder_copy_to_sd": False,
@@ -39770,6 +39806,9 @@ class TrackerApp:
                 "Online SMW Central catalog — checking connection…"
             )
         )
+        self.music_index_last_update_var = tk.StringVar(
+            value="Last cloud update: checking catalog…"
+        )
         self.music_index_next_update_var = tk.StringVar(
             value=format_smwcentral_cloud_update_countdown()
         )
@@ -39805,6 +39844,11 @@ class TrackerApp:
         self.mister_sram_save_generation = 0
         self.mister_sram_save_last_requested_at = 0.0
         self.mister_sram_save_target: dict[str, Any] = {}
+        self.mister_sram_dashboard_prompt: tk.Frame | None = None
+        self.mister_sram_dashboard_status_var = tk.StringVar(
+            master=self.root,
+            value="SRAM has not been saved by the tracker yet.",
+        )
         self.livesplit_install_in_progress: set[str] = set()
         self.livesplit_install_buttons: dict[str, tk.Widget] = {}
         self.livesplit_release_asset_cache: tuple[
@@ -39892,6 +39936,13 @@ class TrackerApp:
         )
 
         self._build_ui()
+        self.platform_var.trace_add(
+            "write",
+            lambda *_args: self.root.after_idle(
+                self._refresh_mister_sram_dashboard_prompt
+            ),
+        )
+        self._refresh_mister_sram_dashboard_prompt()
         self._refresh_obs_widget_state()
         self._configure_streamerbot_dispatcher()
         self.root.after_idle(
@@ -45395,6 +45446,46 @@ class TrackerApp:
             bg="#172A20",
         ).pack(side="left")
 
+        self.stream_dashboard_header = header
+        self.mister_sram_dashboard_prompt = tk.Frame(
+            parent,
+            bg="#15271F",
+            padx=dashboard_px(20),
+            pady=dashboard_y_px(9),
+            bd=0,
+            highlightbackground="#28533C",
+            highlightthickness=1,
+        )
+        tk.Label(
+            self.mister_sram_dashboard_prompt,
+            text="●  MiSTer SRAM autosave",
+            font=("Segoe UI", 9, "bold"),
+            fg=STREAM_DESK["green"],
+            bg="#15271F",
+        ).pack(side="left")
+        tk.Label(
+            self.mister_sram_dashboard_prompt,
+            textvariable=self.mister_sram_dashboard_status_var,
+            font=("Segoe UI", 9),
+            fg=STREAM_DESK["text_strong"],
+            bg="#15271F",
+        ).pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(dashboard_px(14), dashboard_px(12)),
+        )
+        tk.Label(
+            self.mister_sram_dashboard_prompt,
+            text=(
+                "Every 5 min  ·  level clear  ·  checkpoint  ·  overworld"
+            ),
+            font=("Segoe UI", 8),
+            fg=STREAM_DESK["muted"],
+            bg="#15271F",
+        ).pack(side="right")
+        self._refresh_mister_sram_dashboard_prompt()
+
         timeline = tk.Frame(
             parent,
             bg=STREAM_DESK["surface_deep"],
@@ -48231,6 +48322,133 @@ class TrackerApp:
             client.close()
             raise
 
+    def _mister_sram_saved_status_text(self) -> str:
+        """Describe the most recent verified MiSTer SRAM write."""
+
+        saved_at_text = str(
+            self.config.get("mister_last_sram_saved_at", "") or ""
+        ).strip()
+        if not saved_at_text:
+            return "SRAM has not been saved by the tracker yet."
+        try:
+            saved_at = datetime.fromisoformat(saved_at_text)
+            if saved_at.tzinfo is None:
+                saved_at = saved_at.replace(tzinfo=timezone.utc)
+            local_saved_at = saved_at.astimezone()
+            local_now = datetime.now().astimezone()
+            if local_saved_at.date() == local_now.date():
+                when = (
+                    "today at "
+                    + local_saved_at.strftime("%I:%M:%S %p").lstrip("0")
+                )
+            else:
+                when = local_saved_at.strftime("%b %d, %Y at %I:%M:%S %p")
+                when = when.replace(" 0", " ")
+        except (TypeError, ValueError):
+            return "SRAM was saved, but its saved time is unavailable."
+        profile = str(
+            self.config.get("mister_last_sram_saved_profile", "") or ""
+        ).strip()
+        reason = str(
+            self.config.get("mister_last_sram_saved_reason", "") or ""
+        ).strip()
+        detail = "Last saved " + when
+        if profile:
+            detail += f" on {profile}"
+        if reason:
+            detail += f" · {reason}"
+        return detail + "."
+
+    def _set_mister_sram_dashboard_status(self, message: str) -> None:
+        status_variable = getattr(
+            self,
+            "mister_sram_dashboard_status_var",
+            None,
+        )
+        if status_variable is None:
+            return
+        try:
+            status_variable.set(str(message))
+        except tk.TclError:
+            pass
+
+    def _refresh_mister_sram_dashboard_prompt(self) -> None:
+        prompt = getattr(self, "mister_sram_dashboard_prompt", None)
+        if prompt is None:
+            return
+        if bool(self.config.get("mister_save_sram_after_level", True)):
+            self._set_mister_sram_dashboard_status(
+                self._mister_sram_saved_status_text()
+            )
+        else:
+            self._set_mister_sram_dashboard_status(
+                "Automatic SRAM saving is turned off in Platform settings."
+            )
+        platform_variable = getattr(self, "platform_var", None)
+        platform_name = normalize_platform_name(
+            platform_variable.get()
+            if platform_variable is not None
+            else self.config.get("selected_platform", "")
+        )
+        try:
+            if platform_name == "MiSTer":
+                if not prompt.winfo_manager():
+                    prompt.pack(
+                        fill="x",
+                        after=self.stream_dashboard_header,
+                    )
+            elif prompt.winfo_manager():
+                prompt.pack_forget()
+        except tk.TclError:
+            pass
+
+    def _record_mister_sram_save_success(
+        self,
+        save_target: dict[str, Any],
+    ) -> None:
+        """Persist and display one completed, verified SRAM write."""
+
+        saved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        profile = str(save_target.get("profile", "MiSTer") or "MiSTer")
+        reason = str(
+            save_target.get("reason", "automatic save") or "automatic save"
+        )
+        rom_path = str(save_target.get("rom_path", "") or "").strip()
+        game = PurePosixPath(rom_path.replace("\\", "/")).stem if rom_path else ""
+        self.config["mister_last_sram_saved_at"] = saved_at
+        self.config["mister_last_sram_saved_profile"] = profile
+        self.config["mister_last_sram_saved_game"] = game
+        self.config["mister_last_sram_saved_reason"] = reason
+        try:
+            save_config(self.config)
+        except OSError as error:
+            append_error_log(
+                "MiSTer automatic SRAM save timestamp",
+                str(error),
+            )
+        self._refresh_mister_sram_dashboard_prompt()
+        status_variable = getattr(self, "status_var", None)
+        if status_variable is not None:
+            status_variable.set(
+                f"MiSTer SRAM saved and verified after {reason}."
+            )
+
+    def _record_mister_sram_save_failure(
+        self,
+        status_message: str,
+        dashboard_message: str = "Latest save attempt failed.",
+    ) -> None:
+        """Keep the last good timestamp visible while reporting a failure."""
+
+        self._set_mister_sram_dashboard_status(
+            self._mister_sram_saved_status_text()
+            + "  "
+            + str(dashboard_message)
+        )
+        status_variable = getattr(self, "status_var", None)
+        if status_variable is not None:
+            status_variable.set(str(status_message))
+
     def _arm_mister_periodic_sram_save(self, *, reset: bool = False) -> None:
         """Keep one five-minute SRAM timer while the desktop app is open."""
         if reset and self.mister_sram_periodic_after_id is not None:
@@ -48349,6 +48567,9 @@ class TrackerApp:
                 return
             self.mister_sram_save_last_requested_at = time.monotonic()
             target = dict(self.mister_sram_save_target)
+            self._set_mister_sram_dashboard_status(
+                "Saving SRAM…  " + self._mister_sram_saved_status_text()
+            )
             self.mister_sram_save_thread = threading.Thread(
                 target=self._flush_mister_sram_in_background,
                 args=(target,),
@@ -48398,6 +48619,17 @@ class TrackerApp:
                 "A complete live SRAM snapshot was not available; no save "
                 "file was changed.",
             )
+            try:
+                self.root.after(
+                    0,
+                    lambda: self._record_mister_sram_save_failure(
+                        "MiSTer SRAM was not saved because the live memory "
+                        "snapshot was incomplete.",
+                        "Latest save attempt was incomplete.",
+                    ),
+                )
+            except tk.TclError:
+                pass
             return
         try:
             destination = mister_sram_save_destination_for_rom_path(rom_path)
@@ -48503,8 +48735,8 @@ class TrackerApp:
             try:
                 self.root.after(
                     0,
-                    lambda: self.status_var.set(
-                        "MiSTer SRAM saved and verified for the current game."
+                    lambda completed=dict(save_target): (
+                        self._record_mister_sram_save_success(completed)
                     ),
                 )
             except tk.TclError:
@@ -48519,15 +48751,25 @@ class TrackerApp:
                     "MiSTer SRAM protection kept the newer existing save; "
                     "live memory was older or incomplete."
                 )
+                dashboard_message = (
+                    "Latest save was skipped to protect newer progress."
+                )
             else:
                 status_message = (
                     "MiSTer SRAM was not saved. Check the selected MiSTer "
                     "profile and keep the SNES core connected."
                 )
+                dashboard_message = "Latest save attempt failed."
             try:
                 self.root.after(
                     0,
-                    lambda message=status_message: self.status_var.set(message),
+                    lambda message=status_message,
+                    dashboard=dashboard_message: (
+                        self._record_mister_sram_save_failure(
+                            message,
+                            dashboard,
+                        )
+                    ),
                 )
             except tk.TclError:
                 pass
@@ -53721,14 +53963,20 @@ class TrackerApp:
 
     def _music_index_ready_text(self, details: dict[str, Any] | None = None) -> str:
         selected = details or self.music_index_details
-        status = (
+        return (
             "Online SMW Central catalog ready — "
             f"{int(selected.get('track_count', 0) or 0):,} songs"
         )
+
+    def _music_index_last_update_text(
+        self,
+        details: dict[str, Any] | None = None,
+    ) -> str:
+        selected = details or self.music_index_details
         updated_at = format_smwcentral_cloud_update_time(selected)
-        if updated_at:
-            status += f" • Last cloud update: {updated_at}"
-        return status
+        if not updated_at:
+            return "Last cloud update: unavailable"
+        return "Last cloud update: " + updated_at + " (SMW Central time)"
 
     def _refresh_music_cloud_update_countdown(self) -> None:
         self.music_index_countdown_after_id = None
@@ -53809,10 +54057,16 @@ class TrackerApp:
                 self.music_index_status_var.set(
                     self._music_index_ready_text()
                 )
+                self.music_index_last_update_var.set(
+                    self._music_index_last_update_text()
+                )
             elif event_name == "update_error":
                 self.music_index_details = {}
                 self.music_index_status_var.set(
                     "Online music catalog unavailable — Internet connection required"
+                )
+                self.music_index_last_update_var.set(
+                    "Last cloud update: unavailable"
                 )
             elif event_name == "update_finished":
                 finished = True
@@ -54243,7 +54497,7 @@ class TrackerApp:
         )
         tk.Label(
             source_card,
-            textvariable=self.music_index_next_update_var,
+            textvariable=self.music_index_last_update_var,
             font=("Segoe UI", 8, "bold"),
             fg=palette["muted"],
             bg=palette["panel_alt"],
@@ -54251,8 +54505,23 @@ class TrackerApp:
         ).grid(
             row=5,
             column=0,
+            columnspan=2,
             sticky="ew",
             pady=(self._ui_px(3), 0),
+        )
+        tk.Label(
+            source_card,
+            textvariable=self.music_index_next_update_var,
+            font=("Segoe UI", 8, "bold"),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(self._ui_px(2), 0),
         )
         tk.Label(
             source_card,
@@ -54262,7 +54531,7 @@ class TrackerApp:
             bg=palette["panel_alt"],
             anchor="w",
         ).grid(
-            row=6,
+            row=7,
             column=0,
             sticky="ew",
             pady=(self._ui_px(8), 0),
@@ -54277,7 +54546,7 @@ class TrackerApp:
             pad_y=6,
         )
         radio_button.grid(
-            row=6,
+            row=7,
             column=1,
             sticky="e",
             pady=(self._ui_px(8), 0),
@@ -54290,7 +54559,7 @@ class TrackerApp:
             bg=palette["panel_alt"],
             anchor="w",
         ).grid(
-            row=7,
+            row=8,
             column=0,
             sticky="ew",
             pady=(self._ui_px(9), 0),
@@ -54310,7 +54579,7 @@ class TrackerApp:
             selectcolor=STREAM_DESK["green"],
         )
         community_toggle.grid(
-            row=7,
+            row=8,
             column=1,
             sticky="e",
             pady=(self._ui_px(8), 0),
@@ -54327,7 +54596,7 @@ class TrackerApp:
             justify="left",
             wraplength=self._ui_px(980),
         ).grid(
-            row=8,
+            row=9,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -120836,9 +121105,10 @@ class TrackerApp:
                     self._schedule_mister_sram_save_after_level(event)
 
                 elif event_type == "mister_sram_save_failed":
-                    self.status_var.set(
+                    self._record_mister_sram_save_failure(
                         "MiSTer SRAM could not be captured from live memory; "
-                        "no save file was changed."
+                        "no save file was changed.",
+                        "Latest save attempt could not read live memory.",
                     )
 
                 elif event_type == "level_started":

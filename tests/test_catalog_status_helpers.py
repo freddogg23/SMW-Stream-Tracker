@@ -116,19 +116,27 @@ class CatalogStatusHelperTests(unittest.TestCase):
             "Next cloud update in 60m 00s",
         )
 
-    def test_music_catalog_ready_text_includes_cloud_update_time(self):
+    def test_music_catalog_shows_cloud_update_time_on_its_own_line(self):
         fake_app = type("FakeApp", (), {"music_index_details": {}})()
+        details = {
+            "track_count": 12360,
+            "cloud_updated_at": "2026-08-29T21:31:04Z",
+        }
         self.assertEqual(
             self.tracker.TrackerApp._music_index_ready_text(
                 fake_app,
-                {
-                    "track_count": 12360,
-                    "cloud_updated_at": "2026-08-29T21:31:04Z",
-                },
+                details,
+            ),
+            "Online SMW Central catalog ready — 12,360 songs",
+        )
+        self.assertEqual(
+            self.tracker.TrackerApp._music_index_last_update_text(
+                fake_app,
+                details,
             ),
             (
-                "Online SMW Central catalog ready — 12,360 songs"
-                " • Last cloud update: Aug 29, 2026 at 9:31 PM UTC"
+                "Last cloud update: Aug 29, 2026 at 9:31 PM UTC "
+                "(SMW Central time)"
             ),
         )
 

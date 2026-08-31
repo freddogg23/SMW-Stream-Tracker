@@ -71,6 +71,10 @@ class MisterSupportTests(unittest.TestCase):
             self.tracker.DEFAULT_CONFIG["mister_save_sram_after_level"]
         )
         self.assertEqual(
+            self.tracker.DEFAULT_CONFIG["mister_last_sram_saved_at"],
+            "",
+        )
+        self.assertEqual(
             self.tracker.MISTER_PERIODIC_SRAM_SAVE_INTERVAL_MS,
             5 * 60 * 1000,
         )
@@ -94,6 +98,15 @@ class MisterSupportTests(unittest.TestCase):
         self.assertIn("sram_payload=sram_payload", worker_source)
         self.assertIn('event_type == "level_complete"', event_source)
         self.assertIn('event_type == "mister_sram_save"', event_source)
+        dashboard_source = inspect.getsource(
+            self.tracker.TrackerApp._build_stream_desk_dashboard
+        )
+        self.assertIn("MiSTer SRAM autosave", dashboard_source)
+        self.assertIn(
+            "Every 5 min  ·  level clear  ·  checkpoint  ·  overworld",
+            dashboard_source,
+        )
+        self.assertIn("_record_mister_sram_save_success", flush_source)
 
         main_source = (
             MODULE_PATH.parent
@@ -188,6 +201,46 @@ class MisterSupportTests(unittest.TestCase):
         )
         self.assertEqual(app.mister_sram_save_after_id, "save-after")
         self.assertIsNotNone(app.root.callback)
+
+    def test_sram_dashboard_records_the_last_verified_save(self):
+        app = object.__new__(self.tracker.TrackerApp)
+        app.config = {
+            "selected_platform": "MiSTer",
+            "mister_save_sram_after_level": True,
+        }
+        app.mister_sram_dashboard_prompt = None
+        app.status_var = SimpleNamespace(set=mock.Mock())
+
+        with mock.patch.object(self.tracker, "save_config") as save_config_mock:
+            app._record_mister_sram_save_success(
+                {
+                    "profile": "D-10 Nano",
+                    "reason": "returned to the overworld",
+                    "rom_path": "/media/fat/games/SNES/Test Hack.sfc",
+                }
+            )
+
+        self.assertTrue(app.config["mister_last_sram_saved_at"])
+        self.assertEqual(
+            app.config["mister_last_sram_saved_profile"],
+            "D-10 Nano",
+        )
+        self.assertEqual(
+            app.config["mister_last_sram_saved_game"],
+            "Test Hack",
+        )
+        self.assertEqual(
+            app.config["mister_last_sram_saved_reason"],
+            "returned to the overworld",
+        )
+        status_text = app._mister_sram_saved_status_text()
+        self.assertIn("Last saved", status_text)
+        self.assertIn("D-10 Nano", status_text)
+        self.assertIn("returned to the overworld", status_text)
+        save_config_mock.assert_called_once_with(app.config)
+        app.status_var.set.assert_called_once_with(
+            "MiSTer SRAM saved and verified after returned to the overworld."
+        )
 
     def test_sram_save_transition_reasons_are_event_driven(self):
         reasons = self.tracker.mister_sram_transition_reasons(
@@ -447,10 +500,13 @@ class MisterSupportTests(unittest.TestCase):
         app._mister_run_checked = mock.Mock()
 
         with tempfile.TemporaryDirectory() as temporary_directory:
-            with mock.patch.object(
-                self.tracker,
-                "APP_DATA_DIR",
-                Path(temporary_directory),
+            with (
+                mock.patch.object(
+                    self.tracker,
+                    "APP_DATA_DIR",
+                    Path(temporary_directory),
+                ),
+                mock.patch.object(self.tracker, "save_config"),
             ):
                 app._flush_mister_sram_in_background(
                     {
