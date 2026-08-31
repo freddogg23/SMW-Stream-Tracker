@@ -6,7 +6,7 @@
     "Keeps every saved MiSTer profile tied to the correct console, even when multiple MiSTer systems are online.",
     "Sends only missing ROMs to MiSTer SD cards and FXPAK Pro cards instead of retransferring files already present.",
     "Expands automatic MiSTer SRAM protection with five-minute saves and saves at level clears, checkpoints, and overworld returns.",
-    "Captures live SRAM, writes it atomically to MiSTer's real basename-only save path, verifies the result, and refuses to replace newer valid progress.",
+    "Makes the MiSTer core flush its own complete Backup RAM image, verifies the core-owned save file, and refuses to report success or replace newer valid progress without proof.",
     "Keeps newer MiSTer Main versions in place instead of overwriting or downgrading them during setup.",
     "Keeps Current exit visible on the dashboard and shows Room number with the live Lunar Magic room ID for room-based hacks.",
     "Improves rapid consecutive death counting and SMW Central classification for same-named ROMs on different platforms.",
@@ -15,6 +15,6 @@
   ],
   "updater_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v2.2.3/SMWStreamTracker_Update_2.2.3.exe",
   "verification": "sha256",
-  "sha256": "0ae986b4f927e3c72944a124c2e9c519dd256c3213b9bbe95c1a44edca6cb123",
-  "size": 111799269
+  "sha256": "5c9afdfd1ef797308a48c2117ae8301446990d334eb5215938a0c291f3096b5a",
+  "size": 111772222
 }

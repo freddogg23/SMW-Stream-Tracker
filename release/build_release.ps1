@@ -232,12 +232,16 @@ else {
     $bundledIscc = Join-Path $projectRoot 'installer_tools\InnoSetup\ISCC.exe'
     $workspaceRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $projectRoot))
     $workspaceIscc = Join-Path $workspaceRoot 'installer_tools\InnoSetup\ISCC.exe'
+    $localIscc = Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'
     $defaultIscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
     if (Test-Path -LiteralPath $bundledIscc) {
         $isccPath = $bundledIscc
     }
     elseif (Test-Path -LiteralPath $workspaceIscc) {
         $isccPath = $workspaceIscc
+    }
+    elseif (Test-Path -LiteralPath $localIscc) {
+        $isccPath = $localIscc
     }
     elseif (Test-Path -LiteralPath $defaultIscc) {
         $isccPath = $defaultIscc
