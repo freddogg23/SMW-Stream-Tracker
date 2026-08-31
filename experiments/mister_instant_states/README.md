@@ -33,8 +33,8 @@ the exact official base binary used for verification, and the resulting
 `MiSTer-SMW-Virtual-States` binary. `UPSTREAM_SOURCE.txt` records the exact
 upstream repository and commit.
 
-To rebuild it, check out that upstream commit as `Main_MiSTer_20260707`, replace
-its `user_io.cpp` with the included modified file, provide the Arm GNU
+To rebuild it, check out that upstream commit as `Main_MiSTer_20260816_custom`,
+apply the included `input.cpp`, `user_io.cpp`, and `user_io.h` changes, provide the Arm GNU
 10.2-2020.11-compatible Windows toolchain, and run
 `build_mister_experimental.ps1`. The build's SHA-256 must match the value pinned
 in the tracker before it can be installed.

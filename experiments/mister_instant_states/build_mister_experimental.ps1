@@ -1,6 +1,6 @@
 param(
     [string]$ToolchainRoot = "",
-    [string]$SourceDirectory = "Main_MiSTer_20260707",
+    [string]$SourceDirectory = "Main_MiSTer_20260816_custom",
     [string]$BuildVersion = "SMWEXP"
 )
 

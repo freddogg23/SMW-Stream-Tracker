@@ -66,7 +66,7 @@ class MisterSupportTests(unittest.TestCase):
             self.tracker.DEFAULT_CONFIG["rom_builder_upload_to_mister"]
         )
 
-    def test_completed_levels_request_the_tracker_installed_sram_flush(self):
+    def test_completed_levels_save_a_verified_live_sram_snapshot(self):
         self.assertTrue(
             self.tracker.DEFAULT_CONFIG["mister_save_sram_after_level"]
         )
@@ -82,21 +82,24 @@ class MisterSupportTests(unittest.TestCase):
         )
         event_source = inspect.getsource(self.tracker.TrackerApp.process_events)
         worker_source = inspect.getsource(
-            self.tracker.TrackerWorker.send_level_completion_event
+            self.tracker.TrackerWorker.send_mister_sram_save_event
         )
-        self.assertIn("smw_sram_save", flush_source)
-        self.assertIn("/tmp/smw_sram_save_ack", flush_source)
-        self.assertIn('acknowledgement == "requested"', flush_source)
+        self.assertIn("MiSTer SRAM Backups", flush_source)
+        self.assertIn("_mister_sftp_write", flush_source)
+        self.assertIn("saved_payload != raw_payload", flush_source)
         self.assertIn('event_data.get("mister_host")', schedule_source)
+        self.assertIn('event_data.get("sram_payload"', schedule_source)
         self.assertIn("mister_host=normalize_mister_host", worker_source)
+        self.assertIn("MISTER_SRAM_SIZE", worker_source)
+        self.assertIn("sram_payload=sram_payload", worker_source)
         self.assertIn('event_type == "level_complete"', event_source)
-        self.assertIn("_schedule_mister_sram_save_after_level", event_source)
+        self.assertIn('event_type == "mister_sram_save"', event_source)
 
         main_source = (
             MODULE_PATH.parent
             / "experiments"
             / "mister_instant_states"
-            / "Main_MiSTer_20260707"
+            / "Main_MiSTer_20260816_custom"
             / "input.cpp"
         ).read_text(encoding="utf-8")
         self.assertIn('!strcmp(cmd, "smw_sram_save")', main_source)
@@ -107,7 +110,7 @@ class MisterSupportTests(unittest.TestCase):
             MODULE_PATH.parent
             / "experiments"
             / "mister_instant_states"
-            / "Main_MiSTer_20260707"
+            / "Main_MiSTer_20260816_custom"
             / "user_io.cpp"
         ).read_text(encoding="utf-8")
         self.assertIn("smw_sram_write_generation++", user_io_source)
@@ -116,7 +119,7 @@ class MisterSupportTests(unittest.TestCase):
             MODULE_PATH.parent
             / "experiments"
             / "mister_instant_states"
-            / "Main_MiSTer_20260707"
+            / "Main_MiSTer_20260816_custom"
             / "bin_experimental"
             / "MiSTer-SMW-Virtual-States"
         )
@@ -162,6 +165,10 @@ class MisterSupportTests(unittest.TestCase):
                 "mister_ssh_user": "root",
                 "mister_ssh_port": 22,
                 "mister_profile": "Online console",
+                "rom_path": (
+                    "/media/fat/games/SNES/SMW Stream Tracker/Hack.sfc"
+                ),
+                "sram_payload": b"s" * self.tracker.MISTER_SRAM_SIZE,
             }
         )
 
@@ -173,6 +180,10 @@ class MisterSupportTests(unittest.TestCase):
                 "port": 22,
                 "profile": "Online console",
                 "reason": "safe gameplay boundary",
+                "rom_path": (
+                    "/media/fat/games/SNES/SMW Stream Tracker/Hack.sfc"
+                ),
+                "sram_payload": b"s" * self.tracker.MISTER_SRAM_SIZE,
             },
         )
         self.assertEqual(app.mister_sram_save_after_id, "save-after")
@@ -231,13 +242,30 @@ class MisterSupportTests(unittest.TestCase):
             },
             events,
         )
-        worker.send_mister_sram_save_event("returned to the overworld")
+        worker.previous_rom_path = (
+            "/media/fat/games/SNES/SMW Stream Tracker/Hack.sfc"
+        )
+        worker.read_memory = mock.Mock(
+            return_value=b"s" * self.tracker.MISTER_SRAM_SIZE
+        )
+        worker.send_mister_sram_save_event(
+            "returned to the overworld",
+            mock.Mock(),
+        )
         event = events.get_nowait()
         self.assertEqual(event["type"], "mister_sram_save")
         self.assertEqual(event["reason"], "returned to the overworld")
         self.assertEqual(event["mister_host"], "192.168.50.145")
         self.assertEqual(event["mister_ssh_port"], 2222)
         self.assertEqual(event["mister_profile"], "Second MiSTer")
+        self.assertEqual(
+            event["rom_path"],
+            "/media/fat/games/SNES/SMW Stream Tracker/Hack.sfc",
+        )
+        self.assertEqual(
+            event["sram_payload"],
+            b"s" * self.tracker.MISTER_SRAM_SIZE,
+        )
 
     def test_periodic_sram_save_runs_only_during_active_mister_play(self):
         class FakeRoot:
@@ -257,21 +285,202 @@ class MisterSupportTests(unittest.TestCase):
         app.root = FakeRoot()
         app.mister_sram_periodic_after_id = None
         app.connection_is_connected = True
-        app.worker = SimpleNamespace(game_started=True)
+        app.worker = SimpleNamespace(
+            game_started=True,
+            request_mister_sram_snapshot=mock.Mock(),
+        )
         app.config = {
             "selected_platform": "MiSTer",
             "mister_save_sram_after_level": True,
         }
-        app._schedule_mister_sram_save_after_level = mock.Mock()
-
         app._arm_mister_periodic_sram_save()
         self.assertEqual(
             app.root.delay,
             self.tracker.MISTER_PERIODIC_SRAM_SAVE_INTERVAL_MS,
         )
         app.root.callback()
-        app._schedule_mister_sram_save_after_level.assert_called_once_with(
-            {"reason": "five-minute interval"}
+        app.worker.request_mister_sram_snapshot.assert_called_once_with(
+            "five-minute interval"
+        )
+
+    def test_live_mister_sram_destination_matches_mister_basename_rule(self):
+        self.assertEqual(
+            self.tracker.mister_sram_save_destination_for_rom_path(
+                "/media/fat/games/SNES/SMW Stream Tracker/Hack.sfc"
+            ),
+            "/media/fat/saves/SNES/Hack.sav",
+        )
+        with self.assertRaises(ValueError):
+            self.tracker.mister_sram_save_destination_for_rom_path(
+                "/media/fat/games/Genesis/Hack.bin"
+            )
+
+    def test_live_mister_sram_never_replaces_newer_valid_progress(self):
+        def valid_sram(exit_count):
+            slot = bytearray(self.tracker.SAVE_SLOT_SIZE)
+            slot[0x8C] = exit_count
+            checksum = (0x5A5A - sum(slot[:0x8D])) & 0xFFFF
+            slot[0x8D:0x8F] = checksum.to_bytes(2, "little")
+            sram = bytearray(b"\xFF" * self.tracker.MISTER_SRAM_SIZE)
+            for offset in (
+                self.tracker.SAVE_SLOT_OFFSETS[0],
+                self.tracker.SAVE_SLOT_OFFSETS[0]
+                + self.tracker.SMW_SRAM_BACKUP_SLOT_DELTA,
+            ):
+                sram[offset : offset + self.tracker.SAVE_SLOT_SIZE] = slot
+            return bytes(sram)
+
+        recovered = valid_sram(20)
+        older_live_memory = valid_sram(1)
+        newer_live_memory = valid_sram(21)
+        blank_live_memory = b"\xFF" * self.tracker.MISTER_SRAM_SIZE
+
+        self.assertEqual(
+            self.tracker.smw_sram_valid_slot_exit_counts(recovered),
+            {0: 20},
+        )
+        self.assertIn(
+            "no valid Mario A/B/C save",
+            self.tracker.mister_sram_regression_reason(
+                recovered,
+                blank_live_memory,
+            ),
+        )
+        self.assertIn(
+            "Mario A: SD card 20, live 1",
+            self.tracker.mister_sram_regression_reason(
+                recovered,
+                older_live_memory,
+            ),
+        )
+        self.assertEqual(
+            self.tracker.mister_sram_regression_reason(
+                recovered,
+                newer_live_memory,
+            ),
+            "",
+        )
+        self.assertEqual(
+            self.tracker.mister_sram_regression_reason(
+                blank_live_memory,
+                older_live_memory,
+            ),
+            "",
+        )
+        flush_source = inspect.getsource(
+            self.tracker.TrackerApp._flush_mister_sram_in_background
+        )
+        self.assertIn("mister_sram_regression_reason", flush_source)
+        self.assertIn("MisterSramRegressionError", flush_source)
+
+    def test_live_mister_sram_save_preserves_and_verifies_the_previous_file(self):
+        class WriteBuffer(io.BytesIO):
+            def __init__(self, files, path):
+                super().__init__()
+                self.files = files
+                self.path = path
+
+            def close(self):
+                if not self.closed:
+                    self.files[self.path] = self.getvalue()
+                super().close()
+
+        class FakeSftp:
+            def __init__(self, destination):
+                self.files = {destination: b"previous-save"}
+                self.directories = {
+                    "/",
+                    "/media",
+                    "/media/fat",
+                    "/media/fat/saves",
+                    "/media/fat/saves/SNES",
+                }
+
+            def stat(self, path):
+                if path in self.files:
+                    return SimpleNamespace(st_size=len(self.files[path]))
+                if path in self.directories:
+                    return SimpleNamespace(st_size=0)
+                raise OSError(path)
+
+            def mkdir(self, path):
+                self.directories.add(path)
+
+            def open(self, path, mode):
+                if mode == "wb":
+                    return WriteBuffer(self.files, path)
+                if mode == "rb" and path in self.files:
+                    return io.BytesIO(self.files[path])
+                raise OSError(path)
+
+            def remove(self, path):
+                if path not in self.files:
+                    raise OSError(path)
+                del self.files[path]
+
+            def posix_rename(self, source, destination):
+                self.files[destination] = self.files.pop(source)
+
+            def close(self):
+                return None
+
+        class FakeRoot:
+            def after(self, _delay, callback):
+                callback()
+
+        rom_path = "/media/fat/games/SNES/SMW Stream Tracker/Hack.sfc"
+        destination = "/media/fat/saves/SNES/Hack.sav"
+        payload = b"s" * self.tracker.MISTER_SRAM_SIZE
+        sftp = FakeSftp(destination)
+        client = SimpleNamespace(open_sftp=lambda: sftp, close=lambda: None)
+        app = object.__new__(self.tracker.TrackerApp)
+        app.config = {
+            "mister_host": "192.168.50.145",
+            "mister_ssh_user": "root",
+            "mister_ssh_port": 22,
+        }
+        app.mister_session_password = ""
+        app.root = FakeRoot()
+        app.status_var = SimpleNamespace(set=mock.Mock())
+        app._open_mister_ssh_client = mock.Mock(return_value=client)
+        app._verified_mister_peer = mock.Mock()
+        app._mister_run_checked = mock.Mock()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with mock.patch.object(
+                self.tracker,
+                "APP_DATA_DIR",
+                Path(temporary_directory),
+            ):
+                app._flush_mister_sram_in_background(
+                    {
+                        "host": "192.168.50.145",
+                        "user": "root",
+                        "port": 22,
+                        "profile": "D-10 Nano",
+                        "reason": "returned to the overworld",
+                        "rom_path": rom_path,
+                        "sram_payload": payload,
+                    }
+                )
+                snapshots = list(
+                    (Path(temporary_directory) / "MiSTer SRAM Backups").glob(
+                        "*/*.sav"
+                    )
+                )
+                snapshot_payloads = [path.read_bytes() for path in snapshots]
+
+        self.assertEqual(sftp.files[destination], payload)
+        self.assertEqual(
+            sftp.files[destination + ".smwtracker-previous"],
+            b"previous-save",
+        )
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshot_payloads, [payload])
+        app._mister_run_checked.assert_called_once_with(
+            client,
+            "sync",
+            "MiSTer could not commit the SRAM snapshot to its SD card.",
         )
 
     def test_mister_rom_root_stays_inside_the_snes_sd_folder(self):
@@ -719,7 +928,7 @@ class MisterSupportTests(unittest.TestCase):
             MODULE_PATH.parent
             / "experiments"
             / "mister_instant_states"
-            / "Main_MiSTer_20260707"
+            / "Main_MiSTer_20260816_custom"
             / "bin_experimental"
             / "MiSTer-SMW-Virtual-States"
         )
@@ -736,9 +945,9 @@ class MisterSupportTests(unittest.TestCase):
             MODULE_PATH.parent
             / "experiments"
             / "mister_instant_states"
-            / "Main_MiSTer_20260707"
+            / "Main_MiSTer_20260816_custom"
             / "releases"
-            / "MiSTer_20260707"
+            / "MiSTer_20260816"
         )
         self.assertTrue(base_path.is_file())
         import hashlib
@@ -749,7 +958,7 @@ class MisterSupportTests(unittest.TestCase):
         )
         self.assertEqual(
             self.tracker.MISTER_VIRTUAL_STATES_BASE_VERSION,
-            "20260707",
+            "20260816",
         )
 
     def test_virtual_state_bridge_waits_before_restoring_native_slot_four(self):
@@ -757,7 +966,7 @@ class MisterSupportTests(unittest.TestCase):
             MODULE_PATH.parent
             / "experiments"
             / "mister_instant_states"
-            / "Main_MiSTer_20260707"
+            / "Main_MiSTer_20260816_custom"
             / "user_io.cpp"
         )
         source = source_path.read_text(encoding="utf-8")
@@ -779,7 +988,7 @@ class MisterSupportTests(unittest.TestCase):
         self.assertIn("int virtual_shortcut = virtual_slot;", source)
         self.assertIn("%.*s%d%s", source)
 
-    def test_experimental_build_defaults_to_the_compatible_20260707_source(self):
+    def test_experimental_build_defaults_to_the_compatible_20260816_source(self):
         build_script = (
             MODULE_PATH.parent
             / "experiments"
@@ -787,7 +996,7 @@ class MisterSupportTests(unittest.TestCase):
             / "build_mister_experimental.ps1"
         ).read_text(encoding="utf-8-sig")
         self.assertIn(
-            '[string]$SourceDirectory = "Main_MiSTer_20260707"',
+            '[string]$SourceDirectory = "Main_MiSTer_20260816_custom"',
             build_script,
         )
 
@@ -797,9 +1006,9 @@ class MisterSupportTests(unittest.TestCase):
         )
         self.assertIn("MiSTer-SMW-Virtual-States", build_spec)
         self.assertIn("mister_experimental", build_spec)
-        self.assertIn("Main_MiSTer_20260707", build_spec)
+        self.assertIn("Main_MiSTer_20260816_custom", build_spec)
         self.assertIn("UPSTREAM_SOURCE.txt", build_spec)
-        self.assertIn("Main_MiSTer_20260707\\\\LICENSE", build_spec)
+        self.assertIn("Main_MiSTer_20260816_custom\\\\LICENSE", build_spec)
 
     def test_windows_build_refuses_to_package_without_paramiko(self):
         build_spec = (MODULE_PATH.parent / "SMWStreamTracker.spec").read_text(
@@ -1113,6 +1322,37 @@ class MisterSupportTests(unittest.TestCase):
             setup_source,
         )
         self.assertNotIn("install_button = self._make_action_button(", setup_source)
+
+    def test_newer_mister_main_skips_only_optional_virtual_states(self):
+        setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)
+        install_source = inspect.getsource(
+            self.tracker.TrackerApp._install_mister_virtual_states
+        )
+        self.assertIn(
+            "except MisterVirtualStatesCompatibilityError as error:",
+            setup_source,
+        )
+        self.assertIn("virtual_states_installed = False", setup_source)
+        self.assertIn(
+            "Its newer MiSTer Main ",
+            setup_source,
+        )
+        self.assertIn(
+            "was kept unchanged. Live tracking and verified ",
+            setup_source,
+        )
+        self.assertIn(
+            "automatic SRAM saving are ready. Virtual Save ",
+            setup_source,
+        )
+        self.assertIn(
+            "raise MisterVirtualStatesCompatibilityError(",
+            install_source,
+        )
+        self.assertEqual(
+            install_source.count("raise MisterVirtualStatesCompatibilityError("),
+            2,
+        )
 
     def test_mister_automatic_setup_instructions_are_complete(self):
         setup_source = inspect.getsource(self.tracker.TrackerApp.open_mister_setup)

@@ -334,12 +334,12 @@ $misterSourceItems = @(
     'experiments\mister_instant_states\README.md',
     'experiments\mister_instant_states\UPSTREAM_SOURCE.txt',
     'experiments\mister_instant_states\build_mister_experimental.ps1',
-    'experiments\mister_instant_states\Main_MiSTer_20260707\LICENSE',
-    'experiments\mister_instant_states\Main_MiSTer_20260707\input.cpp',
-    'experiments\mister_instant_states\Main_MiSTer_20260707\user_io.cpp',
-    'experiments\mister_instant_states\Main_MiSTer_20260707\user_io.h',
-    'experiments\mister_instant_states\Main_MiSTer_20260707\releases\MiSTer_20260707',
-    'experiments\mister_instant_states\Main_MiSTer_20260707\bin_experimental\MiSTer-SMW-Virtual-States'
+    'experiments\mister_instant_states\Main_MiSTer_20260816_custom\LICENSE',
+    'experiments\mister_instant_states\Main_MiSTer_20260816_custom\input.cpp',
+    'experiments\mister_instant_states\Main_MiSTer_20260816_custom\user_io.cpp',
+    'experiments\mister_instant_states\Main_MiSTer_20260816_custom\user_io.h',
+    'experiments\mister_instant_states\Main_MiSTer_20260816_custom\releases\MiSTer_20260816',
+    'experiments\mister_instant_states\Main_MiSTer_20260816_custom\bin_experimental\MiSTer-SMW-Virtual-States'
 )
 foreach ($relativePath in $misterSourceItems) {
     $sourcePath = Join-Path $projectRoot $relativePath

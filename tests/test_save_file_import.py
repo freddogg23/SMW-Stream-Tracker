@@ -104,7 +104,7 @@ class SaveFileImportTests(unittest.TestCase):
             self.assertEqual(destination, existing)
             self.assertEqual(method, "saved local ROM mapping")
 
-    def test_mister_destination_mirrors_rom_subfolders_and_basename(self):
+    def test_mister_destination_uses_mister_rom_basename(self):
         app = self.make_app()
         destination = app._mister_save_destination(
             {
@@ -118,13 +118,10 @@ class SaveFileImportTests(unittest.TestCase):
 
         self.assertEqual(
             destination,
-            (
-                "/media/fat/saves/SNES/SMW Stream Tracker/A/"
-                "Actual MiSTer Name.sav"
-            ),
+            "/media/fat/saves/SNES/Actual MiSTer Name.sav",
         )
 
-    def test_mister_default_rom_root_is_mirrored_in_save_destination(self):
+    def test_mister_default_rom_root_uses_basename_save_destination(self):
         app = self.make_app(
             {"mister_rom_root": "/media/fat/games/SNES/SMW Stream Tracker"}
         )
@@ -138,7 +135,7 @@ class SaveFileImportTests(unittest.TestCase):
 
         self.assertEqual(
             destination,
-            "/media/fat/saves/SNES/SMW Stream Tracker/Tortured Souls 3.sav",
+            "/media/fat/saves/SNES/Tortured Souls 3.sav",
         )
 
     def test_raw_snes_save_payload_is_preserved(self):

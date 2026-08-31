@@ -1,9 +1,12 @@
 Upstream repository: https://github.com/MiSTer-devel/Main_MiSTer.git
-Upstream commit: 93d13fb690db4581768389450fb639822ae88333
-Upstream release: 20260707
+Upstream commit: fd9d609df72783fe550baf3a76b7064fed792da2
+Official distribution binary SHA-256: ef0dbfde3744ccb160444932d8a7d31f298b16a95db506852c99ece018321596
+Upstream source date: 20260816
 
-The modified source file included with SMW Stream Tracker is:
-Main_MiSTer_20260707/user_io.cpp
+The modified source files included with SMW Stream Tracker are:
+Main_MiSTer_20260816_custom/input.cpp
+Main_MiSTer_20260816_custom/user_io.cpp
+Main_MiSTer_20260816_custom/user_io.h
 
 See README.md and build_mister_experimental.ps1 in this folder for the build
 and verification procedure.

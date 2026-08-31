@@ -174,12 +174,12 @@ a = Analysis(
         ),
         ('tools\\streamerbot_reward_setup.ps1', 'tools'),
         (
-            'experiments\\mister_instant_states\\Main_MiSTer_20260707'
+            'experiments\\mister_instant_states\\Main_MiSTer_20260816_custom'
             '\\bin_experimental\\MiSTer-SMW-Virtual-States',
             'mister_experimental',
         ),
         (
-            'experiments\\mister_instant_states\\Main_MiSTer_20260707\\LICENSE',
+            'experiments\\mister_instant_states\\Main_MiSTer_20260816_custom\\LICENSE',
             'mister_experimental',
         ),
         (

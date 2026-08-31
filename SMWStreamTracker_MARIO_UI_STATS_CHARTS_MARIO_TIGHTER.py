@@ -893,7 +893,7 @@ except ImportError:
 
 APP_NAME = "SMW Stream Tracker"
 APP_VERSION = "2.2.3"
-APP_BUILD_DATE = "2026-08-30"
+APP_BUILD_DATE = "2026-08-31"
 
 GAME_MODE_STAGE_IMAGE_FILES = {
     "play_random_hack": "stage_scene_yoshis_island_2.png",
@@ -2689,20 +2689,26 @@ MISTER_UARTMODE_DOWNLOAD_SHA256 = (
 )
 MISTER_UARTMODE_MAX_BYTES = 128 * 1024
 MISTER_VIRTUAL_STATES_BINARY_SHA256 = (
-    "5b374a1742adfa216875cca9b5ed688df6220911cd47f2e63e06419f85e3aa77"
+    "ecc1852b4ba16979115ee1da6de94a4962ff0590dd272fca2a95380ab34d3b37"
 )
 MISTER_VIRTUAL_STATES_MAX_BYTES = 64 * 1024 * 1024
 MISTER_LEVEL_SRAM_SAVE_DELAY_MS = 2200
 MISTER_LEVEL_SRAM_SAVE_MIN_INTERVAL_SECONDS = 8.0
 MISTER_PERIODIC_SRAM_SAVE_INTERVAL_MS = 5 * 60 * 1000
 MISTER_VIRTUAL_STATES_UPSTREAM_COMMIT = (
-    "93d13fb690db4581768389450fb639822ae88333"
+    "fd9d609df72783fe550baf3a76b7064fed792da2"
 )
-MISTER_VIRTUAL_STATES_BASE_VERSION = "20260707"
+MISTER_VIRTUAL_STATES_BASE_VERSION = "20260816"
 MISTER_VIRTUAL_STATES_BASE_SHA256 = (
-    "7ca3cd2f224b9264d0889f593a0d77aafa5adda61910baba92c5ae401e26fcce"
+    "ef0dbfde3744ccb160444932d8a7d31f298b16a95db506852c99ece018321596"
 )
 MISTER_VIRTUAL_STATES_TOOLCHAIN_VERSION = "Arm GNU 10.2-2020.11"
+
+
+class MisterVirtualStatesCompatibilityError(RuntimeError):
+    """A newer/changed MiSTer Main must be kept instead of downgraded."""
+
+
 MISTER_VIRTUAL_STATES_REMOTE_FOLDER = "/media/fat/SMWStreamTracker"
 MISTER_VIRTUAL_STATES_BACKUP_FOLDER = (
     MISTER_VIRTUAL_STATES_REMOTE_FOLDER + "/Backups"
@@ -29385,8 +29391,93 @@ def mister_mgl_text(
     return ET.tostring(root, encoding="unicode") + "\n"
 
 SRAM_BASE_ADDRESS = 0xE00000
+MISTER_SRAM_SIZE = 0x0800
 SAVE_SLOT_SIZE = 0x8F
 SAVE_SLOT_OFFSETS = {0: 0x000, 1: 0x08F, 2: 0x11E}
+
+
+def mister_sram_save_destination_for_rom_path(rom_path: object) -> str:
+    """Return MiSTer Main's basename-only SNES save path for one ROM."""
+    normalized = str(rom_path or "").strip().replace("\\", "/")
+    remote_rom = PurePosixPath(normalized)
+    try:
+        relative_rom = remote_rom.relative_to("/media/fat/games/SNES")
+    except ValueError as error:
+        raise ValueError(
+            "The active MiSTer ROM path is not inside /media/fat/games/SNES."
+        ) from error
+    if relative_rom.suffix.casefold() not in {".sfc", ".smc", ".fig", ".bin"}:
+        raise ValueError("The active MiSTer file is not a supported SNES ROM.")
+    return str(
+        PurePosixPath("/media/fat/saves/SNES")
+        / remote_rom.with_suffix(".sav").name
+    )
+
+
+SMW_SRAM_BACKUP_SLOT_DELTA = 0x1AD
+
+
+class MisterSramRegressionError(RuntimeError):
+    """A live SRAM sample would replace newer valid progress on the SD card."""
+
+
+def smw_sram_valid_slot_exit_counts(payload: object) -> dict[int, int]:
+    """Return validated Mario A/B/C exit counters from one SMW SRAM image."""
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        return {}
+    sram = bytes(payload)
+    if len(sram) < MISTER_SRAM_SIZE:
+        return {}
+    counts: dict[int, int] = {}
+    for slot, primary_offset in SAVE_SLOT_OFFSETS.items():
+        valid_counts: list[int] = []
+        for offset in (
+            primary_offset,
+            primary_offset + SMW_SRAM_BACKUP_SLOT_DELTA,
+        ):
+            slot_payload = sram[offset : offset + SAVE_SLOT_SIZE]
+            if len(slot_payload) != SAVE_SLOT_SIZE:
+                continue
+            stored_checksum = int.from_bytes(slot_payload[0x8D:0x8F], "little")
+            if (sum(slot_payload[:0x8D]) + stored_checksum) & 0xFFFF != 0x5A5A:
+                continue
+            valid_counts.append(int(slot_payload[0x8C]))
+        if valid_counts:
+            counts[int(slot)] = max(valid_counts)
+    return counts
+
+
+def mister_sram_regression_reason(
+    existing_payload: object,
+    candidate_payload: object,
+) -> str:
+    """Explain why a live sample must not replace valid newer SMW progress."""
+    existing_counts = smw_sram_valid_slot_exit_counts(existing_payload)
+    if not existing_counts:
+        return ""
+    candidate_counts = smw_sram_valid_slot_exit_counts(candidate_payload)
+    if not candidate_counts:
+        return (
+            "Live SRAM has no valid Mario A/B/C save, while the SD card has "
+            "valid progress. The existing save was preserved."
+        )
+    regressions: list[str] = []
+    for slot, existing_count in sorted(existing_counts.items()):
+        candidate_count = candidate_counts.get(slot)
+        if candidate_count is None or candidate_count < existing_count:
+            slot_name = chr(ord("A") + slot)
+            live_text = "missing" if candidate_count is None else str(candidate_count)
+            regressions.append(
+                f"Mario {slot_name}: SD card {existing_count}, live {live_text}"
+            )
+    if not regressions:
+        return ""
+    return (
+        "Live SRAM is older than the valid SD-card save ("
+        + "; ".join(regressions)
+        + "). The existing save was preserved."
+    )
+
 
 DATABASE_SHEET = "Hack Database"
 TRACKER_SHEET = "Tracker"
@@ -31550,17 +31641,63 @@ class TrackerWorker:
             ),
         )
 
-    def send_mister_sram_save_event(self, reason: str) -> None:
-        """Request a UI-thread MiSTer SRAM flush for this exact console."""
+    def request_mister_sram_snapshot(self, reason: str) -> None:
+        """Queue a live-SRAM snapshot on the worker's attached connection."""
+        payload = json.dumps(
+            {"reason": str(reason or "safe gameplay boundary")},
+            separators=(",", ":"),
+        )
+        self.command_queue.put("mister_sram_snapshot:" + payload)
+
+    def send_mister_sram_save_event(
+        self,
+        reason: str,
+        websocket_connection: websocket.WebSocket | None = None,
+    ) -> None:
+        """Read live SRAM and give the UI a verified per-ROM disk snapshot."""
         if (
             normalize_platform_name(self.config.get("selected_platform", ""))
             != "MiSTer"
             or not bool(self.config.get("mister_save_sram_after_level", True))
         ):
             return
+        rom_path = str(self.previous_rom_path or "").strip()
+        if websocket_connection is None or not rom_path:
+            self.log(
+                "MiSTer SRAM snapshot skipped because the live ROM connection "
+                "is not ready.",
+                show_status=False,
+            )
+            return
+        try:
+            sram_payload = self.read_memory(
+                websocket_connection,
+                f"{SRAM_BASE_ADDRESS:X}",
+                MISTER_SRAM_SIZE,
+            )
+            if len(sram_payload) != MISTER_SRAM_SIZE:
+                raise RuntimeError(
+                    f"expected {MISTER_SRAM_SIZE} bytes, received "
+                    f"{len(sram_payload)}"
+                )
+            if not any(value not in {0x00, 0xFF} for value in sram_payload):
+                raise RuntimeError("the live SRAM buffer is blank")
+        except Exception as error:
+            self.log(
+                f"Could not capture live MiSTer SRAM: {error}",
+                show_status=False,
+            )
+            self.send_event(
+                "mister_sram_save_failed",
+                reason=str(reason or "safe gameplay boundary"),
+                error=str(error),
+            )
+            return
         self.send_event(
             "mister_sram_save",
             reason=str(reason or "safe gameplay boundary"),
+            rom_path=rom_path,
+            sram_payload=sram_payload,
             mister_host=normalize_mister_host(
                 self.config.get("mister_host", "MiSTer")
             ),
@@ -31572,7 +31709,6 @@ class TrackerWorker:
                 self.config.get("active_mister_profile", "MiSTer") or "MiSTer"
             ),
         )
-
     def log(self, message: str, show_status: bool = True) -> None:
         output_folder = Path(str(self.config["output_folder"]))
         log_file = output_folder / "SMWTracker.log"
@@ -32520,6 +32656,17 @@ class TrackerWorker:
                 finally:
                     self.stop_event.set()
                 return
+
+            if command.startswith("mister_sram_snapshot:"):
+                try:
+                    payload = json.loads(command.split(":", 1)[1])
+                    reason = str(
+                        payload.get("reason", "five-minute interval")
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    reason = "five-minute interval"
+                self.send_mister_sram_save_event(reason, ws)
+                continue
 
             if command == "reload_spreadsheet":
                 try:
@@ -37940,7 +38087,10 @@ finally {
                 and self.level_id is not None
             ),
         ):
-            self.send_mister_sram_save_event(sram_reason)
+            self.send_mister_sram_save_event(
+                sram_reason,
+                websocket_connection,
+            )
 
         # A goal-tape/orb update is displayed immediately while SMW is still
         # running its end sequence.  Keep that value provisional until the
@@ -38334,7 +38484,10 @@ finally {
             and not self.level_finished
         ):
             self.level_finished = True
-            self.send_mister_sram_save_event("level cleared")
+            self.send_mister_sram_save_event(
+                "level cleared",
+                websocket_connection,
+            )
             goal_route = (
                 "secret"
                 if int(state.get("secret_goal_flag", 0)) != 0
@@ -38398,7 +38551,10 @@ finally {
         ):
             if not self.level_finished:
                 self.level_finished = True
-                self.send_mister_sram_save_event("level cleared")
+                self.send_mister_sram_save_event(
+                    "level cleared",
+                    websocket_connection,
+                )
 
             pending_route = self.pending_goal_route
             if (
@@ -48098,9 +48254,7 @@ class TrackerApp:
                 ) == "MiSTer"
                 and bool(self.config.get("mister_save_sram_after_level", True))
             ):
-                self._schedule_mister_sram_save_after_level(
-                    {"reason": "five-minute interval"}
-                )
+                worker.request_mister_sram_snapshot("five-minute interval")
             self._arm_mister_periodic_sram_save()
 
         try:
@@ -48156,6 +48310,8 @@ class TrackerApp:
             "reason": str(
                 event_data.get("reason") or "safe gameplay boundary"
             ),
+            "rom_path": str(event_data.get("rom_path", "") or "").strip(),
+            "sram_payload": event_data.get("sram_payload", b""),
         }
         self.mister_sram_save_generation += 1
         generation = self.mister_sram_save_generation
@@ -48210,7 +48366,7 @@ class TrackerApp:
         self,
         target: dict[str, Any] | None = None,
     ) -> None:
-        """Ask the tracker-installed MiSTer Main to save and verify SNES SRAM."""
+        """Persist a live SNI SRAM snapshot without replacing MiSTer Main."""
 
         client = None
         save_target = target if isinstance(target, dict) else {}
@@ -48232,7 +48388,42 @@ class TrackerApp:
             )
         except (TypeError, ValueError):
             port = 22
+        rom_path = str(save_target.get("rom_path", "") or "").strip()
+        raw_payload = save_target.get("sram_payload", b"")
+        if isinstance(raw_payload, bytearray):
+            raw_payload = bytes(raw_payload)
+        if not isinstance(raw_payload, bytes) or len(raw_payload) != MISTER_SRAM_SIZE:
+            append_error_log(
+                "MiSTer automatic SRAM save",
+                "A complete live SRAM snapshot was not available; no save "
+                "file was changed.",
+            )
+            return
         try:
+            destination = mister_sram_save_destination_for_rom_path(rom_path)
+
+            snapshot_root = APP_DATA_DIR / "MiSTer SRAM Backups"
+            snapshot_key = hashlib.sha256(
+                rom_path.encode("utf-8", errors="replace")
+            ).hexdigest()[:12]
+            snapshot_folder = snapshot_root / snapshot_key
+            snapshot_folder.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            local_snapshot = snapshot_folder / f"{timestamp}.sav"
+            local_staged = local_snapshot.with_suffix(".tmp")
+            local_staged.write_bytes(raw_payload)
+            local_staged.replace(local_snapshot)
+            snapshots = sorted(
+                snapshot_folder.glob("*.sav"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            for expired_snapshot in snapshots[48:]:
+                try:
+                    expired_snapshot.unlink()
+                except OSError:
+                    pass
+
             client = self._open_mister_ssh_client(
                 host,
                 user,
@@ -48241,47 +48432,102 @@ class TrackerApp:
                 timeout=8,
             )
             self._verified_mister_peer(client)
-            command = (
-                "rm -f /tmp/smw_sram_save_ack; "
-                "printf 'smw_sram_save\n' > /dev/MiSTer_cmd; "
-                "for n in 1 2 3 4 5 6 7 8 9 10; do "
-                "test -s /tmp/smw_sram_save_ack && break; sleep 1; done; "
-                "ack=$(cat /tmp/smw_sram_save_ack 2>/dev/null); "
-                "printf '%s' \"$ack\"; "
-                "test \"$ack\" = saved -o \"$ack\" = requested"
-            )
-            _stdin, stdout, stderr = client.exec_command(command, timeout=15)
-            exit_status = stdout.channel.recv_exit_status()
-            acknowledgement = stdout.read().decode(
-                "utf-8", errors="replace"
-            ).strip()
-            error_output = stderr.read().decode(
-                "utf-8", errors="replace"
-            ).strip()
-            if exit_status != 0:
-                detail = acknowledgement or error_output or "no acknowledgement"
-                raise RuntimeError(detail)
-            if acknowledgement == "requested":
-                append_error_log(
-                    "MiSTer automatic SRAM save",
-                    "The installed MiSTer support acknowledged the save request "
-                    "but cannot verify disk writes. Run Find & Set Up MiSTer "
-                    "once to install the verified saver.",
+            sftp = client.open_sftp()
+            staged = destination + f".{os.getpid()}.smwtracker.tmp"
+            try:
+                self._mister_sftp_makedirs(
+                    sftp,
+                    str(PurePosixPath(destination).parent),
                 )
-        except Exception as error:
-            # Never interrupt play with a modal dialog, but preserve an exact
-            # reason and show a short status so setup problems are actionable.
-            append_error_log(
-                "MiSTer automatic SRAM save",
-                f"Could not save SRAM on {host}:{port}: {error}",
+                try:
+                    existing_payload = self._mister_sftp_read(
+                        sftp,
+                        destination,
+                        maximum_bytes=1024 * 1024,
+                    )
+                except OSError:
+                    existing_payload = b""
+                regression_reason = mister_sram_regression_reason(
+                    existing_payload,
+                    raw_payload,
+                )
+                if regression_reason:
+                    raise MisterSramRegressionError(regression_reason)
+                if existing_payload and existing_payload != raw_payload:
+                    self._mister_sftp_write(
+                        sftp,
+                        destination + ".smwtracker-previous",
+                        existing_payload,
+                    )
+                self._mister_sftp_write(sftp, staged, raw_payload)
+                staged_payload = self._mister_sftp_read(
+                    sftp,
+                    staged,
+                    maximum_bytes=1024 * 1024,
+                )
+                if staged_payload != raw_payload:
+                    raise RuntimeError(
+                        "MiSTer did not store the full staged SRAM snapshot."
+                    )
+                try:
+                    sftp.posix_rename(staged, destination)
+                except (AttributeError, OSError):
+                    self._mister_run_checked(
+                        client,
+                        "mv -f "
+                        + shlex.quote(staged)
+                        + " "
+                        + shlex.quote(destination),
+                        "MiSTer could not finish the verified SRAM save.",
+                    )
+                saved_payload = self._mister_sftp_read(
+                    sftp,
+                    destination,
+                    maximum_bytes=1024 * 1024,
+                )
+                if saved_payload != raw_payload:
+                    raise RuntimeError(
+                        "MiSTer SRAM verification did not match live memory."
+                    )
+            finally:
+                try:
+                    sftp.remove(staged)
+                except (OSError, UnboundLocalError):
+                    pass
+                sftp.close()
+            self._mister_run_checked(
+                client,
+                "sync",
+                "MiSTer could not commit the SRAM snapshot to its SD card.",
             )
             try:
                 self.root.after(
                     0,
                     lambda: self.status_var.set(
-                        "MiSTer SRAM was not saved. Run Find & Set Up MiSTer "
-                        "again, then load the SNES core."
+                        "MiSTer SRAM saved and verified for the current game."
                     ),
+                )
+            except tk.TclError:
+                pass
+        except Exception as error:
+            append_error_log(
+                "MiSTer automatic SRAM save",
+                f"Could not save SRAM on {host}:{port}: {error}",
+            )
+            if isinstance(error, MisterSramRegressionError):
+                status_message = (
+                    "MiSTer SRAM protection kept the newer existing save; "
+                    "live memory was older or incomplete."
+                )
+            else:
+                status_message = (
+                    "MiSTer SRAM was not saved. Check the selected MiSTer "
+                    "profile and keep the SNES core connected."
+                )
+            try:
+                self.root.after(
+                    0,
+                    lambda message=status_message: self.status_var.set(message),
                 )
             except tk.TclError:
                 pass
@@ -48797,7 +49043,7 @@ class TrackerApp:
             experimental_path = bundled_resource_path(
                 "experiments",
                 "mister_instant_states",
-                "Main_MiSTer_20260707",
+                "Main_MiSTer_20260816_custom",
                 "bin_experimental",
                 "MiSTer-SMW-Virtual-States",
             )
@@ -48889,7 +49135,7 @@ class TrackerApp:
                             "damaged. The current MiSTer file was not changed."
                         ) from error
                     if current_sha256 not in allowed_current_hashes:
-                        raise RuntimeError(
+                        raise MisterVirtualStatesCompatibilityError(
                             self._translate_dialog_text(
                                 "MiSTer Main has been updated or changed since "
                                 "save states 5–11 were installed. This tracker "
@@ -48910,7 +49156,7 @@ class TrackerApp:
                             "were changed."
                         )
                     if original_sha256 != MISTER_VIRTUAL_STATES_BASE_SHA256:
-                        raise RuntimeError(
+                        raise MisterVirtualStatesCompatibilityError(
                             self._translate_dialog_text(
                                 "MiSTer Main has been updated or changed since "
                                 "save states 5–11 were installed. This tracker "
@@ -50221,6 +50467,7 @@ class TrackerApp:
 
             def worker() -> None:
                 key_client = None
+                virtual_states_installed = True
                 try:
                     host, fingerprint = self._discover_mister_host(
                         host_hint,
@@ -50254,13 +50501,24 @@ class TrackerApp:
                     self._verified_mister_peer(key_client)
                     key_client.close()
                     key_client = None
-                    self._install_mister_virtual_states(
-                        host,
-                        user,
-                        port,
-                        password,
-                        status_var,
-                    )
+                    try:
+                        self._install_mister_virtual_states(
+                            host,
+                            user,
+                            port,
+                            password,
+                            status_var,
+                        )
+                    except MisterVirtualStatesCompatibilityError as error:
+                        virtual_states_installed = False
+                        append_error_log(
+                            "MiSTer virtual states skipped safely",
+                            str(error),
+                        )
+                        self._set_optional_install_status(
+                            status_var,
+                            "Newer MiSTer Main kept. Finishing safe setup...",
+                        )
 
                     def complete() -> None:
                         host_var.set(host)
@@ -50274,15 +50532,25 @@ class TrackerApp:
                             select_platform=True,
                             fingerprint=fingerprint,
                         )
-                        finish_task(
-                            "MiSTer is fully set up. The tracker found it, "
-                            "installed live tracking, save states 5–11, and "
-                            "automatic SRAM saving every five minutes and at "
-                            "safe gameplay boundaries, "
-                            "created the game folders, enabled automatic "
-                            "login for this app, selected MiSTer, and verified "
-                            "the connection. MiSTer is restarting."
-                        )
+                        if virtual_states_installed:
+                            message = (
+                                "MiSTer is fully set up. The tracker found it, "
+                                "installed live tracking, save states 5-11, and "
+                                "verified automatic SRAM saving, created the game "
+                                "folders, enabled automatic login for this app, "
+                                "selected MiSTer, and verified the connection. "
+                                "MiSTer is restarting."
+                            )
+                        else:
+                            message = (
+                                "MiSTer is safely set up. Its newer MiSTer Main "
+                                "was kept unchanged. Live tracking and verified "
+                                "automatic SRAM saving are ready. Virtual Save "
+                                "State Slots 5-11 were skipped because they need "
+                                "a matching build; everything else is complete "
+                                "and no restart is required."
+                            )
+                        finish_task(message)
                         self._guided_optional_software_completed("mister")
                         if self._guided_setup_stage != "connection":
                             close_dialog(restore_guide=False)
@@ -104122,24 +104390,9 @@ class TrackerApp:
                 PurePosixPath(remote_root)
                 / mister_safe_rom_filename(game, local_rom.suffix)
             )
-        remote_rom_path = PurePosixPath(remote_rom)
-        try:
-            remote_rom_path.relative_to("/media/fat/games/SNES")
-        except ValueError as error:
-            raise ValueError(
-                "The selected MiSTer ROM is not inside /media/fat/games/SNES."
-            ) from error
-        # MiSTer mirrors the ROM's path below games/SNES inside saves/SNES.
-        # Tracker-managed ROMs live in the "SMW Stream Tracker" subfolder, so
-        # flattening this path uploads a valid file that the active core never
-        # reads.
-        relative_rom_path = remote_rom_path.relative_to(
-            "/media/fat/games/SNES"
-        )
-        return str(
-            PurePosixPath("/media/fat/saves/SNES")
-            / relative_rom_path.with_suffix(".sav")
-        )
+        # MiSTer Main's FileGenerateSavePath intentionally strips every ROM
+        # subfolder and uses only the ROM basename below saves/SNES.
+        return mister_sram_save_destination_for_rom_path(remote_rom)
 
     @staticmethod
     def _normalized_snes_save_payload(source: Path) -> tuple[bytes, bool]:
@@ -120574,13 +120827,19 @@ class TrackerApp:
                         )
 
                 elif event_type == "level_complete":
-                    # The worker emits this only after the cleared level reaches
-                    # a safe boundary. It also carries the exact MiSTer address
-                    # that produced the live-memory event.
-                    self._schedule_mister_sram_save_after_level(event)
+                    # The matching mister_sram_save event carries the actual
+                    # live bytes and exact ROM path. Never replace it with this
+                    # metadata-only completion notification.
+                    pass
 
                 elif event_type == "mister_sram_save":
                     self._schedule_mister_sram_save_after_level(event)
+
+                elif event_type == "mister_sram_save_failed":
+                    self.status_var.set(
+                        "MiSTer SRAM could not be captured from live memory; "
+                        "no save file was changed."
+                    )
 
                 elif event_type == "level_started":
                     # Identify in the background while the viewer is playing.

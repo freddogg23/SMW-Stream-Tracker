@@ -11,7 +11,11 @@ Central music catalog.
 - Transfers only ROMs that are missing from MiSTer SD cards and FXPAK Pro
   cards.
 - Saves MiSTer SRAM every five minutes and after important gameplay boundaries:
-  level clears, checkpoints, and returns to the overworld map.
+  level clears, checkpoints, and returns to the overworld map. The tracker
+  captures live SRAM, writes it atomically to MiSTer's real basename-only save
+  path, verifies the file, and refuses to replace newer valid progress.
+- Keeps newer MiSTer Main versions in place instead of overwriting or
+  downgrading them during setup.
 - Keeps Current exit on the dashboard at all times and changes it to Room number
   with the live Lunar Magic room ID for room-based hacks.
 - Improves rapid consecutive death counting and SMW Central platform detection

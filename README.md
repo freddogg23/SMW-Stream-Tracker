@@ -17,7 +17,9 @@ The app does **not** include, download, or upload a commercial Super Mario World
 - Sends only ROMs that are missing from MiSTer SD cards and FXPAK Pro cards,
   avoiding unnecessary retransfers of files already present.
 - Expands automatic MiSTer SRAM protection with five-minute saves and saves at
-  level clears, checkpoints, and returns to the overworld map.
+  level clears, checkpoints, and returns to the overworld map. Live SRAM is
+  written atomically to MiSTer's real basename-only save path and verified
+  before the app reports success.
 - Keeps **Current exit** visible on the dashboard. Room-based hacks show
   **Room number** and the live Lunar Magic room ID instead.
 - Improves rapid consecutive death counting and SMW Central classification when

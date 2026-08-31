@@ -3,6 +3,8 @@ Release 2.2.3
 * Keeps every saved MiSTer profile tied to the correct console, even when multiple MiSTer systems are online.
 * Sends only missing ROMs to MiSTer SD cards and FXPAK Pro cards instead of retransferring files already present.
 * Expands automatic MiSTer SRAM protection with five-minute saves and saves at level clears, checkpoints, and overworld returns.
+* Captures live SRAM, writes it atomically to MiSTer's real basename-only save path, verifies the result, and refuses to replace newer valid progress.
+* Keeps newer MiSTer Main versions in place instead of overwriting or downgrading them during setup.
 * Keeps Current exit visible on the dashboard and shows Room number with the live Lunar Magic room ID for room-based hacks.
 * Improves rapid consecutive death counting and SMW Central classification for same-named ROMs on different platforms.
 * Shows the online SMW Central catalog's last cloud update and a live countdown to its next hourly, on-the-hour refresh.
