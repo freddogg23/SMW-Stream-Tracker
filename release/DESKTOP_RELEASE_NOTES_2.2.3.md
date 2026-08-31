@@ -12,8 +12,10 @@ Central music catalog.
   cards.
 - Saves MiSTer SRAM every five minutes and after important gameplay boundaries:
   level clears, checkpoints, and returns to the overworld map. The tracker
-  captures live SRAM, writes it atomically to MiSTer's real basename-only save
-  path, verifies the file, and refuses to replace newer valid progress.
+  asks the MiSTer core to flush its own complete Backup RAM image, verifies the
+  resulting core-owned file, and refuses to report success or replace newer
+  valid progress without proof. This also supports expanded SRAM sizes instead
+  of truncating every game to a fixed 2 KB file.
 - Keeps newer MiSTer Main versions in place instead of overwriting or
   downgrading them during setup.
 - Keeps Current exit on the dashboard at all times and changes it to Room number

@@ -90,7 +90,10 @@ class MisterSupportTests(unittest.TestCase):
         )
         self.assertIn("MiSTer SRAM Backups", flush_source)
         self.assertIn("_mister_sftp_write", flush_source)
-        self.assertIn("saved_payload != raw_payload", flush_source)
+        self.assertIn("_request_mister_core_sram_flush", flush_source)
+        self.assertIn("mister_sram_core_flush_verification", flush_source)
+        self.assertIn("MISTER_SRAM_SAVE_MAX_BYTES", flush_source)
+        self.assertNotIn("_mister_sftp_write(sftp, staged", flush_source)
         self.assertIn('event_data.get("mister_host")', schedule_source)
         self.assertIn('event_data.get("sram_payload"', schedule_source)
         self.assertIn("mister_host=normalize_mister_host", worker_source)
@@ -239,7 +242,7 @@ class MisterSupportTests(unittest.TestCase):
         self.assertIn("returned to the overworld", status_text)
         save_config_mock.assert_called_once_with(app.config)
         app.status_var.set.assert_called_once_with(
-            "MiSTer SRAM saved and verified after returned to the overworld."
+            "MiSTer core saved and verified SRAM after returned to the overworld."
         )
 
     def test_sram_save_transition_reasons_are_event_driven(self):
@@ -441,6 +444,7 @@ class MisterSupportTests(unittest.TestCase):
         class FakeSftp:
             def __init__(self, destination):
                 self.files = {destination: b"previous-save"}
+                self.mtimes = {destination: 100}
                 self.directories = {
                     "/",
                     "/media",
@@ -451,7 +455,10 @@ class MisterSupportTests(unittest.TestCase):
 
             def stat(self, path):
                 if path in self.files:
-                    return SimpleNamespace(st_size=len(self.files[path]))
+                    return SimpleNamespace(
+                        st_size=len(self.files[path]),
+                        st_mtime=self.mtimes.get(path, 0),
+                    )
                 if path in self.directories:
                     return SimpleNamespace(st_size=0)
                 raise OSError(path)
@@ -484,6 +491,7 @@ class MisterSupportTests(unittest.TestCase):
         rom_path = "/media/fat/games/SNES/SMW Stream Tracker/Hack.sfc"
         destination = "/media/fat/saves/SNES/Hack.sav"
         payload = b"s" * self.tracker.MISTER_SRAM_SIZE
+        core_payload = b"c" * (128 * 1024)
         sftp = FakeSftp(destination)
         client = SimpleNamespace(open_sftp=lambda: sftp, close=lambda: None)
         app = object.__new__(self.tracker.TrackerApp)
@@ -498,6 +506,13 @@ class MisterSupportTests(unittest.TestCase):
         app._open_mister_ssh_client = mock.Mock(return_value=client)
         app._verified_mister_peer = mock.Mock()
         app._mister_run_checked = mock.Mock()
+
+        def core_flush(_client):
+            sftp.files[destination] = core_payload
+            sftp.mtimes[destination] = 200
+            return "no-write"
+
+        app._request_mister_core_sram_flush = mock.Mock(side_effect=core_flush)
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             with (
@@ -526,18 +541,51 @@ class MisterSupportTests(unittest.TestCase):
                 )
                 snapshot_payloads = [path.read_bytes() for path in snapshots]
 
-        self.assertEqual(sftp.files[destination], payload)
+        self.assertEqual(sftp.files[destination], core_payload)
         self.assertEqual(
             sftp.files[destination + ".smwtracker-previous"],
             b"previous-save",
         )
-        self.assertEqual(len(snapshots), 1)
-        self.assertEqual(snapshot_payloads, [payload])
+        self.assertEqual(len(snapshots), 2)
+        self.assertCountEqual(
+            snapshot_payloads,
+            [b"previous-save", core_payload],
+        )
+        self.assertEqual(
+            app.config["mister_last_sram_saved_remote_path"],
+            destination,
+        )
+        self.assertEqual(
+            app.config["mister_last_sram_saved_bytes"],
+            len(core_payload),
+        )
+        self.assertEqual(
+            app.config["mister_last_sram_saved_verification"],
+            "core file-write verification",
+        )
         app._mister_run_checked.assert_called_once_with(
             client,
             "sync",
-            "MiSTer could not commit the SRAM snapshot to its SD card.",
+            "MiSTer could not commit the core-owned SRAM save.",
         )
+
+    def test_mister_core_flush_requires_real_core_or_file_write_proof(self):
+        verify = self.tracker.mister_sram_core_flush_verification
+        self.assertEqual(
+            verify("saved", 100, 100, b"same", b"same"),
+            "core acknowledgement",
+        )
+        self.assertEqual(
+            verify("no-write", 100, 101, b"same", b"same"),
+            "core file-write verification",
+        )
+        with self.assertRaises(RuntimeError):
+            verify("no-write", 100, 100, b"same", b"same")
+        with self.assertRaises(RuntimeError):
+            verify("not-snes", 100, 101, b"same", b"new")
+        for unsupported in ("", "requested"):
+            with self.assertRaises(self.tracker.MisterSramCoreSupportError):
+                verify(unsupported, 100, 101, b"same", b"new")
 
     def test_mister_rom_root_stays_inside_the_snes_sd_folder(self):
         self.assertEqual(
@@ -1393,12 +1441,10 @@ class MisterSupportTests(unittest.TestCase):
             "Its newer MiSTer Main ",
             setup_source,
         )
-        self.assertIn(
-            "was kept unchanged. Live tracking and verified ",
-            setup_source,
-        )
-        self.assertIn(
-            "automatic SRAM saving are ready. Virtual Save ",
+        self.assertIn("was kept unchanged, so live tracking is ready", setup_source)
+        self.assertIn("no false save confirmation", setup_source)
+        self.assertNotIn(
+            "automatic SRAM saving are ready. Virtual Save",
             setup_source,
         )
         self.assertIn(

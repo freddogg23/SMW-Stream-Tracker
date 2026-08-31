@@ -3599,7 +3599,7 @@ void user_io_poll()
 						if (FileWriteAdv(&sd_image[disk], buffer[disk], sz))
 						{
 							sd_image[disk].size = sz;
-							if (is_snes() && disk == 0) smw_sram_write_generation++;
+							if (is_snes()) smw_sram_write_generation++;
 						}
 					}
 					else
@@ -3624,7 +3624,7 @@ void user_io_poll()
 
 							if (sz && FileWriteAdv(&sd_image[disk], buffer[disk], sz))
 							{
-								if (is_snes() && disk == 0) smw_sram_write_generation++;
+								if (is_snes()) smw_sram_write_generation++;
 							}
 						}
 					}
