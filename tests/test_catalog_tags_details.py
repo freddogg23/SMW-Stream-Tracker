@@ -60,6 +60,48 @@ class CatalogTagsAndDetailsTests(unittest.TestCase):
         self.assertEqual(len(game["screenshots"]), 2)
         self.assertIn("custom music", self.tracker.catalog_search_text(game))
 
+    def test_progress_structure_distinguishes_exits_rooms_and_hybrids(self):
+        self.assertEqual(
+            self.tracker.smw_hack_progress_structure(
+                {
+                    "title": "Traditional World",
+                    "description": "A standard adventure.",
+                    "total_exits": 11,
+                }
+            ),
+            "exits",
+        )
+        self.assertEqual(
+            self.tracker.smw_hack_progress_structure(
+                {
+                    "title": "Nightmare Cafe",
+                    "description": "69 singular screen kaizo rooms.",
+                    "total_exits": 0,
+                }
+            ),
+            "rooms",
+        )
+        self.assertEqual(
+            self.tracker.smw_hack_progress_structure(
+                {
+                    "title": "100 Rooms of Enemies",
+                    "description": "Fight through one hundred rooms.",
+                    "total_exits": 2,
+                }
+            ),
+            "hybrid",
+        )
+        self.assertEqual(
+            self.tracker.smw_hack_progress_structure(
+                {
+                    "title": "Unknown Structure",
+                    "description": "No useful progress metadata.",
+                    "total_exits": 0,
+                }
+            ),
+            "unknown",
+        )
+
     def test_catalog_database_round_trips_detail_metadata(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
             database = self.tracker.TrackerDatabase(Path(folder) / "tracker.db")

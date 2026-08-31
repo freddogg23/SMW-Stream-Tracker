@@ -1,5 +1,6 @@
 import importlib.util
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -81,6 +82,54 @@ class CatalogStatusHelperTests(unittest.TestCase):
                 "SMW Central Live API",
             ),
             0,
+        )
+
+    def test_cloud_update_time_uses_smwcentral_utc_reference_time(self):
+        self.assertEqual(
+            self.tracker.format_smwcentral_cloud_update_time(
+                {"cloud_updated_at": "2026-08-29T21:31:04Z"}
+            ),
+            "Aug 29, 2026 at 9:31 PM UTC",
+        )
+
+    def test_cloud_update_time_falls_back_to_existing_index_version(self):
+        self.assertEqual(
+            self.tracker.format_smwcentral_cloud_update_time(
+                {"index_version": "20260829212637"}
+            ),
+            "Aug 29, 2026 at 9:26 PM UTC",
+        )
+
+    def test_cloud_update_countdown_reaches_next_top_of_hour(self):
+        self.assertEqual(
+            self.tracker.format_smwcentral_cloud_update_countdown(
+                datetime(2026, 8, 31, 12, 34, 45, tzinfo=timezone.utc)
+            ),
+            "Next cloud update in 25m 15s",
+        )
+
+    def test_cloud_update_countdown_resets_at_top_of_hour(self):
+        self.assertEqual(
+            self.tracker.format_smwcentral_cloud_update_countdown(
+                datetime(2026, 8, 31, 12, 0, 0, tzinfo=timezone.utc)
+            ),
+            "Next cloud update in 60m 00s",
+        )
+
+    def test_music_catalog_ready_text_includes_cloud_update_time(self):
+        fake_app = type("FakeApp", (), {"music_index_details": {}})()
+        self.assertEqual(
+            self.tracker.TrackerApp._music_index_ready_text(
+                fake_app,
+                {
+                    "track_count": 12360,
+                    "cloud_updated_at": "2026-08-29T21:31:04Z",
+                },
+            ),
+            (
+                "Online SMW Central catalog ready — 12,360 songs"
+                " • Last cloud update: Aug 29, 2026 at 9:31 PM UTC"
+            ),
         )
 
 

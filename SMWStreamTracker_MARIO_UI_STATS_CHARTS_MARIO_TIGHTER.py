@@ -892,8 +892,8 @@ except ImportError:
 
 
 APP_NAME = "SMW Stream Tracker"
-APP_VERSION = "2.2.2"
-APP_BUILD_DATE = "2026-08-29"
+APP_VERSION = "2.2.3"
+APP_BUILD_DATE = "2026-08-30"
 
 GAME_MODE_STAGE_IMAGE_FILES = {
     "play_random_hack": "stage_scene_yoshis_island_2.png",
@@ -2694,6 +2694,7 @@ MISTER_VIRTUAL_STATES_BINARY_SHA256 = (
 MISTER_VIRTUAL_STATES_MAX_BYTES = 64 * 1024 * 1024
 MISTER_LEVEL_SRAM_SAVE_DELAY_MS = 2200
 MISTER_LEVEL_SRAM_SAVE_MIN_INTERVAL_SECONDS = 8.0
+MISTER_PERIODIC_SRAM_SAVE_INTERVAL_MS = 5 * 60 * 1000
 MISTER_VIRTUAL_STATES_UPSTREAM_COMMIT = (
     "93d13fb690db4581768389450fb639822ae88333"
 )
@@ -5086,6 +5087,68 @@ def parse_smwcentral_api_game(
     }
 
 
+ROOM_BASED_PROGRESS_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"\b\d{1,4}\s+(?:[a-z][a-z-]*\s+){0,4}rooms?\b",
+        r"\b(?:one hundred|fifty|sixty|seventy|eighty|ninety)\s+(?:single[- ]screen\s+)?rooms?\b",
+        r"\brooms?\s+(?:cleared|completed|counter|checkpoints?)\b",
+        r"\b(?:saves?|saved|checkpoints?)\b[^.\n]{0,80}\b(?:each|every|per)\s+rooms?\b",
+        r"\b(?:no|zero|0)\s+exits?\b[^.\n]{0,180}\brooms?\b",
+        r"\brooms?\b[^.\n]{0,180}\b(?:no|zero|0)\s+exits?\b",
+        r"\b(?:one[- ]screen|single[- ]screen)\b",
+    )
+)
+
+
+def smw_hack_progress_structure(game: dict[str, Any]) -> str:
+    """Classify official exits, room sequences, and hybrids conservatively.
+
+    SMW Central exposes an official exit count but has no separate room-count
+    field. Room-sequence hacks normally describe that structure in their
+    title, description, or tags, often while reporting zero official exits.
+    Keep hybrids separate because their official exits still define completion.
+    """
+    explicit = str(game.get("progress_structure", "")).strip().casefold()
+    if explicit in {"exits", "rooms", "hybrid", "unknown"}:
+        return explicit
+    try:
+        total_exits = max(0, int(float(game.get("total_exits", 0) or 0)))
+    except (TypeError, ValueError, OverflowError):
+        total_exits = 0
+    evidence = "\n".join(
+        str(game.get(field, "") or "")
+        for field in ("title", "description", "tags")
+    )
+    room_based = any(
+        pattern.search(evidence) is not None
+        for pattern in ROOM_BASED_PROGRESS_PATTERNS
+    )
+    if room_based:
+        return "hybrid" if total_exits > 0 else "rooms"
+    if total_exits > 0:
+        return "exits"
+    return "unknown"
+
+
+def dashboard_progress_metric_label(progress_structure: object) -> str:
+    """Return the dashboard heading for the live SMW progress value."""
+    return (
+        "Room number"
+        if str(progress_structure or "").strip().casefold() == "rooms"
+        else "Current exit"
+    )
+
+
+def dashboard_room_number_text(room_number: object) -> str:
+    """Format SMW's live Lunar Magic room ID for the dashboard."""
+    try:
+        normalized = int(room_number) & 0xFFFF
+    except (TypeError, ValueError, OverflowError):
+        return "—"
+    return f"{normalized:03X}"
+
+
 def fetch_smwcentral_catalog(
     cancel_event: threading.Event,
     progress_callback=None,
@@ -5686,6 +5749,69 @@ def github_catalog_integer(
         ValueError,
     ):
         return default
+
+
+def format_smwcentral_cloud_update_time(
+    details: dict[str, Any] | None,
+) -> str:
+    """Format the last completed cloud catalog update in SMWC's UTC reference time."""
+    selected = details or {}
+    parsed: datetime | None = None
+    raw_updated_at = str(selected.get("cloud_updated_at", "") or "").strip()
+    if raw_updated_at:
+        try:
+            if re.fullmatch(r"\d{9,13}(?:\.\d+)?", raw_updated_at):
+                epoch_value = float(raw_updated_at)
+                if epoch_value > 10_000_000_000:
+                    epoch_value /= 1000.0
+                parsed = datetime.fromtimestamp(epoch_value, timezone.utc)
+            else:
+                parsed = datetime.fromisoformat(
+                    raw_updated_at.replace("Z", "+00:00")
+                )
+        except (OverflowError, OSError, TypeError, ValueError):
+            parsed = None
+
+    if parsed is None:
+        index_version = str(selected.get("index_version", "") or "").strip()
+        if re.fullmatch(r"\d{14}", index_version):
+            try:
+                parsed = datetime.strptime(index_version, "%Y%m%d%H%M%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                parsed = None
+
+    if parsed is None:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    smwc_time = parsed.astimezone(timezone.utc)
+    clock_text = smwc_time.strftime("%I:%M %p").lstrip("0")
+    return (
+        f"{smwc_time.strftime('%b')} {smwc_time.day}, {smwc_time.year} "
+        f"at {clock_text} UTC"
+    )
+
+
+def format_smwcentral_cloud_update_countdown(
+    current_time: datetime | None = None,
+) -> str:
+    """Return a live countdown to the next top-of-hour catalog refresh."""
+    selected_time = current_time or datetime.now(timezone.utc)
+    if selected_time.tzinfo is None:
+        selected_time = selected_time.replace(tzinfo=timezone.utc)
+    current_utc = selected_time.astimezone(timezone.utc)
+    next_update = (
+        current_utc.replace(minute=0, second=0, microsecond=0)
+        + timedelta(hours=1)
+    )
+    remaining_seconds = max(
+        0,
+        int(math.ceil((next_update - current_utc).total_seconds())),
+    )
+    minutes, seconds = divmod(remaining_seconds, 60)
+    return f"Next cloud update in {minutes}m {seconds:02d}s"
 
 
 def catalog_available_new_hack_count(
@@ -15431,16 +15557,10 @@ def rom_builder_copy_rom_to_sd(
     )
 
     if destination.exists():
-        if (
-            destination.stat().st_size == source_path.stat().st_size
-            and rom_builder_file_sha256(destination)
-            == rom_builder_file_sha256(source_path)
-        ):
-            return destination, "already_on_sd"
-        raise FileExistsError(
-            "A different ROM already exists at the SD-card destination: "
-            + str(destination)
-        )
+        # A bulk "Send to SD Card" job is missing-only.  The title's safe,
+        # deterministic destination path is its identity on the card, so do
+        # not reread, hash, replace, or otherwise touch a file already there.
+        return destination, "already_on_sd"
 
     temporary_destination = destination.with_suffix(
         destination.suffix + ".part"
@@ -24256,6 +24376,16 @@ _MISTER_LOCALIZATION_ROWS = (
     ("MiSTer upload failed: {title}", "MiSTer upload came a cropper, mate: {title}", "Falló la subida a MiSTer: {title}", "Échec de l’envoi vers MiSTer : {title}", "MiSTer-Upload fehlgeschlagen: {title}", "Falha no envio ao MiSTer: {title}"),
     ("MiSTer uploaded: {uploaded}; already on MiSTer: {existing}; MiSTer upload failed: {failed}.", "Sent to MiSTer: {uploaded}; already there: {existing}; MiSTer uploads failed: {failed}, mate.", "Subidas a MiSTer: {uploaded}; ya en MiSTer: {existing}; subidas fallidas: {failed}.", "Envoyées vers MiSTer : {uploaded} ; déjà présentes : {existing} ; échecs : {failed}.", "Auf MiSTer hochgeladen: {uploaded}; bereits vorhanden: {existing}; fehlgeschlagen: {failed}.", "Enviadas ao MiSTer: {uploaded}; já no MiSTer: {existing}; falhas: {failed}."),
 )
+_MISTER_LOCALIZATION_ROWS += (
+    (
+        "1. Connect MiSTer to your router with Ethernet or Wi-Fi and power it on.\n2. Keep this computer on the same network. The default SSH password is 1.\n3. Select Find & Set Up MiSTer. The tracker will find its address, install live tracking, Virtual Save State Slots 5–11, and automatic SRAM saving every five minutes and at safe gameplay boundaries, create its game folders, enable automatic login for this app, select MiSTer, and test everything.\n4. The fields and smaller buttons to the right are only needed for manual setup.",
+        "1. Hook MiSTer to your router by Ethernet or Wi-Fi and fire it up, mate.\n2. Keep this computer on the same network. The default SSH password is 1.\n3. Pick Find & Set Up MiSTer. The tracker will hunt it down, sort live tracking, Virtual Save State Slots 5–11, and automatic SRAM saves every five minutes and at safe gameplay boundaries, make the game folders, set up its own automatic login, pick MiSTer, and test the whole lot.\n4. The fields and little buttons to the right are only for manual setup. Crikey, easy as.",
+        "1. Conecta MiSTer al router por Ethernet o Wi-Fi y enciéndelo.\n2. Mantén este equipo en la misma red. La contraseña SSH predeterminada es 1.\n3. Selecciona Buscar y configurar MiSTer. El tracker encontrará su dirección, instalará el seguimiento en vivo, las ranuras de estados virtuales 5–11 y el guardado automático de SRAM cada cinco minutos y en puntos seguros del juego, creará las carpetas de juegos, habilitará el acceso automático para esta aplicación, seleccionará MiSTer y probará todo.\n4. Los campos y botones pequeños de la derecha solo son necesarios para la configuración manual.",
+        "1. Connectez le MiSTer au routeur par Ethernet ou Wi-Fi et allumez-le.\n2. Gardez cet ordinateur sur le même réseau. Le mot de passe SSH par défaut est 1.\n3. Choisissez Rechercher et configurer le MiSTer. Le tracker trouvera son adresse, installera le suivi en direct, les emplacements d’état virtuels 5 à 11 et l’enregistrement automatique de la SRAM toutes les cinq minutes et aux étapes sûres du jeu, créera les dossiers de jeux, activera la connexion automatique pour cette application, sélectionnera MiSTer et vérifiera l’ensemble.\n4. Les champs et les petits boutons à droite servent uniquement à la configuration manuelle.",
+        "1. Verbinde MiSTer per Ethernet oder WLAN mit dem Router und schalte ihn ein.\n2. Dieser Computer muss im selben Netzwerk sein. Das Standard-SSH-Passwort ist 1.\n3. Wähle MiSTer suchen und einrichten. Der Tracker findet seine Adresse, installiert die Live-Verfolgung, die virtuellen Speicherplätze 5–11 und das automatische SRAM-Speichern alle fünf Minuten sowie an sicheren Spielübergängen, erstellt die Spieleordner, aktiviert die automatische Anmeldung für diese App, wählt MiSTer aus und testet alles.\n4. Die Felder und kleineren Schaltflächen auf der rechten Seite werden nur für die manuelle Einrichtung benötigt.",
+        "1. Conecte o MiSTer ao roteador por Ethernet ou Wi-Fi e ligue-o.\n2. Mantenha este computador na mesma rede. A senha SSH padrão é 1.\n3. Selecione Encontrar e configurar o MiSTer. O tracker encontrará o endereço, instalará o rastreamento ao vivo, os slots de estados virtuais 5–11 e o salvamento automático da SRAM a cada cinco minutos e em pontos seguros do jogo, criará as pastas de jogos, ativará o login automático para este aplicativo, selecionará o MiSTer e testará tudo.\n4. Os campos e botões menores à direita são necessários somente para a configuração manual.",
+    ),
+)
 for (
     _english_text,
     _australian_text,
@@ -25177,6 +25307,14 @@ _RUNTIME_LOCALIZATION_ROWS = (
     ("Completed exits:", "Completed exits, mate:", "Salidas completadas:", "Sorties terminées :", "Abgeschlossene Ausgänge:", "Saídas concluídas:"),
     ("Difficulty:", "How rough is it?:", "Dificultad:", "Difficulté :", "Schwierigkeit:", "Dificuldade:"),
     ("Type:", "Hack type, mate:", "Tipo:", "Type :", "Typ:", "Tipo:"),
+    ("Rooms:", "Rooms, mate:", "Salas:", "Salles :", "Räume:", "Salas:"),
+    ("Current exit", "Current exit, mate", "Salida actual", "Sortie actuelle", "Aktueller Ausgang", "Saída atual"),
+    ("Room number", "Room number, mate", "Número de sala", "Numéro de salle", "Raumnummer", "Número da sala"),
+    ("Tracked in game", "Tracked in the game, mate", "Se registra en el juego", "Suivi dans le jeu", "Wird im Spiel erfasst", "Acompanhado no jogo"),
+    ("Room-based", "Room-based, mate", "Basado en salas", "Basé sur des salles", "Raumbasiert", "Baseado em salas"),
+    ("Exit-based", "Exit-based, mate", "Basado en salidas", "Basé sur des sorties", "Ausgangsbasiert", "Baseado em saídas"),
+    ("Exit + room-based", "Exit and room-based, mate", "Basado en salidas y salas", "Basé sur des sorties et des salles", "Ausgangs- und raumbasiert", "Baseado em saídas e salas"),
+    ("Automatically save MiSTer SRAM", "Automatically save MiSTer SRAM, mate", "Guardar automáticamente la SRAM de MiSTer", "Enregistrer automatiquement la SRAM du MiSTer", "MiSTer-SRAM automatisch speichern", "Salvar automaticamente a SRAM do MiSTer"),
     ("Hack Type:", "Hack type, mate:", "Tipo de hack:", "Type de hack :", "Hack-Typ:", "Tipo de hack:"),
     ("Search title, creator, or tag", "Search title, creator, or tag, mate", "Buscar título, creador o etiqueta", "Rechercher un titre, un créateur ou un tag", "Titel, Ersteller oder Tag suchen", "Pesquisar título, criador ou tag"),
     ("Search title, creator, or tag:", "Search title, creator, or tag, mate:", "Buscar título, creador o etiqueta:", "Rechercher un titre, un créateur ou un tag :", "Titel, Ersteller oder Tag suchen:", "Pesquisar título, criador ou tag:"),
@@ -29073,6 +29211,44 @@ def online_mister_profile(
     return None
 
 
+def mister_ssh_host_key_fingerprint(
+    host: object,
+    port: object = 22,
+    timeout: float = 0.8,
+) -> str:
+    """Read a MiSTer's SSH identity without logging in or changing it."""
+    if paramiko is None:
+        return ""
+    connection = None
+    transport = None
+    try:
+        connection = socket.create_connection(
+            (normalize_mister_host(host), int(port or 22)),
+            timeout=max(0.1, float(timeout)),
+        )
+        transport = paramiko.Transport(connection)
+        transport.start_client(timeout=max(0.1, float(timeout)))
+        server_key = transport.get_remote_server_key()
+        digest = hashlib.sha256(server_key.asbytes()).digest()
+        return (
+            "SHA256:"
+            + base64.b64encode(digest).decode("ascii").rstrip("=")
+        )
+    except Exception:
+        return ""
+    finally:
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:
+                pass
+        elif connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
+
+
 def local_private_ipv4_addresses() -> list[str]:
     """Return usable local IPv4 addresses without platform-specific tools."""
     addresses: list[str] = []
@@ -29354,6 +29530,33 @@ LEVEL_MODE = 0x14
 # the game timer must continue through it. The later credits/end modes still
 # finish the run automatically.
 ENDING_MODES = {0x1B, 0x1C}
+
+
+def mister_sram_transition_reasons(
+    *,
+    previous_mode: int | None,
+    mode: int,
+    previous_midway: int | None,
+    midway: int,
+    session_active: bool,
+) -> tuple[str, ...]:
+    """Return safe automatic SRAM-save boundaries in one live SMW sample."""
+    reasons: list[str] = []
+    if (
+        session_active
+        and mode == LEVEL_MODE
+        and previous_midway == 0
+        and int(midway) != 0
+    ):
+        reasons.append("midpoint or checkpoint reached")
+    if (
+        session_active
+        and mode == OVERWORLD_MODE
+        and previous_mode is not None
+        and previous_mode != OVERWORLD_MODE
+    ):
+        reasons.append("returned to the overworld")
+    return tuple(reasons)
 
 
 def hack_gauntlet_translevel_candidates(
@@ -30767,6 +30970,7 @@ class TrackerWorker:
         self.hack_gauntlet_retry_pending = False
 
         self.previous_mode: int | None = None
+        self.previous_midway_point: int | None = None
         self.previous_exit_count: int | None = None
         self.displayed_exit_count: int | None = None
         self.provisional_goal_exit = False
@@ -31334,6 +31538,29 @@ class TrackerWorker:
             level_id=int(self.level_id),
             rom_key=str(self.current_rom_key or ""),
             reason=reason,
+            mister_host=normalize_mister_host(
+                self.config.get("mister_host", "MiSTer")
+            ),
+            mister_ssh_user=(
+                str(self.config.get("mister_ssh_user", "root")).strip() or "root"
+            ),
+            mister_ssh_port=self.config.get("mister_ssh_port", 22),
+            mister_profile=str(
+                self.config.get("active_mister_profile", "MiSTer") or "MiSTer"
+            ),
+        )
+
+    def send_mister_sram_save_event(self, reason: str) -> None:
+        """Request a UI-thread MiSTer SRAM flush for this exact console."""
+        if (
+            normalize_platform_name(self.config.get("selected_platform", ""))
+            != "MiSTer"
+            or not bool(self.config.get("mister_save_sram_after_level", True))
+        ):
+            return
+        self.send_event(
+            "mister_sram_save",
+            reason=str(reason or "safe gameplay boundary"),
             mister_host=normalize_mister_host(
                 self.config.get("mister_host", "MiSTer")
             ),
@@ -31995,6 +32222,7 @@ class TrackerWorker:
         self.clear_hack_gauntlet_level()
 
         self.previous_mode = None
+        self.previous_midway_point = None
         self.previous_exit_count = None
         self.previous_player_state = None
         self.previous_player_lives = None
@@ -35536,6 +35764,67 @@ finally {
             f'No database match for detected title "{detected_title}"',
         )
 
+    def configured_catalog_hack_for_rom(
+        self,
+        rom_path: str,
+    ) -> dict[str, Any] | None:
+        """Resolve an exact saved platform mapping before filename fallbacks."""
+        observed_path = (
+            str(rom_path or "")
+            .strip()
+            .replace("\\", "/")
+            .rstrip("/")
+            .casefold()
+        )
+        if not observed_path:
+            return None
+
+        selected_platform = normalize_platform_name(
+            self.config.get("selected_platform", "FXPAK Pro")
+        )
+        all_mappings = self.config.get("platform_rom_mappings", {})
+        if not isinstance(all_mappings, dict):
+            return None
+        platform_mappings: dict[str, Any] = {}
+        for platform_name, saved_mappings in all_mappings.items():
+            if (
+                normalize_platform_name(platform_name) == selected_platform
+                and isinstance(saved_mappings, dict)
+            ):
+                platform_mappings = saved_mappings
+                break
+
+        mapped_keys = {
+            str(mapping_key).strip().casefold()
+            for mapping_key, mapped_path in platform_mappings.items()
+            if (
+                str(mapped_path or "")
+                .strip()
+                .replace("\\", "/")
+                .rstrip("/")
+                .casefold()
+                == observed_path
+            )
+        }
+        if not mapped_keys:
+            return None
+
+        candidates: list[dict[str, Any]] = list(self.hack_catalog)
+        for entries in self.database.values():
+            candidates.extend(entries)
+        for game in candidates:
+            candidate_keys = {
+                str(game.get("catalog_key", "")).strip().casefold(),
+                "smwc:" + str(game.get("smwc_id", "")).strip().casefold(),
+                "title:" + normalize_title(game.get("title", "")),
+            }
+            candidate_keys.discard("")
+            candidate_keys.discard("smwc:")
+            candidate_keys.discard("title:")
+            if mapped_keys.intersection(candidate_keys):
+                return dict(game)
+        return None
+
     def pending_catalog_hack_for_rom(
         self,
         rom_path: str,
@@ -35622,6 +35911,8 @@ finally {
         detected_title = clean_rom_filename(rom_path)
         launched_hack = self.pending_catalog_hack_for_rom(rom_path)
         if launched_hack is None:
+            launched_hack = self.configured_catalog_hack_for_rom(rom_path)
+        if launched_hack is None:
             launched_hack = find_non_smw_rom_record(rom_path)
         if launched_hack is not None and bool(
             launched_hack.get("_non_smw_rom")
@@ -35648,6 +35939,7 @@ finally {
             return
 
         if hack is not None:
+            progress_structure = smw_hack_progress_structure(hack)
             self.current_total = hack["total_exits"]
             self.current_matched = True
             self.current_hack_title = hack["title"]
@@ -35655,7 +35947,10 @@ finally {
                 "page_url",
                 "",
             )
-            self.current_hack_record = dict(hack)
+            self.current_hack_record = {
+                **dict(hack),
+                "progress_structure": progress_structure,
+            }
             self.update_title_files(
                 hack["title"],
                 hack["author"],
@@ -35676,6 +35971,7 @@ finally {
                 description=hack.get("description", ""),
                 screenshots=hack.get("screenshots", []),
                 added_date=hack.get("added_date", ""),
+                progress_structure=progress_structure,
             )
             self.log(
                 f"Matched {hack['title']} by {hack['author']} "
@@ -35697,6 +35993,7 @@ finally {
                 "smwc_id": "",
                 "page_url": "",
                 "is_custom": True,
+                "progress_structure": "unknown",
             }
             self.update_title_files(
                 detected_title,
@@ -35718,6 +36015,7 @@ finally {
                 description="",
                 screenshots=[],
                 added_date="",
+                progress_structure="unknown",
             )
             self.log(
                 f'Could not match detected ROM title '
@@ -35906,13 +36204,14 @@ finally {
                 except Exception:
                     continue
 
-        # Never guess between multiple consoles. Saved profile addresses are
-        # tested above; an address migration is safe only when one SNID host
-        # is visible across the active Ethernet/Wi-Fi interfaces.
+        # Never use a responding SNID endpoint as proof that the currently
+        # selected physical console changed addresses. Homes with multiple
+        # MiSTers can have only one SNES core active at a time, which made the
+        # sole responding console overwrite a different saved profile. An
+        # automatic address migration is safe only when its SSH host key
+        # matches the identity already bound to the active profile.
         if len(reachable) != 1:
             return
-
-        discovered_host = reachable[0]
         profiles, active_name = normalized_mister_profiles(self.config)
         active_profile = next(
             (
@@ -35923,13 +36222,25 @@ finally {
             ),
             profiles[0],
         )
+        expected_fingerprint = str(
+            active_profile.get("fingerprint", "")
+        ).strip()
+        if not expected_fingerprint:
+            return
+        discovered_host = reachable[0]
+        discovered_fingerprint = mister_ssh_host_key_fingerprint(
+            discovered_host,
+            active_profile.get("port", 22),
+        )
+        if discovered_fingerprint != expected_fingerprint:
+            return
         updated_profiles = upsert_mister_profile(
             profiles,
             name=str(active_profile.get("name", "MiSTer")),
             host=discovered_host,
             user=active_profile.get("user", "root"),
             port=active_profile.get("port", 22),
-            fingerprint=active_profile.get("fingerprint", ""),
+            fingerprint=expected_fingerprint,
             rom_root=active_profile.get("rom_root", MISTER_DEFAULT_ROM_ROOT),
             menu_root=active_profile.get(
                 "menu_root",
@@ -37619,6 +37930,18 @@ finally {
             self.displayed_exit_count = exits
         self.authoritative_exit_count = exits
 
+        for sram_reason in mister_sram_transition_reasons(
+            previous_mode=self.previous_mode,
+            mode=mode,
+            previous_midway=self.previous_midway_point,
+            midway=int(state.get("midway_point", 0)),
+            session_active=(
+                self.game_started
+                and self.level_id is not None
+            ),
+        ):
+            self.send_mister_sram_save_event(sram_reason)
+
         # A goal-tape/orb update is displayed immediately while SMW is still
         # running its end sequence.  Keep that value provisional until the
         # real exit byte confirms it.  A replayed exit is rolled back without
@@ -38011,6 +38334,7 @@ finally {
             and not self.level_finished
         ):
             self.level_finished = True
+            self.send_mister_sram_save_event("level cleared")
             goal_route = (
                 "secret"
                 if int(state.get("secret_goal_flag", 0)) != 0
@@ -38074,6 +38398,7 @@ finally {
         ):
             if not self.level_finished:
                 self.level_finished = True
+                self.send_mister_sram_save_event("level cleared")
 
             pending_route = self.pending_goal_route
             if (
@@ -38310,6 +38635,7 @@ finally {
             self.file_selection_confirmed = False
 
         self.previous_mode = mode
+        self.previous_midway_point = int(state.get("midway_point", 0))
         self.previous_exit_count = exits
 
     def _run_connection(
@@ -38457,6 +38783,7 @@ finally {
                         "exits",
                         completed=completed_exits,
                         total=displayed_total,
+                        room_number=state.get("level_number"),
                     )
                     self.check_for_automatic_completion(
                         confirmed_exits,
@@ -38930,6 +39257,8 @@ class TrackerApp:
         self.current_hack_url = ""
         self.current_hack_record: dict[str, Any] = {}
         self.non_smw_mode_active = False
+        self.stream_dashboard_progress_structure = "unknown"
+        self.stream_dashboard_room_number: int | None = None
         self.non_smw_rom_library = load_non_smw_rom_library()
         saved_last_hack = self.config.get(
             "last_launched_hack",
@@ -39263,6 +39592,7 @@ class TrackerApp:
         self.music_index_update_thread: threading.Thread | None = None
         self.music_index_poll_after_id: str | None = None
         self.music_index_next_check_after_id: str | None = None
+        self.music_index_countdown_after_id: str | None = None
         # Music recognition is cloud-only. Remove generated databases left by
         # older versions so updates neither ship nor retain an offline catalog.
         for legacy_music_database in (
@@ -39283,6 +39613,9 @@ class TrackerApp:
             value=self._translate_ui_text(
                 "Online SMW Central catalog — checking connection…"
             )
+        )
+        self.music_index_next_update_var = tk.StringVar(
+            value=format_smwcentral_cloud_update_countdown()
         )
         self.obs_settings_dialog: tk.Toplevel | None = None
         self.obs_widget_dialog: tk.Toplevel | None = None
@@ -39311,6 +39644,7 @@ class TrackerApp:
         self.mister_setup_dialog: tk.Toplevel | None = None
         self.mister_setup_automatic_button: tk.Widget | None = None
         self.mister_sram_save_after_id: str | None = None
+        self.mister_sram_periodic_after_id: str | None = None
         self.mister_sram_save_thread: threading.Thread | None = None
         self.mister_sram_save_generation = 0
         self.mister_sram_save_last_requested_at = 0.0
@@ -39458,6 +39792,10 @@ class TrackerApp:
                 self.shutdown,
             )
 
+            self.music_index_countdown_after_id = self.root.after(
+                1000, self._refresh_music_cloud_update_countdown
+            )
+
             self.root.after(200, self.process_events)
             self.root.after(300, self._start_obs_widget_server)
             if bool(self.config.get("auto_connect_on_startup", True)):
@@ -39468,6 +39806,7 @@ class TrackerApp:
                 self.root.after(900, self._queue_automatic_tracker_excel_backup)
             self.root.after(1100, self._offer_first_launch_welcome)
             self.root.after(1350, self._offer_crash_session_recovery)
+            self.root.after(1500, self._arm_mister_periodic_sram_save)
             # Always perform one quiet release check so the Help-tab badge can
             # advertise an available update without interrupting the user.
             self.root.after(
@@ -44428,7 +44767,7 @@ class TrackerApp:
         self,
         parent: tk.Widget,
         column: int,
-        label: str,
+        label: str | tk.Variable,
         variable: tk.Variable,
         *,
         row: int = 0,
@@ -44453,13 +44792,18 @@ class TrackerApp:
             sticky="nsew",
             padx=(0 if column == 0 else self._ui_px(5), 0),
         )
+        label_options = (
+            {"textvariable": label}
+            if isinstance(label, tk.Variable)
+            else {"text": label}
+        )
         tk.Label(
             stat,
-            text=label,
             font=("Segoe UI", label_font_size),
             fg=STREAM_DESK["muted"],
             bg=STREAM_DESK["surface"],
             anchor=anchor,
+            **label_options,
         ).pack(fill="x")
         tk.Label(
             stat,
@@ -44997,6 +45341,10 @@ class TrackerApp:
         self.stream_dashboard_stats_frame = stats
         for column in range(5):
             stats.columnconfigure(column, weight=1, uniform="run_stats")
+        self.stream_dashboard_current_progress_label_var = tk.StringVar(
+            master=self.root,
+            value=self._translate_ui_text("Current exit"),
+        )
         self.stream_dashboard_current_exit_var = tk.StringVar(
             master=self.root,
             value="0 / —",
@@ -45019,7 +45367,7 @@ class TrackerApp:
             self._stream_desk_stat(
                 stats,
                 2,
-                "Current exit",
+                self.stream_dashboard_current_progress_label_var,
                 self.stream_dashboard_current_exit_var,
                 anchor="center",
             ),
@@ -45447,11 +45795,7 @@ class TrackerApp:
                     self._ui_px(105),
                     queue_width - self._ui_px(190),
                 )
-                visible_stat_cards = (
-                    [card for index, card in enumerate(run_stat_cards) if index != 2]
-                    if self.non_smw_mode_active
-                    else list(run_stat_cards)
-                )
+                visible_stat_cards = list(run_stat_cards)
                 stat_columns = min(stat_columns, len(visible_stat_cards))
                 visible_run_action_buttons = (
                     self.stream_dashboard_generic_action_buttons
@@ -45747,11 +46091,7 @@ class TrackerApp:
                     stat_card.grid_forget()
                 for column in range(5):
                     stats_frame.columnconfigure(column, weight=0)
-                visible_indices = (
-                    (0, 1, 3, 4)
-                    if self.non_smw_mode_active
-                    else (0, 1, 2, 3, 4)
-                )
+                visible_indices = (0, 1, 2, 3, 4)
                 for display_column, card_index in enumerate(visible_indices):
                     stats_frame.columnconfigure(
                         display_column,
@@ -47582,6 +47922,9 @@ class TrackerApp:
         port_text: str,
         *,
         select_platform: bool = False,
+        profile_name: str | None = None,
+        profile_records: list[dict[str, Any]] | None = None,
+        profile_fingerprint: object | None = None,
     ) -> tuple[str, str, int]:
         normalized_host = normalize_mister_host(host)
         normalized_user = str(user).strip() or "root"
@@ -47595,33 +47938,80 @@ class TrackerApp:
             raise ValueError(
                 "The MiSTer SSH port must be a number between 1 and 65535."
             )
-        self.config.update(
-            {
-                "mister_host": normalized_host,
-                "mister_ssh_user": normalized_user,
-                "mister_ssh_port": port,
-            }
+        profiles, configured_active_profile = normalized_mister_profiles(
+            self.config
         )
-        profiles, active_profile = normalized_mister_profiles(self.config)
+        dialog_profiles = profiles
+        if profile_records is not None:
+            dialog_profiles, _dialog_active = normalized_mister_profiles(
+                {
+                    **self.config,
+                    "mister_profiles": profile_records,
+                }
+            )
+        active_profile = str(profile_name or configured_active_profile).strip()
+        if not active_profile:
+            active_profile = configured_active_profile
+        existing_profile = next(
+            (
+                profile
+                for profile in dialog_profiles
+                if str(profile.get("name", "")).casefold()
+                == active_profile.casefold()
+            ),
+            next(
+                (
+                    profile
+                    for profile in profiles
+                    if str(profile.get("name", "")).casefold()
+                    == active_profile.casefold()
+                ),
+                {},
+            ),
+        )
+        existing_host = normalize_mister_host(
+            existing_profile.get("host", normalized_host)
+        )
+        saved_fingerprint = (
+            profile_fingerprint
+            if profile_fingerprint is not None
+            else existing_profile.get(
+                "fingerprint",
+                self.config.get("mister_ssh_fingerprint", ""),
+            )
+        )
+        # A manually edited address must not carry a different console's SSH
+        # identity with it. Find & Set Up MiSTer binds the new address again
+        # after it positively verifies that physical console.
+        if profile_fingerprint is None and normalized_host != existing_host:
+            saved_fingerprint = ""
         profiles = upsert_mister_profile(
             profiles,
             name=active_profile,
             host=normalized_host,
             user=normalized_user,
             port=port,
-            fingerprint=self.config.get("mister_ssh_fingerprint", ""),
-            rom_root=self.config.get(
-                "mister_rom_root",
-                MISTER_DEFAULT_ROM_ROOT,
+            fingerprint=saved_fingerprint,
+            rom_root=existing_profile.get(
+                "rom_root",
+                self.config.get("mister_rom_root", MISTER_DEFAULT_ROM_ROOT),
             ),
-            menu_root=self.config.get(
-                "mister_menu_root",
-                "/media/fat/_SMW Stream Tracker",
+            menu_root=existing_profile.get(
+                "menu_root",
+                self.config.get(
+                    "mister_menu_root",
+                    "/media/fat/_SMW Stream Tracker",
+                ),
             ),
         )
         self.config["mister_profiles"] = profiles
-        self.config["active_mister_profile"] = active_profile
-        self.config["platform_websocket_url"] = mister_websocket_url(self.config)
+        saved_profile = next(
+            profile
+            for profile in profiles
+            if str(profile.get("name", "")).casefold()
+            == active_profile.casefold()
+        )
+        apply_mister_profile_to_config(self.config, saved_profile)
         if select_platform:
             self.config["selected_platform"] = "MiSTer"
             self.platform_var.set("MiSTer")
@@ -47685,11 +48075,47 @@ class TrackerApp:
             client.close()
             raise
 
+    def _arm_mister_periodic_sram_save(self, *, reset: bool = False) -> None:
+        """Keep one five-minute SRAM timer while the desktop app is open."""
+        if reset and self.mister_sram_periodic_after_id is not None:
+            try:
+                self.root.after_cancel(self.mister_sram_periodic_after_id)
+            except tk.TclError:
+                pass
+            self.mister_sram_periodic_after_id = None
+        if self.mister_sram_periodic_after_id is not None:
+            return
+
+        def periodic_save() -> None:
+            self.mister_sram_periodic_after_id = None
+            worker = self.worker
+            if (
+                self.connection_is_connected
+                and worker is not None
+                and bool(getattr(worker, "game_started", False))
+                and normalize_platform_name(
+                    self.config.get("selected_platform", "")
+                ) == "MiSTer"
+                and bool(self.config.get("mister_save_sram_after_level", True))
+            ):
+                self._schedule_mister_sram_save_after_level(
+                    {"reason": "five-minute interval"}
+                )
+            self._arm_mister_periodic_sram_save()
+
+        try:
+            self.mister_sram_periodic_after_id = self.root.after(
+                MISTER_PERIODIC_SRAM_SAVE_INTERVAL_MS,
+                periodic_save,
+            )
+        except tk.TclError:
+            self.mister_sram_periodic_after_id = None
+
     def _schedule_mister_sram_save_after_level(
         self,
         event: dict[str, Any] | None = None,
     ) -> None:
-        """Debounce a verified MiSTer SRAM flush after a confirmed level exit."""
+        """Debounce a verified MiSTer SRAM flush at a safe gameplay boundary."""
 
         if (
             self.startup_check
@@ -47727,6 +48153,9 @@ class TrackerApp:
                 or self.config.get("active_mister_profile", "MiSTer")
                 or "MiSTer"
             ),
+            "reason": str(
+                event_data.get("reason") or "safe gameplay boundary"
+            ),
         }
         self.mister_sram_save_generation += 1
         generation = self.mister_sram_save_generation
@@ -47754,6 +48183,13 @@ class TrackerApp:
                 return
             running = self.mister_sram_save_thread
             if running is not None and running.is_alive():
+                try:
+                    self.mister_sram_save_after_id = self.root.after(
+                        1000,
+                        begin_save,
+                    )
+                except tk.TclError:
+                    self.mister_sram_save_after_id = None
                 return
             self.mister_sram_save_last_requested_at = time.monotonic()
             target = dict(self.mister_sram_save_target)
@@ -47964,8 +48400,13 @@ class TrackerApp:
         port: int,
         password: str,
         status_variable: tk.StringVar,
+        *,
+        expected_fingerprint: str = "",
+        allow_fingerprint_rebind: bool = False,
     ) -> tuple[str, str]:
         """Find and positively identify a MiSTer on the local network."""
+        expected_fingerprint = str(expected_fingerprint or "").strip()
+        normalized_host_hint = normalize_mister_host(host_hint)
         direct_candidates: list[str] = []
         for candidate in (
             host_hint,
@@ -47981,7 +48422,11 @@ class TrackerApp:
 
         authentication_failed = False
 
-        def try_candidate(candidate: str) -> tuple[str, str] | None:
+        def try_candidate(
+            candidate: str,
+            *,
+            allow_rebind: bool = False,
+        ) -> tuple[str, str] | None:
             nonlocal authentication_failed
             if not self._tcp_port_is_open(candidate, port, timeout=0.35):
                 return None
@@ -47997,6 +48442,12 @@ class TrackerApp:
                 )
                 peer = self._verified_mister_peer(client)
                 fingerprint = self._mister_host_key_fingerprint(client)
+                if (
+                    expected_fingerprint
+                    and fingerprint != expected_fingerprint
+                    and not allow_rebind
+                ):
+                    return None
                 self._remember_mister_host_key(client)
                 return peer, fingerprint
             except Exception as error:
@@ -48021,7 +48472,14 @@ class TrackerApp:
             "Looking for MiSTer on your network...",
         )
         for candidate in direct_candidates:
-            found = try_candidate(candidate)
+            found = try_candidate(
+                candidate,
+                allow_rebind=(
+                    allow_fingerprint_rebind
+                    and normalize_mister_host(candidate)
+                    == normalized_host_hint
+                ),
+            )
             if found is not None:
                 return found
 
@@ -48059,10 +48517,21 @@ class TrackerApp:
                     tuple(int(part) for part in candidate.split(".")),
                 )
             )
+            verified_hosts: dict[tuple[str, str], tuple[str, str]] = {}
             for candidate in open_hosts[:32]:
                 found = try_candidate(candidate)
                 if found is not None:
-                    return found
+                    verified_hosts[(found[0], found[1])] = found
+                    if expected_fingerprint:
+                        return found
+            if len(verified_hosts) == 1:
+                return next(iter(verified_hosts.values()))
+            if len(verified_hosts) > 1:
+                raise RuntimeError(
+                    "More than one MiSTer was found. Select the intended "
+                    "profile, enter that console's exact IP address, then "
+                    "try again."
+                )
 
         if authentication_failed:
             raise RuntimeError(
@@ -48159,6 +48628,45 @@ class TrackerApp:
             )
         return match.group(1).casefold()
 
+    @staticmethod
+    def _mister_sftp_rom_inventory(
+        sftp,
+        remote_root: str,
+    ) -> set[str] | None:
+        """List one MiSTer ROM folder once and cache its file names."""
+        normalized_root = str(PurePosixPath(remote_root))
+        cache = getattr(sftp, "_smwtracker_rom_inventories", None)
+        if isinstance(cache, dict):
+            cached_names = cache.get(normalized_root)
+            if isinstance(cached_names, set):
+                return cached_names
+        else:
+            cache = {}
+            try:
+                setattr(sftp, "_smwtracker_rom_inventories", cache)
+            except (AttributeError, TypeError):
+                cache = None
+
+        try:
+            raw_entries = sftp.listdir_attr(normalized_root)
+        except (AttributeError, OSError):
+            try:
+                raw_entries = sftp.listdir(normalized_root)
+            except (AttributeError, OSError):
+                return None
+
+        names: set[str] = set()
+        for entry in raw_entries:
+            mode = getattr(entry, "st_mode", None)
+            if mode is not None and stat.S_ISDIR(mode):
+                continue
+            filename = str(getattr(entry, "filename", entry) or "").strip()
+            if filename:
+                names.add(filename.casefold())
+        if isinstance(cache, dict):
+            cache[normalized_root] = names
+        return names
+
     def _upload_rom_to_mister_sd(
         self,
         client,
@@ -48167,7 +48675,7 @@ class TrackerApp:
         remote_root: str,
         game: dict[str, Any],
     ) -> tuple[str, str]:
-        """Upload and verify one ROM without launching or resetting MiSTer."""
+        """Upload one missing ROM without launching or resetting MiSTer."""
         local_path = Path(local_rom)
         if not local_path.is_file():
             raise FileNotFoundError(
@@ -48181,8 +48689,23 @@ class TrackerApp:
         remote_filename = mister_safe_rom_filename(game, local_path.suffix)
         remote_path = str(PurePosixPath(safe_root) / remote_filename)
         staged_path = remote_path + ".smwtracker-upload"
-        local_sha256 = file_sha256(local_path)
         self._mister_sftp_makedirs(sftp, safe_root)
+
+        remote_inventory = self._mister_sftp_rom_inventory(sftp, safe_root)
+        if (
+            remote_inventory is not None
+            and remote_filename.casefold() in remote_inventory
+        ):
+            return remote_path, "already_on_mister"
+        if remote_inventory is None:
+            try:
+                sftp.stat(remote_path)
+            except OSError:
+                pass
+            else:
+                return remote_path, "already_on_mister"
+
+        local_sha256 = file_sha256(local_path)
 
         def verified_remote_sha256(path: str) -> str:
             try:
@@ -48196,13 +48719,6 @@ class TrackerApp:
                     maximum_bytes=local_size,
                 )
                 return hashlib.sha256(remote_payload).hexdigest()
-
-        try:
-            if int(sftp.stat(remote_path).st_size) == local_size:
-                if verified_remote_sha256(remote_path) == local_sha256:
-                    return remote_path, "already_on_mister"
-        except (OSError, RuntimeError):
-            pass
 
         try:
             try:
@@ -48234,6 +48750,8 @@ class TrackerApp:
                 raise RuntimeError(
                     "The MiSTer SD-card upload has an unexpected final size."
                 )
+            if remote_inventory is not None:
+                remote_inventory.add(remote_filename.casefold())
             return remote_path, "uploaded"
         finally:
             try:
@@ -49095,7 +49613,10 @@ class TrackerApp:
             value=str(active_profile_record.get("port", 22))
         )
         profile_var = tk.StringVar(value=active_mister_profile)
-        mister_profiles_state = {"profiles": mister_profiles}
+        mister_profiles_state = {
+            "profiles": mister_profiles,
+            "loaded_name": active_mister_profile,
+        }
         password_var = tk.StringVar(value=self.mister_session_password or "1")
         status_var = self._localized_string_var(
             value="Ready for MiSTer setup.",
@@ -49185,7 +49706,53 @@ class TrackerApp:
         )
         profile_box.grid(row=0, column=1, sticky="ew")
 
-        def select_mister_profile(profile_name: str, *, persist: bool = True) -> None:
+        def persist_mister_profile_fields(
+            profile_name: str,
+            *,
+            select_platform: bool = False,
+            fingerprint: object | None = None,
+        ) -> tuple[str, str, int]:
+            values = self._save_mister_connection_settings(
+                host_var.get(),
+                user_var.get(),
+                port_var.get(),
+                select_platform=select_platform,
+                profile_name=profile_name,
+                profile_records=mister_profiles_state["profiles"],
+                profile_fingerprint=fingerprint,
+            )
+            saved_profiles = self.config.get("mister_profiles", [])
+            mister_profiles_state["profiles"] = [
+                dict(profile)
+                for profile in saved_profiles
+                if isinstance(profile, dict)
+            ]
+            return values
+
+        def select_mister_profile(
+            profile_name: str,
+            *,
+            persist: bool = True,
+            save_pending: bool = True,
+        ) -> None:
+            loaded_name = str(
+                mister_profiles_state.get("loaded_name", "")
+            ).strip()
+            if (
+                save_pending
+                and loaded_name
+                and loaded_name.casefold() != str(profile_name).casefold()
+            ):
+                try:
+                    persist_mister_profile_fields(loaded_name)
+                except ValueError as error:
+                    profile_var.set(loaded_name)
+                    self._show_localized_error(
+                        "MiSTer Profile",
+                        str(error),
+                        parent=dialog,
+                    )
+                    return
             selected = next(
                 (
                     profile
@@ -49196,6 +49763,7 @@ class TrackerApp:
             )
             if selected is None:
                 return
+            mister_profiles_state["loaded_name"] = selected["name"]
             profile_var.set(selected["name"])
             host_var.set(str(selected.get("host", "MiSTer")))
             user_var.set(str(selected.get("user", "root")))
@@ -49316,7 +49884,8 @@ class TrackerApp:
             profile_box.configure(
                 values=tuple(profile["name"] for profile in updated)
             )
-            select_mister_profile(updated[0]["name"])
+            mister_profiles_state["loaded_name"] = ""
+            select_mister_profile(updated[0]["name"], save_pending=False)
 
         profile_box.bind(
             "<<ComboboxSelected>>",
@@ -49377,7 +49946,8 @@ class TrackerApp:
                 "The default SSH password is 1.\n"
                 "3. Select Find & Set Up MiSTer. The tracker will find its "
                 "address, install live tracking, Virtual Save State Slots "
-                "5–11, and background SRAM saving after completed levels, "
+                "5–11, and automatic SRAM saving every five minutes and at "
+                "safe gameplay boundaries, "
                 "create its game folders, enable automatic login for "
                 "this app, select MiSTer, and test everything.\n4. The fields "
                 "and smaller buttons to the right are only needed for manual "
@@ -49527,11 +50097,20 @@ class TrackerApp:
         busy_buttons: list[tk.Widget] = []
 
         def saved_values(select_platform: bool = False):
-            values = self._save_mister_connection_settings(
-                host_var.get(),
-                user_var.get(),
-                port_var.get(),
+            selected_name = str(
+                mister_profiles_state.get("loaded_name") or profile_var.get()
+            ).strip()
+            values = persist_mister_profile_fields(
+                selected_name,
                 select_platform=select_platform,
+            )
+            mister_profiles_state["loaded_name"] = selected_name
+            profile_var.set(selected_name)
+            profile_box.configure(
+                values=tuple(
+                    profile["name"]
+                    for profile in mister_profiles_state["profiles"]
+                )
             )
             self.mister_session_password = password_var.get()
             self.mister_session_credentials_confirmed = True
@@ -49609,6 +50188,28 @@ class TrackerApp:
 
             password = password_var.get()
             host_hint = host_var.get()
+            loaded_profile_name = str(
+                mister_profiles_state.get("loaded_name")
+                or profile_var.get()
+            ).strip()
+            loaded_profile = next(
+                (
+                    profile
+                    for profile in mister_profiles_state["profiles"]
+                    if str(profile.get("name", "")).casefold()
+                    == loaded_profile_name.casefold()
+                ),
+                {},
+            )
+            expected_fingerprint = str(
+                loaded_profile.get("fingerprint", "")
+            ).strip()
+            allow_fingerprint_rebind = (
+                normalize_mister_host(host_hint)
+                != normalize_mister_host(
+                    loaded_profile.get("host", host_hint)
+                )
+            )
             self.mister_session_password = password
             self.mister_session_credentials_confirmed = True
             set_busy(True)
@@ -49627,6 +50228,8 @@ class TrackerApp:
                         port,
                         password,
                         status_var,
+                        expected_fingerprint=expected_fingerprint,
+                        allow_fingerprint_rebind=allow_fingerprint_rebind,
                     )
                     self._set_optional_install_status(
                         status_var,
@@ -49661,17 +50264,21 @@ class TrackerApp:
 
                     def complete() -> None:
                         host_var.set(host)
-                        self.config["mister_ssh_fingerprint"] = fingerprint
-                        self._save_mister_connection_settings(
-                            host,
-                            user,
-                            str(port),
+                        user_var.set(user)
+                        port_var.set(str(port))
+                        persist_mister_profile_fields(
+                            str(
+                                mister_profiles_state.get("loaded_name")
+                                or profile_var.get()
+                            ),
                             select_platform=True,
+                            fingerprint=fingerprint,
                         )
                         finish_task(
                             "MiSTer is fully set up. The tracker found it, "
                             "installed live tracking, save states 5–11, and "
-                            "background SRAM saving after completed levels, "
+                            "automatic SRAM saving every five minutes and at "
+                            "safe gameplay boundaries, "
                             "created the game folders, enabled automatic "
                             "login for this app, selected MiSTer, and verified "
                             "the connection. MiSTer is restarting."
@@ -52846,10 +53453,27 @@ class TrackerApp:
 
     def _music_index_ready_text(self, details: dict[str, Any] | None = None) -> str:
         selected = details or self.music_index_details
-        return (
+        status = (
             "Online SMW Central catalog ready — "
             f"{int(selected.get('track_count', 0) or 0):,} songs"
         )
+        updated_at = format_smwcentral_cloud_update_time(selected)
+        if updated_at:
+            status += f" • Last cloud update: {updated_at}"
+        return status
+
+    def _refresh_music_cloud_update_countdown(self) -> None:
+        self.music_index_countdown_after_id = None
+        try:
+            self.music_index_next_update_var.set(
+                format_smwcentral_cloud_update_countdown()
+            )
+            self.music_index_countdown_after_id = self.root.after(
+                1000,
+                self._refresh_music_cloud_update_countdown,
+            )
+        except tk.TclError:
+            self.music_index_countdown_after_id = None
 
     def _start_music_index_update_check(self, *, manual: bool = False) -> None:
         """Check the cloud catalog without downloading an offline copy."""
@@ -53351,13 +53975,26 @@ class TrackerApp:
         )
         tk.Label(
             source_card,
+            textvariable=self.music_index_next_update_var,
+            font=("Segoe UI", 8, "bold"),
+            fg=palette["muted"],
+            bg=palette["panel_alt"],
+            anchor="w",
+        ).grid(
+            row=5,
+            column=0,
+            sticky="ew",
+            pady=(self._ui_px(3), 0),
+        )
+        tk.Label(
+            source_card,
             text=self._translate_ui_text("Listen to SMW Central Radio"),
             font=("Segoe UI", 9, "bold"),
             fg=palette["muted"],
             bg=palette["panel_alt"],
             anchor="w",
         ).grid(
-            row=5,
+            row=6,
             column=0,
             sticky="ew",
             pady=(self._ui_px(8), 0),
@@ -53372,7 +54009,7 @@ class TrackerApp:
             pad_y=6,
         )
         radio_button.grid(
-            row=5,
+            row=6,
             column=1,
             sticky="e",
             pady=(self._ui_px(8), 0),
@@ -53385,7 +54022,7 @@ class TrackerApp:
             bg=palette["panel_alt"],
             anchor="w",
         ).grid(
-            row=6,
+            row=7,
             column=0,
             sticky="ew",
             pady=(self._ui_px(9), 0),
@@ -53405,7 +54042,7 @@ class TrackerApp:
             selectcolor=STREAM_DESK["green"],
         )
         community_toggle.grid(
-            row=6,
+            row=7,
             column=1,
             sticky="e",
             pady=(self._ui_px(8), 0),
@@ -53422,7 +54059,7 @@ class TrackerApp:
             justify="left",
             wraplength=self._ui_px(980),
         ).grid(
-            row=7,
+            row=8,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -59750,7 +60387,7 @@ class TrackerApp:
                 local_post_stream_summary,
             ),
             (
-                "Save MiSTer SRAM after completed levels",
+                "Automatically save MiSTer SRAM",
                 local_mister_save_sram_after_level,
             ),
         )
@@ -63990,8 +64627,15 @@ class TrackerApp:
         except (tk.TclError, TypeError, ValueError):
             return
 
+        progress_structure = str(
+            getattr(self, "stream_dashboard_progress_structure", "unknown")
+            or "unknown"
+        ).strip().casefold()
+        room_metric = progress_structure == "rooms"
         exit_mode_progress = self._active_exit_based_mode_progress()
-        if exit_mode_progress is not None:
+        if room_metric:
+            current, total = 0, 0
+        elif exit_mode_progress is not None:
             current, total = exit_mode_progress
         else:
             exits_variable = getattr(self, "exits_var", None)
@@ -64041,9 +64685,18 @@ class TrackerApp:
         )
         if exit_display_var is not None:
             try:
-                exit_display_var.set(
-                    f"{current:,} / {total:,}" if total > 0 else f"{current:,} / —"
-                )
+                if room_metric:
+                    exit_display_var.set(
+                        dashboard_room_number_text(
+                            getattr(self, "stream_dashboard_room_number", None)
+                        )
+                    )
+                else:
+                    exit_display_var.set(
+                        f"{current:,} / {total:,}"
+                        if total > 0
+                        else f"{current:,} / —"
+                    )
             except tk.TclError:
                 pass
 
@@ -105714,6 +106367,49 @@ class TrackerApp:
 
         return entries
 
+    def _fxpak_cached_directory_entries(
+        self,
+        ws: websocket.WebSocket,
+        folder: str,
+    ) -> list[tuple[str, bool]]:
+        """Read each FXPAK folder once during a bulk transfer connection."""
+        normalized_folder = self._normalize_fxpak_sd_path(folder)
+        cache = getattr(ws, "_smwtracker_directory_inventory", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            try:
+                setattr(ws, "_smwtracker_directory_inventory", cache)
+            except (AttributeError, TypeError):
+                cache = None
+        if isinstance(cache, dict) and normalized_folder in cache:
+            return list(cache[normalized_folder])
+        entries = self._fxpak_directory_entries(ws, normalized_folder)
+        if isinstance(cache, dict):
+            cache[normalized_folder] = list(entries)
+        return entries
+
+    def _remember_fxpak_directory_entry(
+        self,
+        ws: websocket.WebSocket,
+        folder: str,
+        name: str,
+        is_directory: bool,
+    ) -> None:
+        """Keep the per-connection FXPAK inventory current after a change."""
+        cache = getattr(ws, "_smwtracker_directory_inventory", None)
+        if not isinstance(cache, dict):
+            return
+        normalized_folder = self._normalize_fxpak_sd_path(folder)
+        entries = list(cache.get(normalized_folder, []))
+        folded_name = name.casefold()
+        entries = [
+            entry
+            for entry in entries
+            if entry[0].casefold() != folded_name
+        ]
+        entries.append((name, is_directory))
+        cache[normalized_folder] = entries
+
     def _ensure_fxpak_usb_folder(
         self,
         ws: websocket.WebSocket,
@@ -105730,7 +106426,7 @@ class TrackerApp:
         for segment in PurePosixPath(normalized).parts:
             if segment in {"", "/"}:
                 continue
-            entries = self._fxpak_directory_entries(
+            entries = self._fxpak_cached_directory_entries(
                 ws,
                 current,
             )
@@ -105748,6 +106444,15 @@ class TrackerApp:
                     "MakeDir",
                     [next_folder],
                 )
+                self._remember_fxpak_directory_entry(
+                    ws,
+                    current,
+                    segment,
+                    True,
+                )
+                cache = getattr(ws, "_smwtracker_directory_inventory", None)
+                if isinstance(cache, dict):
+                    cache.setdefault(next_folder, [])
                 time.sleep(0.2)
             current = next_folder
 
@@ -105777,7 +106482,7 @@ class TrackerApp:
             parent,
         )
 
-        entries = self._fxpak_directory_entries(
+        entries = self._fxpak_cached_directory_entries(
             ws,
             parent,
         )
@@ -105832,6 +106537,10 @@ class TrackerApp:
             raise RuntimeError(
                 "The FXPAK Pro did not show the uploaded ROM on its SD card."
             )
+
+        cache = getattr(ws, "_smwtracker_directory_inventory", None)
+        if isinstance(cache, dict):
+            cache[parent] = list(entries)
 
         return "uploaded"
 
@@ -119870,6 +120579,9 @@ class TrackerApp:
                     # that produced the live-memory event.
                     self._schedule_mister_sram_save_after_level(event)
 
+                elif event_type == "mister_sram_save":
+                    self._schedule_mister_sram_save_after_level(event)
+
                 elif event_type == "level_started":
                     # Identify in the background while the viewer is playing.
                     # A later What Song Is Playing? redemption can then post
@@ -119991,6 +120703,10 @@ class TrackerApp:
                             connection_text,
                             "partial" if partially_connected else "connected",
                         )
+                        if normalize_platform_name(
+                            self.config.get("selected_platform", "")
+                        ) == "MiSTer":
+                            self._arm_mister_periodic_sram_save(reset=True)
                     else:
                         transient_error = bool(
                             event.get("transient")
@@ -120054,7 +120770,23 @@ class TrackerApp:
 
                 elif event_type == "game":
                     event_is_generic = bool(event.get("generic_game"))
+                    progress_structure = str(
+                        event.get("progress_structure", "unknown") or "unknown"
+                    ).strip().casefold()
                     self.non_smw_mode_active = event_is_generic
+                    self.stream_dashboard_progress_structure = progress_structure
+                    self.stream_dashboard_room_number = None
+                    progress_label_var = getattr(
+                        self,
+                        "stream_dashboard_current_progress_label_var",
+                        None,
+                    )
+                    if progress_label_var is not None:
+                        progress_label_var.set(
+                            self._translate_ui_text(
+                                dashboard_progress_metric_label(progress_structure)
+                            )
+                        )
                     event_author = (
                         ""
                         if event_is_generic
@@ -120075,15 +120807,22 @@ class TrackerApp:
                         + " "
                         + event_author
                     )
-                    self.exits_var.set(
-                        ""
-                        if event_is_generic
-                        else self._translate_ui_text("Exits:")
-                        + " "
-                        + str(event.get("completed", 0))
-                        + " / "
-                        + str(event.get("total", "Unknown"))
-                    )
+                    if event_is_generic:
+                        self.exits_var.set("")
+                    elif progress_structure == "rooms":
+                        self.exits_var.set(
+                            self._translate_ui_text("Rooms:")
+                            + " "
+                            + self._translate_ui_text("Tracked in game")
+                        )
+                    else:
+                        self.exits_var.set(
+                            self._translate_ui_text("Exits:")
+                            + " "
+                            + str(event.get("completed", 0))
+                            + " / "
+                            + str(event.get("total", "Unknown"))
+                        )
                     self.obs_widget_completed_exits = (
                         _obs_widget_nonnegative_integer(event.get("completed", 0))
                     )
@@ -120130,10 +120869,21 @@ class TrackerApp:
                     hack_type_text = str(
                         event.get("hack_type", "Unknown") or "Unknown"
                     )
+                    progress_label_key = {
+                        "rooms": "Room-based",
+                        "exits": "Exit-based",
+                        "hybrid": "Exit + room-based",
+                    }.get(progress_structure, "")
                     self.hack_type_var.set(
                         self._translate_ui_text("Type:")
                         + " "
                         + hack_type_text
+                        + (
+                            "  •  "
+                            + self._translate_ui_text(progress_label_key)
+                            if progress_label_key and not event_is_generic
+                            else ""
+                        )
                     )
                     try:
                         event_retroachievements_game_id = max(
@@ -120163,6 +120913,7 @@ class TrackerApp:
                         "rating": rating_value,
                         "tags": catalog_tags_text(event.get("tags", "")),
                         "description": str(event.get("description", "")),
+                        "progress_structure": progress_structure,
                         "screenshots": catalog_screenshot_urls(
                             event.get("screenshots", [])
                         ),
@@ -120211,6 +120962,12 @@ class TrackerApp:
                         )
 
                 elif event_type == "exits":
+                    try:
+                        self.stream_dashboard_room_number = int(
+                            event.get("room_number")
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        self.stream_dashboard_room_number = None
                     self.exits_var.set(
                         self._translate_ui_text("Exits:")
                         + " "
@@ -120744,6 +121501,19 @@ class TrackerApp:
         self.automatic_catalog_refresh_cancel_event.set()
         self.fxpak_sd_cancel_event.set()
         self.music_identifier_cancel_event.set()
+        for after_attribute in (
+            "mister_sram_save_after_id",
+            "mister_sram_periodic_after_id",
+            "music_index_countdown_after_id",
+        ):
+            after_id = getattr(self, after_attribute, None)
+            if after_id is None:
+                continue
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+            setattr(self, after_attribute, None)
         for sequence, bind_id in tuple(
             self.main_mousewheel_bind_ids.items()
         ):

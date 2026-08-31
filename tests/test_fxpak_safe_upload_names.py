@@ -135,6 +135,72 @@ class FxpakSafeUploadNameTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), b"test-rom")
             self.assertTrue(local_rom.exists())
 
+    def test_sd_copy_skips_any_destination_that_is_already_present(self):
+        game = {"title": "Already Here", "smwc_id": "77"}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            local_rom = root / "Already Here.sfc"
+            sd_root = root / "All_Hacks"
+            destination = sd_root / "A" / "Already Here.sfc"
+            local_rom.write_bytes(b"new-local-rom")
+            destination.parent.mkdir(parents=True)
+            destination.write_bytes(b"existing-card-rom")
+
+            with mock.patch.object(
+                self.tracker,
+                "rom_builder_file_sha256",
+                side_effect=AssertionError("existing SD files must not be hashed"),
+            ):
+                returned_path, status = self.tracker.rom_builder_copy_rom_to_sd(
+                    local_rom,
+                    sd_root,
+                    game,
+                )
+
+            self.assertEqual(status, "already_on_sd")
+            self.assertEqual(returned_path, destination)
+            self.assertEqual(destination.read_bytes(), b"existing-card-rom")
+
+    def test_fxpak_usb_reuses_inventory_and_never_sends_existing_rom(self):
+        class DummyWebSocket:
+            def send_binary(self, _payload):
+                raise AssertionError("an existing FXPAK ROM must not be sent")
+
+        app = self.tracker.TrackerApp.__new__(self.tracker.TrackerApp)
+        ws = DummyWebSocket()
+        directory_reads = []
+
+        def entries(_ws, folder):
+            directory_reads.append(folder)
+            return {
+                "/": [("All_Hacks", True)],
+                "/All_Hacks": [("A", True)],
+                "/All_Hacks/A": [("Already Here.sfc", False)],
+            }[folder]
+
+        app._fxpak_directory_entries = entries
+        app._fxpak_request = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an existing FXPAK ROM must not issue a write request")
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            local_rom = Path(temporary_directory) / "Already Here.sfc"
+            local_rom.write_bytes(b"local-rom")
+            first_status = app._upload_rom_to_fxpak_usb(
+                ws,
+                local_rom,
+                "/All_Hacks/A/Already Here.sfc",
+            )
+            second_status = app._upload_rom_to_fxpak_usb(
+                ws,
+                local_rom,
+                "/All_Hacks/A/Already Here.sfc",
+            )
+
+        self.assertEqual(first_status, "already_on_usb")
+        self.assertEqual(second_status, "already_on_usb")
+        self.assertEqual(directory_reads, ["/", "/All_Hacks", "/All_Hacks/A"])
+
     def test_download_usb_path_uses_fxpak_safe_path_builder(self):
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
         worker = next(

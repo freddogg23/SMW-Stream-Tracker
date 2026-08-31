@@ -1917,6 +1917,9 @@ def fetch_cloud_music_catalog_status(endpoint: object) -> dict[str, Any]:
         "catalog_updated_at": str(
             response.get("catalog_updated_at", "")
         ).strip(),
+        "cloud_updated_at": str(
+            response.get("cloud_updated_at", "")
+        ).strip(),
         "track_count": track_count,
     }
 

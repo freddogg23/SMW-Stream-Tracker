@@ -98,6 +98,62 @@ class DashboardExitTotalTests(unittest.TestCase):
         self.assertEqual(game_event["total"], 12)
         self.assertEqual(game_event["title"], "Example Hack")
 
+    def test_saved_smw_mapping_beats_same_named_non_smw_fallback(self):
+        worker, events = self.make_worker()
+        remote_path = (
+            "/media/fat/games/SNES/SMW Stream Tracker/"
+            "Super Little Miss A.D.D. World.sfc"
+        )
+        worker.config["selected_platform"] = "MiSTer"
+        worker.config["platform_rom_mappings"] = {
+            "MiSTer": {"smwc:32714": remote_path}
+        }
+        worker.hack_catalog = [
+            {
+                "catalog_key": "SMWC:32714",
+                "smwc_id": "32714",
+                "title": "Super Little Miss A.D.D. World",
+                "author": "Creator",
+                "total_exits": 9,
+            }
+        ]
+        worker.database = {}
+        worker.previous_rom_path = remote_path
+        original_fallback = self.tracker.find_non_smw_rom_record
+        self.tracker.find_non_smw_rom_record = lambda _path: {
+            "title": "Super Little Miss A.D.D. World",
+            "_non_smw_rom": True,
+        }
+        try:
+            worker.refresh_current_hack_metadata()
+        finally:
+            self.tracker.find_non_smw_rom_record = original_fallback
+
+        self.assertFalse(worker.generic_game_active)
+        self.assertTrue(worker.current_matched)
+        self.assertEqual(worker.current_total, 9)
+        game_event = events.get_nowait()
+        self.assertEqual(game_event["title"], "Super Little Miss A.D.D. World")
+        self.assertNotIn("generic_game", game_event)
+
+    def test_room_dashboard_uses_lunar_magic_room_number(self):
+        self.assertEqual(
+            self.tracker.dashboard_progress_metric_label("rooms"),
+            "Room number",
+        )
+        self.assertEqual(
+            self.tracker.dashboard_progress_metric_label("hybrid"),
+            "Current exit",
+        )
+        self.assertEqual(
+            self.tracker.dashboard_room_number_text(0x105),
+            "105",
+        )
+        self.assertEqual(
+            self.tracker.dashboard_room_number_text(None),
+            "—",
+        )
+
     def test_different_rom_does_not_reuse_pending_exit_total(self):
         worker, _events = self.make_worker()
         worker.pending_catalog_launch_game = {

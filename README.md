@@ -1,6 +1,6 @@
 # SMW Stream Tracker
 
-**Version 2.2.2**
+**Version 2.2.3**
 
 SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-hack progress, timers, exits, ratings, and stream text. It supports three playable platforms:
 
@@ -9,6 +9,25 @@ SMW Stream Tracker is a Windows application for tracking Super Mario World ROM-h
 - MiSTer FPGA over the local network
 
 The app does **not** include, download, or upload a commercial Super Mario World base ROM. To build playable ROMs from moderated patches, you must provide your own legally obtained clean base ROM.
+
+## What’s new in v2.2.3
+
+- Keeps each saved MiSTer profile tied to the correct console and prevents
+  automatic discovery from replacing one powered-on console with another.
+- Sends only ROMs that are missing from MiSTer SD cards and FXPAK Pro cards,
+  avoiding unnecessary retransfers of files already present.
+- Expands automatic MiSTer SRAM protection with five-minute saves and saves at
+  level clears, checkpoints, and returns to the overworld map.
+- Keeps **Current exit** visible on the dashboard. Room-based hacks show
+  **Room number** and the live Lunar Magic room ID instead.
+- Improves rapid consecutive death counting and SMW Central classification when
+  different platforms contain ROMs with the same filename.
+- Uses the online SMW Central song catalog with its last cloud update time and a
+  live countdown to the next hourly, on-the-hour catalog refresh.
+- Updates Music Identifier wording to describe shared community song results.
+
+This is a Windows-only release. No macOS artifacts are published because the
+macOS build has not been tested.
 
 ## What’s new in v2.2.2
 

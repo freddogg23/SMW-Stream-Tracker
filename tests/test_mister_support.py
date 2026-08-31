@@ -70,6 +70,10 @@ class MisterSupportTests(unittest.TestCase):
         self.assertTrue(
             self.tracker.DEFAULT_CONFIG["mister_save_sram_after_level"]
         )
+        self.assertEqual(
+            self.tracker.MISTER_PERIODIC_SRAM_SAVE_INTERVAL_MS,
+            5 * 60 * 1000,
+        )
         flush_source = inspect.getsource(
             self.tracker.TrackerApp._flush_mister_sram_in_background
         )
@@ -168,10 +172,107 @@ class MisterSupportTests(unittest.TestCase):
                 "user": "root",
                 "port": 22,
                 "profile": "Online console",
+                "reason": "safe gameplay boundary",
             },
         )
         self.assertEqual(app.mister_sram_save_after_id, "save-after")
         self.assertIsNotNone(app.root.callback)
+
+    def test_sram_save_transition_reasons_are_event_driven(self):
+        reasons = self.tracker.mister_sram_transition_reasons(
+            previous_mode=self.tracker.LEVEL_MODE,
+            mode=self.tracker.LEVEL_MODE,
+            previous_midway=0,
+            midway=1,
+            session_active=True,
+        )
+        self.assertEqual(reasons, ("midpoint or checkpoint reached",))
+
+        reasons = self.tracker.mister_sram_transition_reasons(
+            previous_mode=self.tracker.LEVEL_MODE,
+            mode=self.tracker.OVERWORLD_MODE,
+            previous_midway=1,
+            midway=0,
+            session_active=True,
+        )
+        self.assertEqual(reasons, ("returned to the overworld",))
+
+        self.assertEqual(
+            self.tracker.mister_sram_transition_reasons(
+                previous_mode=None,
+                mode=self.tracker.OVERWORLD_MODE,
+                previous_midway=None,
+                midway=0,
+                session_active=True,
+            ),
+            (),
+        )
+        self.assertEqual(
+            self.tracker.mister_sram_transition_reasons(
+                previous_mode=self.tracker.LEVEL_MODE,
+                mode=self.tracker.OVERWORLD_MODE,
+                previous_midway=0,
+                midway=1,
+                session_active=False,
+            ),
+            (),
+        )
+
+    def test_worker_sram_event_keeps_reason_and_exact_profile(self):
+        events = queue.Queue()
+        worker = self.tracker.TrackerWorker(
+            {
+                "selected_platform": "MiSTer",
+                "mister_save_sram_after_level": True,
+                "mister_host": "192.168.50.145",
+                "mister_ssh_user": "root",
+                "mister_ssh_port": 2222,
+                "active_mister_profile": "Second MiSTer",
+            },
+            events,
+        )
+        worker.send_mister_sram_save_event("returned to the overworld")
+        event = events.get_nowait()
+        self.assertEqual(event["type"], "mister_sram_save")
+        self.assertEqual(event["reason"], "returned to the overworld")
+        self.assertEqual(event["mister_host"], "192.168.50.145")
+        self.assertEqual(event["mister_ssh_port"], 2222)
+        self.assertEqual(event["mister_profile"], "Second MiSTer")
+
+    def test_periodic_sram_save_runs_only_during_active_mister_play(self):
+        class FakeRoot:
+            def __init__(self):
+                self.delay = None
+                self.callback = None
+
+            def after(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                return "periodic-after"
+
+            def after_cancel(self, _after_id):
+                return None
+
+        app = object.__new__(self.tracker.TrackerApp)
+        app.root = FakeRoot()
+        app.mister_sram_periodic_after_id = None
+        app.connection_is_connected = True
+        app.worker = SimpleNamespace(game_started=True)
+        app.config = {
+            "selected_platform": "MiSTer",
+            "mister_save_sram_after_level": True,
+        }
+        app._schedule_mister_sram_save_after_level = mock.Mock()
+
+        app._arm_mister_periodic_sram_save()
+        self.assertEqual(
+            app.root.delay,
+            self.tracker.MISTER_PERIODIC_SRAM_SAVE_INTERVAL_MS,
+        )
+        app.root.callback()
+        app._schedule_mister_sram_save_after_level.assert_called_once_with(
+            {"reason": "five-minute interval"}
+        )
 
     def test_mister_rom_root_stays_inside_the_snes_sd_folder(self):
         self.assertEqual(
@@ -256,12 +357,13 @@ class MisterSupportTests(unittest.TestCase):
             self.assertEqual(repeated_path, remote_path)
             self.assertEqual(repeated_status, "already_on_mister")
 
-    def test_mister_bulk_upload_hashes_on_device_without_downloading_rom(self):
+    def test_mister_bulk_upload_reuses_inventory_and_skips_existing_rom(self):
         class FakeSftp:
             def __init__(self):
                 self.files = {}
                 self.read_count = 0
                 self.stat_count = 0
+                self.list_count = 0
                 self.directories = {
                     "/",
                     "/media",
@@ -280,6 +382,19 @@ class MisterSupportTests(unittest.TestCase):
 
             def mkdir(self, path):
                 self.directories.add(path)
+
+            def listdir_attr(self, path):
+                self.list_count += 1
+                prefix = path.rstrip("/") + "/"
+                return [
+                    SimpleNamespace(
+                        filename=remote_path[len(prefix):],
+                        st_mode=0,
+                    )
+                    for remote_path in self.files
+                    if remote_path.startswith(prefix)
+                    and "/" not in remote_path[len(prefix):]
+                ]
 
             def put(self, local_path, remote_path, *, confirm=True):
                 self.files[remote_path] = Path(local_path).read_bytes()
@@ -338,21 +453,30 @@ class MisterSupportTests(unittest.TestCase):
                 {"title": "Fast Hack", "smwc_id": "456"},
             )
             first_directory_stat_count = sftp.stat_count
-            repeated_path, repeated_status = app._upload_rom_to_mister_sd(
-                client,
-                sftp,
-                local_rom,
-                self.tracker.MISTER_DEFAULT_ROM_ROOT,
-                {"title": "Fast Hack", "smwc_id": "456"},
-            )
+            local_rom.write_bytes(b"a-newer-local-rom-that-must-not-replace-it")
+            with mock.patch.object(
+                self.tracker,
+                "file_sha256",
+                side_effect=AssertionError(
+                    "an existing MiSTer ROM must not be rehashed"
+                ),
+            ):
+                repeated_path, repeated_status = app._upload_rom_to_mister_sd(
+                    client,
+                    sftp,
+                    local_rom,
+                    self.tracker.MISTER_DEFAULT_ROM_ROOT,
+                    {"title": "Fast Hack", "smwc_id": "456"},
+                )
 
         self.assertEqual(status, "uploaded")
         self.assertEqual(repeated_status, "already_on_mister")
         self.assertEqual(repeated_path, remote_path)
         self.assertEqual(sftp.files[remote_path], payload)
         self.assertEqual(sftp.read_count, 0)
-        self.assertGreaterEqual(len(client.commands), 2)
-        self.assertLessEqual(sftp.stat_count - first_directory_stat_count, 1)
+        self.assertEqual(len(client.commands), 1)
+        self.assertEqual(sftp.list_count, 1)
+        self.assertEqual(sftp.stat_count - first_directory_stat_count, 0)
 
     def test_mister_downloader_checkbox_is_platform_specific(self):
         downloader_source = inspect.getsource(
@@ -393,6 +517,134 @@ class MisterSupportTests(unittest.TestCase):
             self.tracker.mister_websocket_url({"mister_host": "192.168.1.44"}),
             "ws://192.168.1.44:23074",
         )
+
+    def test_mister_host_edit_is_saved_to_the_profile_shown_in_setup(self):
+        app = object.__new__(self.tracker.TrackerApp)
+        app.config = {
+            "active_mister_profile": "Office",
+            "mister_host": "192.168.50.145",
+            "mister_ssh_user": "root",
+            "mister_ssh_port": 22,
+            "mister_ssh_fingerprint": "office-key",
+            "mister_profiles": [
+                {
+                    "name": "Living Room",
+                    "host": "192.168.50.116",
+                    "user": "root",
+                    "port": 22,
+                    "fingerprint": "living-room-key",
+                    "rom_root": "/media/fat/games/SNES/Living Room",
+                    "menu_root": "/media/fat/_SMW Stream Tracker",
+                },
+                {
+                    "name": "Office",
+                    "host": "192.168.50.145",
+                    "user": "root",
+                    "port": 22,
+                    "fingerprint": "office-key",
+                    "rom_root": "/media/fat/games/SNES/Office",
+                    "menu_root": "/media/fat/_SMW Stream Tracker",
+                },
+            ],
+        }
+        app.worker = None
+        dialog_profiles = [dict(profile) for profile in app.config["mister_profiles"]]
+        app.config["mister_profiles"][1]["host"] = "192.168.50.199"
+
+        with mock.patch.object(self.tracker, "save_config") as save:
+            values = app._save_mister_connection_settings(
+                "ssh://192.168.50.200:22/",
+                "root",
+                "22",
+                profile_name="Living Room",
+                profile_records=dialog_profiles,
+            )
+
+        profiles, active = self.tracker.normalized_mister_profiles(app.config)
+        living_room = next(
+            profile for profile in profiles if profile["name"] == "Living Room"
+        )
+        office = next(profile for profile in profiles if profile["name"] == "Office")
+        self.assertEqual(values, ("192.168.50.200", "root", 22))
+        self.assertEqual(active, "Living Room")
+        self.assertEqual(living_room["host"], "192.168.50.200")
+        self.assertEqual(living_room["fingerprint"], "")
+        self.assertEqual(
+            living_room["rom_root"],
+            "/media/fat/games/SNES/Living Room",
+        )
+        self.assertEqual(office["host"], "192.168.50.199")
+        self.assertEqual(app.config["mister_host"], "192.168.50.200")
+        self.assertEqual(
+            app.config["platform_websocket_url"],
+            "ws://192.168.50.200:23074",
+        )
+        save.assert_called_once_with(app.config)
+
+    def test_auto_address_recovery_cannot_overwrite_a_different_console(self):
+        events = queue.Queue()
+        worker = self.tracker.TrackerWorker(
+            {
+                "selected_platform": "MiSTer",
+                "active_mister_profile": "D-10 Nano",
+                "mister_host": "192.168.50.145",
+                "mister_ssh_user": "root",
+                "mister_ssh_port": 22,
+                "mister_ssh_fingerprint": "SHA256:nano-key",
+                "mister_profiles": [
+                    {
+                        "name": "D-10 Nano",
+                        "host": "192.168.50.145",
+                        "user": "root",
+                        "port": 22,
+                        "fingerprint": "SHA256:nano-key",
+                    },
+                    {
+                        "name": "Multisystem 2",
+                        "host": "192.168.50.116",
+                        "user": "root",
+                        "port": 22,
+                        "fingerprint": "SHA256:multisystem-key",
+                    },
+                ],
+            },
+            events,
+        )
+        worker.last_mister_connection_scan_at = 0.0
+        with (
+            mock.patch.object(
+                worker,
+                "_tracking_port_is_open",
+                side_effect=lambda host, *_args: host == "192.168.50.11",
+            ),
+            mock.patch.object(
+                self.tracker,
+                "local_private_ipv4_addresses",
+                return_value=["192.168.50.10"],
+            ),
+            mock.patch.object(
+                self.tracker,
+                "mister_local_scan_candidates",
+                return_value=["192.168.50.11"],
+            ),
+            mock.patch.object(
+                self.tracker,
+                "mister_ssh_host_key_fingerprint",
+                return_value="SHA256:some-other-console",
+            ),
+        ):
+            worker.auto_select_mister_connection()
+
+        profiles, active = self.tracker.normalized_mister_profiles(
+            worker.config
+        )
+        nano = next(
+            profile for profile in profiles if profile["name"] == "D-10 Nano"
+        )
+        self.assertEqual(active, "D-10 Nano")
+        self.assertEqual(nano["host"], "192.168.50.145")
+        self.assertEqual(worker.config["mister_host"], "192.168.50.145")
+        self.assertTrue(events.empty())
 
     def test_selected_mister_uses_remote_bridge_instead_of_local_sni(self):
         config = dict(self.tracker.DEFAULT_CONFIG)

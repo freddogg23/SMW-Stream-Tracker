@@ -39,6 +39,21 @@ function text(value) {
   return String(value ?? "").trim();
 }
 
+export function cloudCatalogUpdatedAt(catalog) {
+  const recorded = text(catalog?.cloud_updated_at);
+  if (recorded) {
+    return recorded;
+  }
+  const version = text(catalog?.index_version);
+  if (!/^\d{14}$/.test(version)) {
+    return "";
+  }
+  return (
+    `${version.slice(0, 4)}-${version.slice(4, 6)}-${version.slice(6, 8)}`
+    + `T${version.slice(8, 10)}:${version.slice(10, 12)}:${version.slice(12, 14)}Z`
+  );
+}
+
 function isHex(value, length) {
   return new RegExp(`^[0-9a-f]{${length}}$`, "i").test(text(value));
 }
@@ -894,6 +909,7 @@ async function finishCatalogUpdate(env, document) {
     ["catalog", "smwcentral"],
     ["index_version", text(document.index_version)],
     ["catalog_updated_at", text(document.catalog_updated_at)],
+    ["cloud_updated_at", new Date().toISOString()],
     ["track_count", String(Number(countRow?.count ?? 0))],
   ];
   await env.DB.batch(values.map(([key, value]) => env.DB.prepare(
@@ -971,7 +987,13 @@ async function handleCatalogStatus(env) {
   const catalog = Object.fromEntries(
     (result.results ?? []).map((row) => [text(row.key), text(row.value)]),
   );
-  return jsonResponse({ ok: true, ...catalog, fingerprints_only: true, raw_audio_collected: false });
+  return jsonResponse({
+    ok: true,
+    ...catalog,
+    cloud_updated_at: cloudCatalogUpdatedAt(catalog),
+    fingerprints_only: true,
+    raw_audio_collected: false,
+  });
 }
 
 async function handleAdminRevoke(request, env) {

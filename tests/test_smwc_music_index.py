@@ -721,6 +721,7 @@ class SmwcMusicIndexTests(unittest.TestCase):
                 "catalog": "smwcentral",
                 "index_version": "20260829212637",
                 "catalog_updated_at": "2026-08-29T21:26:37Z",
+                "cloud_updated_at": "2026-08-29T21:31:04Z",
                 "track_count": "12353",
                 "fingerprints_only": True,
                 "raw_audio_collected": False,
@@ -732,6 +733,7 @@ class SmwcMusicIndexTests(unittest.TestCase):
 
         self.assertTrue(status["cloud_only"])
         self.assertEqual(status["track_count"], 12353)
+        self.assertEqual(status["cloud_updated_at"], "2026-08-29T21:31:04Z")
         self.assertFalse(status["raw_audio_collected"])
         self.assertEqual(api.call_args.args[1], "v1/music/catalog")
 

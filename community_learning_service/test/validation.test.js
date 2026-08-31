@@ -3,10 +3,25 @@ import assert from "node:assert/strict";
 
 import {
   chromaprintAlignedDistance,
+  cloudCatalogUpdatedAt,
   validateCatalogUpdateDocument,
   validateContribution,
   validateMusicMatchDocument,
 } from "../src/index.js";
+
+test("catalog status derives a UTC cloud time for catalogs uploaded before tracking", () => {
+  assert.equal(
+    cloudCatalogUpdatedAt({ index_version: "20260831012233" }),
+    "2026-08-31T01:22:33Z",
+  );
+  assert.equal(
+    cloudCatalogUpdatedAt({
+      index_version: "20260831012233",
+      cloud_updated_at: "2026-08-31T01:25:10.000Z",
+    }),
+    "2026-08-31T01:25:10.000Z",
+  );
+});
 
 function validContribution() {
   return {

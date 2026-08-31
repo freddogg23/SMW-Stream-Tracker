@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '2.2.2',
+    [string]$Version = '2.2.3',
     [string]$ReleaseBaseUrl = 'https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/v',
     [switch]$SkipAppBuild
 )
