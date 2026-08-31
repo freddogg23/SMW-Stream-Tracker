@@ -3,7 +3,9 @@ name: Update SMW Central music index
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 23 * * *"
+    # Check SMW Central at the top of every hour. The incremental builder
+    # exits without touching the cloud catalog when no submissions changed.
+    - cron: "0 * * * *"
 
 permissions:
   contents: write
