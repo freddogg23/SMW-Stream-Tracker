@@ -10,7 +10,7 @@
   "chromaprint_track_count": 12620,
   "chromaprint_token_count": 4161402,
   "size_bytes": 199745536,
-  "sha256": "2a9f20c600e745668b94c1072bf4278ddc6422731c820c6027ce9220ed546c7b",
+  "sha256": "3ea5a0134458e55cede73a303b11dc495a2a2d36925e542e4f36725893009023",
   "download_url": "https://github.com/freddogg23/SMW-Stream-Tracker/releases/download/music-index-latest/SMWCentralMusicIndex.sqlite3",
   "incremental_update": {
     "base_index_version": "20260828070238",
